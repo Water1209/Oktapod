@@ -1,0 +1,108 @@
+import { describe, expect, it } from 'vitest'
+import type { RunEvent, Task } from '../../shared/api/client'
+import { buildTaskExecutionPlan, buildTaskTimeline, taskFailureInfo } from './task-progress-model'
+
+const task: Task = {
+  id: 'task-1', project_id: 'project-1', run_id: 'run-1', conversation_id: 'conversation-1',
+  title: '检索 Physical AI', goal: '检索资料', mode: 'single_agent', visibility: 'private',
+  status: 'failed', error_code: 'PROVIDER_UNAVAILABLE',
+  result_summary: 'context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
+  accepted: false, created_at: '2026-07-20T11:06:01Z', updated_at: '2026-07-20T11:08:01Z',
+}
+
+describe('task progress presentation', () => {
+  it('explains provider header timeout in user-facing language', () => {
+    expect(taskFailureInfo(task)).toMatchObject({
+      title: '模型服务请求超时',
+      retryable: true,
+    })
+    expect(taskFailureInfo(task)?.action).toContain('连续 3 次失败后才停止')
+  })
+
+  it('turns a budget error into an actionable recovery reason', () => {
+    expect(taskFailureInfo({ error_code: 'BUDGET_RESERVATION_EXCEEDED', result_summary: '' })).toMatchObject({
+      title: '本次运行配额不足',
+      retryable: false,
+    })
+    expect(taskFailureInfo({ error_code: 'BUDGET_RESERVATION_EXCEEDED', result_summary: '' })?.action).toContain('增加本次 Run 的配额')
+    expect(taskFailureInfo({ error_code: 'BUDGET_EXCEEDED', result_summary: '' })).toMatchObject({
+      title: '本次运行配额不足',
+      retryable: false,
+    })
+  })
+
+  it('offers checkpoint replanning for a scene-policy mismatch', () => {
+    const failure = taskFailureInfo({ error_code: 'SCENE_POLICY_DENIED', result_summary: '' })
+    expect(failure).toMatchObject({
+      title: '当前场景不允许该操作',
+      retryable: true,
+    })
+    expect(failure?.action).toContain('重新规划')
+  })
+
+  it('aggregates technical events into a task and one failed execution step', () => {
+    const events: RunEvent[] = [
+      { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'run.created', occurred_at: '2026-07-20T11:06:01Z', payload: { step_id: 'step-1' } },
+      { id: 'event-2', run_id: 'run-1', stream_seq: 2, event_type: 'step.started', occurred_at: '2026-07-20T11:06:02Z', payload: { step_id: 'step-1' } },
+      { id: 'event-3', run_id: 'run-1', stream_seq: 3, event_type: 'checkpoint.committed', occurred_at: '2026-07-20T11:06:03Z', payload: { step_id: 'step-1' } },
+      { id: 'event-4', run_id: 'run-1', stream_seq: 4, event_type: 'step.failed', occurred_at: '2026-07-20T11:08:01Z', payload: { step_id: 'step-1', error_code: 'PROVIDER_UNAVAILABLE', result_summary: task.result_summary } },
+    ]
+
+    const timeline = buildTaskTimeline(task, events)
+    expect(timeline).toHaveLength(2)
+    expect(timeline[0]).toMatchObject({ label: '任务已创建', state: 'succeeded' })
+    expect(timeline[1]).toMatchObject({ label: '分析目标并制定执行计划', state: 'failed', code: 'PROVIDER_UNAVAILABLE' })
+  })
+
+  it('shows the concrete tool name, input and verified result', () => {
+    const events: RunEvent[] = [
+      { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'run.created', occurred_at: '2026-07-20T11:06:01Z', payload: {} },
+      { id: 'event-2', run_id: 'run-1', stream_seq: 2, event_type: 'tool.planned', occurred_at: '2026-07-20T11:06:02Z', payload: { step_id: 'step-tool', tool_name: 'workspace_write_file' } },
+      { id: 'event-3', run_id: 'run-1', stream_seq: 3, event_type: 'tool.completed', occurred_at: '2026-07-20T11:06:03Z', payload: { step_id: 'step-tool', tool_name: 'workspace_write_file', input_summary: 'reports/final.md · 5 B', output_summary: '成功 · reports/final.md · 5 B', output_excerpt: '{\n  "path": "reports/final.md"\n}' } },
+      { id: 'event-4', run_id: 'run-1', stream_seq: 4, event_type: 'step.succeeded', occurred_at: '2026-07-20T11:06:04Z', payload: { step_id: 'step-tool', result_summary: '工具执行完成。' } },
+    ]
+
+    const timeline = buildTaskTimeline({ ...task, status: 'succeeded', error_code: '', result_summary: '完成' }, events)
+    expect(timeline[1]).toMatchObject({
+      label: '写入工作区文件',
+      state: 'succeeded',
+      detail: '成功 · reports/final.md · 5 B',
+      tool: {
+        name: 'workspace_write_file',
+        input: 'reports/final.md · 5 B',
+        result: '成功 · reports/final.md · 5 B',
+      },
+    })
+    expect(timeline[1]?.tool?.output).toContain('reports/final.md')
+  })
+
+  it('presents an automatic compatibility retry as a model recovery step', () => {
+    const events: RunEvent[] = [
+      { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'run.created', occurred_at: '2026-07-20T11:06:01Z', payload: {} },
+      { id: 'event-2', run_id: 'run-1', stream_seq: 2, event_type: 'model.retry_queued', occurred_at: '2026-07-20T11:06:02Z', payload: { step_id: 'retry-step', retry_count: 1, max_retries: 3, error_code: 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED' } },
+      { id: 'event-3', run_id: 'run-1', stream_seq: 3, event_type: 'step.started', occurred_at: '2026-07-20T11:06:03Z', payload: { step_id: 'retry-step' } },
+    ]
+    const timeline = buildTaskTimeline({ ...task, status: 'running', error_code: '', result_summary: '' }, events)
+    expect(timeline[1]).toMatchObject({ label: '修复模型响应（第 1/3 次）', state: 'running' })
+    expect(taskFailureInfo({ error_code: 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED', result_summary: '' })?.retryable).toBe(true)
+  })
+
+  it('turns a persisted model plan into numbered executable steps', () => {
+    const events: RunEvent[] = [
+      { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'execution.plan_created', occurred_at: '2026-07-20T11:06:01Z', payload: { plan_id: 'plan-1', iteration: 2, summary: '先检索，再生成报告。', items: [
+        { index: 1, step_id: 'step-search', tool_name: 'web_search', input_summary: 'Physical AI 2026' },
+        { index: 2, step_id: 'step-file', tool_name: 'workspace_write_file', input_summary: 'reports/final.md · 12 KB' },
+      ] } },
+      { id: 'event-2', run_id: 'run-1', stream_seq: 2, event_type: 'tool.planned', occurred_at: '2026-07-20T11:06:02Z', payload: { step_id: 'step-search', tool_name: 'web_search' } },
+      { id: 'event-3', run_id: 'run-1', stream_seq: 3, event_type: 'step.succeeded', occurred_at: '2026-07-20T11:06:03Z', payload: { step_id: 'step-search', result_summary: '完成' } },
+      { id: 'event-4', run_id: 'run-1', stream_seq: 4, event_type: 'tool.planned', occurred_at: '2026-07-20T11:06:04Z', payload: { step_id: 'step-file', tool_name: 'workspace_write_file' } },
+    ]
+    const timeline = buildTaskTimeline({ ...task, status: 'running', error_code: '', result_summary: '' }, events)
+    const plan = buildTaskExecutionPlan(events, timeline)
+    expect(plan).toMatchObject({ iteration: 2, summary: '先检索，再生成报告。' })
+    expect(plan?.items).toEqual([
+      expect.objectContaining({ index: 1, label: '执行工具：web_search', state: 'succeeded' }),
+      expect.objectContaining({ index: 2, label: '写入工作区文件', state: 'pending' }),
+    ])
+  })
+})

@@ -1,0 +1,3244 @@
+openapi: 3.0.3
+info:
+  title: Oktapod API
+  version: 0.1.0
+  description: Contract-first API for the Oktapod MVP control plane.
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /diagnostics:
+    get:
+      operationId: getDiagnostics
+      responses:
+        "200":
+          description: Read-only, secret-safe runtime diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Diagnostics"
+        default:
+          $ref: "#/components/responses/Problem"
+  /bootstrap:
+    get:
+      operationId: getBootstrap
+      responses:
+        "200":
+          description: Non-sensitive bootstrap state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bootstrap"
+  /models:
+    get:
+      operationId: listModels
+      responses:
+        "200":
+          description: Provider-advertised chat-capable models
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, default_model]
+                properties:
+                  default_model:
+                    type: string
+                    description: 当前运行时解析出的默认模型 ID
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ModelDescriptor"
+        default:
+          $ref: "#/components/responses/Problem"
+  /providers:
+    get:
+      operationId: listProviders
+      responses:
+        "200":
+          description: Organization-owned provider instances
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProviderInstance" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SaveProviderRequest" }
+      responses:
+        "201":
+          description: Provider instance created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderInstance" }
+        default: { $ref: "#/components/responses/Problem" }
+  /providers/{provider_id}:
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 255 }
+    get:
+      operationId: getProvider
+      responses:
+        "200":
+          description: Provider instance details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderInstance" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      operationId: updateProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SaveProviderRequest" }
+      responses:
+        "200":
+          description: Provider instance updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderInstance" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteProvider
+      responses:
+        "204":
+          description: Provider instance and its credential removed
+        default: { $ref: "#/components/responses/Problem" }
+  /providers/{provider_id}/test:
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 255 }
+    post:
+      operationId: testProvider
+      responses:
+        "200":
+          description: Redacted provider connectivity result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderTestResult" }
+        default: { $ref: "#/components/responses/Problem" }
+  /providers/{provider_id}/models:
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 255 }
+    get:
+      operationId: listProviderModels
+      responses:
+        "200":
+          description: Cached provider model catalog; stale entries remain selectable offline
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProviderModelCatalogEntry" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects:
+    get:
+      operationId: listProjects
+      responses:
+        "200":
+          description: Visible projects
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Project"
+    post:
+      operationId: createProject
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Problem"
+  /auth/sessions:
+    post:
+      operationId: createAuthSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAuthSessionRequest"
+      responses:
+        "201":
+          description: Short-lived Team session token (returned once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        default:
+          $ref: "#/components/responses/Problem"
+  /auth/sessions/{session_id}:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: revokeAuthSession
+      responses:
+        "204":
+          description: Session revoked
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProject
+      responses:
+        "200":
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Problem"
+    patch:
+      operationId: updateProjectSettings
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectSettingsRequest"
+      responses:
+        "200":
+          description: Project model policy updated by an owner or approver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectTasks
+      responses:
+        "200":
+          description: Visible tasks in the project
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+    post:
+      operationId: createTask
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "202":
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/schedules:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectSchedules
+      responses:
+        "200":
+          description: Permission-filtered schedules in the project
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Schedule"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createSchedule
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScheduleRequest"
+      responses:
+        "201":
+          description: Schedule created and enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        default:
+          $ref: "#/components/responses/Problem"
+  /schedules/{schedule_id}/status:
+    parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: setScheduleStatus
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [enabled, disabled]
+      responses:
+        "200":
+          description: Schedule status changed by its owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/capabilities:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectCapabilities
+      responses:
+        "200":
+          description: Permission-filtered capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Capability" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createCapability
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCapabilityRequest" }
+      responses:
+        "201":
+          description: Manifest scanned and registered; risky capabilities are quarantined
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/status:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: setCapabilityStatus
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [enabled, disabled, quarantined] }
+      responses:
+        "200":
+          description: Capability status changed by owner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/review:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: reviewCapability
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewCapabilityRequest" }
+      responses:
+        "200":
+          description: Explicit owner or approver review of a quarantined capability
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /capabilities/{capability_id}/mcp/connect:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: connectMCP
+      responses:
+        "200":
+          description: MCP handshake completed and tool metadata recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MCPHealth" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/mcp/disconnect:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: disconnectMCP
+      responses:
+        "200":
+          description: MCP connection disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MCPHealth" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/mcp/health:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getMCPHealth
+      responses:
+        "200":
+          description: Persisted MCP health and tool metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MCPHealth" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/memories:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectMemories
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: Scope-filtered memory entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Memory" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createMemory
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMemoryRequest" }
+      responses:
+        "201":
+          description: Memory persisted with source hash
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/memories/daily-summary:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      operationId: createDailySummary
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Deterministic zero-model-call daily summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        default: { $ref: "#/components/responses/Problem" }
+  /memories/{memory_id}/promote:
+    parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: promoteMemoryToSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Quarantined Skill draft generated from an explicitly selected memory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
+        default: { $ref: "#/components/responses/Problem" }
+  /memories/{memory_id}:
+    parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      operationId: updateMemory
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateMemoryRequest" }
+      responses:
+        "200":
+          description: Updated memory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteMemory
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Memory deleted
+        default: { $ref: "#/components/responses/Problem" }
+  /memories/{memory_id}/status:
+    parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: setMemoryStatus
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetMemoryStatusRequest" }
+      responses:
+        "200":
+          description: Memory status changed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/agents:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectAgents
+      responses:
+        "200":
+          description: Versioned project agents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createAgentDefinition
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAgentRequest" }
+      responses:
+        "201":
+          description: Agent configuration saved after schema and permission preflight
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+  /agents/{agent_id}/status:
+    parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: setAgentDefinitionStatus
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [enabled, disabled, quarantined] }
+      responses:
+        "200":
+          description: Agent status changed by owner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/teams:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectTeamDefinitions
+      responses:
+        "200":
+          description: Versioned project TeamDefinitions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/TeamDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createTeamDefinition
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTeamDefinitionRequest" }
+      responses:
+        "201":
+          description: TeamDefinition created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/usage:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProjectUsage
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: UTC lower bound for the aggregate window; defaults to the last 30 days.
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Scope-filtered project usage aggregate; only Owner/Approver may read it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectUsage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /teams/{team_id}/status:
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: setTeamDefinitionStatus
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [enabled, disabled, quarantined] }
+      responses:
+        "200":
+          description: TeamDefinition status changed by owner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/members:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectMembers
+      responses:
+        "200":
+          description: Active project members visible to a current member
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProjectMember"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: addProjectMember
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddProjectMemberRequest"
+      responses:
+        "201":
+          description: Member joined and can immediately read existing project-visible history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMember"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/members/{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: removeProjectMember
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Member access revoked immediately
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectInvitations
+      responses:
+        "200":
+          description: Owner-visible invitation lifecycle records without raw tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProjectInvitation" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createProjectInvitation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateProjectInvitationRequest" }
+      responses:
+        "201":
+          description: Created single-use invitation; raw token is returned once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectInvitation" }
+        default: { $ref: "#/components/responses/Problem" }
+  /invitations/{invitation_id}/revoke:
+    parameters:
+      - name: invitation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: revokeProjectInvitation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: Pending invitation revoked }
+        default: { $ref: "#/components/responses/Problem" }
+  /invitations/accept:
+    post:
+      operationId: acceptProjectInvitation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AcceptProjectInvitationRequest" }
+      responses:
+        "200":
+          description: Invitation accepted and project membership activated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectInvitation" }
+        default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/conversations:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectConversations
+      responses:
+        "200":
+          description: Scope-filtered conversation metadata; message bodies remain lazy-loaded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Conversation"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/activity:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectActivity
+      parameters:
+        - name: before
+          in: query
+          description: Optional RFC3339 exclusive timestamp cursor
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Permission-filtered committed project activity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProjectActivity"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/plan-items:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectPlanItems
+      responses:
+        "200":
+          description: Scope-filtered project plan board; independent from runtime status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PlanItem"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createPlanItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlanItemRequest"
+      responses:
+        "201":
+          description: Created manual plan item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanItem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /plan-items/{plan_item_id}/status:
+    parameters:
+      - name: plan_item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: movePlanItem
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MovePlanItemRequest"
+      responses:
+        "200":
+          description: Plan status changed without mutating the linked Task or Run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanItem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/assets:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectAssets
+      parameters:
+        - name: parent_id
+          in: query
+          description: Empty means the project asset root; ignored during project-wide search
+          schema:
+            type: string
+            format: uuid
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: kind
+          in: query
+          schema:
+            type: string
+            enum: [file, folder]
+      responses:
+        "200":
+          description: Permission-filtered, metadata-first asset collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetCollection"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: uploadProjectAsset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/UploadAssetRequest"
+      responses:
+        "201":
+          description: Streamed, content-addressed project asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Asset"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/asset-folders:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      operationId: createAssetFolder
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAssetFolderRequest"
+      responses:
+        "201":
+          description: Created asset folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Asset"
+        default:
+          $ref: "#/components/responses/Problem"
+  /assets/{asset_id}/content:
+    parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: downloadAssetContent
+      responses:
+        "200":
+          description: Authorized asset content stream
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+                format: int64
+            X-Content-SHA256:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Problem"
+  /artifacts/{artifact_id}/publish:
+    parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: publishArtifact
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishArtifactRequest"
+      responses:
+        "201":
+          description: Artifact published as a project asset without duplicating blob content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Asset"
+        default:
+          $ref: "#/components/responses/Problem"
+  /artifacts/{artifact_id}/content:
+    parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: downloadArtifactContent
+      responses:
+        "200":
+          description: Authorized task artifact content stream
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+                format: int64
+            X-Content-SHA256:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/messages:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listConversationMessages
+      parameters:
+        - name: after
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Authorized messages after the server sequence cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Message"
+                  next_cursor:
+                    type: integer
+                    format: int64
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: appendConversationMessage
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendConversationMessageRequest"
+      responses:
+        "202":
+          description: Created a new executable task in the existing conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/entries:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: listSessionEntries
+      parameters:
+        - name: after_entry_seq
+          in: query
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+      responses:
+        "200":
+          description: Paginated Session Tree entries
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionTreePage" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /session-entries/{entry_id}/path:
+    parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    get:
+      operationId: getSessionEntryPath
+      responses:
+        "200":
+          description: Root-to-entry ancestor path
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SessionEntry" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/navigate:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: navigateSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NavigateSessionRequest" }
+      responses:
+        "200":
+          description: Active leaf moved with expected-leaf CAS
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NavigateSessionResponse" }
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/fork:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: forkSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForkSessionRequest" }
+      responses:
+        "201":
+          description: New Thread copied from the selected ancestor path
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/clone:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: cloneSession
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CloneSessionRequest" }
+      responses:
+        "201":
+          description: New Thread copied from the current active path
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/entries/{entry_id}/label:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: entry_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    post:
+      operationId: labelSessionEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LabelSessionEntryRequest" }
+      responses:
+        "201":
+          description: Auditable label Entry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionEntry" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/branch-summary:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: appendBranchSummary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BranchSummaryRequest" }
+      responses:
+        "201":
+          description: Five-section branch handoff Entry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionEntry" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/queue:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: listConversationQueue
+      summary: List queued steering and follow-up turns
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, claimed, consumed, canceled], default: pending }
+      responses:
+        "200":
+          description: Ordered conversation queue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ConversationQueueItem" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/queue/{queue_item_id}:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: queue_item_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: cancelConversationQueueItem
+      summary: Withdraw one pending queued turn
+      responses:
+        "200":
+          description: Canceled queue item
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: "#/components/schemas/ConversationQueueItem" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}/steer:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: steerConversation
+      summary: Promote a pending follow-up to steering
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queue_item_id]
+              additionalProperties: false
+              properties:
+                queue_item_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Promoted queue item
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: "#/components/schemas/ConversationQueueItem" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/turns:
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: submitProjectTurn
+      summary: Submit one chat or executable task turn in a project conversation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectTurnRequest"
+      responses:
+        "200":
+          description: Chat messages were stored or an executable task was queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectTurnResponse"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/transcript-import:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      operationId: importProjectTranscript
+      summary: Rebuild private Session Trees from a validated Pi or Oktapod portable transcript
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportTranscriptRequest" }
+      responses:
+        "201":
+          description: Imported conversations and message entries
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportTranscriptResult" }
+        default:
+          $ref: "#/components/responses/Problem"
+  /tasks/{task_id}:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getTask
+      responses:
+        "200":
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        default:
+          $ref: "#/components/responses/Problem"
+  /tasks/{task_id}/commands:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: controlTask
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlTaskRequest"
+      responses:
+        "200":
+          description: Updated task state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        default:
+          $ref: "#/components/responses/Problem"
+  /tasks/{task_id}/fork:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: forkTask
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: New independent task forked from the source task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        default:
+          $ref: "#/components/responses/Problem"
+  /tasks/{task_id}/acceptance:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: acceptTaskOutcome
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptTaskOutcomeRequest"
+      responses:
+        "201":
+          description: Outcome accepted independently of execution completion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptedOutcome"
+        default:
+          $ref: "#/components/responses/Problem"
+  /runs/{run_id}/events:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listRunEvents
+      parameters:
+        - name: after
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Committed run events after the cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RunEvent"
+                  next_cursor:
+                    type: integer
+                    format: int64
+  /runs/{run_id}/agent-team:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getAgentTeamRoom
+      responses:
+        "200":
+          description: Scope-filtered Agent Team members and ordered group messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTeamRoom"
+        default:
+          $ref: "#/components/responses/Problem"
+  /runs/{run_id}/usage:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getRunUsage
+      responses:
+        "200":
+          description: Scope-filtered usage summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunUsage"
+        default:
+          $ref: "#/components/responses/Problem"
+  /runs/{run_id}/budget:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: updateRunBudget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRunBudgetRequest"
+      responses:
+        "200":
+          description: Updated budget and usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunUsage"
+        default:
+          $ref: "#/components/responses/Problem"
+  /runs/{run_id}/advisor:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: createAdvisorReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAdvisorReportRequest"
+      responses:
+        "201":
+          description: Deterministic Advisor preview or approved report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdvisorReport"
+        default:
+          $ref: "#/components/responses/Problem"
+  /runs/{run_id}/artifacts:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listRunArtifacts
+      responses:
+        "200":
+          description: Visible artifacts produced by the run
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Artifact"
+        default:
+          $ref: "#/components/responses/Problem"
+  /inbox:
+    get:
+      operationId: listInbox
+      responses:
+        "200":
+          description: Scope-filtered human action summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/InboxItem" }
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/InboxHistoryItem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /runs/{run_id}/plan:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getActiveRunPlan
+      responses:
+        "200":
+          description: Active or latest persisted semantic execution plan
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunPlanRevision" }
+        default: { $ref: "#/components/responses/Problem" }
+  /human-actions:
+    get:
+      operationId: listHumanActions
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [reviewing, waiting_user, approved, rejected, answered, expired, superseded, all]
+            default: waiting_user
+        - name: conversation_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: run_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Scope-filtered human actions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/HumanAction" }
+        default: { $ref: "#/components/responses/Problem" }
+  /human-actions/{human_action_id}/decision:
+    parameters:
+      - name: human_action_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: decideHumanAction
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecideHumanActionRequest" }
+      responses:
+        "200":
+          description: Persisted human action decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HumanAction" }
+        default: { $ref: "#/components/responses/Problem" }
+  /approvals:
+    get:
+      operationId: listApprovals
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        "200":
+          description: Scope-filtered approval inbox
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Approval"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/approval-rules:
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: listProjectApprovalRules
+      responses:
+        "200":
+          description: Project-scoped approval rules, including expired or revoked entries for audit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApprovalRule"
+        default:
+          $ref: "#/components/responses/Problem"
+  /projects/{project_id}/approval-rules/{rule_id}:
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: rule_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: revokeProjectApprovalRule
+      responses:
+        "204":
+          description: Rule revoked
+        default:
+          $ref: "#/components/responses/Problem"
+  /approvals/{approval_id}/decision:
+    parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: decideApproval
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideApprovalRequest"
+      responses:
+        "200":
+          description: Persisted one-time approval decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        default:
+          $ref: "#/components/responses/Problem"
+  /side-effect-receipts:
+    get:
+      operationId: listSideEffectReceipts
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [started, succeeded, failed, unknown, all]
+            default: unknown
+      responses:
+        "200":
+          description: Scope-filtered side-effect receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SideEffectReceipt" }
+        default: { $ref: "#/components/responses/Problem" }
+  /side-effect-receipts/{receipt_id}/resolution:
+    parameters:
+      - name: receipt_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: resolveSideEffect
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveSideEffectRequest"
+      responses:
+        "200":
+          description: Persisted human resolution of an unknown side effect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SideEffectReceipt"
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Problem:
+      description: Problem details
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    CreateAuthSessionRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        expires_in_seconds: { type: integer, minimum: 300, maximum: 2592000, default: 28800 }
+    AuthSession:
+      type: object
+      required: [id, organization_id, user_id, display_name, token, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        display_name: { type: string }
+        token: { type: string, minLength: 32 }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    Health:
+      type: object
+      required: [status, profile, database]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        profile: { type: string, enum: [personal, team] }
+        database: { type: string }
+    Diagnostics:
+      type: object
+      additionalProperties: false
+      required: [status, version, profile, database, providers, worker, sse, logs, maintenance]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string }
+        profile: { type: string }
+        database: { $ref: "#/components/schemas/DatabaseDiagnostics" }
+        providers: { $ref: "#/components/schemas/ProviderDiagnostics" }
+        worker: { $ref: "#/components/schemas/WorkerDiagnostics" }
+        sse: { $ref: "#/components/schemas/SseDiagnostics" }
+        logs: { $ref: "#/components/schemas/DiagnosticLogPolicy" }
+        maintenance: { $ref: "#/components/schemas/MaintenanceDiagnostics" }
+    DatabaseDiagnostics:
+      type: object
+      required: [name, status]
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [ok, degraded] }
+    ProviderDiagnostics:
+      type: object
+      required: [total, active, stale_catalog]
+      properties:
+        total: { type: integer }
+        active: { type: integer }
+        stale_catalog: { type: integer }
+    WorkerDiagnostics:
+      type: object
+      required: [queued_runs, running_runs, waiting_approvals, active_leases]
+      properties:
+        queued_runs: { type: integer, format: int64 }
+        running_runs: { type: integer, format: int64 }
+        waiting_approvals: { type: integer, format: int64 }
+        active_leases: { type: integer, format: int64 }
+    SseDiagnostics:
+      type: object
+      required: [active_connections]
+      properties:
+        active_connections: { type: integer, format: int64 }
+    DiagnosticLogPolicy:
+      type: object
+      required: [available, redacted, detail]
+      properties:
+        available: { type: boolean }
+        redacted: { type: boolean }
+        detail: { type: string }
+    MaintenanceDiagnostics:
+      type: object
+      required: [backup_endpoint_available, restore_endpoint_available, detail]
+      properties:
+        backup_endpoint_available: { type: boolean }
+        restore_endpoint_available: { type: boolean }
+        detail: { type: string }
+    Bootstrap:
+      type: object
+      required: [profile, model_endpoint, model_configured, user, organization, capabilities]
+      properties:
+        profile: { type: string, enum: [personal, team] }
+        model_endpoint: { type: string, format: uri }
+        model_configured: { type: boolean }
+        user: { $ref: "#/components/schemas/Actor" }
+        organization: { $ref: "#/components/schemas/Organization" }
+        capabilities: { $ref: "#/components/schemas/RuntimeCapabilities" }
+    ModelDescriptor:
+      type: object
+      required: [id]
+      additionalProperties: false
+      properties:
+        id: { type: string, minLength: 1, maxLength: 255 }
+        tool_calling: { type: boolean }
+        vision: { type: boolean }
+        structured_output: { type: boolean }
+        reasoning: { type: boolean }
+        context_window: { type: integer, format: int64, minimum: 0 }
+    ProviderInstance:
+      type: object
+      additionalProperties: false
+      required:
+        [provider_id, display_name, protocol_family, endpoint, default_model_id, status, is_default, credential_configured, created_at, updated_at]
+      properties:
+        provider_id: { type: string }
+        display_name: { type: string }
+        protocol_family: { type: string, enum: [openai_compatible, anthropic, gemini] }
+        endpoint: { type: string, format: uri }
+        default_model_id: { type: string }
+        status: { type: string, enum: [active, disabled, error] }
+        is_default: { type: boolean }
+        credential_configured: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SaveProviderRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, protocol_family, endpoint]
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        protocol_family: { type: string, enum: [openai_compatible, anthropic, gemini] }
+        endpoint: { type: string, format: uri, maxLength: 2048 }
+        default_model_id: { type: string, maxLength: 255 }
+        status: { type: string, enum: [active, disabled, error], default: active }
+        is_default: { type: boolean, default: false }
+        credential:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          writeOnly: true
+          description: Replaces the credential when supplied and is never returned.
+    ProviderTestResult:
+      type: object
+      additionalProperties: false
+      required: [provider_id, stage, latency_millis, catalog_status, model_count, redacted_error, completed_at]
+      properties:
+        provider_id: { type: string }
+        stage: { type: string }
+        latency_millis: { type: integer, format: int64, minimum: 0 }
+        catalog_status: { type: string }
+        model_count: { type: integer, minimum: 0 }
+        redacted_error: { type: string }
+        completed_at: { type: string, format: date-time }
+    ProviderModelCatalogEntry:
+      type: object
+      additionalProperties: false
+      required:
+        [provider_id, model_id, capabilities, context_window, max_output, thinking_map, pricing, fetched_at, expires_at, catalog_version, stale]
+      properties:
+        provider_id: { type: string }
+        model_id: { type: string }
+        capabilities: { type: object, additionalProperties: true }
+        context_window: { type: integer, format: int64, minimum: 0 }
+        max_output: { type: integer, format: int64, minimum: 0 }
+        thinking_map: { type: object, additionalProperties: true }
+        pricing: { type: object, additionalProperties: true }
+        fetched_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        catalog_version: { type: string }
+        stale: { type: boolean }
+    RuntimeCapabilities:
+      type: object
+      required: [os, sandbox, filesystem, command, network, browser, mcp]
+      properties:
+        os: { type: string }
+        sandbox: { type: string }
+        filesystem: { type: string }
+        command: { type: string }
+        network: { type: string }
+        browser: { type: string }
+        mcp: { type: string }
+    Actor:
+      type: object
+      required: [id, display_name]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        display_name: { type: string }
+    Organization:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+    Project:
+      type: object
+      required: [id, organization_id, name, kind, scene, default_model, fallback_model, max_model_calls, max_tokens, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+        kind: { type: string, enum: [personal, team] }
+        scene: { type: string, enum: [work, code] }
+        default_model: { type: string, maxLength: 200 }
+        fallback_model: { type: string, maxLength: 200 }
+        max_model_calls:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1000
+          description: Project default for new Runs; zero means unlimited.
+        max_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 10000000
+          description: Project default for new Runs; zero means unlimited.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateProjectRequest:
+      type: object
+      required: [name, kind, scene]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 2000, default: "" }
+        kind: { type: string, enum: [personal, team] }
+        scene: { type: string, enum: [work, code] }
+        default_model: { type: string, maxLength: 200, default: "" }
+        fallback_model: { type: string, maxLength: 200, default: "" }
+    UpdateProjectSettingsRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        default_model: { type: string, maxLength: 200 }
+        fallback_model: { type: string, maxLength: 200 }
+        max_model_calls: { type: integer, format: int64, minimum: 0, maximum: 1000 }
+        max_tokens: { type: integer, format: int64, minimum: 0, maximum: 10000000 }
+    PortableTranscriptMessage:
+      type: object
+      required: [role, content, created_at]
+      additionalProperties: false
+      properties:
+        role: { type: string, enum: [user, assistant, tool] }
+        content: { type: string, maxLength: 1048576 }
+        created_at: { type: string, format: date-time }
+    PortableTranscriptConversation:
+      type: object
+      required: [title, messages]
+      additionalProperties: false
+      properties:
+        title: { type: string, maxLength: 200 }
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 100000
+          items: { $ref: "#/components/schemas/PortableTranscriptMessage" }
+    ImportTranscriptRequest:
+      type: object
+      required: [source_format, conversations]
+      additionalProperties: false
+      properties:
+        source_format: { type: string, enum: [oktapod-browser-export-v1, pi-jsonl-preview-v1] }
+        conversations:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/PortableTranscriptConversation" }
+    ImportTranscriptResult:
+      type: object
+      required: [project_id, conversation_ids, message_count]
+      properties:
+        project_id: { type: string, format: uuid }
+        conversation_ids:
+          type: array
+          items: { type: string, format: uuid }
+        message_count: { type: integer, minimum: 0 }
+    ProjectMember:
+      type: object
+      required: [user_id, display_name, email, role, status, created_at, updated_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        display_name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [owner, member, approver] }
+        status: { type: string, enum: [active, removed] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AddProjectMemberRequest:
+      type: object
+      required: [email, display_name, role]
+      additionalProperties: false
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        role: { type: string, enum: [owner, member, approver] }
+    ProjectInvitation:
+      type: object
+      required: [id, organization_id, project_id, invited_by, email, display_name, role, status, expires_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        invited_by: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role: { type: string, enum: [owner, member, approver] }
+        status: { type: string, enum: [pending, accepted, revoked, expired] }
+        accepted_user_id: { type: string, format: uuid, nullable: true }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        invite_token: { type: string, minLength: 32, writeOnly: true }
+        session_token: { type: string, minLength: 32, writeOnly: true, description: "接受一次性邀请时仅返回一次的短期 Session；列表和重放响应不返回" }
+    CreateProjectInvitationRequest:
+      type: object
+      required: [email, display_name, role]
+      additionalProperties: false
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        role: { type: string, enum: [owner, member, approver] }
+        expires_in: { type: integer, format: int64, minimum: 1, maximum: 2592000, default: 604800 }
+    AcceptProjectInvitationRequest:
+      type: object
+      required: [token]
+      additionalProperties: false
+      properties:
+        token: { type: string, minLength: 32, maxLength: 256 }
+    Task:
+      type: object
+      required: [id, project_id, run_id, conversation_id, title, goal, mode, visibility, status, accepted, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        title: { type: string }
+        goal: { type: string }
+        acceptance: { type: string }
+        mode: { type: string, enum: [answer, single_agent, agent_team] }
+        visibility: { type: string, enum: [private, selected, project] }
+        status: { type: string, enum: [queued, running, waiting_approval, waiting_input, paused, blocked, succeeded, failed, canceled] }
+        error_code: { type: string }
+        result_summary: { type: string }
+        accepted: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Schedule:
+      type: object
+      required: [id, organization_id, project_id, owner_user_id, name, cron_expression, timezone, goal, acceptance, mode, visibility, status, next_run_at, misfire_policy, overlap_policy, misfire_grace_seconds, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        name: { type: string }
+        cron_expression: { type: string }
+        timezone: { type: string }
+        goal: { type: string }
+        acceptance: { type: string }
+        mode: { type: string, enum: [answer, single_agent, agent_team] }
+        visibility: { type: string, enum: [private, selected, project] }
+        status: { type: string, enum: [enabled, disabled] }
+        next_run_at: { type: string, format: date-time }
+        misfire_policy: { type: string, enum: [skip, run_now, ask] }
+        overlap_policy: { type: string, enum: [forbid, queue, replace] }
+        misfire_grace_seconds: { type: integer, format: int64, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Capability:
+      type: object
+      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        kind: { type: string, enum: [skill, plugin, mcp, agent] }
+        name: { type: string }
+        version: { type: string }
+        manifest_json: { type: string }
+        content_hash: { type: string }
+        status: { type: string, enum: [enabled, disabled, quarantined] }
+        risk_level: { type: string }
+        permission_diff:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 200 }
+        scope_type: { type: string, enum: [global, project] }
+        scope_id: { type: string, format: uuid }
+        source_filename: { type: string }
+        bundle_hash: { type: string }
+        install_job_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MCPHealth:
+      type: object
+      required: [id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, last_error, connected_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        capability_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        transport: { type: string, enum: [stdio, streamable_http] }
+        status: { type: string, enum: [disabled, needs-auth, connected, failed] }
+        protocol: { type: string }
+        tool_count: { type: integer, format: int64 }
+        tools_json: { type: string }
+        last_error: { type: string }
+        connected_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time }
+    CreateCapabilityRequest:
+      type: object
+      required: [kind, name, manifest_json]
+      properties:
+        kind: { type: string, enum: [skill, plugin, mcp, agent] }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        version: { type: string, maxLength: 64, default: 0.1.0 }
+        scope_type:
+          type: string
+          enum: [global, project]
+          default: global
+          description: Installation scope. Omitted requests install globally by default.
+        source_filename: { type: string, maxLength: 255, default: "" }
+        bundle_base64:
+          type: string
+          maxLength: 69905068
+          description: Optional ZIP capability package encoded as base64. The server safely inspects it without executing bundled code.
+        manifest_json:
+          type: string
+          minLength: 2
+          maxLength: 262144
+          description: JSON manifest; Skill imports may alternatively provide SKILL.md with YAML frontmatter and a Markdown instruction body, which the server normalizes to JSON before persistence.
+    ReviewCapabilityRequest:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        note: { type: string, maxLength: 2000, default: "" }
+    Memory:
+      type: object
+      required: [id, organization_id, project_id, owner_user_id, kind, title, content, source_hash, source_refs, visibility, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        kind: { type: string }
+        title: { type: string }
+        content: { type: string }
+        source_hash: { type: string }
+        source_refs:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 200 }
+        visibility: { type: string, enum: [private, selected, project] }
+        status: { type: string, enum: [active, inactive] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateMemoryRequest:
+      type: object
+      required: [kind, title, content, visibility]
+      properties:
+        kind: { type: string, maxLength: 64 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        content: { type: string, minLength: 1, maxLength: 262144 }
+        visibility: { type: string, enum: [private, selected, project] }
+        source_refs:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 200 }
+    UpdateMemoryRequest:
+      type: object
+      required: [title, content, visibility, source_refs]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        content: { type: string, minLength: 1, maxLength: 262144 }
+        visibility: { type: string, enum: [private, selected, project] }
+        source_refs:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 200 }
+    SetMemoryStatusRequest:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [active, inactive] }
+    AgentDefinition:
+      type: object
+      required: [id, organization_id, project_id, owner_user_id, name, version, instructions, model, fallback_model, config_json, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: string }
+        instructions: { type: string }
+        model: { type: string }
+        fallback_model: { type: string }
+        config_json: { type: string }
+        status: { type: string, enum: [enabled, disabled, quarantined] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateAgentRequest:
+      type: object
+      required: [name, version, instructions]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        version: { type: string, minLength: 1, maxLength: 64 }
+        instructions: { type: string, minLength: 1, maxLength: 50000 }
+        model: { type: string, maxLength: 120 }
+        fallback_model: { type: string, maxLength: 120 }
+        config_json: { type: string, maxLength: 131072, default: "{}" }
+    TeamRole:
+      type: object
+      required: [role, name]
+      additionalProperties: false
+      properties:
+        role: { type: string, minLength: 1, maxLength: 60 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+    TeamDefinition:
+      type: object
+      required: [id, project_id, owner_user_id, name, version, status, roles, config_json, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [enabled, disabled, quarantined] }
+        roles:
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/TeamRole" }
+        config_json: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateTeamDefinitionRequest:
+      type: object
+      required: [name, version, roles]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        version: { type: string, minLength: 1, maxLength: 64 }
+        roles:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items: { $ref: "#/components/schemas/TeamRole" }
+        config_json: { type: string, maxLength: 131072, default: "{}" }
+    Conversation:
+      type: object
+      required: [id, project_id, title, visibility, message_count, last_message, active_leaf_entry_id, parent_session_id, forked_from_entry_id, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        title: { type: string }
+        visibility: { type: string, enum: [private, selected, project] }
+        message_count: { type: integer, format: int64 }
+        last_message: { type: string }
+        active_leaf_entry_id: { type: string }
+        parent_session_id: { type: string }
+        forked_from_entry_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SessionEntry:
+      type: object
+      required: [id, project_id, conversation_id, parent_entry_id, entry_seq, kind, ref_id, label, summary, namespace, payload, schema_version, context_injection, created_at]
+      properties:
+        id: { type: string }
+        project_id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        parent_entry_id: { type: string }
+        entry_seq: { type: integer, format: int64 }
+        kind: { type: string, enum: [message, config_change, compaction, custom, branch_summary] }
+        ref_id: { type: string }
+        label: { type: string }
+        summary: { type: string }
+        namespace: { type: string }
+        payload: { type: object, additionalProperties: true }
+        schema_version: { type: integer }
+        context_injection: { type: string, enum: [default, include, exclude, summary_only] }
+        created_at: { type: string, format: date-time }
+    SessionTreePage:
+      type: object
+      required: [items, active_leaf_entry_id, next_entry_seq]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SessionEntry" }
+        active_leaf_entry_id: { type: string }
+        next_entry_seq: { type: integer, format: int64 }
+    NavigateSessionRequest:
+      type: object
+      required: [entry_id, expected_leaf_entry_id]
+      additionalProperties: false
+      properties:
+        entry_id: { type: string, minLength: 1 }
+        expected_leaf_entry_id: { type: string }
+    NavigateSessionResponse:
+      type: object
+      required: [conversation, entry, composer_text]
+      properties:
+        conversation: { $ref: "#/components/schemas/Conversation" }
+        entry: { $ref: "#/components/schemas/SessionEntry" }
+        composer_text: { type: string }
+    ForkSessionRequest:
+      type: object
+      required: [entry_id]
+      additionalProperties: false
+      properties:
+        entry_id: { type: string, minLength: 1 }
+        title: { type: string, maxLength: 200 }
+    CloneSessionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title: { type: string, maxLength: 200 }
+    LabelSessionEntryRequest:
+      type: object
+      required: [label, expected_leaf_entry_id]
+      additionalProperties: false
+      properties:
+        label: { type: string, minLength: 1, maxLength: 120 }
+        expected_leaf_entry_id: { type: string }
+    BranchSummaryRequest:
+      type: object
+      required: [expected_leaf_entry_id]
+      additionalProperties: false
+      properties:
+        summary: { type: string, minLength: 1, maxLength: 65536 }
+        expected_leaf_entry_id: { type: string }
+    Message:
+      type: object
+      required: [id, project_id, conversation_id, server_seq, role, visibility, content, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid, nullable: true }
+        server_seq: { type: integer, format: int64 }
+        role: { type: string, enum: [user, assistant, system, tool] }
+        visibility: { type: string, enum: [private, selected, project] }
+        content: { type: string }
+        created_at: { type: string, format: date-time }
+    ProjectActivity:
+      type: object
+      required: [id, project_id, run_id, task_id, task_title, task_status, mode, event_type, visibility, payload, occurred_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        task_title: { type: string }
+        task_status: { type: string, enum: [queued, running, waiting_approval, waiting_input, paused, blocked, succeeded, failed, canceled] }
+        mode: { type: string, enum: [answer, single_agent, agent_team] }
+        event_type: { type: string }
+        visibility: { type: string, enum: [private, selected, project] }
+        payload: { type: object, additionalProperties: true }
+        occurred_at: { type: string, format: date-time }
+    PlanItem:
+      type: object
+      required: [id, project_id, title, description, status, source, visibility, rank, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [todo, in_progress, paused, done] }
+        source: { type: string, enum: [manual, task] }
+        linked_task_id: { type: string, format: uuid }
+        visibility: { type: string, enum: [private, selected, project] }
+        rank: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreatePlanItemRequest:
+      type: object
+      required: [title, visibility]
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000, default: "" }
+        visibility: { type: string, enum: [private, selected, project] }
+    MovePlanItemRequest:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [todo, in_progress, paused, done] }
+    Asset:
+      type: object
+      required: [id, project_id, owner_user_id, parent_id, name, kind, media_type, content_hash, size_bytes, visibility, source_type, source_artifact_id, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        parent_id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [file, folder] }
+        media_type: { type: string }
+        content_hash: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        visibility: { type: string, enum: [private, selected, project] }
+        source_type: { type: string, enum: [upload, artifact] }
+        source_artifact_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AssetCollection:
+      type: object
+      required: [items, visible_bytes, quota_bytes]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Asset"
+        visible_bytes: { type: integer, format: int64 }
+        quota_bytes: { type: integer, format: int64 }
+    CreateAssetFolderRequest:
+      type: object
+      required: [name, visibility]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        parent_id: { type: string, format: uuid }
+        visibility: { type: string, enum: [private, selected, project] }
+    UploadAssetRequest:
+      type: object
+      required: [file, visibility]
+      properties:
+        file:
+          type: string
+          format: binary
+        parent_id: { type: string, format: uuid }
+        visibility: { type: string, enum: [private, selected, project] }
+    PublishArtifactRequest:
+      type: object
+      required: [name, visibility]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        parent_id: { type: string, format: uuid }
+        visibility: { type: string, enum: [private, selected, project] }
+    CreateTaskRequest:
+      type: object
+      required: [goal, mode, visibility]
+      additionalProperties: false
+      properties:
+        title: { type: string, maxLength: 200 }
+        goal: { type: string, minLength: 1, maxLength: 20000 }
+        acceptance: { type: string, maxLength: 10000, default: "" }
+        mode: { type: string, enum: [auto, answer, single_agent, agent_team] }
+        visibility: { type: string, enum: [private, selected, project] }
+        permission_mode: { type: string, enum: [ask, auto_review, full_access, default], default: ask, description: "ask 等待用户；auto_review 需要独立 Reviewer；full_access 为 30 分钟 Run 快照且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。" }
+        scene: { type: string, enum: [work, code], description: "可选任务场景覆盖；未提供时继承项目场景" }
+        model: { type: string, maxLength: 255, description: "可选模型覆盖；优先级高于 Agent/项目默认" }
+        fallback_model: { type: string, maxLength: 255, description: "可选受控 fallback 模型" }
+        provider_id: { type: string, maxLength: 255, description: "可选 Provider 实例；Run 创建时冻结" }
+        thinking: { type: string, enum: [auto, off, low, medium, high], default: auto }
+        max_model_calls: { type: integer, format: int64, minimum: 0, maximum: 1000, default: 0 }
+        max_tokens: { type: integer, format: int64, minimum: 0, maximum: 10000000, default: 0 }
+        agent_id: { type: string, format: uuid }
+        team_definition_id: { type: string, format: uuid }
+        team_roles:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [role, name]
+            additionalProperties: false
+            properties:
+              role: { type: string, minLength: 1, maxLength: 60 }
+              name: { type: string, minLength: 1, maxLength: 120 }
+        context_asset_ids:
+          type: array
+          maxItems: 8
+          items: { type: string, format: uuid }
+        context_memory_ids:
+          type: array
+          maxItems: 8
+          items: { type: string, format: uuid }
+        skill_id: { type: string, format: uuid, description: "显式调用的项目 Skill；服务端强制使用 single_agent 并冻结版本" }
+        skill_args: { type: string, maxLength: 10000, description: "传给显式 Skill 的可选参数" }
+    AppendConversationMessageRequest:
+      type: object
+      required: [content]
+      additionalProperties: false
+      properties:
+        content: { type: string, minLength: 1, maxLength: 20000 }
+        acceptance: { type: string, maxLength: 10000, default: "" }
+        mode: { type: string, enum: [auto, answer, single_agent, agent_team], default: auto }
+        visibility: { type: string, enum: [private, selected, project] }
+        permission_mode: { type: string, enum: [ask, auto_review, full_access, default], default: ask }
+        queue_kind:
+          type: string
+          enum: [follow_up, steering]
+          default: follow_up
+          description: Active Run only. Enter steers after the current checkpoint; Alt+Enter queues a follow-up for the next idle turn.
+        scene: { type: string, enum: [work, code] }
+        model: { type: string, maxLength: 255, description: "可选模型覆盖；优先级高于 Agent/项目默认" }
+        fallback_model: { type: string, maxLength: 255, description: "可选受控 fallback 模型" }
+        provider_id: { type: string, maxLength: 255, description: "可选 Provider 实例；Run 创建时冻结" }
+        thinking: { type: string, enum: [auto, off, low, medium, high], default: auto }
+        max_model_calls: { type: integer, format: int64, minimum: 0, maximum: 1000, default: 0 }
+        max_tokens: { type: integer, format: int64, minimum: 0, maximum: 10000000, default: 0 }
+        agent_id: { type: string, format: uuid }
+        team_definition_id: { type: string, format: uuid }
+        team_roles:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [role, name]
+            additionalProperties: false
+            properties:
+              role: { type: string, minLength: 1, maxLength: 60 }
+              name: { type: string, minLength: 1, maxLength: 120 }
+        context_asset_ids:
+          type: array
+          maxItems: 8
+          items: { type: string, format: uuid }
+        context_memory_ids:
+          type: array
+          maxItems: 8
+          items: { type: string, format: uuid }
+        skill_id: { type: string, format: uuid }
+        skill_args: { type: string, maxLength: 10000 }
+    ProjectTurnRequest:
+      type: object
+      required: [content]
+      additionalProperties: false
+      properties:
+        conversation_id: { type: string, format: uuid }
+        content: { type: string, minLength: 1, maxLength: 20000 }
+        acceptance: { type: string, maxLength: 10000, default: "" }
+        mode: { type: string, enum: [auto, answer, single_agent, agent_team], default: auto }
+        visibility: { type: string, enum: [private, selected, project], default: private }
+        permission_mode: { type: string, enum: [ask, auto_review, full_access, default], default: ask }
+        queue_kind:
+          type: string
+          enum: [follow_up, steering]
+          default: follow_up
+          description: Active Run only. Enter steers after the current checkpoint; Alt+Enter queues a follow-up for the next idle turn.
+        scene: { type: string, enum: [work, code] }
+        model: { type: string, maxLength: 255 }
+        fallback_model: { type: string, maxLength: 255 }
+        provider_id: { type: string, maxLength: 255 }
+        thinking: { type: string, enum: [auto, off, low, medium, high], default: auto }
+        max_model_calls: { type: integer, format: int64, minimum: 0, maximum: 1000, default: 0 }
+        max_tokens: { type: integer, format: int64, minimum: 0, maximum: 10000000, default: 0 }
+        agent_id: { type: string, format: uuid }
+        team_definition_id: { type: string, format: uuid }
+        team_roles:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [role, name]
+            additionalProperties: false
+            properties:
+              role: { type: string, minLength: 1, maxLength: 60 }
+              name: { type: string, minLength: 1, maxLength: 120 }
+        context_asset_ids:
+          type: array
+          maxItems: 8
+          items: { type: string, format: uuid }
+        context_memory_ids:
+          type: array
+          maxItems: 8
+          items: { type: string, format: uuid }
+        skill_id: { type: string, format: uuid, description: "显式调用的项目 Skill；跳过 Auto 分类并创建任务" }
+        skill_args: { type: string, maxLength: 10000 }
+    ProjectTurnResponse:
+      type: object
+      required: [route, conversation, messages]
+      properties:
+        route: { type: string, enum: [chat, task] }
+        conversation:
+          $ref: "#/components/schemas/Conversation"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+        task:
+          $ref: "#/components/schemas/Task"
+        queued:
+          type: boolean
+          description: whether the turn was queued because an active task exists
+        queue_item:
+          $ref: "#/components/schemas/ConversationQueueItem"
+    ConversationQueueItem:
+      type: object
+      required: [id, conversation_id, active_task_id, content, kind, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        active_task_id: { type: string, format: uuid }
+        content: { type: string }
+        kind: { type: string, enum: [follow_up, steering] }
+        status: { type: string, enum: [pending, claimed, consumed, canceled] }
+        created_at: { type: string, format: date-time }
+    CreateScheduleRequest:
+      type: object
+      required: [name, cron_expression, timezone, goal, mode, visibility]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        cron_expression: { type: string, minLength: 1, maxLength: 120, example: "*/15 * * * *" }
+        timezone: { type: string, minLength: 1, maxLength: 100, example: "Asia/Shanghai" }
+        goal: { type: string, minLength: 1, maxLength: 20000 }
+        acceptance: { type: string, maxLength: 10000, default: "" }
+        mode: { type: string, enum: [answer, single_agent, agent_team] }
+        visibility: { type: string, enum: [private, selected, project] }
+        misfire_policy: { type: string, enum: [skip, run_now, ask], default: ask }
+        overlap_policy: { type: string, enum: [forbid, queue, replace], default: forbid }
+        misfire_grace_seconds: { type: integer, format: int64, minimum: 0, maximum: 604800, default: 300 }
+    ControlTaskRequest:
+      type: object
+      required: [command]
+      additionalProperties: false
+      properties:
+        command: { type: string, enum: [pause, resume, cancel, retry] }
+    AcceptTaskOutcomeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, maxLength: 1000, default: "" }
+    AcceptedOutcome:
+      type: object
+      required: [id, project_id, task_id, run_id, accepted_by, note, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        accepted_by: { type: string, format: uuid }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+    RunEvent:
+      type: object
+      required: [id, run_id, stream_seq, event_type, occurred_at, payload]
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        stream_seq: { type: integer, format: int64 }
+        event_type: { type: string }
+        occurred_at: { type: string, format: date-time }
+        payload: { type: object, additionalProperties: true }
+    AgentTeamMember:
+      type: object
+      required: [id, run_id, role, display_name, status, current_step_id, model, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        role: { type: string, enum: [coordinator, researcher, builder, reviewer] }
+        display_name: { type: string }
+        status: { type: string, enum: [planned, working, waiting, done, failed] }
+        current_step_id: { type: string }
+        model: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AgentTeamMessage:
+      type: object
+      required: [id, run_id, sender_agent_id, server_seq, message_type, content, content_hash, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        sender_agent_id: { type: string, format: uuid }
+        server_seq: { type: integer, format: int64 }
+        message_type: { type: string, enum: [plan, handoff, result, review, synthesis] }
+        content: { type: string }
+        content_hash: { type: string }
+        created_at: { type: string, format: date-time }
+    AgentTeamRoom:
+      type: object
+      required: [run_id, members, messages, next_cursor]
+      properties:
+        run_id: { type: string, format: uuid }
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentTeamMember"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentTeamMessage"
+        next_cursor: { type: integer, format: int64 }
+    CreateAdvisorReportRequest:
+      type: object
+      required: [trigger_reason]
+      properties:
+        trigger_reason: { type: string, minLength: 1, maxLength: 500 }
+        approve: { type: boolean, default: false }
+    AdvisorReport:
+      type: object
+      required: [id, organization_id, project_id, task_id, run_id, requested_by, trigger_reason, status, summary, evidence, estimated_model_calls, estimated_tokens, estimated_cost_decimal, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        requested_by: { type: string, format: uuid }
+        trigger_reason: { type: string }
+        status: { type: string, enum: [preview, completed, rejected] }
+        summary: { type: string }
+        evidence: { type: array, items: { type: string } }
+        estimated_model_calls: { type: integer, format: int64 }
+        estimated_tokens: { type: integer, format: int64 }
+        estimated_cost_decimal: { type: string }
+        created_at: { type: string, format: date-time }
+    UpdateRunBudgetRequest:
+      type: object
+      required: [max_model_calls, max_tokens]
+      properties:
+        max_model_calls: { type: integer, format: int64, minimum: 0, maximum: 1000, description: "Zero means unlimited." }
+        max_tokens: { type: integer, format: int64, minimum: 0, maximum: 10000000, description: "Zero means unlimited." }
+        approve: { type: boolean, default: false }
+    RunUsage:
+      type: object
+      required: [run_id, model_calls, input_tokens, output_tokens, cached_tokens, reasoning_tokens, estimated_calls, latency_ms, cost_status, currency, cost_decimal, budget_max_calls, budget_max_tokens, budget_status, remaining_calls, remaining_tokens]
+      properties:
+        run_id: { type: string, format: uuid }
+        model_calls: { type: integer, format: int64 }
+        input_tokens: { type: integer, format: int64 }
+        output_tokens: { type: integer, format: int64 }
+        cached_tokens: { type: integer, format: int64 }
+        reasoning_tokens: { type: integer, format: int64 }
+        estimated_calls: { type: integer, format: int64 }
+        latency_ms: { type: integer, format: int64 }
+        cost_status: { type: string, enum: [unpriced, estimated, confirmed] }
+        currency: { type: string }
+        cost_decimal: { type: string }
+        budget_max_calls: { type: integer, format: int64 }
+        budget_max_tokens: { type: integer, format: int64 }
+        budget_status: { type: string, enum: [active, exhausted, approved_exception] }
+        remaining_calls: { type: integer, format: int64 }
+        remaining_tokens: { type: integer, format: int64 }
+        reserved_calls: { type: integer, format: int64 }
+        reserved_tokens: { type: integer, format: int64 }
+    UsageBucket:
+      type: object
+      required: [key, label, model_calls, input_tokens, output_tokens, cached_tokens, reasoning_tokens, estimated_calls, latency_ms, cost_decimal]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        model_calls: { type: integer, format: int64 }
+        input_tokens: { type: integer, format: int64 }
+        output_tokens: { type: integer, format: int64 }
+        cached_tokens: { type: integer, format: int64 }
+        reasoning_tokens: { type: integer, format: int64 }
+        estimated_calls: { type: integer, format: int64 }
+        latency_ms: { type: integer, format: int64 }
+        cost_decimal: { type: string }
+    ProjectUsage:
+      type: object
+      required: [project_id, model_calls, input_tokens, output_tokens, cached_tokens, reasoning_tokens, estimated_calls, latency_ms, cost_status, currency, cost_decimal, by_day, by_model, by_member, by_agent]
+      properties:
+        project_id: { type: string, format: uuid }
+        model_calls: { type: integer, format: int64 }
+        input_tokens: { type: integer, format: int64 }
+        output_tokens: { type: integer, format: int64 }
+        cached_tokens: { type: integer, format: int64 }
+        reasoning_tokens: { type: integer, format: int64 }
+        estimated_calls: { type: integer, format: int64 }
+        latency_ms: { type: integer, format: int64 }
+        cost_status: { type: string, enum: [unpriced, estimated, confirmed] }
+        currency: { type: string }
+        cost_decimal: { type: string }
+        by_day: { type: array, items: { $ref: "#/components/schemas/UsageBucket" } }
+        by_model: { type: array, items: { $ref: "#/components/schemas/UsageBucket" } }
+        by_member: { type: array, items: { $ref: "#/components/schemas/UsageBucket" } }
+        by_agent: { type: array, items: { $ref: "#/components/schemas/UsageBucket" } }
+    Artifact:
+      type: object
+      required: [id, project_id, task_id, run_id, step_id, name, kind, media_type, content_hash, size_bytes, visibility, source_type, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        step_id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string }
+        media_type: { type: string }
+        content_hash: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        visibility: { type: string, enum: [private, selected, project] }
+        source_type: { type: string }
+        created_at: { type: string, format: date-time }
+    InboxItem:
+      type: object
+      required: [id, kind, project_id, task_id, title, reason, status, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [approval, task_input, task_recovery, side_effect_unknown] }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        title: { type: string }
+        reason: { type: string }
+        status: { type: string }
+        updated_at: { type: string, format: date-time }
+    InboxHistoryItem:
+      type: object
+      required: [id, kind, project_id, task_id, title, summary, status, occurred_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [approval, side_effect, task] }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        title: { type: string }
+        summary: { type: string }
+        status: { type: string }
+        occurred_at: { type: string, format: date-time }
+    RunPlanItem:
+      type: object
+      required: [id, plan_revision_id, position, title, description, status, result_summary, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        plan_revision_id: { type: string, format: uuid }
+        position: { type: integer, format: int64 }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [pending, running, waiting_user, completed, blocked, canceled] }
+        result_summary: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    RunPlanRevision:
+      type: object
+      required: [id, project_id, task_id, run_id, revision, trigger, goal_summary, status, supersedes_revision_id, created_by, created_at, items]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        revision: { type: integer, format: int64 }
+        trigger: { type: string, enum: [initial, steering, follow_up, permission_change, recovery] }
+        goal_summary: { type: string }
+        status: { type: string, enum: [active, superseded, completed, blocked, canceled] }
+        supersedes_revision_id: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        superseded_at: { type: string, format: date-time, nullable: true }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/RunPlanItem" }
+    HumanAction:
+      type: object
+      required: [id, project_id, conversation_id, task_id, run_id, step_id, plan_revision_id, run_plan_item_id, kind, status, reviewer, risk_level, title, reason, request, request_hash, response, requested_by, decided_by, requested_at, expires_at, version]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        conversation_id: { type: string }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        step_id: { type: string }
+        plan_revision_id: { type: string }
+        run_plan_item_id: { type: string }
+        kind: { type: string, enum: [tool_approval, permission_escalation, input_request, budget_request, side_effect_resolution] }
+        status: { type: string, enum: [reviewing, waiting_user, approved, rejected, answered, expired, superseded] }
+        reviewer: { type: string, enum: [user, auto] }
+        risk_level: { type: string }
+        title: { type: string }
+        reason: { type: string }
+        request: { type: object, additionalProperties: true }
+        request_hash: { type: string }
+        response: { type: object, additionalProperties: true }
+        requested_by: { type: string }
+        decided_by: { type: string }
+        requested_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        version: { type: integer, format: int64, minimum: 1 }
+    DecideHumanActionRequest:
+      type: object
+      required: [decision, version]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approved, rejected, answered, confirm_applied, confirm_not_applied] }
+        scope: { type: string, enum: [once, conversation, project], default: once }
+        answer: {}
+        note: { type: string, maxLength: 2000, default: "" }
+        confirmed: { type: boolean, default: false }
+        version: { type: integer, format: int64, minimum: 1 }
+    Approval:
+      type: object
+      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        step_id: { type: string, format: uuid }
+        tool_call_id: { type: string, format: uuid }
+        tool_name: { type: string }
+        risk_level: { type: string, enum: [L0, L1, L2, L3] }
+        status: { type: string, enum: [pending, approved, rejected] }
+        reason: { type: string }
+        frozen_params: { type: object, additionalProperties: true }
+        input_hash: { type: string }
+        requested_by: { type: string }
+        decided_by: { type: string }
+        requested_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+    DecideApprovalRequest:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        scope: { type: string, enum: [once, conversation, project], default: once, description: "Approval lifetime. conversation creates a same-tool session rule; project creates a 30-day project rule." }
+        note: { type: string, maxLength: 1000, default: "" }
+        confirmed: { type: boolean, default: false, description: "Must be true when scope is project; UI must require a second explicit confirmation." }
+    ApprovalRule:
+      type: object
+      required: [id, project_id, tool_name, rule_key, created_from_approval_id, created_by, created_at, expires_at, revoked_by]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        tool_name: { type: string }
+        rule_key: { type: string }
+        created_from_approval_id: { type: string, format: uuid }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        revoked_by: { type: string }
+    SideEffectReceipt:
+      type: object
+      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, input_hash, idempotent, status, error_code, started_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        step_id: { type: string, format: uuid }
+        tool_call_id: { type: string, format: uuid }
+        tool_name: { type: string }
+        input_hash: { type: string }
+        idempotent: { type: boolean }
+        status: { type: string, enum: [started, succeeded, failed, unknown] }
+        error_code: { type: string }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+    ResolveSideEffectRequest:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [confirm_applied, confirm_not_applied, abandon] }
+        note: { type: string, maxLength: 2000, default: "" }
+    Problem:
+      type: object
+      required: [type, title, status, code, correlation_id]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string }
+        correlation_id: { type: string }

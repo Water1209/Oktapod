@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: oktapod
+      POSTGRES_PASSWORD: ${OKTAPOD_POSTGRES_PASSWORD:?set OKTAPOD_POSTGRES_PASSWORD in Deploy/.env}
+      POSTGRES_DB: oktapod
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oktapod"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  oktapod:
+    build:
+      context: ..
+      dockerfile: Deploy/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OKTAPOD_PROFILE: team
+      OKTAPOD_LISTEN_ADDRESS: 0.0.0.0:8787
+      OKTAPOD_DATABASE_URL: ${OKTAPOD_DATABASE_URL:?set OKTAPOD_DATABASE_URL in Deploy/.env}
+      OKTAPOD_TEAM_ADMIN_TOKEN: ${OKTAPOD_TEAM_ADMIN_TOKEN:?set OKTAPOD_TEAM_ADMIN_TOKEN in Deploy/.env}
+      OKTAPOD_DATA_ROOT: /data
+    volumes:
+      - oktapod-data:/data
+    ports:
+      - "8787:8787"
+
+volumes:
+  postgres-data:
+  oktapod-data:

@@ -1,0 +1,49 @@
+{
+  "name": "@oktapod/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:e2e": "pnpm test:e2e:foundation && pnpm test:e2e:success",
+    "test:e2e:auth": "pnpm test:e2e:build-api && node ../../Test/e2e/run-e2e.mjs auth",
+    "test:e2e:build-api": "node ../../Test/e2e/build-api.mjs",
+    "test:e2e:foundation": "pnpm test:e2e:build-api && node ../../Test/e2e/run-e2e.mjs foundation",
+    "test:e2e:success": "pnpm test:e2e:build-api && node ../../Test/e2e/run-e2e.mjs success",
+    "test:e2e:turn": "pnpm test:e2e:build-api && node ../../Test/e2e/run-e2e.mjs turn",
+    "test:e2e:approval": "pnpm test:e2e:build-api && node ../../Test/e2e/run-e2e.mjs approval"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "1.1.19",
+    "@radix-ui/react-select": "2.3.3",
+    "@radix-ui/react-tabs": "1.1.17",
+    "@tanstack/react-query": "5.101.2",
+    "@tanstack/react-router": "1.170.18",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "^22.20.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "eslint": "10.0.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.3",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.64.0",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

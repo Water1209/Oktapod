@@ -1,0 +1,45 @@
+version: "2"
+sql:
+  - engine: sqlite
+    schema:
+      - Src/db/migrations/sqlite/000001_initial.up.sql
+      - Src/db/migrations/sqlite/000002_attempts_and_checkpoints.up.sql
+      - Src/db/migrations/sqlite/000003_accepted_outcomes.up.sql
+      - Src/db/migrations/sqlite/000004_artifacts_and_blobs.up.sql
+      - Src/db/migrations/sqlite/000005_tools_approvals_and_receipts.up.sql
+      - Src/db/migrations/sqlite/000006_conversations_and_activity.up.sql
+      - Src/db/migrations/sqlite/000007_plan_items.up.sql
+      - Src/db/migrations/sqlite/000008_project_assets.up.sql
+      - Src/db/migrations/sqlite/000009_project_members_and_audit.up.sql
+      - Src/db/migrations/sqlite/000010_agent_teams.up.sql
+      - Src/db/migrations/sqlite/000011_schedules.up.sql
+      - Src/db/migrations/sqlite/000012_capabilities.up.sql
+      - Src/db/migrations/sqlite/000013_memories.up.sql
+      - Src/db/migrations/sqlite/000014_run_budgets.up.sql
+      - Src/db/migrations/sqlite/000015_agents.up.sql
+      - Src/db/migrations/sqlite/000017_pricing_snapshots.up.sql
+      - Src/db/migrations/sqlite/000018_auth_sessions.up.sql
+      - Src/db/migrations/sqlite/000019_advisor_reports.up.sql
+      - Src/db/migrations/sqlite/000020_schedule_policies.up.sql
+      - Src/db/migrations/sqlite/000021_mcp_connections.up.sql
+      - Src/db/migrations/sqlite/000022_scheduler_leases.up.sql
+      - Src/db/migrations/sqlite/000029_memory_status.up.sql
+      - Src/db/migrations/sqlite/000030_memory_sources.up.sql
+      - Src/db/migrations/sqlite/000031_project_model_policy.up.sql
+    queries: Src/db/queries/sqlite
+    gen:
+      go:
+        package: sqlitegen
+        out: Src/internal/adapters/db/sqlite/sqlc
+        emit_json_tags: true
+        emit_empty_slices: true
+        emit_interface: true
+        overrides:
+          - column: "*.created_at"
+            go_type: "string"
+          - column: "*.updated_at"
+            go_type: "string"
+          - column: "*.occurred_at"
+            go_type: "string"
+          - column: "*.lease_until"
+            go_type: "string"

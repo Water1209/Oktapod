@@ -1,0 +1,156 @@
+import { lazy, Suspense, type ComponentType } from 'react'
+import { createRootRoute, createRoute, createRouter, Link, Navigate } from '@tanstack/react-router'
+import { AuthenticatedRoot } from './authenticated-root'
+
+const ProjectsPage = lazyNamed(() => import('../features/projects/projects-page'), 'ProjectsPage')
+const ProjectPage = lazyNamed(() => import('../features/projects/project-page'), 'ProjectPage')
+const LegacyTaskResolver = lazyNamed(() => import('../features/tasks/legacy-task-resolver'), 'LegacyTaskResolver')
+const ApprovalInbox = lazyNamed(() => import('../features/approvals/approval-inbox'), 'ApprovalInbox')
+const InvitationAcceptPage = lazyNamed(() => import('../features/invitations/invitation-accept-page'), 'InvitationAcceptPage')
+const ProviderSettingsPage = lazyNamed(() => import('../features/providers/provider-settings-page'), 'ProviderSettingsPage')
+const ResourcesPage = lazyNamed(() => import('../features/resources/resources-page'), 'ResourcesPage')
+const DiagnosticsPage = lazyNamed(() => import('../features/diagnostics/diagnostics-page'), 'DiagnosticsPage')
+const SessionTreePage = lazyNamed(() => import('../features/sessions/session-tree-page'), 'SessionTreePage')
+const ProjectTerminalPage = lazyNamed(() => import('../features/terminal/project-terminal-page'), 'ProjectTerminalPage')
+const ImportExportPage = lazyNamed(() => import('../features/migration/import-export-page'), 'ImportExportPage')
+const SettingsPage = lazyNamed(() => import('../features/settings/settings-page'), 'SettingsPage')
+
+type ProjectSearch = {
+  conversation?: string
+  inspector?: string
+  event?: string
+}
+
+const rootRoute = createRootRoute({
+  component: AuthenticatedRoot,
+  notFoundComponent: () => (
+    <div className="empty-panel">
+      <p className="eyebrow">404</p>
+      <h1>这个工作面不存在</h1>
+      <p>返回项目首页，继续当前任务。</p>
+      <Link className="primary-button" to="/">返回项目首页</Link>
+    </div>
+  ),
+})
+
+const projectsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/',
+  component: suspend(ProjectsPage),
+})
+
+const projectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId',
+  validateSearch: projectSearch,
+  component: suspend(ProjectPage),
+})
+
+const threadRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId/threads/$threadId',
+  validateSearch: projectSearch,
+  component: suspend(ProjectPage),
+})
+
+const sessionTreeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId/tree',
+  validateSearch: (search: Record<string, unknown>) => typeof search.thread === 'string' ? { thread: search.thread } : {},
+  component: suspend(SessionTreePage),
+})
+
+const terminalRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId/terminal',
+  component: suspend(ProjectTerminalPage),
+})
+
+const taskRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tasks/$taskId',
+  component: suspend(LegacyTaskResolver),
+})
+
+const approvalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/approvals',
+  component: suspend(ApprovalInbox),
+})
+
+const resourcesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/resources',
+  component: suspend(ResourcesPage),
+})
+
+const providersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/providers',
+  component: suspend(ProviderSettingsPage),
+})
+
+const settingsIndexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  component: () => <Navigate to="/settings/$section" params={{ section: 'appearance' }} />,
+})
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/$section',
+  component: suspend(SettingsPage),
+})
+
+const importExportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/import-export',
+  component: suspend(ImportExportPage),
+})
+
+const diagnosticsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/diagnostics',
+  component: suspend(DiagnosticsPage),
+})
+
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  component: () => <Navigate to="/" />,
+})
+
+const invitationAcceptRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/invitations/accept',
+  validateSearch: (search: Record<string, unknown>) => ({ token: typeof search.token === 'string' ? search.token : '' }),
+  component: suspend(InvitationAcceptPage),
+})
+
+const routeTree = rootRoute.addChildren([projectsRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
+
+export const router = createRouter({ routeTree })
+
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: typeof router
+  }
+}
+
+function projectSearch(search: Record<string, unknown>): ProjectSearch {
+  return {
+    ...(typeof search.conversation === 'string' ? { conversation: search.conversation } : {}),
+    ...(typeof search.inspector === 'string' ? { inspector: search.inspector } : {}),
+    ...(typeof search.event === 'string' ? { event: search.event } : {}),
+  }
+}
+
+function lazyNamed<T extends Record<string, unknown>, K extends keyof T>(loader: () => Promise<T>, name: K) {
+  return lazy(async () => ({ default: (await loader())[name] as ComponentType }))
+}
+
+function suspend(Page: ComponentType) {
+  return function SuspendedRoute() {
+    return <Suspense fallback={<div className="page-loading">正在打开工作面…</div>}><Page /></Suspense>
+  }
+}
