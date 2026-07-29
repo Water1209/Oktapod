@@ -1204,6 +1204,28 @@ paths:
                 $ref: "#/components/schemas/Task"
         default:
           $ref: "#/components/responses/Problem"
+  /conversations/{conversation_id}:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: deleteConversation
+      summary: Delete an owner-only conversation and its completed task history
+      responses:
+        "204":
+          description: Conversation deleted
+        "409":
+          description: An active task must be stopped before deletion
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
   /conversations/{conversation_id}/entries:
     parameters:
       - name: conversation_id
@@ -2731,7 +2753,7 @@ components:
         acceptance: { type: string, maxLength: 10000, default: "" }
         mode: { type: string, enum: [auto, answer, single_agent, agent_team] }
         visibility: { type: string, enum: [private, selected, project] }
-        permission_mode: { type: string, enum: [ask, auto_review, full_access, default], default: ask, description: "ask 等待用户；auto_review 需要独立 Reviewer；full_access 为 30 分钟 Run 快照且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。" }
+        permission_mode: { type: string, enum: [ask, auto_review, full_access, default], default: ask, description: "ask 等待用户；auto_review 需要独立 Reviewer；full_access 由用户在 Composer 中手动开启或切换且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。" }
         scene: { type: string, enum: [work, code], description: "可选任务场景覆盖；未提供时继承项目场景" }
         model: { type: string, maxLength: 255, description: "可选模型覆盖；优先级高于 Agent/项目默认" }
         fallback_model: { type: string, maxLength: 255, description: "可选受控 fallback 模型" }

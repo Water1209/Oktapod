@@ -1,0 +1,486 @@
+# Oktapod 第一阶段补全与 Codex 式工作台重构执行计划
+
+## 1. 总体决策
+
+### 1.1 目标
+
+在不破坏现有注册用户、个人私有项目、SQLite 持久化、审批审计和恢复能力的前提下，完成：
+
+- Pi 级消息、Agent Loop、Compaction、Session Tree 和工具语义；
+- 多实例 Provider、模型与 Thinking 管理；
+- Codex 式会话优先工作台；
+- 首页、资源、Provider、Session Tree、Changes、审批和诊断页面；
+- Windows/Linux、重启恢复、安全和 Golden Trace 验收。
+
+### 1.2 固定决策
+
+- 产品继续采用“注册用户 + Owner-only 个人私有项目”；团队功能不进入当前入口。
+- 内部继续使用 `Conversation`，UI 统一称为 `Thread`，本阶段不做数据库对象重命名。
+- 前端保留 React、TypeScript、TanStack Router/Query、Radix UI；不回退到历史 PRD 中的 HTMX/templ。
+- 实时通道采用“REST 写操作 + 可恢复 SSE 读事件”；本阶段不增加 WebSocket。
+- SQLite 是当前权威存储，同时保持 PostgreSQL 迁移契约测试。
+- 不直接复制 Codex 品牌视觉，只复用其信息架构、布局密度和交互模式。
+- 采用两段式交付：
+  - Release 1A：W1-W6、核心 Harness、Session Tree、Provider、工具与 Codex 工作台。
+  - Release 1B：终端、Pi 导入导出、Extensions/Packages、完整资源中心、Git 高级操作和维护能力。
+- 当前工作树中的既有修改全部保留；不自动清理、提交或推送。
+
+---
+
+## 2. 后端与协议实施
+
+### 2.1 W0：基线、文档和兼容实验台
+
+- 执行 `pnpm install --frozen-lockfile`，建立 Go/Web/E2E 当前基线；失败项先记录，不在重构中顺手掩盖。
+- 冻结 Pi 基线 `b1c444d9`，建立 OHCS Golden Trace fixtures。
+- 冻结以下公共协议：
+  - Message/ContentBlock；
+  - ToolCall/ToolResult/ToolBatch；
+  - SessionEntry；
+  - RunEvent；
+  - ModelUsage/StopReason；
+  - ProviderInstance/ModelRef。
+- 恢复权威验收矩阵，所有后续工作包必须关联功能 ID、迁移、API、UI 状态和测试。
+- 修正文档冲突：
+  - 第一阶段不再排除注册/登录；
+  - 前端技术路线改为当前 React/TanStack；
+  - API 事件通道明确为 REST + SSE；
+  - Git 远程操作降为后续 SHOULD。
+- 出口：后端基线通过；前端依赖可复现；Golden Trace 测试框架可以运行。
+
+### 2.2 W1：调用方端口、身份、授权和存储边界
+
+- Repository 保留聚合装配能力，但业务消费者只依赖自己声明的最小接口。
+- WorkerRepository 显式列出当前实际使用的 16 个方法，不嵌入宽泛的 Run/Queue 接口。
+- 将身份、安全拆成三个独立职责：
+  - `PrincipalResolver`：识别组织、用户、认证方式和管理员状态；
+  - `Authorizer`：判断项目、Thread、Task、Run、Artifact 的访问权限；
+  - `ExecutionPolicy`：判断 Tool、文件、命令、网络和 Git 操作是否允许。
+- HTTP 使用经过 Session 中间件验证的 Principal；缺少身份时返回 401，不允许回退到 `local-user`。
+- `LocalPrincipalResolver` 仅用于 CLI/初始化等明确离线入口。
+- 将文件内容存储抽象为 `BlobStore`；Artifact 元数据、引用关系和审计仍保留在 Repository。
+- Policy 迁移必须一次完成：旧判断先写 characterization tests，再统一切换，不保留长期双轨逻辑。
+- 出口：双用户隔离测试、审批回归、Worker 窄接口、Go 全量测试通过。
+
+### 2.3 W2：Provider-neutral 消息与模型协议
+
+新增统一类型：
+
+```go
+type ModelMessage struct {
+    Role       MessageRole
+    Content    []ContentBlock
+    ToolCallID string
+    ToolName   string
+}
+
+type ContentBlock struct {
+    Type       ContentBlockType
+    Text       string
+    ToolCall   *ToolCallBlock
+    ToolResult *ToolResultBlock
+    Image      *ImageBlock
+    Thinking   *ThinkingBlock
+}
+
+type ModelRef struct {
+    ProviderID string
+    ModelID    string
+}
+
+type ModelResult struct {
+    Content    []ContentBlock
+    StopReason StopReason
+    Usage      ModelUsage
+}
+```
+
+- `StopReason` 固定为 `stop/tool_use/length/error/aborted`。
+- System Prompt 独立于普通 Messages，不伪装成历史用户消息。
+- OpenAI、Anthropic、Gemini Adapter 只负责协议映射，不拥有 Tool Schema 和业务规则。
+- Usage 统一定义：
+  - `InputTokens` 不含重复缓存计数；
+  - `CacheRead/CacheWrite` 独立记录；
+  - `ContextTokens` 表示本次实际上下文窗口占用；
+  - Reasoning 是 Output 的子集时不得重复计入总量。
+- `conversation_model_calls/model_calls` 增加 purpose、through entry、context tokens 和 usage semantics version。
+- 出口：流式/非流式、文本/工具/图片/thinking、StopReason 和 usage contract tests 全部通过。
+
+### 2.4 W3：Harness、上下文和 Compaction
+
+- 新增唯一 `TranscriptAssembler`，从当前 Session Leaf 构造真实消息序列，禁止再把历史 JSON 塞进 user prompt。
+- Tool Call 与 Tool Result 通过 ID 和 batch 关联；截断时按完整 Turn/Batch 删除，不拆散配对。
+- Compaction 对齐 Pi：
+  - 使用最新有效 assistant usage 加尾部估算；
+  - 初次和增量使用不同 Prompt；
+  - EXACT 六节结构；
+  - 保留确定性 read/modified file 清单；
+  - Tool Result 截断后写 Artifact 引用；
+  - 支持 split-turn prefix summary；
+  - summary 模型失败可重试，但失败时不推进 checkpoint；
+  - summary 调用独立记录模型、Token、耗时和费用。
+- `finish_reason=length`：
+  - 保留 assistant 事件和审计；
+  - 存在 Tool Call 时全部禁止执行；
+  - 为每个 Tool Call 生成可见错误 ToolResult；
+  - 下一 Turn 要求模型重新发出完整调用；
+  - 普通文本被截断时显示“回答被截断”，由用户继续或显式自动续写策略处理，不静默重复整 Turn。
+- 工具并发引入 Durable ToolBatch：
+  - preflight、审批和 hook 串行执行；
+  - 任一工具声明 sequential 时整批串行；
+  - 其他工具并行；
+  -完成事件按真实时间发布，ToolResult 按源调用顺序写入；
+  - Batch 全部终态后只生成一个 continuation step。
+- 出口：文本、多工具、截断、Steering、Follow-up、Abort、Compaction、崩溃恢复 Golden Trace 通过。
+
+### 2.5 W4：Session Tree V2
+
+- 不修改已经发布的 000044；新增修复迁移。
+- `session_entries` 使用独立 `entry_seq`，不再等同 `messages.server_seq`。
+- Message Entry 使用 `ref_id` 引用消息；增加 entry schema version 和 context injection 属性。
+- 统一事务原语 `appendSessionMessageTx`，覆盖 Chat、Task 创建、Tool Result、Assistant Result 和 Compaction。
+- 同一事务完成 message、entry、leaf、event 和幂等状态写入。
+- Active Leaf 更新使用 expected-leaf CAS；冲突返回 409，不覆盖其他请求产生的分支。
+- 实现：
+  - Navigate：用户消息节点回填 Composer，其他节点直接作为 Leaf；
+  - Branch：从当前 Leaf 后追加，不修改历史；
+  - Fork：创建新 Thread，复制目标祖先链并重建消息引用；
+  - Clone：复制当前活动路径；
+  - Branch Summary：使用独立五节模板，不复用 Compaction 六节模板；
+  - Label：作为可审计 Entry 事件保存；
+  - Busy Guard：存在活动 Run 时数据库层拒绝结构操作。
+- 提供分页、路径读取、孤儿/循环检测和重启恢复。
+- 出口：SQLite/PostgreSQL 迁移、旧库回填、Navigate/Fork/Clone、并发冲突、重启恢复测试通过。
+
+### 2.6 W5：Provider Registry 与模型选择
+
+数据模型：
+
+```text
+ProviderInstance
+- provider_id
+- organization_id
+- display_name
+- protocol_family
+- endpoint
+- credential_ref
+- status
+- created_at / updated_at
+
+ModelCatalogEntry
+- provider_id / model_id
+- capabilities
+- context_window / max_output
+- thinking_map
+- pricing
+- fetched_at / expires_at / etag / last_error
+```
+
+API：
+
+- `GET/POST /api/v1/providers`
+- `GET/PUT/DELETE /api/v1/providers/{provider_id}`
+- `POST /api/v1/providers/{provider_id}/test`
+- `GET /api/v1/providers/{provider_id}/models`
+
+行为：
+
+- `provider_id` 是实例身份，`protocol_family` 只是协议类型。
+- API Key 只进入 SecretStore；API、日志和 UI 永不回显。
+- Provider 保存和凭据写入使用补偿事务；任一步失败恢复旧配置。
+- 连接测试设置超时、响应体上限、错误脱敏和 Endpoint 策略。
+- Model Catalog 使用 stale-while-revalidate；离线时可选最近成功目录并明确标记过期。
+- Run Snapshot 保存 requested/effective ModelRef、Thinking、降级原因和目录版本。
+- Release 1A 支持多个 OpenAI-compatible 实例；Release 1B 增加原生 Anthropic/Gemini。
+- 出口：多实例同协议、模型 ID 冲突、凭据回滚、离线目录、Run 冻结和下一 Turn 生效测试通过。
+
+### 2.7 W6：工具、Git、并发和诊断
+
+- 先建立 provider-neutral Tool Registry，再新增 read/edit/list/find/grep。
+- 所有文件工具统一：
+  - canonical path、workspace root、symlink 防护；
+  - 字节/行数上限和确定性分页；
+  - 二进制识别；
+  - Secret 脱敏；
+  - 大输出 Artifact 化。
+- `edit` 使用 preimage hash/CAS、临时文件和原子替换；文件外部变化返回冲突，不覆盖。
+- Git 分两类：
+  - 只读：status/diff/log；
+  - 变更：branch/commit/restore，必须经 Policy、审批、前置状态 Hash 和 Receipt。
+- Release 1A 不提供 push/pull；Release 1B 再评估受控远程操作。
+- 全局 Run 并发在 Durable ToolBatch 完成后实现：
+  - 默认 4，可降低；
+  - 每个 claim 使用唯一 lease owner；
+  - 支持取消、优雅退出、SQLite Busy 退避和未知副作用保护。
+- 诊断能力按风险拆分：
+  - 只读健康、版本、数据库、Provider、Worker 和 SSE 状态；
+  - 日志必须脱敏；
+  - 备份、下载、恢复作为独立高风险操作，不与健康页混为一项。
+
+---
+
+## 3. Codex 式页面与交互设计
+
+### 3.1 视觉语言
+
+- 视觉目标：安静、专业、高信息密度、内容优先，不做“后台卡片大屏”。
+- 品牌锚点取自现有 Oktapod Logo：
+  - Ink Navy `#071454`
+  - Signal Blue `#2455E6`
+  - Active Cyan `#18C6D8`
+  - Light Canvas `#F6F7F9`
+  - Dark Canvas `#11131A`
+  - Danger `#C64343`
+- 所有状态色使用语义 Token，不在组件内直接写 Hex。
+- 字体：
+  - UI：自托管 `Inter Variable`；
+  - 代码和运行数据：自托管 `JetBrains Mono Variable`；
+  - 不加载外部 CDN 字体。
+- 圆角控制在 6–10px；除状态胶囊外不使用大面积 pill。
+- 阴影仅用于浮层；主布局使用边界、层级背景和留白。
+- 动效 120–180ms，围绕展开、流式增量、抽屉和状态切换；尊重 reduced motion。
+- 独有视觉记忆点：中央执行流使用“Activity Spine”，以 Logo 的圆点和触手关系表达 Turn、Tool、Approval、Compaction 和恢复点；其余界面保持克制。
+
+### 3.2 桌面布局
+
+```text
+┌──────┬──────────────────┬─────────────────────────────┬──────────────────┐
+│ 56px │ 280px            │ 自适应中央工作区             │ 360px 检查器      │
+│ 全局栏│ 项目/Thread侧栏   │ 顶栏 + Thread + Composer     │ Run/Context/...   │
+└──────┴──────────────────┴─────────────────────────────┴──────────────────┘
+```
+
+- 全局栏：首页、项目、资源、审批、设置；底部为用户与服务状态。
+- 项目侧栏：项目切换、新建 Thread、搜索、Thread 列表、Tasks、Files、Changes、Resources、Session Tree。
+- 中央区：统一事件流；消息正文控制阅读宽度，Diff/表格可扩展。
+- 检查器：Run、Context、Usage、Tools、Security、Changes、Trace。
+- Composer 固定在中央底部，不覆盖最后一条消息。
+- 检查器默认折叠，点击文件、Tool、Usage、错误或 Trace 事件时打开到对应 Tab；用户选择持久化。
+
+响应式：
+
+- `>=1440px`：四区完整显示。
+- `1024–1439px`：右检查器改为覆盖式抽屉。
+- `768–1023px`：项目侧栏和检查器均为抽屉，只保留全局栏和中央区。
+- `<768px`：单栏 Thread；导航、任务详情、审批和检查器使用全屏 sheet。
+- `390px` 必须无横向滚动，Composer、审批按钮和 Diff 操作可完整使用。
+
+### 3.3 页面与路由
+
+| 页面 | 主要功能 | 交付 |
+|---|---|---|
+| `/login` | 注册/登录、会话过期提示、返回原路径 | 1A |
+| `/` | 最近项目/Thread、运行中、待审批、失败恢复、用量、Provider 引导 | 1A |
+| `/projects/:id` | 项目默认 Thread 或空状态 | 1A |
+| `/projects/:id/threads/:threadId` | 核心 Codex 式工作台 | 1A |
+| `/projects/:id/tree` | Session Tree、预览、Navigate/Fork/Clone/Label | 1A |
+| `/approvals` | 全局审批收件箱和历史；审批仍优先内联显示 | 1A |
+| `/resources` | Skills、Tools、MCP、Agents 的统一只读/基础管理 | 1A |
+| `/settings/providers` | Provider 实例、模型、连接测试和凭据更新 | 1A |
+| `/diagnostics` | 健康、版本、Worker、Provider、数据库和脱敏日志 | 1A |
+| `/projects/:id/terminal` | 受控终端和上下文回灌 | 1B |
+| `/import-export` | Pi/Oktapod 导入预览、导出和脱敏 | 1B |
+| `/settings/*` | Context、Retry、安全、Shell、主题、快捷键、数据维护 | 1B |
+
+兼容规则：
+
+- 旧 `/tasks/:taskId` 保留为解析路由，查出 Project/Thread 后跳转工作台并打开 Run 检查器。
+- 旧项目管理抽屉功能全部迁入对应工作台导航或检查器，不删除现有能力。
+- URL 持有 Project、Thread、Inspector Tab、选中 Event 等可分享状态；临时展开状态留在组件内。
+
+### 3.4 首页
+
+- 顶部只保留两个主操作：“新建任务”“打开项目”。
+- 主体使用列表而不是卡片瀑布：
+  - 继续处理；
+  - 正在运行；
+  - 等待你处理；
+  - 最近项目；
+  - 最近失败；
+  - 用量摘要。
+- 点击 Run 直接进入对应 Thread 并定位当前事件。
+- 没有 Provider 时，主操作改为“配置模型服务”；禁止静默发送。
+- 没有项目时展示打开目录和示例任务，不展示空统计卡。
+
+### 3.5 Thread 与执行流
+
+- User、Assistant、Tool、Approval、Retry、Compaction、File Change、Error、Final Result 均在同一时间线中。
+- Tool/Command 卡默认折叠，显示名称、目标、状态、耗时和摘要。
+- Approval 卡默认展开，显示风险、冻结参数和影响范围。
+- 执行中间过程必须可读，不以单个 Spinner 代替。
+- 技术事件默认聚合到 Activity Spine；错误、审批、文件变化和最终结果不折叠。
+- 点击 Tool/File/Usage/Trace 事件，在右侧检查器打开对应内容。
+- 流式 assistant 内容只更新当前消息块，不重排整个 Thread。
+- 断线恢复后按序号去重；不得出现重复文本或重复 Tool Card。
+
+### 3.6 Composer 与任务状态
+
+空闲状态：
+
+- 默认 Auto，可切 Ask/Task。
+- Enter 发送，Shift+Enter 换行。
+- 支持模型、Thinking、Active Tools、`@` 引用、`/` 命令、附件和图片。
+- 草稿按用户、项目、Thread 保存在本地；不得包含 Secret。
+
+Run 执行状态：
+
+- Composer 上方显示任务状态条，默认收缩。
+- 展开后为固定高度可滚动区域，展示计划、步骤、模型、工具、审批和队列详情。
+- Enter 发送 Steering。
+- Alt+Enter 加入 Follow-up。
+- Next Turn 从发送按钮旁的动作菜单选择。
+- Escape 请求 Abort，并显示可取消范围。
+- 排队项展示类型、顺序、内容摘要、创建时间和撤回按钮。
+
+### 3.7 审批
+
+内联卡提供：
+
+- 拒绝；
+- 允许本次；
+- 当前会话同类操作允许，默认最长 24 小时；
+- Full Access 作为独立权限模式，最长 30 分钟，不绕过静态路径、网络和命令黑名单。
+
+Release 1B 再增加项目级持久规则，必须二次确认并提供管理/撤销入口。
+
+审批超时后显示确定性拒绝状态，不自动执行。移动端按钮纵向排列，风险详情保持可展开。
+
+### 3.8 Changes、Diff 和文件
+
+- Changes 检查器显示当前 Run 修改文件、状态、行数和测试结果。
+- Diff 支持 Run 开始、Git HEAD、当前工作区三种基线。
+- 点击事件中的文件路径定位到文件和行。
+- Release 1A 提供只读 Diff 和整文件操作；Release 1B 增加 Hunk 恢复、选择提交和冲突辅助。
+- 恢复或提交前重新校验工作区 Hash；外部变化时阻止操作。
+- Monaco 仅在首次打开文件/Diff 时懒加载，不能增加首屏主包体积。
+
+### 3.9 Session Tree
+
+- 中央显示父子树，右侧预览选中 Entry 的消息、模型、Usage、文件和分支摘要。
+- 当前 Leaf 使用品牌蓝实心节点，祖先路径使用青色细线，其他分支降噪。
+- 点击用户节点进入“重新编辑”预览，确认后才移动 Leaf 并回填 Composer。
+- 点击其他节点进入“从此继续”确认。
+- Fork、Clone、Label 和 Branch Summary 使用明确命名，不混用概念。
+- 活动 Run 时禁用结构操作，并说明需要先结束或中止 Run。
+
+### 3.10 Provider、资源、设置与诊断
+
+- Provider 页面使用“实例列表 + 详情面板”，不是按协议族固定卡片。
+- 凭据字段只显示“已配置/未配置”，编辑时不回填旧值。
+- 连接测试显示阶段、延迟、目录状态和脱敏错误。
+- 资源中心采用左侧类型/列表、右侧详情的 master-detail 布局；显示来源、路径、权限、Trust、使用项目和兼容性。
+- 设置使用左侧分组导航和右侧表单，所有配置显示生效来源。
+- 诊断页默认只读；备份、恢复和日志导出独立进入高风险流程。
+
+### 3.11 前端工程结构与状态所有权
+
+- Route 层持有 Project、Thread、共享 Composer 数据和权限快照。
+- React Query 持有服务端数据；子 View 只查询自己独有的数据。
+- `RunEventsProvider/useRunEvents` 统一当前三个 EventSource，实现：
+  - 单 Run 单连接；
+  - after sequence；
+  - 指数退避；
+  - dedupe；
+  - 页面可见性；
+  - auth/logout；
+  - query invalidation 策略。
+- Composer、Task Strip、Event Card、Inspector、Session Tree、Provider Form 分成独立 feature 模块。
+- 禁止按行号删除 CSS；先用 selector 使用审计和截图证明无引用，再分批删除。
+- Design Tokens、基础组件、布局和业务页面分四步迁移，每步均可独立回归。
+
+---
+
+## 4. 实施顺序与交付门禁
+
+| 里程碑 | 内容 | 预计工作量 | 依赖与出口 |
+|---|---|---:|---|
+| M0 | 基线、文档修正、协议、Golden Trace | 3–5 人日 | 无；形成权威契约 |
+| M1 | Repository、Principal、Authorizer、Policy、BlobStore | 4–6 人日 | M0；安全回归全绿 |
+| M2 | Typed Message、Usage、StopReason、ModelRef | 7–10 人日 | M0；Provider contract 全绿 |
+| M3 | Transcript、Compaction、ToolBatch、截断语义 | 8–12 人日 | M2；Harness Golden Trace 全绿 |
+| M4 | Session Tree V2 与迁移 | 8–12 人日 | M2/M3；恢复与并发测试全绿 |
+| M5 | Tokens、组件、路由、SSE、状态所有权 | 6–9 人日 | M0；现有 E2E 不退化 |
+| M6 | 首页与核心 Workbench 重构 | 10–15 人日 | M3/M5；桌面/移动闭环 |
+| M7 | Provider、工具、Changes、Tree UI | 10–15 人日 | M4/W5/W6；真实任务闭环 |
+| M8 | 1A 全量验收、性能、安全、文档 | 5–8 人日 | 所有 1A 功能 |
+| M9 | Terminal、Import/Export、Extensions/Packages、高级 Git/设置 | 15–25 人日 | Release 1B |
+| M10 | 完整 Phase 1 验收 | 5–8 人日 | OHCS、跨平台、真实 Provider |
+
+并行规则：
+
+- M1、M2、M5 可在 M0 后并行。
+- M6 只能在消息、事件和 SSE 契约冻结后进入大规模页面重构。
+- Provider 原生 Adapter 依赖 typed message，不能只依赖 Repository 拆分。
+- Session Tree UI 依赖 Tree V2 API，不允许先写假数据 UI。
+- 全局 Run 并发依赖 Durable ToolBatch，不得用单个 semaphore 代替。
+
+---
+
+## 5. 测试、验收与交付
+
+### 5.1 后端测试
+
+- Unit：接口边界、usage、StopReason、cut point、Policy、路径和 CAS。
+- Contract：OpenAI/Anthropic/Gemini、Tool Registry、BlobStore、SecretStore。
+- Migration：000044 到 Tree V2、Provider singleton 到 registry、重复迁移和旧数据回填。
+- Integration：Chat、Task、ToolBatch、Approval、Steering、Follow-up、Abort、Compaction、Tree、Provider。
+- Security：
+  - 两个注册用户互不可见；
+  - HTTP 无 Principal 不得回退；
+  - path traversal/symlink；
+  - edit hash 冲突；
+  - approval TTL；
+  - secret redaction；
+  - Provider 错误脱敏。
+- Recovery：模型、工具、审批、Compaction、Tree 事务中断后重启。
+
+### 5.2 Golden Trace
+
+固定至少以下场景：
+
+- `text_multi_turn`
+- `tool_call_and_result`
+- `parallel_tool_batch`
+- `sequential_tool_override`
+- `length_truncated_tool_calls`
+- `steering_after_checkpoint`
+- `followup_after_idle`
+- `abort_preserves_next_turn`
+- `compaction_initial`
+- `compaction_incremental`
+- `compaction_split_turn`
+- `tree_navigate_branch_fork`
+- `provider_switch_next_turn`
+- `restart_recovery`
+
+每个 Fixture 同时断言 Event Sequence、Persisted Sequence、Tool Source Order、Completion Order、Entry Path、Usage 和最终恢复状态。
+
+### 5.3 前端与浏览器验收
+
+- 组件测试：Composer 模式、Task Strip、Event Card、Approval、Inspector、Tree、Provider Form。
+- E2E：auth、foundation、success、turn、approval，以及新增 workbench、tree、provider、SSE reconnect、responsive。
+- 视口：1440、1280、1024、768、390。
+- Light/Dark/System 三主题视觉回归。
+- 键盘：发送、换行、Steering、Follow-up、Abort、命令面板、焦点循环。
+- 无障碍：可见焦点、语义标签、状态公告、对比度、reduced motion。
+- 浏览器控制台不得出现 error、未处理 rejection 或重复 EventSource。
+- 使用真实 Provider 完成一次可见流式任务、工具调用、审批、文件修改、测试和 Diff；凭据只从 SecretStore/环境注入。
+
+### 5.4 性能门槛
+
+- Thread 首屏只加载最近分页，不加载整棵 10 万 Entry。
+- Event update 不导致整个项目页面重渲染。
+- Monaco/xterm 按需加载。
+- SSE 重连不重复消息。
+- 390px 无横向溢出。
+- SQLite 多 Run 并发下无持续 busy loop。
+- 首页和工作台首屏不等待低频管理查询。
+
+### 5.5 文档与发布
+
+- 每个工作包同时更新 README、对应设计文档、OpenAPI 和验收矩阵，不在最后一次性补文档。
+- 部署、配置、Provider、并发或数据目录变化同步更新运维指南。
+- UI 交互变化同步第一阶段产品功能设计。
+- 重大协议和迁移决策新增 ADR。
+- AGENTS.md 只保留长期稳定规则，不写临时功能进度。
+- Release 1A、1B 各自生成独立验收报告，未完成项明确标记 PARTIAL，不以局部绿测宣称完整完成。

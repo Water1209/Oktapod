@@ -94,15 +94,15 @@ func TestFailedToolReplansAndContinues(t *testing.T) {
 			t.Fatalf("worker attempt %d worked=%v err=%v", attempt, worked, runErr)
 		}
 	}
-	completed, err := service.GetTask(context.Background(), task.ID)
-	if err != nil || completed.Status != core.StatusSucceeded || search.calls != 2 {
-		t.Fatalf("task=%#v search_calls=%d err=%v", completed, search.calls, err)
+	recovering, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || recovering.Status != core.StatusRunning || search.calls != 2 {
+		t.Fatalf("task=%#v search_calls=%d err=%v", recovering, search.calls, err)
 	}
 	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	failedIndex, recoveryIndex := -1, -1
+	failedIndex, recoveryIndex, validationIndex := -1, -1, -1
 	for index, event := range events {
 		if event.EventType == "step.failed" && event.Payload["error_code"] == "WEB_SEARCH_REQUEST_FAILED" {
 			failedIndex = index
@@ -110,9 +110,12 @@ func TestFailedToolReplansAndContinues(t *testing.T) {
 		if event.EventType == "tool.recovery_queued" {
 			recoveryIndex = index
 		}
+		if event.EventType == "completion.validation_failed" && event.Payload["reason"] == "WEB_EVIDENCE_MISSING" {
+			validationIndex = index
+		}
 	}
-	if failedIndex < 0 || recoveryIndex <= failedIndex {
-		t.Fatalf("tool recovery was not queued after the failed step: %#v", events)
+	if failedIndex < 0 || recoveryIndex <= failedIndex || validationIndex <= recoveryIndex {
+		t.Fatalf("tool recovery or completion validation was not queued after the failed step: %#v", events)
 	}
 }
 
@@ -131,7 +134,7 @@ func executionPlanProvider(t *testing.T, recoverAfterFailure bool) *httptest.Ser
 		body, _ := io.ReadAll(r.Body)
 		modelCalls++
 		if recoverAfterFailure && modelCalls == 2 {
-			if !strings.Contains(string(body), "工具失败恢复 1/3") || strings.Count(string(body), "WEB_SEARCH_REQUEST_FAILED") < 2 {
+			if !strings.Contains(string(body), "工具失败恢复 1/5") || strings.Count(string(body), "WEB_SEARCH_REQUEST_FAILED") < 2 {
 				t.Errorf("recovery request missing failed receipt or replanning hint: %s", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "recovered", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "已根据失败收据调整方案并完成目标。"}}}, "usage": map[string]any{"prompt_tokens": 20, "completion_tokens": 8}})

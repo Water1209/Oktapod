@@ -80,6 +80,13 @@ func TestSecondTruncationRetryForcesChunkedWrites(t *testing.T) {
 	}
 }
 
+func TestPlanRegressionRetryPreservesCompletedItems(t *testing.T) {
+	hint := modelCompatibilityRetryHint(`{"model_retry_count":1,"model_retry_reason":"RUN_PLAN_STATUS_REGRESSION"}`)
+	if hint == "" || !containsAll(hint, "已完成项", "completed", "同一完整清单") {
+		t.Fatalf("unexpected plan regression hint: %q", hint)
+	}
+}
+
 func containsAll(value string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(value, part) {

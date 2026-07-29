@@ -283,6 +283,80 @@ func TestProjectTurnAutoTaskCreatesTaskWithoutConfirmationState(t *testing.T) {
 	}
 }
 
+func TestProjectTurnRecoveryIntentRetriesLatestFailedTaskInPlace(t *testing.T) {
+	model := &projectTurnModelStub{}
+	service, databasePath, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Research workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "调研 token 云平台形成 md 文档", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "recovery-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markTaskForRetry(t, databasePath, task.ID, task.RunID, core.StatusFailed, core.StatusFailed)
+
+	var route string
+	var deltas []string
+	result, err := service.SubmitProjectTurnStream(t.Context(), project.ID, core.ProjectTurnInput{
+		ConversationID: task.ConversationID,
+		Content:        "重新规划任务，继续",
+		Mode:           core.ModeAuto,
+		Visibility:     core.VisibilityPrivate,
+	}, "00000000-0000-7000-8000-000000000204", "turn-recovery-0001", func(value string) error {
+		route = value
+		return nil
+	}, func(value string) error {
+		deltas = append(deltas, value)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route != application.TurnRouteTask || result.Route != application.TurnRouteTask || result.Task == nil {
+		t.Fatalf("route=%q result=%#v", route, result)
+	}
+	if result.Task.ID != task.ID || result.Task.RunID != task.RunID || result.Task.Status != core.StatusQueued {
+		t.Fatalf("recovery created or changed task identity: %#v", result.Task)
+	}
+	if got := strings.Join(deltas, ""); got != "正在继续当前任务；原执行计划、Skill 和已完成进度保持不变。" {
+		t.Fatalf("recovery acknowledgement=%q", got)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("recovery messages=%#v", result.Messages)
+	}
+	for _, message := range result.Messages {
+		if message.TaskID != task.ID {
+			t.Fatalf("recovery message is not attributed to task: %#v", message)
+		}
+	}
+	tasks, err := service.ListTasks(t.Context(), project.ID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("recovery created another task: tasks=%#v err=%v", tasks, err)
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("recovery unexpectedly called the chat model: prompts=%#v", model.prompts)
+	}
+
+	// Retrying the same HTTP request after the task has already moved to queued
+	// must replay the same turn instead of falling through to chat routing.
+	replayed, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{
+		ConversationID: task.ConversationID,
+		Content:        "重新规划任务，继续",
+		Mode:           core.ModeAuto,
+		Visibility:     core.VisibilityPrivate,
+	}, "00000000-0000-7000-8000-000000000204", "turn-recovery-0001")
+	if err != nil || replayed.Route != application.TurnRouteTask || replayed.Task == nil || replayed.Task.ID != task.ID {
+		t.Fatalf("replayed recovery=%#v err=%v", replayed, err)
+	}
+	messages, err := service.ListMessages(t.Context(), task.ConversationID, 0)
+	if err != nil || len(messages) != 3 {
+		t.Fatalf("replayed recovery duplicated messages=%#v err=%v", messages, err)
+	}
+}
+
 func TestProjectTurnStreamEmitsRouteAndDeltasBeforePersisting(t *testing.T) {
 	model := &streamingProjectTurnModelStub{
 		classification: turnModelResult("classification-stream", `{"route":"chat"}`),

@@ -69,7 +69,7 @@ export function SettingsPage() {
         </SettingsGroup> : null}
         {section === 'security' ? <SettingsGroup title="安全" description="静态路径、网络和命令黑名单不可由这里关闭。">
           <SettingRow label="默认权限" source="服务端 Policy"><span>最小权限 · 需要时审批</span></SettingRow>
-          <SettingRow label="Full Access" source="会话临时授权"><span>最长 30 分钟，不绕过静态规则</span></SettingRow>
+          <SettingRow label="Full Access" source="发送框手动控制"><span>持续到手动切换，不绕过静态规则</span></SettingRow>
           <Link className="secondary-button compact" to="/approvals">管理审批与历史</Link>
         </SettingsGroup> : null}
         {section === 'shell' ? <SettingsGroup title="Shell" description="受控终端仍通过 Tool Policy 和审批。">

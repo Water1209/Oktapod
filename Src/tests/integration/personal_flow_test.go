@@ -208,6 +208,43 @@ func containsSnapshotID(value any, want string) bool {
 	return false
 }
 
+func TestConversationDeletionRequiresIdleTaskAndRemovesHistory(t *testing.T) {
+	t.Parallel()
+
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Delete thread", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "delete-thread-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "Queued work", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "delete-thread-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteConversation(t.Context(), task.ConversationID, "delete-active"); err == nil {
+		t.Fatal("active conversation deletion was accepted")
+	} else {
+		var conflict *core.ResourceConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("active deletion error=%T %v", err, err)
+		}
+	}
+	if _, err := service.ControlTask(t.Context(), task.ID, core.ControlTaskInput{Command: "cancel"}, "cancel-before-delete", "cancel-before-delete"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteConversation(t.Context(), task.ConversationID, "delete-idle"); err != nil {
+		t.Fatal(err)
+	}
+	if conversations, err := service.ListConversations(t.Context(), project.ID); err != nil || len(conversations) != 0 {
+		t.Fatalf("conversations=%#v err=%v", conversations, err)
+	}
+	if _, err := service.GetTask(t.Context(), task.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted task error=%v", err)
+	}
+}
+
 func TestMissingModelCredentialBlocksInsteadOfPretendingSuccess(t *testing.T) {
 	t.Parallel()
 

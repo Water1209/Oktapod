@@ -6,7 +6,7 @@ export const taskStatusView: Record<TaskStatus, { label: string; tone: string }>
   waiting_approval: { label: '等待审批', tone: 'warning' },
   waiting_input: { label: '等待输入', tone: 'warning' },
   paused: { label: '已暂停', tone: 'paused' },
-  blocked: { label: '需要处理', tone: 'failed' },
+  blocked: { label: '执行受阻', tone: 'failed' },
   succeeded: { label: '已完成', tone: 'succeeded' },
   failed: { label: '执行失败', tone: 'failed' },
   canceled: { label: '已取消', tone: 'muted' },
@@ -42,6 +42,10 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   if (code === 'TOOL_POLICY_DENIED') return { title: '工具动作被安全策略拒绝', detail: '冻结的工具或参数不在允许范围内，相关动作没有执行。', action: '修订目标或参数后重新创建任务。', retryable: false }
   if (code === 'SIDE_EFFECT_STATUS_UNKNOWN') return { title: '外部操作结果未知', detail: '系统无法确认上一次非幂等操作是否完成，因此停止自动重试。', action: '先核查外部状态，再在任务详情中确认处理方式。', retryable: false }
   if (code === 'COMMAND_EXIT_NONZERO') return { title: '命令执行失败', detail: '命令已经运行，但退出码不是 0。', action: '查看工具事件和输出，修订命令后重试。', retryable: true }
+  if (code === 'WEB_EVIDENCE_MISSING') return { title: '检索证据不足', detail: '任务要求使用最新互联网资料，但当前 Run 没有任何成功的检索收据，因此未标记为完成。', action: '检查网络后从阻塞点继续，或明确选择基于已有资料交付。', retryable: true }
+  if (code === 'DELIVERABLE_MISSING') return { title: '交付文件尚未生成', detail: '任务要求生成 Markdown 或文档，但当前 Run 没有成功写入工作区文件，因此未标记为完成。', action: '从阻塞点继续，系统会补写并验证交付文件。', retryable: true }
+  if (code === 'RUN_PLAN_PREMATURE_COMPLETION') return { title: '执行计划状态无效', detail: '初次计划把尚未执行的工作提前标记为完成，系统已拒绝该状态。', action: '从当前检查点重试，重新生成从第一项开始的计划。', retryable: true }
+  if (code === 'RUN_PLAN_STATUS_REGRESSION') return { title: '计划更新受阻', detail: '模型尝试把已经完成的计划项改回未完成状态；系统保留了真实进度并拒绝这次更新。', action: '当前版本会先自动修复，连续 3 次失败才停止；此任务也可从阻塞点继续。', retryable: true }
   if (code === 'APPROVAL_REJECTED' || code === 'APPROVAL_EXPIRED') return { title: code === 'APPROVAL_EXPIRED' ? '审批已过期' : '审批未通过', detail: '风险动作没有执行，任务已停止。', action: '修订动作后重新发起任务。', retryable: false }
   return { title: '任务未能完成', detail: summary || `运行在 ${code} 处停止。`, action: '查看执行步骤和技术事件后再决定是否重试。', retryable: false }
 }

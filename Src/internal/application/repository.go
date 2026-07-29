@@ -32,6 +32,7 @@ type Repository interface {
 	UpdateProjectSettings(ctx context.Context, scope core.Scope, projectID string, input core.UpdateProjectSettingsInput, idempotency core.Idempotency) (core.Project, error)
 	GetProject(ctx context.Context, scope core.Scope, projectID string) (core.Project, error)
 	GetConversation(ctx context.Context, scope core.Scope, conversationID string) (core.Conversation, error)
+	DeleteConversation(ctx context.Context, scope core.Scope, conversationID, correlationID string) error
 	ListProjects(ctx context.Context, scope core.Scope, limit int) ([]core.Project, error)
 	AddProjectMember(ctx context.Context, scope core.Scope, projectID string, input core.AddProjectMemberInput, correlationID string, idempotency core.Idempotency) (core.ProjectMember, error)
 	ListProjectMembers(ctx context.Context, scope core.Scope, projectID string) ([]core.ProjectMember, error)

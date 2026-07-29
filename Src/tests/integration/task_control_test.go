@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,123 @@ func TestTaskRetryResumesFailedCheckpoint(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("run.retried missing from events=%#v", events)
+	}
+}
+
+func TestTaskRetryResetsFrozenToolCallWithFailedFrontier(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Retry Tool User"}, core.Organization{ID: testOrgID, Name: "Retry Tool Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Retry tool project", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "retry failed search", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "retry-tool-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepID := markTaskForRetry(t, databasePath, task.ID, task.RunID, core.StatusFailed, core.StatusFailed)
+	db := openTaskControlDatabase(t, databasePath)
+	toolCallID := uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO tool_calls (id, organization_id, project_id, task_id, run_id, step_id, position, tool_name, arguments_json, arguments_hash, risk_level, policy_decision, status, error_code, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, 99, 'web_search', '{}', 'hash:search', 'L0', 'allow', 'failed', 'WEB_SEARCH_UNAVAILABLE', ?, ?, ?)`, toolCallID, testOrgID, project.ID, task.ID, task.RunID, stepID, now, now, now); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "retry-tool-control", "retry-tool-control-key")
+	if err != nil || updated.Status != core.StatusQueued {
+		t.Fatalf("retry task=%#v err=%v", updated, err)
+	}
+	db = openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	var stepStatus, toolStatus, toolError, completedAt string
+	if err := db.QueryRow(`SELECT status, error_code, completed_at FROM tool_calls WHERE id = ?`, toolCallID).Scan(&toolStatus, &toolError, &completedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, stepID).Scan(&stepStatus); err != nil {
+		t.Fatal(err)
+	}
+	if stepStatus != core.StatusQueued || toolStatus != core.StatusQueued || toolError != "" || completedAt != "" {
+		t.Fatalf("retry checkpoint step=%q tool=%q error=%q completed_at=%q", stepStatus, toolStatus, toolError, completedAt)
+	}
+}
+
+func TestTaskRetryRecreatesPlanRecoveryCheckpoint(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Plan Recovery User"}, core.Organization{ID: testOrgID, Name: "Plan Recovery Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Plan recovery", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "resume a rejected plan update", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate}, "plan-recovery-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openTaskControlDatabase(t, databasePath)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE steps SET status = 'succeeded', error_code = '', updated_at = ? WHERE run_id = ?`, now, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status = 'blocked', error_code = 'RUN_PLAN_STATUS_REGRESSION', updated_at = ? WHERE id = ?`, now, task.ID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE runs SET status = 'blocked', updated_at = ? WHERE id = ?`, now, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE run_plan_revisions SET status = 'blocked' WHERE run_id = ?`, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE run_plan_items SET status = 'blocked', updated_at = ? WHERE plan_revision_id = (SELECT id FROM run_plan_revisions WHERE run_id = ? ORDER BY revision DESC LIMIT 1)`, now, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "plan-recovery", "plan-recovery-key")
+	if err != nil || updated.Status != core.StatusQueued {
+		t.Fatalf("retry task=%#v err=%v", updated, err)
+	}
+	db = openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	var status, inputJSON, planRevisionID, planItemID string
+	if err := db.QueryRow(`
+		SELECT status, input_json, plan_revision_id, run_plan_item_id
+		FROM steps WHERE run_id = ? ORDER BY position DESC LIMIT 1`, task.RunID).Scan(&status, &inputJSON, &planRevisionID, &planItemID); err != nil {
+		t.Fatal(err)
+	}
+	if status != core.StatusQueued || planRevisionID == "" || planItemID == "" {
+		t.Fatalf("recovery checkpoint status=%q plan=%q item=%q", status, planRevisionID, planItemID)
+	}
+	if !strings.Contains(inputJSON, `"model_retry_reason":"RUN_PLAN_STATUS_REGRESSION"`) || !strings.Contains(inputJSON, `"manual_retry":true`) {
+		t.Fatalf("unexpected recovery input=%s", inputJSON)
+	}
+	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.EventType == "run.retried" && event.Payload["retry_scope"] == "plan_recovery" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("plan recovery run.retried missing from events=%#v", events)
 	}
 }
 
@@ -135,6 +253,124 @@ func TestTaskRetryOnlyQueuesLatestRecoveryFrontier(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("checkpoint-scoped run.retried missing from events=%#v", events)
+	}
+}
+
+func TestTaskRetryPrefersNewerQueuedContinuationOverHistoricalFailure(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Retry Continuation User"}, core.Organization{ID: testOrgID, Name: "Retry Continuation Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Retry continuation", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "resume queued recovery work", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "retry-continuation-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedStepID := markTaskForRetry(t, databasePath, task.ID, task.RunID, core.StatusFailed, core.StatusFailed)
+	queuedStepID := insertPlainStep(t, databasePath, project.ID, task.RunID, core.StatusQueued)
+
+	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "retry-continuation", "retry-continuation-key")
+	if err != nil || updated.Status != core.StatusQueued {
+		t.Fatalf("retry task=%#v err=%v", updated, err)
+	}
+	db := openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	var failedStatus, queuedStatus string
+	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, failedStepID).Scan(&failedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, queuedStepID).Scan(&queuedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if failedStatus != core.StatusFailed || queuedStatus != core.StatusQueued {
+		t.Fatalf("retry replayed historical failure: failed=%q queued=%q", failedStatus, queuedStatus)
+	}
+	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.EventType == "run.retried" && event.Payload["step_id"] == queuedStepID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("queued continuation was not selected: events=%#v", events)
+	}
+}
+
+func TestTaskRetryQueuesMissingContinuationForCompletedToolBatch(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Retry Batch User"}, core.Organization{ID: testOrgID, Name: "Retry Batch Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Retry completed batch", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "continue after completed tools", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "retry-completed-batch-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openTaskControlDatabase(t, databasePath)
+	var sourceStepID string
+	if err := db.QueryRow(`SELECT id FROM steps WHERE run_id = ? ORDER BY position LIMIT 1`, task.RunID).Scan(&sourceStepID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	batchID, toolStepID, toolCallID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE steps SET status = 'succeeded', output_json = '{"content":"planned tools"}', updated_at = ? WHERE id = ?`, now, sourceStepID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tool_batches (id, organization_id, project_id, task_id, run_id, source_step_id, plan_iteration, execution_mode, status, tool_count, continuation_claimed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 'parallel', 'running', 1, 0, ?, ?)`, batchID, testOrgID, project.ID, task.ID, task.RunID, sourceStepID, now, now); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO steps (id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, tool_batch_id, batch_index, created_at, updated_at) VALUES (?, ?, ?, ?, 'web_search', 2, 'succeeded', '{"name":"web_search","arguments":{"query":"evidence"}}', '{"result":"ok"}', ?, 1, ?, ?)`, toolStepID, testOrgID, project.ID, task.RunID, batchID, now, now); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tool_calls (id, organization_id, project_id, task_id, run_id, step_id, position, tool_name, arguments_json, arguments_hash, risk_level, policy_decision, status, tool_batch_id, batch_index, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 2, 'web_search', '{"query":"evidence"}', 'hash:evidence', 'L0', 'allow', 'succeeded', ?, 1, ?, ?, ?)`, toolCallID, testOrgID, project.ID, task.ID, task.RunID, toolStepID, batchID, now, now, now); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status = 'failed', error_code = 'TOOL_EXECUTION_FAILED', updated_at = ? WHERE id = ?`, now, task.ID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE runs SET status = 'failed', updated_at = ? WHERE id = ?`, now, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "retry-completed-batch", "retry-completed-batch-key")
+	if err != nil || updated.Status != core.StatusQueued {
+		t.Fatalf("retry task=%#v err=%v", updated, err)
+	}
+	db = openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	var batchStatus string
+	var claimed int
+	var continuationStepID, continuationStatus, continuationInput string
+	if err := db.QueryRow(`SELECT status, continuation_claimed, continuation_step_id FROM tool_batches WHERE id = ?`, batchID).Scan(&batchStatus, &claimed, &continuationStepID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status, input_json FROM steps WHERE id = ?`, continuationStepID).Scan(&continuationStatus, &continuationInput); err != nil {
+		t.Fatal(err)
+	}
+	if batchStatus != core.StatusSucceeded || claimed != 1 || continuationStatus != core.StatusQueued || !strings.Contains(continuationInput, `"stage":"continue"`) {
+		t.Fatalf("batch=%q claimed=%d continuation=%q input=%s", batchStatus, claimed, continuationStatus, continuationInput)
 	}
 }
 

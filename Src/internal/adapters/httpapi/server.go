@@ -811,6 +811,13 @@ func (s *Server) ListProjectConversations(ctx context.Context, request generated
 	return generated.ListProjectConversations200JSONResponse{Items: items}, nil
 }
 
+func (s *Server) DeleteConversation(ctx context.Context, request generated.DeleteConversationRequestObject) (generated.DeleteConversationResponseObject, error) {
+	if err := s.service.DeleteConversation(ctx, request.ConversationId.String(), correlationID(ctx)); err != nil {
+		return nil, err
+	}
+	return generated.DeleteConversation204Response{}, nil
+}
+
 func (s *Server) ListConversationMessages(ctx context.Context, request generated.ListConversationMessagesRequestObject) (generated.ListConversationMessagesResponseObject, error) {
 	after := int64(0)
 	if request.Params.After != nil {

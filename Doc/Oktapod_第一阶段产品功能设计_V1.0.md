@@ -385,6 +385,8 @@ Provider 以协议族复用实现，但产品兼容矩阵必须逐项记录以�
 | F-CMP-016 | 草稿保存 | 页面刷新或切换 Thread 后可恢复未发送草稿 | SHOULD |
 | F-CMP-017 | 快捷键 | 支持发送、换行、中止、模型、Thinking、工具折叠和命令面板 | MUST |
 | F-CMP-018 | 无障碍输入 | 主要操作可通过键盘完成，焦点和错误提示可感知 | SHOULD |
+| F-CMP-019 | 对话恢复任务 | 最新 Task 为失败或阻塞时，Auto Composer 的“继续/重试/重新执行/重新规划并继续”直接恢复该 Task 的安全检查点；确认消息关联原 Task，保留 Run、Skill 快照和已完成计划，不调用聊天模型 | MUST |
+| F-CMP-020 | 紧凑消息排版 | Assistant Markdown 折叠源空白，正文块间距 6–8px、Turn 间距约 20px；User 原文继续保留换行 | MUST |
 
 ### 6.5 Task、Run、Agent Loop 与流式呈现
 
@@ -517,12 +519,14 @@ Provider 以协议族复用实现，但产品兼容矩阵必须逐项记录以�
 | F-SES-014 | Fork | 从历史用户消息创建新 Session，并记录 Parent Session | MUST |
 | F-SES-015 | Clone | 将当前活动分支复制到新 Session | MUST |
 | F-SES-016 | Branch Summary | 离开分支时选择不摘要、默认摘要或自定义摘要 | MUST |
-| F-SES-017 | 删除 Thread | 二次确认后删除 Session 元数据和本地数据；可优先移入回收站 | MUST |
+| F-SES-017 | 删除 Thread | 侧栏操作菜单内二次确认；活动任务必须先停止，随后删除 Session、消息、关联任务与本地数据，Fork 副本保留 | MUST |
 | F-SES-018 | 导出 Thread | 导出 JSONL、JSON、HTML | MUST |
 | F-SES-019 | 消息分页 | 10 万 Entry 可分页和虚拟加载，不一次加载全部 | MUST |
 | F-SES-020 | 忙状态保护 | Run 执行时禁止 Tree Navigate、Fork、Clone、Compact 等结构操作 | MUST |
 
 当前后端契约使用独立 `entry_seq`，不再复用 `messages.server_seq`；Message 仅通过 `ref_id` 被 Entry 引用。消息正文、Message Entry、Leaf 和序号在同一事务提交，Navigate 必须携带 `expected_leaf_entry_id`，冲突返回 409。Label 除更新目标节点外还会追加 `system/label` 审计 Entry；Branch Summary 使用独立五节格式，不复用 Compaction 六节格式。Thread 上存在活动 Run 时，Navigate、Fork、Clone、Label、Branch Summary 和 Compaction 均由数据库层拒绝。
+
+删除 Thread 使用 `DELETE /api/v1/conversations/{conversation_id}`。只有 Owner 可执行；存在 `queued/running/waiting_approval/waiting_input/paused` 任务时返回 409。删除事务会清理关联任务链、消息与 Session Entry，并把 Fork 子 Thread 的来源指针置空以保留其独立副本，同时写入 `conversation.deleted` 审计事件。
 
 ### 6.10 上下文、压缩与项目知识
 
@@ -635,7 +639,7 @@ Compaction 的初次与增量调用使用不同提示词，输出严格为 Goal�
 - Run 创建时只保存一个短暂的“正在制定执行计划”占位项。模型必须单独调用 `update_plan` 发布完整、目标特定、带状态的语义清单；固定“理解/完成/验证”模板和 Tool 名称计划项由契约拒绝。计划发布后的首轮先执行当前项并暂不暴露 `update_plan`；产生 Tool 证据后才允许提交状态更新。运行中更新按稳定位置绑定原计划项，标题润色或结构增删不产生新 Revision，而是保留原清单并投影完成度；无进度更新写入审计并自动切回执行轮，完成项回退仍拒绝。只有 Steering、追加需求或权限变化才创建新 Revision。
 - Steering、新目标、权限变化或恢复会发布完整新 Revision，并事务性将旧 Revision 与未决 Human Action 标记为 `superseded`。
 - `human_action_requests` 统一承载工具审批、权限升级、补充输入、预算确认和未知副作用处置；每项必须绑定 Run、Step、Plan Revision 和 Plan Item，并通过 `version` 乐观锁防止人工与自动审批重复生效。
-- 权限模式为 Ask、Auto Review 和 Full Access。Auto Review 必须使用独立 Reviewer Model、禁用工具并严格返回 `approve/reject/escalate_to_user`；服务不可用、输出非法和高风险一律转人工。Full Access 仅在 30 分钟 Run 快照内减少命令审批。
+- 权限模式为 Ask、Auto Review 和 Full Access。Auto Review 必须使用独立 Reviewer Model、禁用工具并严格返回 `approve/reject/escalate_to_user`；服务不可用、输出非法和高风险一律转人工。Full Access 由用户在 Composer 中手动开启并持续到手动切换，只减少命令审批。
 - MCP Annotation 必须进入冻结快照。缺少标注、破坏性或开放世界 MCP 按高风险处理；即使 Full Access 也必须人工确认，且不得创建会话或项目长期授权。
 - Composer 上方只显示“完成数/总数 + 当前计划项”，展开后显示完整语义清单。Human Action 自动展开当前项并显示冻结参数、原因、影响、有效期和授权范围；硬拒绝没有批准按钮。
 - 单个 Tool 失败只是模型可见的错误收据。并行 Tool Batch 必须收齐兄弟调用后以 CAS 产生唯一恢复分支；恢复上限耗尽时优先综合已有证据，没有可用证据才进入 `input_request` 等待用户，不得重复输出多条任务失败。

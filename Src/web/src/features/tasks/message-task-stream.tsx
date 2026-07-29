@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, FileText, LoaderCircle } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, FileText, LoaderCircle, Puzzle } from 'lucide-react'
 import type { Artifact, Task } from '../../shared/api/client'
 import { api } from '../../shared/api/client'
 import { buildTaskTimeline, taskFailureInfo, type TaskTimelineItem } from '../tasks/task-progress-model'
@@ -58,22 +58,29 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
   const failure = taskFailureInfo(taskQuery.data)
   const artifacts = artifactsQuery.data?.items ?? []
   const runningStep = timeline.find((step) => step.state === 'running')
-  const failedCount = timeline.filter((step) => step.state === 'failed' || step.state === 'blocked').length
   const taskActive = active && ['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'].includes(taskQuery.data.status)
+  const taskFailed = taskQuery.data.status === 'failed' || taskQuery.data.status === 'blocked'
+  const skillNames = Array.from(new Set(liveEvents.flatMap((event) => {
+    if (event.event_type !== 'skill.loaded' || !Array.isArray(event.payload.skill_names)) return []
+    return event.payload.skill_names.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+  })))
   const hasExecutionEvidence = taskActive || Boolean(failure) || artifacts.length > 0 || timeline.some((step) => Boolean(step.tool))
   if (!hasExecutionEvidence) return null
 
   return <div className={`message-task-stream${taskActive ? ' active' : ''}`}>
     <div className="message-task-stream-head">
-      <span className={`task-stream-status${taskActive ? ' running' : ''}`}>
-        {taskActive ? <LoaderCircle className="spin" size={12} /> : failedCount > 0 || failure ? <AlertTriangle size={12} /> : <Check size={12} />}
+      <span className={`task-stream-status${taskActive ? ' running' : ''}${taskFailed ? ' failed' : ''}`}>
+        {taskActive ? <LoaderCircle className="spin" size={12} /> : taskFailed ? <AlertTriangle size={12} /> : <Check size={12} />}
         {taskActive ? (runningStep?.label ?? '任务执行中') : failure ? failure.title : '任务已完成'}
+      </span>
+      <span className={`task-skill-summary${skillNames.length ? ' loaded' : ''}`} title={skillNames.length ? `已加载：${skillNames.join('、')}` : '本次 Run 未加载 Skill'}>
+        <Puzzle size={11} />{skillNames.length ? skillNames.join('、') : '未加载 Skill'}
       </span>
       {artifacts.length > 0 ? <small>{artifacts.length} 个文件</small> : null}
     </div>
     {failure ? <div className="message-task-failure" role="alert">
       <AlertTriangle size={14} />
-      <div><strong>{failure.title}</strong><p>{failure.detail}</p></div>
+      <div><p>{failure.detail}</p><small>{failure.action}</small></div>
     </div> : null}
     <details className="message-task-detail">
       <summary>执行记录</summary>

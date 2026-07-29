@@ -3,6 +3,7 @@ package websearch
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +19,9 @@ import (
 )
 
 const (
-	DefaultEndpoint = "https://html.duckduckgo.com/html/"
-	maxResponseSize = 2 << 20
+	DefaultEndpoint  = "https://html.duckduckgo.com/html/"
+	FallbackEndpoint = "https://www.bing.com/search"
+	maxResponseSize  = 2 << 20
 )
 
 type Input struct {
@@ -45,31 +47,43 @@ type Response struct {
 }
 
 type Client struct {
-	endpoint   *url.URL
+	endpoints  []*url.URL
 	httpClient *http.Client
+	searchSlot chan struct{}
 }
 
 func New(endpoint string) (*Client, error) {
 	endpoint = strings.TrimSpace(endpoint)
+	rawEndpoints := []string{endpoint}
 	if endpoint == "" {
-		endpoint = DefaultEndpoint
+		rawEndpoints = []string{DefaultEndpoint, FallbackEndpoint}
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil {
-		return nil, fmt.Errorf("web search endpoint must be an absolute HTTP(S) URL without credentials")
+	endpoints := make([]*url.URL, 0, len(rawEndpoints))
+	for _, raw := range rawEndpoints {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil {
+			return nil, fmt.Errorf("web search endpoint must be an absolute HTTP(S) URL without credentials")
+		}
+		if parsed.Scheme != "https" && !isLoopbackHost(parsed.Hostname()) {
+			return nil, fmt.Errorf("web search endpoint must use HTTPS unless it is loopback")
+		}
+		endpoints = append(endpoints, parsed)
 	}
-	if parsed.Scheme != "https" && !isLoopbackHost(parsed.Hostname()) {
-		return nil, fmt.Errorf("web search endpoint must use HTTPS unless it is loopback")
-	}
-	return &Client{
-		endpoint: parsed,
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyFromEnvironment
+	client := &Client{
+		endpoints: endpoints,
 		httpClient: &http.Client{
-			Timeout: 20 * time.Second,
+			Transport: transport,
+			Timeout:   12 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return errors.New("web search endpoint redirects are disabled")
 			},
 		},
-	}, nil
+		searchSlot: make(chan struct{}, 1),
+	}
+	client.searchSlot <- struct{}{}
+	return client, nil
 }
 
 func (c *Client) Execute(ctx context.Context, call core.ToolCall) core.ToolExecution {
@@ -100,8 +114,20 @@ func (c *Client) Execute(ctx context.Context, call core.ToolCall) core.ToolExecu
 }
 
 func (c *Client) Search(ctx context.Context, input Input) (Response, error) {
-	if c == nil || c.endpoint == nil || c.httpClient == nil {
+	if c == nil || len(c.endpoints) == 0 || c.httpClient == nil {
 		return Response{}, errors.New("web search client is not configured")
+	}
+	// Public HTML search endpoints rate-limit or serve challenge pages when a
+	// tool batch starts several requests at once. Keep the Agent's tool batch
+	// parallelism, but serialize this shared external adapter so every query
+	// receives a parseable provider response.
+	if c.searchSlot != nil {
+		select {
+		case <-ctx.Done():
+			return Response{}, ctx.Err()
+		case <-c.searchSlot:
+		}
+		defer func() { c.searchSlot <- struct{}{} }()
 	}
 	input.Query = strings.TrimSpace(input.Query)
 	if len([]rune(input.Query)) < 2 || len([]rune(input.Query)) > 500 {
@@ -120,10 +146,29 @@ func (c *Client) Search(ctx context.Context, input Input) (Response, error) {
 	for _, domain := range input.BlockedDomains {
 		query += " -site:" + domain
 	}
-	requestURL := *c.endpoint
+	var failures []string
+	for _, endpoint := range c.endpoints {
+		response, err := c.searchEndpoint(ctx, endpoint, input, query)
+		if err == nil {
+			return response, nil
+		}
+		failures = append(failures, endpoint.Hostname()+": "+safeError(err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return Response{}, fmt.Errorf("all configured search providers failed: %s", strings.Join(failures, "; "))
+}
+
+func (c *Client) searchEndpoint(ctx context.Context, endpoint *url.URL, input Input, query string) (Response, error) {
+	requestURL := *endpoint
 	values := requestURL.Query()
 	values.Set("q", query)
-	if code := freshnessCode(input.Freshness); code != "" {
+	provider := "duckduckgo_html"
+	if strings.EqualFold(endpoint.Hostname(), "www.bing.com") {
+		values.Set("format", "rss")
+		provider = "bing_rss"
+	} else if code := freshnessCode(input.Freshness); code != "" {
 		values.Set("df", code)
 	}
 	requestURL.RawQuery = values.Encode()
@@ -135,17 +180,6 @@ func (c *Client) Search(ctx context.Context, input Input) (Response, error) {
 	request.Header.Set("User-Agent", "Oktapod/0.1 (+controlled-web-search)")
 	started := time.Now()
 	response, err := c.httpClient.Do(request)
-	if err != nil && ctx.Err() == nil && retryableSearchError(err) {
-		// Public HTML search endpoints occasionally drop a connection or delay
-		// headers under burst traffic. One bounded retry keeps the user-facing
-		// search reliable without hiding a persistent provider outage.
-		retryRequest, retryErr := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
-		if retryErr == nil {
-			retryRequest.Header.Set("Accept", "text/html,application/xhtml+xml")
-			retryRequest.Header.Set("User-Agent", "Oktapod/0.1 (+controlled-web-search)")
-			response, err = c.httpClient.Do(retryRequest)
-		}
-	}
 	if err != nil {
 		return Response{}, err
 	}
@@ -160,19 +194,55 @@ func (c *Client) Search(ctx context.Context, input Input) (Response, error) {
 	if len(body) > maxResponseSize {
 		return Response{}, errors.New("search provider response exceeded 2 MiB")
 	}
-	results, err := parseResults(body, input.MaxResults, input.AllowedDomains, input.BlockedDomains)
+	var results []Result
+	if provider == "bing_rss" {
+		results, err = parseRSSResults(body, input.MaxResults, input.AllowedDomains, input.BlockedDomains)
+	} else {
+		results, err = parseResults(body, input.MaxResults, input.AllowedDomains, input.BlockedDomains)
+	}
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Query: input.Query, Provider: "duckduckgo_html", Results: results, Duration: time.Since(started).Milliseconds()}, nil
+	if len(results) == 0 {
+		return Response{}, errors.New("search provider returned no usable results")
+	}
+	return Response{Query: input.Query, Provider: provider, Results: results, Duration: time.Since(started).Milliseconds()}, nil
 }
 
-func retryableSearchError(err error) bool {
-	if err == nil {
-		return false
+func parseRSSResults(body []byte, limit int, allowed, blocked []string) ([]Result, error) {
+	var feed struct {
+		Channel struct {
+			Items []struct {
+				Title       string `xml:"title"`
+				Link        string `xml:"link"`
+				Description string `xml:"description"`
+			} `xml:"item"`
+		} `xml:"channel"`
 	}
-	var networkError net.Error
-	return errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary())
+	if err := xml.Unmarshal(body, &feed); err != nil {
+		return nil, errors.New("search provider returned invalid RSS")
+	}
+	results := make([]Result, 0, limit)
+	seen := make(map[string]struct{})
+	for _, item := range feed.Channel.Items {
+		target, err := normalizeResultURL(item.Link)
+		if err != nil || !domainAllowed(target.Hostname(), allowed, blocked) {
+			continue
+		}
+		canonical := target.String()
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		results = append(results, Result{
+			Title: boundedText(item.Title, 300), URL: canonical,
+			Snippet: boundedText(item.Description, 800), Domain: strings.ToLower(target.Hostname()),
+		})
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results, nil
 }
 
 func inputFromArguments(arguments map[string]any) (Input, error) {

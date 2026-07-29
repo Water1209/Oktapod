@@ -758,6 +758,105 @@ func (s *Store) GetConversation(ctx context.Context, scope core.Scope, conversat
 	return core.Conversation{ID: row.ID, OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, OwnerUserID: row.OwnerUserID, Title: row.Title, Visibility: row.Visibility, MessageCount: row.NextMessageSeq, LastMessage: row.LastMessage, ActiveLeafEntryID: row.ActiveLeafEntryID, ParentSessionID: row.ParentSessionID, ForkedFromEntryID: row.ForkedFromEntryID, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
+func (s *Store) DeleteConversation(ctx context.Context, scope core.Scope, conversationID, correlationID string) error {
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		err = s.deleteConversationTx(ctx, scope, conversationID, correlationID)
+		if err == nil || !sqliteBusyError(err) {
+			return err
+		}
+		if waitErr := waitSQLiteRetry(ctx, attempt); waitErr != nil {
+			return waitErr
+		}
+	}
+	return err
+}
+
+func (s *Store) deleteConversationTx(ctx context.Context, scope core.Scope, conversationID, correlationID string) error {
+	conversation, err := s.GetConversation(ctx, scope, conversationID)
+	if err != nil {
+		return err
+	}
+	if conversation.OwnerUserID != scope.UserID {
+		return &core.ForbiddenError{Message: "only the conversation owner can delete this thread"}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var active int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tasks
+		WHERE conversation_id = ? AND status IN ('queued','running','waiting_approval','waiting_input','paused')`,
+		conversationID,
+	).Scan(&active); err != nil {
+		return err
+	}
+	if active > 0 {
+		return &core.ResourceConflictError{Resource: "conversation", Reason: "stop the active task before deleting this thread"}
+	}
+	// Forked threads remain usable. They lose only the deleted ancestry pointer;
+	// their copied messages and entries are independent.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE conversations
+		SET parent_session_id = NULL, forked_from_entry_id = NULL
+		WHERE parent_session_id = ?`, conversationID); err != nil {
+		return fmt.Errorf("detach conversation children: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE schedule_fires SET task_id = NULL
+		WHERE task_id IN (SELECT id FROM tasks WHERE conversation_id = ?)`, conversationID); err != nil {
+		return fmt.Errorf("detach scheduled fires: %w", err)
+	}
+	// The original usage ledger intentionally keeps strict foreign keys without
+	// ON DELETE CASCADE. A thread owns this execution history, so remove the
+	// ledger and model-call rows before deleting its tasks.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM usage_ledger
+		WHERE task_id IN (SELECT id FROM tasks WHERE conversation_id = ?)`, conversationID); err != nil {
+		return fmt.Errorf("delete conversation usage ledger: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM model_calls
+		WHERE task_id IN (SELECT id FROM tasks WHERE conversation_id = ?)`, conversationID); err != nil {
+		return fmt.Errorf("delete conversation model calls: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE conversation_id = ?`, conversationID); err != nil {
+		return fmt.Errorf("delete conversation tasks: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM conversations
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ?`,
+		conversationID, scope.OrganizationID, scope.UserID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete conversation: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if removed != 1 {
+		return sql.ErrNoRows
+	}
+	auditID, err := newID()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_events (
+			id, organization_id, project_id, actor_user_id, action,
+			target_type, target_id, outcome, detail_json, correlation_id, occurred_at
+		) VALUES (?, ?, ?, ?, 'conversation.deleted', 'conversation', ?, 'succeeded', '{}', ?, ?)`,
+		auditID, scope.OrganizationID, conversation.ProjectID, scope.UserID,
+		conversationID, correlationID, formatTime(time.Now()),
+	); err != nil {
+		return fmt.Errorf("write conversation deletion audit: %w", err)
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ListMessages(ctx context.Context, scope core.Scope, conversationID string, after int64, limit int) ([]core.Message, error) {
 	rows, err := s.queries.ListMessagesForUser(ctx, sqlitegen.ListMessagesForUserParams{
 		ConversationID: conversationID,
@@ -1587,6 +1686,7 @@ func (s *Store) AppendChatTurn(ctx context.Context, scope core.Scope, projectID 
 			OrganizationID: scope.OrganizationID,
 			ProjectID:      projectID,
 			ConversationID: conversationID,
+			TaskID:         input.TaskID,
 			OwnerUserID:    scope.UserID,
 			Role:           value.Role,
 			Visibility:     input.Visibility,
@@ -2871,7 +2971,7 @@ WHERE id = ?`,
 		ActorID:        scope.UserID,
 		CorrelationID:  correlationID,
 		Visibility:     input.Visibility,
-		Payload:        map[string]any{"task_id": taskID, "step_id": stepID, "mode": input.Mode, "requested_mode": configSnapshot["requested_mode"], "classification_reason": configSnapshot["classification_reason"], "permission_mode": configSnapshot["permission_mode"], "full_access_expires_at": configSnapshot["full_access_expires_at"], "status": core.StatusQueued},
+		Payload:        map[string]any{"task_id": taskID, "step_id": stepID, "mode": input.Mode, "requested_mode": configSnapshot["requested_mode"], "classification_reason": configSnapshot["classification_reason"], "permission_mode": configSnapshot["permission_mode"], "status": core.StatusQueued},
 	}); err != nil {
 		return core.Task{}, err
 	}
@@ -3024,7 +3124,7 @@ func (s *Store) ControlTask(ctx context.Context, scope core.Scope, taskID string
 	if changed {
 		now := formatTime(time.Now())
 		eventPayload := map[string]any{"task_id": taskID, "command": input.Command, "from_status": current.Status, "to_status": targetStatus}
-		controlPayload, err := applyTaskStepControl(ctx, tx, current.RunID, input.Command, now)
+		controlPayload, err := s.applyTaskStepControl(ctx, tx, current.RunID, input.Command, now, correlationID)
 		if err != nil {
 			return core.Task{}, err
 		}
@@ -3071,7 +3171,7 @@ type taskControlStep struct {
 // retry must never reactivate every historical failure in a Run: doing so can
 // replay model calls and side effects that have already been superseded by a
 // persisted recovery Step.
-func applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, command, now string) (map[string]any, error) {
+func (s *Store) applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, command, now, correlationID string) (map[string]any, error) {
 	switch command {
 	case core.TaskCommandPause:
 		_, err := tx.ExecContext(ctx, `
@@ -3117,13 +3217,13 @@ func applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, command, now s
 		}
 		return nil, nil
 	case core.TaskCommandRetry:
-		return retryTaskFromFrontier(ctx, tx, runID, now)
+		return s.retryTaskFromFrontier(ctx, tx, runID, now, correlationID)
 	default:
 		return nil, &core.ValidationError{Field: "command", Message: "is not supported"}
 	}
 }
 
-func retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, now string) (map[string]any, error) {
+func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, now, correlationID string) (map[string]any, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, position, status, input_json FROM steps WHERE run_id = ? ORDER BY position, id`, runID)
 	if err != nil {
 		return nil, err
@@ -3141,11 +3241,25 @@ func retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, now string) (
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if continuationStepID, batchID, resumed, resumeErr := s.resumeCompletedToolBatch(ctx, tx, runID, now, correlationID); resumeErr != nil {
+		return nil, resumeErr
+	} else if resumed {
+		return map[string]any{
+			"step_id":       continuationStepID,
+			"retry_scope":   "completed_batch_continuation",
+			"tool_batch_id": batchID,
+		}, nil
+	}
 
 	var frontier *taskControlStep
 	for index := range steps {
 		step := &steps[index]
-		candidate := (step.IsRetry && retryControlStatus(step.Status)) || step.Status == core.StatusFailed || step.Status == core.StatusBlocked
+		candidate := (step.IsRetry && retryControlStatus(step.Status)) ||
+			step.Status == core.StatusFailed || step.Status == core.StatusBlocked ||
+			step.Status == core.StatusQueued
 		if !candidate {
 			continue
 		}
@@ -3154,7 +3268,7 @@ func retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, now string) (
 		}
 	}
 	if frontier == nil {
-		return nil, &core.ResourceConflictError{Resource: "task", Reason: "no retryable checkpoint remains; resolve the cause or fork a new task"}
+		return s.retryPlanControlFailure(ctx, tx, runID, steps, now)
 	}
 
 	// A previous broad retry may have left older recovery attempts active. They
@@ -3189,7 +3303,154 @@ func retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, now string) (
 		}
 		return nil, &core.ResourceConflictError{Resource: "task", Reason: "retry checkpoint changed concurrently"}
 	}
+	// A Tool Step and its frozen ToolCall form one retry checkpoint. Resetting
+	// only the Step leaves the ToolCall terminal, so BeginToolExecution rejects
+	// the otherwise valid retry as TOOL_INPUT_CHANGED.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tool_calls
+		SET status = 'queued', error_code = '', completed_at = '', updated_at = ?
+		WHERE step_id = ? AND run_id = ?`, now, frontier.ID, runID); err != nil {
+		return nil, err
+	}
 	return map[string]any{"step_id": frontier.ID, "step_position": frontier.Position, "retry_scope": "frontier_only", "superseded_steps": superseded}, nil
+}
+
+func (s *Store) resumeCompletedToolBatch(ctx context.Context, tx *sql.Tx, runID, now, correlationID string) (continuationStepID, batchID string, resumed bool, err error) {
+	var sourceStep core.ClaimedStep
+	err = tx.QueryRowContext(ctx, `
+		SELECT tb.id, source.id, source.step_type, source.input_json, source.owner_id
+		FROM tool_batches tb
+		JOIN tool_calls calls ON calls.tool_batch_id = tb.id
+		JOIN steps source ON source.id = (
+			SELECT latest.step_id
+			FROM tool_calls latest
+			WHERE latest.tool_batch_id = tb.id
+			ORDER BY latest.batch_index DESC, latest.position DESC
+			LIMIT 1
+		)
+		WHERE tb.run_id = ? AND tb.continuation_claimed = 0
+		GROUP BY tb.id, source.id, source.step_type, source.input_json, source.owner_id, tb.created_at
+		HAVING COUNT(*) = SUM(CASE WHEN calls.status = 'succeeded' THEN 1 ELSE 0 END)
+		ORDER BY tb.created_at DESC
+		LIMIT 1`, runID,
+	).Scan(&batchID, &sourceStep.ID, &sourceStep.StepType, &sourceStep.InputJSON, &sourceStep.OwnerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return "", "", false, err
+	}
+	sourceStep.OrganizationID = run.OrganizationID
+	sourceStep.ProjectID = run.ProjectID
+	sourceStep.RunID = runID
+	continuationStepID, err = s.queueModelContinuation(ctx, tx, s.queries.WithTx(tx), sourceStep, run, now, correlationID)
+	if err != nil {
+		return "", "", false, err
+	}
+	if continuationStepID == "" {
+		return "", "", false, &core.ResourceConflictError{Resource: "task", Reason: "completed tool batch has no continuation history"}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tool_batches
+		SET status = 'succeeded', continuation_claimed = 1,
+		    continuation_step_id = ?, updated_at = ?
+		WHERE id = ? AND continuation_claimed = 0`,
+		continuationStepID, now, batchID,
+	); err != nil {
+		return "", "", false, err
+	}
+	return continuationStepID, batchID, true, nil
+}
+
+// retryPlanControlFailure recovers older task-level plan failures whose model
+// step was persisted as succeeded before the plan update was rejected. Those
+// runs have no failed Step frontier, but the active plan plus continuation
+// history is still a valid durable checkpoint.
+func (s *Store) retryPlanControlFailure(ctx context.Context, tx *sql.Tx, runID string, steps []taskControlStep, now string) (map[string]any, error) {
+	var errorCode string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT t.error_code
+		FROM tasks t JOIN runs r ON r.task_id = t.id
+		WHERE r.id = ?`, runID).Scan(&errorCode); err != nil {
+		return nil, err
+	}
+	if errorCode != "RUN_PLAN_STATUS_REGRESSION" {
+		return nil, &core.ResourceConflictError{Resource: "task", Reason: "no retryable checkpoint remains; resolve the cause or fork a new task"}
+	}
+
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return nil, err
+	}
+	var planRevisionID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM run_plan_revisions
+		WHERE run_id = ? AND status IN ('active', 'blocked')
+		ORDER BY revision DESC LIMIT 1`, runID).Scan(&planRevisionID); err != nil {
+		return nil, err
+	}
+	var planItemID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM run_plan_items
+		WHERE plan_revision_id = ? AND status IN ('running', 'blocked', 'waiting_user', 'pending')
+		ORDER BY position LIMIT 1`, planRevisionID).Scan(&planItemID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'active' WHERE id = ?`, planRevisionID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE run_plan_items
+		SET status = 'running', completed_at = '', updated_at = ?
+		WHERE id = ? AND status = 'blocked'`, now, planItemID); err != nil {
+		return nil, err
+	}
+
+	history, err := s.collectContinuationHistory(ctx, tx, run)
+	if err != nil {
+		return nil, err
+	}
+	sourceStepID := ""
+	for index := len(steps) - 1; index >= 0; index-- {
+		if steps[index].ID != "" {
+			sourceStepID = steps[index].ID
+			break
+		}
+	}
+	recoveryInput := map[string]any{
+		"history":                    history,
+		"stage":                      "plan_execute",
+		"source_step_id":             sourceStepID,
+		"plan_revision_id":           planRevisionID,
+		"model_retry_count":          1,
+		"model_retry_reason":         errorCode,
+		"model_retry_source_step_id": sourceStepID,
+		"manual_retry":               true,
+	}
+	stepID, err := insertQueuedModelStep(ctx, tx, run, recoveryInput, now)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ?
+		WHERE id = ?`, planRevisionID, planItemID, stepID); err != nil {
+		return nil, err
+	}
+	var position int64
+	if err := tx.QueryRowContext(ctx, `SELECT position FROM steps WHERE id = ?`, stepID).Scan(&position); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"step_id":          stepID,
+		"step_position":    position,
+		"retry_scope":      "plan_recovery",
+		"plan_revision_id": planRevisionID,
+		"run_plan_item_id": planItemID,
+	}, nil
 }
 
 func retryStepMetadata(inputJSON string) (source string, retry bool) {
@@ -6424,6 +6685,12 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 		if _, err := tx.ExecContext(ctx, `UPDATE side_effect_receipts SET status = 'unknown', error_code = 'SIDE_EFFECT_STATUS_UNKNOWN', finished_at = ? WHERE id = ?`, now, receiptID); err != nil {
 			return "", err
 		}
+	} else if _, err := tx.ExecContext(ctx, `
+			UPDATE side_effect_receipts
+			SET status = 'started', exit_code = -1, output_json = '{}',
+			    error_code = '', started_at = ?, finished_at = ''
+			WHERE id = ?`, now, receiptID); err != nil {
+		return "", err
 	}
 	if unknown {
 		if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'blocked', error_code = 'SIDE_EFFECT_STATUS_UNKNOWN', updated_at = ? WHERE id = ?`, now, call.ID); err != nil {
@@ -6726,6 +6993,47 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 			return err
 		}
 	}
+	if run.Mode == core.ModeSingleAgent && taskStatus == core.StatusSucceeded && outcome.Model != nil && len(outcome.Model.ToolCalls) == 0 {
+		reason, invariantErr := completionInvariantFailure(ctx, tx, run)
+		if invariantErr != nil {
+			return invariantErr
+		}
+		if reason != "" {
+			if modelStageFromInput(step.InputJSON) == "completion_recovery" {
+				taskStatus, taskErrorCode = core.StatusBlocked, reason
+				if reason == "WEB_EVIDENCE_MISSING" {
+					taskSummary = "任务要求联网检索，但当前 Run 没有成功的互联网检索收据，不能标记为完成。"
+				} else {
+					taskSummary = "任务要求生成文档交付物，但当前 Run 没有成功写入任何工作区文件，不能标记为完成。"
+				}
+			} else {
+				history, historyErr := s.collectContinuationHistory(ctx, tx, run)
+				if historyErr != nil {
+					return historyErr
+				}
+				nextStepID, queueErr := insertQueuedModelStep(ctx, tx, run, map[string]any{
+					"history": history, "stage": "completion_recovery",
+					"source_step_id": step.ID, "completion_recovery_reason": reason,
+				}, now)
+				if queueErr != nil {
+					return queueErr
+				}
+				planRevisionID, planItemID := activeExecutionPlanBinding(ctx, tx, run.RunID)
+				if _, err := tx.ExecContext(ctx, `UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE id = ?`, planRevisionID, planItemID, nextStepID); err != nil {
+					return err
+				}
+				if err := s.appendEvent(ctx, q, eventInput{
+					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+					EventType: "completion.validation_failed", ActorType: "validator", ActorID: "runtime",
+					CorrelationID: correlationID, Visibility: run.Visibility,
+					Payload: map[string]any{"source_step_id": step.ID, "recovery_step_id": nextStepID, "reason": reason},
+				}); err != nil {
+					return err
+				}
+				taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
+			}
+		}
+	}
 	if err := s.syncRunPlanState(ctx, tx, q, run, taskStatus, taskSummary, now, correlationID); err != nil {
 		return err
 	}
@@ -6977,6 +7285,42 @@ func (s *Store) createToolRecoveryHumanAction(ctx context.Context, tx *sql.Tx, q
 		CorrelationID: correlationID, Visibility: run.Visibility,
 		Payload: map[string]any{"human_action_id": actionID, "kind": core.HumanActionInputRequest, "status": core.HumanActionWaitingUser, "plan_revision_id": planRevisionID, "run_plan_item_id": planItemID, "reason": reason},
 	})
+}
+
+func completionInvariantFailure(ctx context.Context, tx *sql.Tx, run core.RunContext) (string, error) {
+	goal := strings.ToLower(strings.TrimSpace(run.Goal))
+	var successfulSearches, failedSearches int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)
+		FROM tool_calls WHERE run_id = ? AND tool_name = ?`, run.RunID, core.ToolWebSearch,
+	).Scan(&successfulSearches, &failedSearches); err != nil {
+		return "", err
+	}
+	requiresWeb := strings.Contains(goal, "检索") || strings.Contains(goal, "调研") ||
+		strings.Contains(goal, "最新") || strings.Contains(goal, "互联网") ||
+		strings.Contains(goal, "research") || strings.Contains(goal, "search")
+	if requiresWeb && successfulSearches == 0 && failedSearches > 0 {
+		return "WEB_EVIDENCE_MISSING", nil
+	}
+	requiresDocument := strings.Contains(goal, "md文档") || strings.Contains(goal, "markdown") ||
+		strings.Contains(goal, "形成文档") || strings.Contains(goal, "生成文档") ||
+		strings.Contains(goal, "写入工作区")
+	if requiresDocument {
+		var successfulWrites int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tool_calls
+			WHERE run_id = ? AND tool_name = ? AND status = 'succeeded'`,
+			run.RunID, core.ToolWorkspaceWriteFile,
+		).Scan(&successfulWrites); err != nil {
+			return "", err
+		}
+		if successfulWrites == 0 {
+			return "DELIVERABLE_MISSING", nil
+		}
+	}
+	return "", nil
 }
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
@@ -7848,6 +8192,7 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 	}
 	items := make([]semanticItem, 0, len(rawItems))
 	runningCount := 0
+	completedCount := 0
 	for _, raw := range rawItems {
 		value, ok := raw.(map[string]any)
 		if !ok {
@@ -7860,6 +8205,8 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 		status = strings.TrimSpace(status)
 		if status == "in_progress" {
 			runningCount++
+		} else if status == "completed" {
+			completedCount++
 		}
 		if title == "" || description == "" || (status != "pending" && status != "in_progress" && status != "completed") || len([]rune(title)) > 160 || len([]rune(description)) > 500 {
 			return core.StatusBlocked, "RUN_PLAN_INVALID", nil
@@ -7875,13 +8222,31 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 	if runningCount > 1 {
 		return core.StatusBlocked, "RUN_PLAN_INVALID", nil
 	}
+	stage := modelStageFromInput(modelStep.InputJSON)
+	if stage == "plan" && (runningCount != 1 || completedCount != 0) {
+		return core.StatusBlocked, "RUN_PLAN_PREMATURE_COMPLETION", nil
+	}
 	var previousID string
 	var previousRevision int64
 	err := tx.QueryRowContext(ctx, `SELECT id, revision FROM run_plan_revisions WHERE run_id = ? AND status = 'active' ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&previousID, &previousRevision)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", "", err
 	}
-	stage := modelStageFromInput(modelStep.InputJSON)
+	supersedesRevisionID := previousID
+	if errors.Is(err, sql.ErrNoRows) {
+		// A completed/blocked historical plan is no longer active, but its
+		// revision number still belongs to this Run. Starting again at revision
+		// 1 violates the unique (run_id, revision) contract and leaves the model
+		// step running until lease recovery. Allocate from the latest durable
+		// revision while keeping same-plan updates limited to the active plan.
+		latestErr := tx.QueryRowContext(ctx, `
+			SELECT id, revision FROM run_plan_revisions
+			WHERE run_id = ? ORDER BY revision DESC LIMIT 1`,
+			run.RunID).Scan(&supersedesRevisionID, &previousRevision)
+		if latestErr != nil && !errors.Is(latestErr, sql.ErrNoRows) {
+			return "", "", latestErr
+		}
+	}
 	samePlan := previousID != ""
 	existingTitles := make([]string, 0, len(items))
 	existingDescriptions := make([]string, 0, len(items))
@@ -7959,28 +8324,78 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 	if samePlan {
 		firstItemID := ""
 		changed := false
+		currentItemIDs := make([]string, len(items))
+		currentStatuses := make([]string, len(items))
 		for index, item := range items {
 			dbStatus := map[string]string{"pending": core.RunPlanItemPending, "in_progress": core.RunPlanItemRunning, "completed": core.RunPlanItemCompleted}[item.Status]
-			var itemID string
-			var currentStatus string
-			if err := tx.QueryRowContext(ctx, `SELECT id, status FROM run_plan_items WHERE plan_revision_id = ? AND position = ?`, previousID, index+1).Scan(&itemID, &currentStatus); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT id, status FROM run_plan_items WHERE plan_revision_id = ? AND position = ?`, previousID, index+1).Scan(&currentItemIDs[index], &currentStatuses[index]); err != nil {
 				return "", "", err
 			}
-			if currentStatus == core.RunPlanItemCompleted && dbStatus != core.RunPlanItemCompleted {
-				return core.StatusBlocked, "RUN_PLAN_STATUS_REGRESSION", nil
+			if currentStatuses[index] == core.RunPlanItemCompleted && dbStatus != core.RunPlanItemCompleted {
+				recoveryStepID, retryCount, queued, retryErr := s.queueModelInteractionRetry(ctx, tx, modelStep, run, "RUN_PLAN_STATUS_REGRESSION", now)
+				if retryErr != nil {
+					return "", "", retryErr
+				}
+				if !queued {
+					if err := s.appendEvent(ctx, q, eventInput{
+						OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+						EventType: "plan.status_regression_exhausted", ActorType: "system", ActorID: modelStep.OwnerID,
+						CorrelationID: correlationID, Visibility: run.Visibility,
+						Payload: map[string]any{"plan_revision_id": previousID, "position": index + 1, "retry_count": retryCount, "max_retries": core.DefaultModelRetryLimit},
+					}); err != nil {
+						return "", "", err
+					}
+					return core.StatusBlocked, "RUN_PLAN_STATUS_REGRESSION", nil
+				}
+				var activeItemID string
+				_ = tx.QueryRowContext(ctx, `
+					SELECT id FROM run_plan_items
+					WHERE plan_revision_id = ? AND status IN ('running', 'blocked', 'pending')
+					ORDER BY position LIMIT 1`, previousID).Scan(&activeItemID)
+				if _, err := tx.ExecContext(ctx, `UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE id = ?`, previousID, activeItemID, recoveryStepID); err != nil {
+					return "", "", err
+				}
+				if err := s.appendEvent(ctx, q, eventInput{
+					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+					EventType: "plan.status_regression_ignored", ActorType: "system", ActorID: modelStep.OwnerID,
+					CorrelationID: correlationID, Visibility: run.Visibility,
+					Payload: map[string]any{
+						"plan_revision_id": previousID, "position": index + 1,
+						"preserved_status": currentStatuses[index], "submitted_status": dbStatus,
+						"recovery_step_id": recoveryStepID, "retry_count": retryCount, "max_retries": core.DefaultModelRetryLimit,
+					},
+				}); err != nil {
+					return "", "", err
+				}
+				if err := s.appendEvent(ctx, q, eventInput{
+					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+					EventType: "model.retry_queued", ActorType: "system", ActorID: modelStep.OwnerID,
+					CorrelationID: correlationID, Visibility: run.Visibility,
+					Payload: map[string]any{
+						"step_id": recoveryStepID, "source_step_id": modelStep.ID,
+						"retry_count": retryCount, "max_retries": core.DefaultModelRetryLimit,
+						"error_code": "RUN_PLAN_STATUS_REGRESSION",
+					},
+				}); err != nil {
+					return "", "", err
+				}
+				return core.StatusRunning, "", nil
 			}
-			if currentStatus != dbStatus {
+			if currentStatuses[index] != dbStatus {
 				changed = true
 			}
 			if firstItemID == "" && dbStatus == core.RunPlanItemRunning {
-				firstItemID = itemID
+				firstItemID = currentItemIDs[index]
 			}
+		}
+		for index, item := range items {
+			dbStatus := map[string]string{"pending": core.RunPlanItemPending, "in_progress": core.RunPlanItemRunning, "completed": core.RunPlanItemCompleted}[item.Status]
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE run_plan_items SET description = ?, status = ?,
 					started_at = CASE WHEN ? = 'running' AND started_at = '' THEN ? ELSE started_at END,
 					completed_at = CASE WHEN ? = 'completed' AND completed_at = '' THEN ? WHEN ? <> 'completed' THEN '' ELSE completed_at END,
 					updated_at = ? WHERE id = ?`,
-				item.Description, dbStatus, dbStatus, now, dbStatus, now, dbStatus, now, itemID); err != nil {
+				item.Description, dbStatus, dbStatus, now, dbStatus, now, dbStatus, now, currentItemIDs[index]); err != nil {
 				return "", "", err
 			}
 		}
@@ -8059,7 +8474,7 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 			goal_summary, status, supersedes_revision_id, created_by, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
 		revisionID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID,
-		previousRevision+1, trigger, truncateText(run.Goal, 1000), previousID, modelStep.OwnerID, now,
+		previousRevision+1, trigger, truncateText(run.Goal, 1000), supersedesRevisionID, modelStep.OwnerID, now,
 	); err != nil {
 		return "", "", err
 	}
@@ -8583,10 +8998,19 @@ func deriveRunStatus(ctx context.Context, tx *sql.Tx, runID string) (string, str
 		       COALESCE(SUM(CASE WHEN status = 'waiting_approval' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN status = 'blocked' OR (status = 'rejected' AND error_code <> 'PLAN_SUPERSEDED') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN status = 'failed' AND NOT EXISTS (
-		           SELECT 1 FROM run_events recovery
+		           SELECT 1
+		           FROM run_events recovery
+		           LEFT JOIN tool_calls recovered_call
+		             ON recovered_call.id = json_extract(recovery.payload_json, '$.tool_call_id')
 		           WHERE recovery.run_id = tool_calls.run_id
 		             AND recovery.event_type = 'tool.recovery_queued'
-		             AND json_extract(recovery.payload_json, '$.tool_call_id') = tool_calls.id
+		             AND (
+		                 json_extract(recovery.payload_json, '$.tool_call_id') = tool_calls.id
+		                 OR (
+		                     tool_calls.tool_batch_id <> ''
+		                     AND recovered_call.tool_batch_id = tool_calls.tool_batch_id
+		                 )
+		             )
 		       ) THEN 1 ELSE 0 END), 0)
 		FROM tool_calls WHERE run_id = ?`, runID,
 	).Scan(&queued, &waiting, &blocked, &failed); err != nil {

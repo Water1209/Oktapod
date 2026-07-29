@@ -16,7 +16,7 @@ import { useRunEvents } from '../runs/use-run-events'
 import { isCompactCommand, parseSkillInvocation, skillCommandName } from './skill-command'
 
 const statusLabels: Record<string, string> = {
-  queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '需要处理', succeeded: '已完成', failed: '失败', canceled: '已取消',
+  queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '执行受阻', succeeded: '已完成', failed: '失败', canceled: '已取消',
 }
 
 type ComposerDraft =
@@ -752,10 +752,14 @@ function skillDescription(skill: Capability) {
 function TaskComposer({ projectId, conversationId, activeTask, projectDefaultModel, agents, skills, models, providers, providerDefaultModel, initialValue, onComposerDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; projectDefaultModel: string; agents: Awaited<ReturnType<typeof api.agents>>['items']; teams: TeamDefinition[]; skills: Capability[]; models: { id: string }[]; providers: ProviderInstance[]; providerDefaultModel: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
   const bootstrap = useBootstrap()
   const storageKey = `oktapod.composer.${bootstrap.user.id}.${projectId}.${conversationId ?? 'new'}`
+  const permissionStorageKey = `oktapod.permission-mode.${bootstrap.user.id}.${projectId}`
   const treePrefillKey = conversationId ? `oktapod.composer.prefill.${conversationId}` : ''
   const [goal, setGoal] = useState(() => initialValue ?? (treePrefillKey ? window.sessionStorage.getItem(treePrefillKey) : undefined) ?? window.localStorage.getItem(storageKey) ?? '')
   const [mode, setMode] = useState<TaskMode>(initialValue ? 'single_agent' : 'auto')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+    const saved = window.localStorage.getItem(permissionStorageKey)
+    return saved === 'ask' || saved === 'auto_review' || saved === 'full_access' ? saved : 'ask'
+  })
   const [fullAccessOpen, setFullAccessOpen] = useState(false)
   const [scene, setScene] = useState<Scene>('work')
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -862,6 +866,10 @@ function TaskComposer({ projectId, conversationId, activeTask, projectDefaultMod
     ['default', '默认 Provider'],
     ...providers.filter((provider) => provider.status === 'active').map((provider) => [provider.provider_id, provider.display_name] as [string, string]),
   ]
+  const selectPermissionMode = (value: PermissionMode) => {
+    setPermissionMode(value)
+    window.localStorage.setItem(permissionStorageKey, value)
+  }
 
   return <div className="conversation-composer-wrap">
     {skillCommandError || submit.error || installCapability.error || abort.error ? <div className="composer-error" role="alert">{skillCommandError || submit.error?.message || installCapability.error?.message || abort.error?.message}</div> : null}
@@ -884,15 +892,15 @@ function TaskComposer({ projectId, conversationId, activeTask, projectDefaultMod
         <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={setProviderId} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} /> : null}</div>
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"], ["agent_team", "Agent Team"]]} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } setPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "Full Access · 30 min"]]} /><InlineSelect value={model || 'default'} onValueChange={(value) => setModel(value === 'default' ? '' : value)} items={modelItems} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景与执行器" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}<button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button></div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"], ["agent_team", "Agent Team"]]} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "Full Access"]]} /><InlineSelect value={model || 'default'} onValueChange={(value) => setModel(value === 'default' ? '' : value)} items={modelItems} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景与执行器" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}<button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button></div></div>
     </form>
     <Dialog.Root open={fullAccessOpen} onOpenChange={setFullAccessOpen}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content permission-mode-dialog" aria-describedby="full-access-description">
-          <Dialog.Title>启用 Full Access 30 分钟？</Dialog.Title>
-          <Dialog.Description id="full-access-description">它只减少当前 Run 的逐次命令审批，不会绕过路径、网络、命令黑名单或场景能力边界。破坏性和开放世界 MCP 始终需要人工确认。</Dialog.Description>
-          <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" onClick={() => { setPermissionMode('full_access'); setFullAccessOpen(false) }}>确认启用</button></div>
+          <Dialog.Title>启用 Full Access？</Dialog.Title>
+          <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你在发送框中手动切换权限模式。它不会绕过路径、网络、命令黑名单或场景能力边界；破坏性和开放世界 MCP 仍需人工确认。</Dialog.Description>
+          <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" onClick={() => { selectPermissionMode('full_access'); setFullAccessOpen(false) }}>确认启用</button></div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

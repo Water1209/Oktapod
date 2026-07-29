@@ -187,7 +187,7 @@ V1.0 是功能驱动（缺什么补什么）。架构复审后修正为**内核�
 |---|---|
 | steering 事务化重规划（取消未完步骤+原子 replan+checkpoint 后生效） | Pi 没有，独有强语义 |
 | 持久化 step 循环（durable/可恢复/可审计） | Pi 内存循环崩溃即丢 |
-| 七层审批（L0-L3/ApprovalScope/参数 sha256 冻结/会话规则/24h TTL/Full Access 30min/幂等回放） | 比 Pi 单层 Trust 细得多 |
+| 七层审批（L0-L3/ApprovalScope/参数 sha256 冻结/会话规则/24h TTL/手动 Full Access/幂等回放） | 比 Pi 单层 Trust 细得多 |
 | Run 级模型快照（创建时冻结） | 比 Pi 会话级切换更可审计，符合 F-MDL-012 |
 | OS keyring 凭据 | 比 Pi 可插拔 CredentialStore 更安全；仅抽象接口便于测试 |
 | 静态拒绝 shell 解释器与网络程序 | 独有 |

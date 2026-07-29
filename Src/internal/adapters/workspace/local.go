@@ -1,15 +1,18 @@
 package workspace
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -65,6 +68,10 @@ func (l *Local) Execute(ctx context.Context, projectID string, call core.ToolCal
 		return l.writeFile(projectRoot, call, planned)
 	case core.ToolWorkspaceRunCommand:
 		return l.runCommand(ctx, projectRoot, call, planned)
+	case core.ToolWorkspaceShell:
+		return l.executeShell(ctx, projectRoot, call, planned)
+	case core.ToolWorkspaceExtractArchive:
+		return l.extractArchive(projectRoot, call, planned)
 	case core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolGitConflicts,
 		core.ToolGitBranch, core.ToolGitCommit, core.ToolGitCommitPaths,
 		core.ToolGitRestore, core.ToolGitRestoreHunk:
@@ -168,6 +175,194 @@ func (l *Local) writeFile(projectRoot string, call core.ToolCall, planned core.P
 	return result
 }
 
+func (l *Local) extractArchive(projectRoot string, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
+	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ExitCode: -1, InputHash: planned.InputHash, Idempotent: false}
+	archivePath, _ := call.Arguments["archive_path"].(string)
+	destDir, _ := call.Arguments["dest_dir"].(string)
+	archivePath = strings.TrimSpace(archivePath)
+	destDir = strings.TrimSpace(destDir)
+	if archivePath == "" || destDir == "" {
+		result.ErrorCode = "TOOL_INVALID_ARGUMENT"
+		result.Output = map[string]any{"reason": "archive_path and dest_dir are required"}
+		return result
+	}
+	fullArchivePath, err := secureJoin(projectRoot, archivePath)
+	if err != nil {
+		result.ErrorCode = "WORKSPACE_PATH_INVALID"
+		result.Output = map[string]any{"reason": err.Error()}
+		return result
+	}
+	if !strings.HasSuffix(strings.ToLower(fullArchivePath), ".zip") {
+		result.ErrorCode = "TOOL_INVALID_ARGUMENT"
+		result.Output = map[string]any{"reason": "only .zip archives are supported"}
+		return result
+	}
+	fullDestPath, err := secureJoin(projectRoot, destDir)
+	if err != nil {
+		result.ErrorCode = "WORKSPACE_PATH_INVALID"
+		result.Output = map[string]any{"reason": err.Error()}
+		return result
+	}
+	reader, err := zip.OpenReader(fullArchivePath)
+	if err != nil {
+		result.ErrorCode = "ARCHIVE_READ_FAILED"
+		result.Output = map[string]any{"reason": "cannot open archive: " + err.Error()}
+		return result
+	}
+	defer reader.Close()
+	if err := os.MkdirAll(fullDestPath, 0o755); err != nil {
+		result.ErrorCode = "WORKSPACE_SCOPE_INVALID"
+		result.Output = map[string]any{"reason": "cannot create destination directory: " + err.Error()}
+		return result
+	}
+	const maxFiles = 5000
+	const maxExpanded = 200 << 20 // 200 MiB
+	var expanded uint64
+	extracted := 0
+	for i, file := range reader.File {
+		if i >= maxFiles {
+			result.ErrorCode = "ARCHIVE_TOO_LARGE"
+			result.Output = map[string]any{"reason": fmt.Sprintf("archive exceeds %d file limit", maxFiles)}
+			return result
+		}
+		if file.FileInfo().IsDir() {
+			dirPath, err := secureJoin(fullDestPath, file.Name)
+			if err != nil {
+				continue
+			}
+			_ = os.MkdirAll(dirPath, 0o755)
+			continue
+		}
+		if !file.Mode().IsRegular() {
+			continue
+		}
+		if uint64(file.UncompressedSize64) > maxExpanded-expanded {
+			result.ErrorCode = "ARCHIVE_TOO_LARGE"
+			result.Output = map[string]any{"reason": "archive exceeds 200 MiB expanded limit"}
+			return result
+		}
+		filePath, err := secureJoin(fullDestPath, file.Name)
+		if err != nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			continue
+		}
+		src, err := file.Open()
+		if err != nil {
+			continue
+		}
+		dst, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			_ = src.Close()
+			continue
+		}
+		n, _ := io.Copy(dst, io.LimitReader(src, maxExpanded))
+		expanded += uint64(n)
+		_ = dst.Close()
+		_ = src.Close()
+		extracted++
+	}
+	result.Status = core.StatusSucceeded
+	result.ExitCode = 0
+	result.Output = map[string]any{"extracted_files": extracted, "dest_dir": destDir}
+	return result
+}
+
+func (l *Local) executeShell(ctx context.Context, projectRoot string, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
+	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ExitCode: -1, InputHash: planned.InputHash, Idempotent: false}
+	command, _ := call.Arguments["command"].(string)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		result.ErrorCode = "TOOL_INVALID_ARGUMENT"
+		result.Output = map[string]any{"reason": "command is required"}
+		return result
+	}
+	if reason := validateShellCommand(command); reason != "" {
+		result.ErrorCode = "SHELL_COMMAND_DENIED"
+		result.Output = map[string]any{"reason": reason}
+		return result
+	}
+	timeout := 5 * time.Minute
+	if v, ok := call.Arguments["timeout_seconds"].(float64); ok && v > 0 {
+		timeout = time.Duration(v) * time.Second
+		if timeout > 5*time.Minute {
+			timeout = 5 * time.Minute
+		}
+	}
+	shellCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(shellCtx, "cmd", "/c", command)
+	} else {
+		cmd = exec.CommandContext(shellCtx, "bash", "-c", command)
+	}
+	configureCommand(cmd)
+	cmd.Cancel = func() error { return terminateProcessTree(cmd) }
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Dir = projectRoot
+	environment, err := safeEnvironment(projectRoot)
+	if err != nil {
+		result.ErrorCode = "TOOL_ENVIRONMENT_FAILED"
+		result.Output = map[string]any{"reason": err.Error()}
+		return result
+	}
+	cmd.Env = environment
+	stdout := &boundedBuffer{limit: maxCommandOutput}
+	stderr := &boundedBuffer{limit: maxCommandOutput}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err = cmd.Run()
+	result.Output = map[string]any{
+		"command":         command,
+		"stdout":          stdout.String(),
+		"stderr":          stderr.String(),
+		"stdout_truncated": stdout.truncated,
+		"stderr_truncated": stderr.truncated,
+	}
+	if cmd.ProcessState != nil {
+		result.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if shellCtx.Err() == context.DeadlineExceeded {
+		result.ErrorCode = "SHELL_TIMEOUT"
+		result.Output = map[string]any{"reason": "shell command exceeded the timeout"}
+		return result
+	}
+	if err != nil {
+		result.Status = core.StatusFailed
+		return result
+	}
+	result.Status = core.StatusSucceeded
+	result.ExitCode = 0
+	return result
+}
+
+// validateShellCommand rejects dangerous shell commands. The blacklist is
+// defense-in-depth, not a security boundary; scene policy and human approval
+// remain the actual control plane.
+func validateShellCommand(command string) string {
+	lower := strings.ToLower(command)
+	dangerousPatterns := []string{
+		"rm -rf /", "rm -rf ~", "rm -rf *",
+		"rm -rf $home", "rm -rf $pwd",
+		"mkfs.", "dd if=/dev/zero", "dd if=/dev/urandom",
+		" > /dev/sd", " > /dev/nvme", " > /dev/hd",
+		":(){:|:&};:",
+		"chmod -r 777 /", "chown -r ",
+		"mkfs ", "fdisk ", "format ",
+	}
+	for _, p := range dangerousPatterns {
+		if strings.Contains(lower, p) {
+			return "dangerous pattern detected: " + p
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(lower), "rm -rf ") && (strings.Contains(command, "..") || strings.HasSuffix(command, "/")) {
+		return "recursive delete with unsafe path"
+	}
+	return ""
+}
+
 func (l *Local) runCommand(ctx context.Context, projectRoot string, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
 	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ExitCode: -1, InputHash: planned.InputHash, Idempotent: false}
 	program := call.Arguments["program"].(string)
@@ -230,6 +425,20 @@ func (l *Local) runCommand(ctx context.Context, projectRoot string, call core.To
 	result.ErrorCode = "COMMAND_START_FAILED"
 	result.Output["reason"] = err.Error()
 	return result
+}
+
+// secureJoin resolves a project-relative path and rejects traversal attempts
+// without creating directories. Used by extractArchive to validate both the
+// archive source and the extraction destination.
+func secureJoin(root, relative string) (string, error) {
+	clean := filepath.Clean(relative)
+	if clean == "." {
+		return root, nil
+	}
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes the project workspace")
+	}
+	return filepath.Join(root, clean), nil
 }
 
 func secureParent(root, relative string) (string, error) {
@@ -334,3 +543,57 @@ func (b *boundedBuffer) String() string {
 }
 
 var _ io.Writer = (*boundedBuffer)(nil)
+
+// ExecuteChatTool implements application.ChatToolExecutor. It runs a single
+// read-only tool call and returns the result as a plain text string suitable
+// for feeding back into a model conversation. Only read-only tools are allowed;
+// write or command tools are rejected.
+func (l *Local) ExecuteChatTool(ctx context.Context, projectID string, call core.ToolCall) (string, error) {
+	switch call.Name {
+	case core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles,
+		core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
+		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolGitConflicts:
+		// allowed read-only tools
+	default:
+		return "", fmt.Errorf("chat mode only allows read-only workspace tools, got: %s", call.Name)
+	}
+	execution := l.Execute(ctx, projectID, call)
+	if execution.Status != core.StatusSucceeded {
+		reason, _ := execution.Output["reason"].(string)
+		if reason == "" {
+			reason = execution.ErrorCode
+		}
+		return "", fmt.Errorf("%s: %s", execution.ErrorCode, reason)
+	}
+	return toolExecutionText(execution), nil
+}
+
+// toolExecutionText extracts a human/model-readable text summary from a
+// ToolExecution output map.
+func toolExecutionText(execution core.ToolExecution) string {
+	if execution.Output == nil {
+		return ""
+	}
+	if content, ok := execution.Output["content"].(string); ok && content != "" {
+		return content
+	}
+	// list_files / find_files return "entries"
+	if entries, ok := execution.Output["entries"].([]any); ok {
+		var sb strings.Builder
+		for _, entry := range entries {
+			if m, ok := entry.(map[string]any); ok {
+				if name, _ := m["name"].(string); name != "" {
+					sb.WriteString(name)
+					sb.WriteByte('\n')
+				}
+			}
+		}
+		return sb.String()
+	}
+	// Fallback: JSON-encode the output
+	data, err := json.Marshal(execution.Output)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}

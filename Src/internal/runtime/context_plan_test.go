@@ -137,17 +137,15 @@ func TestScenePolicyFiltersWorkspaceCommandBeforeModelPlanning(t *testing.T) {
 	}
 }
 
-func TestFullAccessIsExplicitAndTimeBound(t *testing.T) {
-	active := time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339Nano)
-	if !core.FullAccessActive(`{"permission_mode":"full_access","full_access_expires_at":"`+active+`"}`, time.Now().UTC()) {
-		t.Fatal("active full access should be honored")
+func TestFullAccessIsExplicitAndManuallyControlled(t *testing.T) {
+	if !core.FullAccessActive(`{"permission_mode":"full_access"}`, time.Now().UTC()) {
+		t.Fatal("explicit full access should be honored without a timer")
 	}
-	expired := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
-	if core.FullAccessActive(`{"permission_mode":"full_access","full_access_expires_at":"`+expired+`"}`, time.Now().UTC()) {
-		t.Fatal("expired full access must not be honored")
+	if core.FullAccessActive(`{"permission_mode":"ask"}`, time.Now().UTC()) {
+		t.Fatal("ask mode must not enable full access")
 	}
-	if core.FullAccessActive(`{"permission_mode":"full_access"}`, time.Now().UTC()) {
-		t.Fatal("missing expiry must fail closed")
+	if core.FullAccessActive(`{}`, time.Now().UTC()) {
+		t.Fatal("missing permission mode must fail closed")
 	}
 }
 

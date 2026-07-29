@@ -40,6 +40,8 @@ type Service struct {
 	localPrincipal   LocalPrincipalResolver
 	providerSecrets  ProviderSecretStore
 	providerCatalogs ProviderCatalogFactory
+	chatToolExec     ChatToolExecutor
+	workspaceRoot    string
 }
 
 const (
@@ -60,6 +62,15 @@ func (s *Service) WithAdvisorModel(model AdvisorModel) *Service {
 // usable when no provider adapter is configured.
 func (s *Service) WithModelCatalog(catalog ModelCatalog) *Service {
 	s.catalog = catalog
+	return s
+}
+
+// WithChatToolExecutor wires a read-only workspace executor for chat-mode tool
+// use. When set, chat turns can invoke read-only workspace tools (list, read,
+// find, grep) to answer questions without creating a full Task/Run.
+func (s *Service) WithChatToolExecutor(executor ChatToolExecutor, workspaceRoot string) *Service {
+	s.chatToolExec = executor
+	s.workspaceRoot = strings.TrimSpace(workspaceRoot)
 	return s
 }
 
@@ -518,12 +529,6 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			"network":           false,
 		},
 	}
-	if input.PermissionMode == core.PermissionModeFullAccess {
-		// Full access is an explicit, bounded Run-level choice. It broadens
-		// governed ToolBroker prompts only until this expiry; deterministic
-		// path, executable and network hard-deny rules remain in force.
-		snapshot["full_access_expires_at"] = time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339Nano)
-	}
 	if input.MaxModelCalls > 0 {
 		snapshot["max_model_calls"] = input.MaxModelCalls
 	}
@@ -822,6 +827,59 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		}{projectID, input})})
 	}
 
+	if mode == core.ModeAuto && conversationID != "" && isTaskRecoveryIntent(content) {
+		tasks, listErr := s.repository.ListTasks(ctx, s.ScopeFor(ctx), projectID, 100)
+		if listErr != nil {
+			return core.ProjectTurnResult{}, listErr
+		}
+		for _, candidate := range tasks {
+			if candidate.ConversationID != conversationID {
+				continue
+			}
+			// Only the newest task in this conversation defines the recovery
+			// context. Never revive an older failure behind a newer task.
+			if candidate.Status != core.StatusFailed && candidate.Status != core.StatusBlocked &&
+				candidate.Status != core.StatusQueued && candidate.Status != core.StatusRunning {
+				break
+			}
+			if onRoute != nil {
+				if routeErr := onRoute(TurnRouteTask); routeErr != nil {
+					return core.ProjectTurnResult{}, routeErr
+				}
+			}
+			updated := candidate
+			if candidate.Status == core.StatusFailed || candidate.Status == core.StatusBlocked {
+				var retryErr error
+				updated, retryErr = s.ControlTask(ctx, candidate.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, correlationID, idempotencyKey)
+				if retryErr != nil {
+					return core.ProjectTurnResult{}, retryErr
+				}
+			}
+			assistant := "正在继续当前任务；原执行计划、Skill 和已完成进度保持不变。"
+			if onDelta != nil {
+				if deltaErr := onDelta(assistant); deltaErr != nil {
+					return core.ProjectTurnResult{}, deltaErr
+				}
+			}
+			idempotencyKey, err = normalizeIdempotencyKey(idempotencyKey)
+			if err != nil {
+				return core.ProjectTurnResult{}, err
+			}
+			turnInput := inputWithTurnDefaults(input, content, conversationID, visibility)
+			turnInput.TaskID = updated.ID
+			result, appendErr := s.repository.AppendChatTurn(ctx, s.ScopeFor(ctx), projectID, turnInput, assistant, nil, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(struct {
+				ProjectID string
+				Input     core.ProjectTurnInput
+			}{projectID, turnInput})})
+			if appendErr != nil {
+				return core.ProjectTurnResult{}, appendErr
+			}
+			result.Route = TurnRouteTask
+			result.Task = &updated
+			return result, nil
+		}
+	}
+
 	var classification core.ModelResult
 	route := TurnRouteTask
 	classificationReason := "user_selected_task"
@@ -832,11 +890,16 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		var classifyErr error
 		classification, classifyErr = s.classifyProjectTurn(ctx, project, content, input.Model, input.FallbackModel, input.ProviderID)
 		if classifyErr != nil {
-			return core.ProjectTurnResult{}, classifyErr
-		}
-		route, classificationReason = parseTurnRoute(classification.Content)
-		if route == "" {
-			return core.ProjectTurnResult{}, &ModelTurnUnavailableError{Err: errors.New("classifier returned neither chat nor task")}
+			// Classification is a best-effort router. When the model call fails
+			// (rate limit, timeout, empty response), fall back to chat instead of
+			// blocking the user's turn with a hard error. Chat mode streams the
+			// answer directly and is the safer default for arbitrary input.
+			route, classificationReason = TurnRouteChat, "classify_fallback_chat"
+		} else {
+			route, classificationReason = parseTurnRoute(classification.Content)
+			if route == "" {
+				route, classificationReason = TurnRouteChat, "classify_unparsable_chat"
+			}
 		}
 	}
 	if onRoute != nil {
@@ -939,6 +1002,29 @@ func inputWithTurnDefaults(input core.ProjectTurnInput, content, conversationID,
 	return input
 }
 
+func isTaskRecoveryIntent(content string) bool {
+	if len([]rune(content)) > 64 {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(content))
+	replacer := strings.NewReplacer(
+		" ", "", "\t", "", "\r", "", "\n", "",
+		"，", "", ",", "", "。", "", ".", "", "；", "", ";", "",
+		"：", "", ":", "", "！", "", "!", "",
+	)
+	normalized = replacer.Replace(normalized)
+	switch normalized {
+	case "继续", "继续任务", "继续执行", "继续原任务",
+		"重试", "重试任务", "重新执行", "重新执行任务",
+		"重新规划任务继续", "重新规划并继续", "重新规划任务并继续",
+		"重新归属任务继续", "从失败处继续", "从上次停止的位置继续",
+		"resume", "resumetask", "retry", "retrytask", "continue", "continuetask":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) completeProjectTurn(ctx context.Context, systemPrompt, userPrompt string, maxOutputTokens int, model, fallback, providerID string) (core.ModelResult, error) {
 	if s.advisor == nil {
 		return core.ModelResult{}, &ModelTurnUnavailableError{Err: errors.New("no model provider is configured")}
@@ -960,7 +1046,7 @@ func (s *Service) completeProjectTurn(ctx context.Context, systemPrompt, userPro
 
 func (s *Service) classifyProjectTurn(ctx context.Context, project core.Project, content, model, fallback, providerID string) (core.ModelResult, error) {
 	system := "You route a user's project message. Return JSON only: {\"route\":\"chat\"} or {\"route\":\"task\"}. Use task when the user asks to change files, run commands, research, create artifacts, or perform multiple steps. Use chat for explanation, brainstorming, or direct answers."
-	return s.completeProjectTurn(ctx, system, "Project scene: "+project.Scene+"\nUser message:\n"+content, 120, model, fallback, providerID)
+	return s.completeProjectTurn(ctx, system, "Project scene: "+project.Scene+"\nUser message:\n"+content, 1024, model, fallback, providerID)
 }
 
 func parseTurnRoute(content string) (string, string) {
@@ -1012,6 +1098,54 @@ func (s *Service) answerProjectTurnStream(ctx context.Context, project core.Proj
 	if err != nil {
 		return core.ModelResult{}, err
 	}
+	// If the advisor supports chat-mode tool use and a workspace executor is
+	// configured, allow the model to call read-only tools to investigate before
+	// producing its final streamed answer.
+	if chatModel, ok := s.advisor.(ChatToolStreamModel); ok && s.chatToolExec != nil && project.ID != "" {
+		return s.answerWithChatTools(ctx, chatModel, system, messages, project, model, fallback, providerID, onDelta)
+	}
+	return s.answerProjectTurnStreamDirect(ctx, system, messages, model, fallback, providerID, onDelta)
+}
+
+// answerWithChatTools runs a bounded loop: the model may call read-only tools
+// to investigate the workspace, and each tool result is fed back as an
+// assistant+tool message pair. After at most 3 tool rounds the model must
+// produce a final streamed answer without tools.
+func (s *Service) answerWithChatTools(ctx context.Context, chatModel ChatToolStreamModel, system string, messages []core.ModelMessage, project core.Project, model, fallback, providerID string, onDelta func(string) error) (core.ModelResult, error) {
+	toolDefs := chatReadonlyToolDefinitions()
+	requested := core.ModelRef{ProviderID: providerID, ModelID: model}
+	const maxToolRounds = 3
+	for round := 0; round < maxToolRounds; round++ {
+		result, streamErr := chatModel.StreamMessagesWithTools(ctx, system, messages, 2000, requested, fallback, toolDefs, onDelta)
+		if streamErr != nil {
+			return core.ModelResult{}, &ModelTurnUnavailableError{Err: streamErr}
+		}
+		if len(result.ToolCalls) == 0 {
+			return result, nil
+		}
+		// Execute each tool call and append the results to the conversation.
+		messages = append(messages, core.ModelMessage{Role: core.MessageRoleAssistant, Content: result.ContentBlocks})
+		for _, call := range result.ToolCalls {
+			output, execErr := s.chatToolExec.ExecuteChatTool(ctx, project.ID, call)
+			if execErr != nil {
+				output = "Error: " + execErr.Error()
+			}
+			messages = append(messages, core.ModelMessage{
+				Role:       core.MessageRoleTool,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Content: []core.ContentBlock{{
+					Type:       core.ContentBlockToolResult,
+					ToolResult: &core.ToolResultBlock{ToolCallID: call.ID, ToolName: call.Name, Content: output},
+				}},
+			})
+		}
+	}
+	// Final round: force a streamed answer without tools.
+	return s.answerProjectTurnStreamDirect(ctx, system, messages, model, fallback, providerID, onDelta)
+}
+
+func (s *Service) answerProjectTurnStreamDirect(ctx context.Context, system string, messages []core.ModelMessage, model, fallback, providerID string, onDelta func(string) error) (core.ModelResult, error) {
 	if streamModel, ok := s.advisor.(TypedProviderProjectTurnStreamModel); ok {
 		result, streamErr := streamModel.StreamMessagesWithModelRef(ctx, system, messages, 2000, core.ModelRef{ProviderID: providerID, ModelID: model}, fallback, onDelta)
 		if streamErr != nil {
@@ -1045,12 +1179,45 @@ func (s *Service) answerProjectTurnStream(ctx context.Context, project core.Proj
 	return result, nil
 }
 
+// chatReadonlyToolDefinitions returns the minimal tool schemas available to the
+// chat mode. All are read-only and scoped to the project workspace.
+func chatReadonlyToolDefinitions() []ChatToolDefinition {
+	return []ChatToolDefinition{
+		{Name: core.ToolWorkspaceListFiles, Description: "List files under a project-relative directory.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"path": map[string]any{"type": "string", "maxLength": 500}, "recursive": map[string]any{"type": "boolean"}}}},
+		{Name: core.ToolWorkspaceReadFile, Description: "Read a UTF-8 text file in the project workspace.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"path"}, "properties": map[string]any{"path": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "offset_line": map[string]any{"type": "integer", "minimum": 0}, "limit_lines": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000}}}},
+		{Name: core.ToolWorkspaceFindFiles, Description: "Find project-relative file names using a glob pattern.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"pattern"}, "properties": map[string]any{"pattern": map[string]any{"type": "string", "minLength": 1, "maxLength": 200}, "path": map[string]any{"type": "string", "maxLength": 500}}}},
+		{Name: core.ToolWorkspaceGrep, Description: "Search workspace files for literal text.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"query"}, "properties": map[string]any{"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "path": map[string]any{"type": "string", "maxLength": 500}, "glob": map[string]any{"type": "string", "maxLength": 200}}}},
+	}
+}
+
 func (s *Service) projectTurnAnswerPrompt(ctx context.Context, project core.Project, conversationID, content, model, fallback string) (string, []core.ModelMessage, error) {
 	messages, err := s.conversationTranscriptForPrompt(ctx, conversationID, content, model, fallback)
 	if err != nil {
 		return "", nil, err
 	}
-	system := "You are the assistant inside a private Oktapod project conversation. Answer directly and concisely. Do not claim to have changed files or run commands. If execution is needed, the user should send it as a task. Project scene: " + project.Scene
+	system := `# Identity
+You are an interactive agent inside a private Oktapod project. You help users by:
+- Answering questions about the project, workspace, and system state
+- Exploring files with read-only tools
+- Explaining code and architecture
+- Advising on next steps
+
+# Available read-only tools
+- workspace_list_files: list files in a project directory
+- workspace_read_file: read file contents
+- workspace_find_files: find files by glob pattern
+- workspace_grep: search file contents
+
+Use tools proactively to investigate before answering. Do not ask the user to look up information you can check yourself.
+
+For file modifications, running commands, or multi-step tasks, tell the user to send it as a task and the agent will execute with full tool access.`
+	if s.workspaceRoot != "" {
+		system += "\n\n# Environment\nWorkspace: " + s.workspaceRoot
+	}
+	system += "\nProject: " + project.Name + " (scene: " + project.Scene + ")"
+	if model != "" {
+		system += "\nModel: " + model
+	}
 	return system, messages, nil
 }
 
@@ -1208,6 +1375,14 @@ func (s *Service) ListTasks(ctx context.Context, projectID string) ([]core.Task,
 
 func (s *Service) ListConversations(ctx context.Context, projectID string) ([]core.Conversation, error) {
 	return s.repository.ListConversations(ctx, s.ScopeFor(ctx), projectID, 100)
+}
+
+func (s *Service) DeleteConversation(ctx context.Context, conversationID, correlationID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return &core.ValidationError{Field: "conversation_id", Message: "is required"}
+	}
+	return s.repository.DeleteConversation(ctx, s.ScopeFor(ctx), conversationID, correlationID)
 }
 
 func (s *Service) ListMessages(ctx context.Context, conversationID string, after int64) ([]core.Message, error) {

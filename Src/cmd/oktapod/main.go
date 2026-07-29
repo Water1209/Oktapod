@@ -157,6 +157,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	service.WithChatToolExecutor(workspaceExecutor, config.WorkspaceRoot)
 	webSearchExecutor, err := websearch.New("")
 	if err != nil {
 		return err
@@ -343,6 +344,18 @@ func (a advisorGateway) StreamMessages(ctx context.Context, systemPrompt string,
 
 func (a advisorGateway) StreamMessagesWithModelRef(ctx context.Context, systemPrompt string, messages []core.ModelMessage, maxOutputTokens int, requested core.ModelRef, fallbackModel string, onDelta func(string) error) (core.ModelResult, error) {
 	return a.model.Stream(ctx, okruntime.ModelRequest{SystemPrompt: systemPrompt, Messages: messages, RequestedModel: requested, MaxOutputTokens: maxOutputTokens, Model: requested.ModelID, FallbackModel: fallbackModel}, onDelta)
+}
+
+func (a advisorGateway) StreamMessagesWithTools(ctx context.Context, systemPrompt string, messages []core.ModelMessage, maxOutputTokens int, requested core.ModelRef, fallbackModel string, toolDefinitions []application.ChatToolDefinition, onDelta func(string) error) (core.ModelResult, error) {
+	runtimeDefs := make([]okruntime.ToolDefinition, 0, len(toolDefinitions))
+	for _, def := range toolDefinitions {
+		runtimeDefs = append(runtimeDefs, okruntime.ToolDefinition{Name: def.Name, Description: def.Description, Parameters: def.Parameters})
+	}
+	return a.model.Stream(ctx, okruntime.ModelRequest{
+		SystemPrompt: systemPrompt, Messages: messages, RequestedModel: requested,
+		MaxOutputTokens: maxOutputTokens, Model: requested.ModelID, FallbackModel: fallbackModel,
+		EnableTools: true, ToolDefinitions: runtimeDefs,
+	}, onDelta)
 }
 
 func runBackup(args []string) error {

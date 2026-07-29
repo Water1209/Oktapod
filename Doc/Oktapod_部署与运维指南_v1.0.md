@@ -43,6 +43,7 @@ Provider 更新无需重启：下一次 Chat Turn 或新 Run 读取新配置；�
 - 数据维护、备份和恢复仍是独立高风险操作，不得通过终端页或诊断页绕过现有运维流程。
 - 项目级审批规则由迁移 `000049_project_approval_rules` 保存，默认有效 30 天。只有 Project Owner 可以查看或撤销；规则不会绕过静态拒绝。运维核查可使用 `GET /api/v1/projects/{project_id}/approval-rules`，撤销使用对应 `DELETE`，不得直接修改数据库延长 TTL。
 - 自动审批必须单独配置 `OKTAPOD_REVIEWER_MODEL`。该模型只接收当前计划项、冻结参数、风险和策略理由，不获得工具；未配置、超时、解析失败和高风险结论都会自动转为人工 Human Action。不得将主 Agent 的自由文本当作 Reviewer 决策，也不得通过修改数据库跳过等待状态。
+- `web_search` 默认依次访问 `https://html.duckduckgo.com/html/` 与 `https://www.bing.com/search?format=rss`，并继承 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`。生产网络必须至少允许其中一个 HTTPS 端点；单端点不可用会自动回退，只有全部失败才记录 `WEB_SEARCH_UNAVAILABLE`。不得通过关闭 TLS 校验或放宽结果 URL 校验排障。
 - 迁移 `000050_run_execution_plans`、`000051_human_actions` 和 `000052_approval_rule_signatures` 分别保存 Plan Revision/Item、统一人工动作以及 v2 结构化授权签名；`000053_task_run_status_reconciliation` 会以最新 Run 为真源修复旧版本遗留的 Task 终态漂移，避免已阻塞任务继续接收 Steering。升级前应先备份 SQLite；升级后检查旧待审批已按相同 ID 回填，旧宽泛授权只保留审计而不再命中。
 
 ## 5. 验证

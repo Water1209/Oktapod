@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Activity, ChevronDown, FileUp, Folder, GitCompareArrows, Home, LogOut, Menu, MessageSquare, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, ShieldCheck, SlidersHorizontal, Sparkles, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, GitCompareArrows, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, ShieldAlert, ShieldCheck, SlidersHorizontal, Sparkles, Wrench, X } from 'lucide-react'
 import { api, type Bootstrap } from '../shared/api/client'
 import { assistantExcerpt } from '../shared/assistant-segments'
 import { BootstrapContext } from '../shared/bootstrap-context'
@@ -9,6 +9,7 @@ import { BootstrapContext } from '../shared/bootstrap-context'
 export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && window.localStorage.getItem('oktapod.sidebar.collapsed') === '1')
+  const [deleteTarget, setDeleteTarget] = useState<string>()
   const location = useRouterState({ select: (state) => state.location })
   const queryClient = useQueryClient()
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
@@ -21,6 +22,19 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
   const threadMatch = location.pathname.match(/\/threads\/([^/]+)/)
   const queryConversation = new URLSearchParams(location.search).get('conversation') ?? undefined
   const activeThreadId = threadMatch?.[1] ?? queryConversation ?? conversations.data?.items[0]?.id
+  const deleteConversation = useMutation({
+    mutationFn: (conversationId: string) => api.deleteConversation(conversationId),
+    onSuccess: async (_, conversationId) => {
+      setDeleteTarget(undefined)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['conversations', currentProject?.id] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks', currentProject?.id] }),
+      ])
+      if (conversationId === activeThreadId && currentProject) {
+        window.location.assign(`/projects/${currentProject.id}?conversation=new`)
+      }
+    },
+  })
   const closeMobile = () => setMobileOpen(false)
   const toggleSidebar = () => setSidebarCollapsed((value) => {
     const next = !value
@@ -60,8 +74,13 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
         <div className="thread-nav">
           {conversations.data?.items.map((thread) => {
             const latestTask = projectTasks.data?.items.find((task) => task.conversation_id === thread.id)
-            return <Link key={thread.id} className={thread.id === activeThreadId ? 'active' : ''} to="/projects/$projectId/threads/$threadId" params={{ projectId: currentProject.id, threadId: thread.id }} onClick={closeMobile}><MessageSquare size={14} /><span><strong>{thread.title || '未命名 Thread'}</strong><small>{thread.last_message ? assistantExcerpt(thread.last_message, 90) : '尚无消息'}{latestTask && !['succeeded', 'canceled'].includes(latestTask.status) ? <em className={`thread-task-state ${latestTask.status}`}>{threadTaskStatus(latestTask.status)}</em> : null}</small></span></Link>
+            const deleting = deleteTarget === thread.id
+            return <div className={`thread-nav-row${thread.id === activeThreadId ? ' active' : ''}${deleting ? ' confirming-delete' : ''}`} key={thread.id}>
+              <Link to="/projects/$projectId/threads/$threadId" params={{ projectId: currentProject.id, threadId: thread.id }} onClick={closeMobile}><MessageSquare size={14} /><span><strong>{thread.title || '未命名 Thread'}</strong><small>{thread.last_message ? assistantExcerpt(thread.last_message, 90) : '尚无消息'}</small></span>{latestTask ? <ThreadStatusIcon status={latestTask.status} /> : null}</Link>
+              {deleting ? <span className="thread-delete-confirm"><button type="button" onClick={() => setDeleteTarget(undefined)}>取消</button><button className="danger" type="button" disabled={deleteConversation.isPending} onClick={() => deleteConversation.mutate(thread.id)}>{deleteConversation.isPending ? '删除中' : '删除'}</button></span> : <button className="thread-more" type="button" aria-label={`管理 ${thread.title || '未命名 Thread'}`} title="会话操作" onClick={() => { deleteConversation.reset(); setDeleteTarget(thread.id) }}><MoreHorizontal size={14} /></button>}
+            </div>
           })}
+          {deleteConversation.error ? <p className="thread-delete-error" role="alert">{deleteConversation.error.message}</p> : null}
           {!conversations.isLoading && conversations.data?.items.length === 0 ? <p className="thread-nav-empty">发送第一条消息后，Thread 会出现在这里。</p> : null}
         </div>
         <nav className="project-tools" aria-label="项目工具">
@@ -90,12 +109,18 @@ function RailLink({ to, params, label, active, icon, badge }: { to: string; para
   return <Link className={`rail-item ${active ? 'active' : ''}`} to={to} params={params} title={label}>{icon}<span>{label}</span>{badge ? <em>{badge}</em> : null}</Link>
 }
 
-function threadTaskStatus(status: string) {
-  if (status === 'blocked') return '已阻塞'
-  if (status === 'failed') return '失败'
-  if (status === 'waiting_approval') return '待审批'
-  if (status === 'waiting_input') return '待输入'
-  if (status === 'paused') return '已暂停'
-  if (status === 'queued') return '排队中'
-  return '运行中'
+function ThreadStatusIcon({ status }: { status: string }) {
+  const labels: Record<string, string> = {
+    succeeded: '已完成', failed: '失败', blocked: '已阻塞', waiting_approval: '待审批',
+    waiting_input: '待输入', paused: '已暂停', queued: '排队中', running: '运行中', canceled: '已取消',
+  }
+  const label = labels[status] ?? status
+  return <span className={`thread-task-state ${status}`} aria-label={label} title={label}>
+    {status === 'succeeded' ? <CheckCircle2 size={12} /> :
+      status === 'failed' || status === 'blocked' ? <AlertTriangle size={12} /> :
+        status === 'waiting_approval' || status === 'waiting_input' ? <ShieldAlert size={12} /> :
+          status === 'paused' ? <CirclePause size={12} /> :
+            status === 'running' || status === 'queued' ? <LoaderCircle className={status === 'running' ? 'spin' : ''} size={12} /> :
+              <X size={12} />}
+  </span>
 }

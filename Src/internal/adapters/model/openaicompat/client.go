@@ -130,9 +130,32 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 		}
 		return result, err
 	}
+	if request.EnableTools {
+		if capabilityErr := c.validateToolCalling(ctx, key, model); capabilityErr != nil {
+			result.ErrorCode = capabilityErr.Code
+			return result, capabilityErr
+		}
+	}
 	payload := chatRequest{
 		Model: model, MaxTokens: request.MaxOutputTokens, Stream: true,
 		Messages: chatMessagesFromRequest(request),
+	}
+	if request.EnableTools {
+		payload.Tools = []chatTool{}
+		for _, definition := range request.ToolDefinitions {
+			if strings.TrimSpace(definition.Name) == "" {
+				continue
+			}
+			payload.Tools = append(payload.Tools, chatTool{Type: "function", Function: chatToolFunction{
+				Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters,
+			}})
+		}
+		if request.ToolScopeDeclared {
+			payload.Tools = filterBuiltinTools(payload.Tools, request.AllowedTools)
+		}
+		if len(payload.Tools) > 0 {
+			payload.ToolChoice = "auto"
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -819,7 +842,8 @@ func applyResponseMessage(result *core.ModelResult, message responseChatMessage,
 		result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: call.ID, Name: call.Name, Arguments: call.Arguments}})
 	}
 	result.StopReason = mapStopReason(finishReason, len(result.ToolCalls) > 0)
-	if result.Content == "" && len(result.ToolCalls) == 0 && len(result.ContentBlocks) == 0 {
+	hasTextOrTool := result.Content != "" || len(result.ToolCalls) > 0
+	if !hasTextOrTool {
 		result.ErrorCode = "PROVIDER_EMPTY_RESPONSE"
 		result.StopReason = core.StopReasonError
 		return &GatewayError{Code: result.ErrorCode, Message: "provider returned no assistant content or tool calls"}

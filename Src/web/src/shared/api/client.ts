@@ -870,6 +870,7 @@ export const api = {
     request<TeamDefinition>(`/projects/${projectId}/teams`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   setTeamStatus: (teamId: string, status: CapabilityStatus) => request<TeamDefinition>(`/teams/${teamId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
   conversations: (projectId: string) => request<{ items: Conversation[] }>(`/projects/${projectId}/conversations`),
+  deleteConversation: (conversationId: string) => request<void>(`/conversations/${conversationId}`, { method: 'DELETE' }),
   conversationMessages: (conversationId: string, after = 0) => request<{ items: ConversationMessage[]; next_cursor: number }>(`/conversations/${conversationId}/messages?after=${after}`),
   sessionEntries: (conversationId: string, afterEntrySeq = 0, limit = 200) => request<SessionTreePage>(`/conversations/${conversationId}/entries?after_entry_seq=${afterEntrySeq}&limit=${limit}`),
   sessionEntryPath: (entryId: string) => request<{ items: SessionEntry[] }>(`/session-entries/${entryId}/path`),

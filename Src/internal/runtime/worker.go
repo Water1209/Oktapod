@@ -218,20 +218,24 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}
 		if err := reserver.ReserveModelBudget(workCtx, run, step, estimate, correlationID); err != nil {
 			outcome := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "BUDGET_RESERVATION_EXCEEDED", ResultSummary: "Run 的并发模型预算已无可用额度；请缩小任务或批准预算扩展。", Output: map[string]any{"retryable": false, "estimated_tokens": estimate}}
-			cancel()
-			<-heartbeatDone
 			if finishErr := retryOnBusy(ctx, func() error {
 				return w.repository.FinishStep(ctx, step, run, outcome, correlationID)
 			}); finishErr != nil {
+				cancel()
+				<-heartbeatDone
 				return true, fmt.Errorf("finish budget-blocked step: %w", finishErr)
 			}
+			// Keep renewing the lease until the terminal state is durably
+			// committed. Stopping the heartbeat before FinishStep allows a
+			// second worker to recover and repeat the same model step while
+			// the first worker is still closing its transaction.
+			cancel()
+			<-heartbeatDone
 			return true, nil
 		}
 	}
 
 	outcome := w.execute(workCtx, step, run)
-	cancel()
-	<-heartbeatDone
 	finishCtx := ctx
 	finishCancel := func() {}
 	if ctx.Err() != nil {
@@ -241,8 +245,14 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err := retryOnBusy(finishCtx, func() error {
 		return w.repository.FinishStep(finishCtx, step, run, outcome, correlationID)
 	}); err != nil {
+		cancel()
+		<-heartbeatDone
 		return true, fmt.Errorf("finish step: %w", err)
 	}
+	// FinishStep is part of the owned attempt. Keep the lease alive through
+	// its commit so another worker cannot fence and repeat the same step.
+	cancel()
+	<-heartbeatDone
 	scope := core.Scope{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}
 	// Steering takes effect only after the atomic step and its checkpoint are
 	// durably committed. The replan step, superseded-step cancellation, task
@@ -317,7 +327,8 @@ func isWorkspaceTool(stepType string) bool {
 	switch stepType {
 	case core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles,
 		core.ToolWorkspaceGrep, core.ToolWorkspaceEditFile, core.ToolWorkspaceWriteFile,
-		core.ToolWorkspaceRunCommand, core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolGitConflicts,
+		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell, core.ToolWorkspaceExtractArchive,
+		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolGitConflicts,
 		core.ToolGitBranch, core.ToolGitCommit, core.ToolGitCommitPaths, core.ToolGitRestore, core.ToolGitRestoreHunk:
 		return true
 	default:
@@ -374,11 +385,16 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	if lengthTruncationHint(step.InputJSON) != "" {
 		continuationInstruction += "\n\n" + lengthTruncationHint(step.InputJSON)
 	}
+	if completionHint := completionRecoveryHint(step.InputJSON); completionHint != "" {
+		continuationInstruction += "\n\n" + completionHint
+	}
 	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
 	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
 	systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input；当前场景缺少工作区命令能力但目标确实需要时，只能单独调用 request_permission。不得在普通助手文本中伪装阻塞式提问或声称工具不存在。"
-	if modelStage(step.InputJSON) == "plan" || modelStage(step.InputJSON) == "steering_replan" {
-		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，提交完整、具体、面向用户结果的语义子任务清单。标题必须体现本次目标的真实工作（例如检索哪些主题、比较哪些维度、产出什么交付物），禁止使用“理解目标”“完成目标”“生成下一步计划”“验证并交付”等通用占位步骤，也禁止把 read_file、web_search 等工具调用写成计划项。计划发布后系统会恢复同一 Run 执行。"
+	if modelStage(step.InputJSON) == "plan" {
+		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，提交完整、具体、面向用户结果的语义子任务清单。初次计划中尚无执行证据：不得把任何项目标记 completed，且必须恰好把第一个项目标记 in_progress，其余均为 pending。标题必须体现本次目标的真实工作（例如检索哪些主题、比较哪些维度、产出什么交付物），禁止使用“理解目标”“完成目标”“生成下一步计划”“验证并交付”等通用占位步骤，也禁止把 read_file、web_search 等工具调用写成计划项。计划发布后系统会恢复同一 Run 执行。"
+	} else if modelStage(step.InputJSON) == "steering_replan" {
+		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，基于用户 Steering 重规划尚未完成的语义子任务。保留真实完成项，不得把未执行工作标记 completed；最多一个项目为 in_progress。标题必须描述用户结果而非工具调用。"
 	}
 	contextPlan["builtin_tool_definitions"] = len(core.BuiltinToolSpecs())
 	selectedContext, selectedContextPlan := w.contextForPrompt(ctx, run)
@@ -629,6 +645,9 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 	if input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_INVALID" || input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_TRUNCATED" {
 		hint += " 每个 function.arguments 必须是完整 JSON 对象，使用双引号并正确转义换行和反斜杠，不要使用 Markdown 代码块；参数过长时拆成更小的工具调用。"
 	}
+	if input.RetryReason == "RUN_PLAN_STATUS_REGRESSION" {
+		hint += " 上一次 update_plan 试图把已完成项改回未完成，系统已拒绝并保留原计划。先读取当前持久化计划，再提交同一完整清单；所有 completed 项必须继续保持 completed，只推进当前项和后续项。"
+	}
 	if input.RetryCount >= 2 && input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_TRUNCATED" {
 		hint += " 本次禁止在单个工具参数中生成整篇长文；先写入较短的结构或分段文件，再用后续工具调用逐段补全。"
 	}
@@ -667,6 +686,8 @@ func modelRetryReasonLabel(reason string) string {
 		return "未能连接模型服务"
 	case "PROVIDER_EMPTY_RESPONSE":
 		return "没有返回可用内容"
+	case "RUN_PLAN_STATUS_REGRESSION":
+		return "提交了会回退已完成进度的执行计划"
 	default:
 		return "返回了无法解析的响应"
 	}
@@ -681,7 +702,7 @@ func toolRecoveryHint(inputJSON string) string {
 	if json.Unmarshal([]byte(inputJSON), &input) != nil || input.RecoveryCount < 1 {
 		return ""
 	}
-	return fmt.Sprintf("工具失败恢复 %d/3：%s 执行失败（%s）。失败收据已经包含在执行轨迹中。请分析错误、修订计划并选择更合适的参数或替代工具；不要重复已经成功的步骤，也不要原样重试同一个失败动作。", input.RecoveryCount, strings.TrimSpace(input.ToolName), strings.TrimSpace(input.Reason))
+	return fmt.Sprintf("工具失败恢复 %d/5：%s 执行失败（%s）。失败收据已经包含在执行轨迹中。你可以：1) 用 workspace_read_file 读取相关脚本或配置文件，定位错误根因；2) 用 workspace_edit_file 修复脚本中的语法错误、路径错误或依赖缺失；3) 用 workspace_write_file 创建缺失的依赖文件或配置；4) 用 workspace_run_command 安装缺失依赖或运行验证；5) 换用不同参数或替代工具重新尝试。不要原样重试同一个失败动作；先诊断根因再修复。不要重复已经成功的步骤。", input.RecoveryCount, strings.TrimSpace(input.ToolName), strings.TrimSpace(input.Reason))
 }
 
 func modelStage(inputJSON string) string {
@@ -692,6 +713,23 @@ func modelStage(inputJSON string) string {
 		return ""
 	}
 	return strings.TrimSpace(input.Stage)
+}
+
+func completionRecoveryHint(inputJSON string) string {
+	var input struct {
+		Reason string `json:"completion_recovery_reason"`
+	}
+	if json.Unmarshal([]byte(inputJSON), &input) != nil || strings.TrimSpace(input.Reason) == "" {
+		return ""
+	}
+	switch input.Reason {
+	case "WEB_EVIDENCE_MISSING":
+		return "确定性完成检查未通过：任务要求联网检索，但当前 Run 没有任何成功的 web_search 收据。不得用“无法联网”说明冒充交付；请继续调用 web_search 获取真实证据，或在受控恢复耗尽后请求用户决定。"
+	case "DELIVERABLE_MISSING":
+		return "确定性完成检查未通过：用户要求 Markdown/文档交付物，但当前 Run 没有成功的 workspace_write_file 收据。请把真实内容写入工作区并验证文件存在，再给最终总结。"
+	default:
+		return "确定性完成检查未通过。请补齐缺失的执行证据后再交付，不得再次直接声明完成。"
+	}
 }
 
 func (w *Worker) executeModelSynthesis(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
@@ -1150,13 +1188,13 @@ func applySceneToolPolicy(snapshot string, allowed []string, declared bool) ([]s
 	} else {
 		filtered := make([]string, 0, len(allowed))
 		for _, name := range allowed {
-			if name != core.ToolWorkspaceRunCommand {
+			if name != core.ToolWorkspaceRunCommand && name != core.ToolWorkspaceShell {
 				filtered = append(filtered, name)
 			}
 		}
 		allowed = filtered
 	}
-	return allowed, true, map[string]any{"workspace_command": false, "filtered_tools": []string{core.ToolWorkspaceRunCommand}}
+	return allowed, true, map[string]any{"workspace_command": false, "filtered_tools": []string{core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell}}
 }
 
 func filterToolDefinitionsBySkill(definitions []ToolDefinition, plan map[string]any) []ToolDefinition {
@@ -1650,12 +1688,41 @@ func (w *Worker) heartbeat(ctx context.Context, step core.ClaimedStep, done chan
 }
 
 func prompts(run core.RunContext) (string, string) {
-	system := "你是 Oktapod 的受控执行智能体。请直接完成当前目标，明确说明结论和依据。不得声称执行了未实际执行的工具，不得输出密钥或隐藏推理过程。"
+	system := "# Identity\nYou are an autonomous agent operating inside an Oktapod project workspace. You complete the user's goal by using the available tools to read files, write files, run commands, search the web, and manage Git operations."
 	if run.Mode == core.ModeAnswer {
-		system = "你是 Oktapod 的问答智能体。请直接、准确地回答用户问题；信息不足时明确说明。不得输出密钥或隐藏推理过程。"
+		system = "# Identity\nYou are the question-answering agent in an Oktapod project. You answer the user's question accurately and concisely. Prefer looking up information with available tools over asking the user to provide it."
 	}
 	if run.Mode == core.ModeSingleAgent {
-		system += " 需要当前互联网信息、读取或修改工作区文件、检查 Git 状态或运行验证命令时，必须调用已提供的结构化工具；不要在文本中伪造工具执行或搜索结果。带有工具调用的响应请在正文中先用一句话说明本轮可执行计划，系统会把每个工具调用固化为有序执行步骤并逐步更新状态。工具完成后系统会把已验证结果交还给你继续执行；若某一步失败，应依据错误和收据修订下一步，不要重复已经成功的步骤。用户要求报告、文档或其他材料时，必须用文件工具生成真实交付文件，并在最终总结中列出文件路径。互联网搜索结果必须经过后续综合并引用来源；文件编辑必须使用最新内容哈希避免覆盖外部变化，Git 变更和命令会由确定性策略要求审批。"
+		system += `
+
+# Available tools
+- workspace_read_file / workspace_list_files / workspace_find_files / workspace_grep: explore files
+- workspace_write_file / workspace_edit_file: create and modify files
+- workspace_run_command: run a single program (no shell)
+- workspace_shell: run shell commands with pipes, redirects, and chaining
+- workspace_extract_archive: extract ZIP archives
+- git_status / git_diff / git_log: inspect repository state
+- git_commit / git_branch: manage Git history (requires approval)
+- web_search: search the internet
+- update_plan: publish an execution plan
+- request_input: ask the user ONLY when genuinely stuck
+- request_permission: request capability escalation
+
+# How to work
+- Investigate before acting: read files, check state, understand context.
+- Be autonomous: choose sensible defaults for unspecified details (file names, paths, content). Do not pause to ask for things you can reasonably decide yourself.
+- When a tool fails: read the error, diagnose the root cause, fix it (edit scripts, install dependencies, correct paths), and retry. Do not give up after one failure.
+- Parallelize: call multiple independent tools in one response.
+- The first response that calls tools should briefly state the plan in one sentence; the system turns each tool call into an ordered step and updates status.
+- Internet search results must be summarized and cited; file edits must use the latest content hash to avoid overwriting external changes; Git changes and shell commands go through the deterministic policy and may require approval.
+
+# Reversibility
+Local, reversible actions (editing files, running tests) can be taken freely.
+Hard-to-reverse or destructive actions (deleting files, force-pushing, sending messages) require user confirmation.
+
+# Output
+Report outcomes faithfully. State what you did, what worked, what failed. Do not claim success without verification. Use file paths in results. For reports or deliverables, generate real files with file tools and list file paths in the final summary.
+`
 	}
 	parts := []string{"目标：" + run.Goal}
 	if strings.TrimSpace(run.Acceptance) != "" {

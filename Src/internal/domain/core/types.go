@@ -46,27 +46,29 @@ const (
 	TaskCommandCancel = "cancel"
 	TaskCommandRetry  = "retry"
 
-	ToolWorkspaceWriteFile  = "workspace_write_file"
-	ToolWorkspaceReadFile   = "workspace_read_file"
-	ToolWorkspaceListFiles  = "workspace_list_files"
-	ToolWorkspaceFindFiles  = "workspace_find_files"
-	ToolWorkspaceGrep       = "workspace_grep"
-	ToolWorkspaceEditFile   = "workspace_edit_file"
-	ToolWorkspaceRunCommand = "workspace_run_command"
-	ToolGitStatus           = "git_status"
-	ToolGitDiff             = "git_diff"
-	ToolGitLog              = "git_log"
-	ToolGitBranch           = "git_branch"
-	ToolGitCommit           = "git_commit"
-	ToolGitCommitPaths      = "git_commit_paths"
-	ToolGitRestore          = "git_restore"
-	ToolGitRestoreHunk      = "git_restore_hunk"
-	ToolGitConflicts        = "git_conflicts"
-	ToolWebSearch           = "web_search"
-	ToolSkillInvoke         = "skill_invoke"
-	ToolUpdatePlan          = "update_plan"
-	ToolRequestInput        = "request_input"
-	ToolRequestPermission   = "request_permission"
+	ToolWorkspaceWriteFile      = "workspace_write_file"
+	ToolWorkspaceReadFile       = "workspace_read_file"
+	ToolWorkspaceListFiles      = "workspace_list_files"
+	ToolWorkspaceFindFiles      = "workspace_find_files"
+	ToolWorkspaceGrep           = "workspace_grep"
+	ToolWorkspaceEditFile       = "workspace_edit_file"
+	ToolWorkspaceRunCommand     = "workspace_run_command"
+	ToolWorkspaceShell          = "workspace_shell"
+	ToolGitStatus               = "git_status"
+	ToolGitDiff                 = "git_diff"
+	ToolGitLog                  = "git_log"
+	ToolGitBranch               = "git_branch"
+	ToolGitCommit               = "git_commit"
+	ToolGitCommitPaths          = "git_commit_paths"
+	ToolGitRestore              = "git_restore"
+	ToolGitRestoreHunk          = "git_restore_hunk"
+	ToolGitConflicts            = "git_conflicts"
+	ToolWebSearch               = "web_search"
+	ToolSkillInvoke             = "skill_invoke"
+	ToolUpdatePlan              = "update_plan"
+	ToolRequestInput            = "request_input"
+	ToolRequestPermission       = "request_permission"
+	ToolWorkspaceExtractArchive = "workspace_extract_archive"
 
 	PolicyAllow = "allow"
 	PolicyAsk   = "ask"
@@ -121,7 +123,7 @@ const (
 	DefaultTaskMaxModelCalls = 32
 	DefaultTaskMaxTokens     = 200_000
 	DefaultModelRetryLimit   = 3
-	DefaultToolRetryLimit    = 3
+	DefaultToolRetryLimit    = 5
 	DefaultModelOutputTokens = 2_048
 
 	SideEffectReceiptStarted   = "started"
@@ -471,6 +473,7 @@ type ConversationCompaction struct {
 // can be promoted to a Task without asking the user to fill a second form.
 type ProjectTurnInput struct {
 	ConversationID   string
+	TaskID           string
 	Content          string
 	Mode             string
 	Acceptance       string

@@ -1426,7 +1426,7 @@ type CreateTaskRequest struct {
 	// Model 可选模型覆盖；优先级高于 Agent/项目默认
 	Model *string `json:"model,omitempty"`
 
-	// PermissionMode ask 等待用户；auto_review 需要独立 Reviewer；full_access 为 30 分钟 Run 快照且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。
+	// PermissionMode ask 等待用户；auto_review 需要独立 Reviewer；full_access 由用户在 Composer 中手动开启或切换且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。
 	PermissionMode *CreateTaskRequestPermissionMode `json:"permission_mode,omitempty"`
 
 	// ProviderId 可选 Provider 实例；Run 创建时冻结
@@ -1453,7 +1453,7 @@ type CreateTaskRequest struct {
 // CreateTaskRequestMode defines model for CreateTaskRequest.Mode.
 type CreateTaskRequestMode string
 
-// CreateTaskRequestPermissionMode ask 等待用户；auto_review 需要独立 Reviewer；full_access 为 30 分钟 Run 快照且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。
+// CreateTaskRequestPermissionMode ask 等待用户；auto_review 需要独立 Reviewer；full_access 由用户在 Composer 中手动开启或切换且不绕过硬拒绝或破坏性 MCP。default 仅兼容旧客户端。
 type CreateTaskRequestPermissionMode string
 
 // CreateTaskRequestScene 可选任务场景覆盖；未提供时继承项目场景
@@ -2856,6 +2856,9 @@ type ServerInterface interface {
 
 	// (POST /capabilities/{capability_id}/status)
 	SetCapabilityStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params SetCapabilityStatusParams)
+	// Delete an owner-only conversation and its completed task history
+	// (DELETE /conversations/{conversation_id})
+	DeleteConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
 
 	// (POST /conversations/{conversation_id}/branch-summary)
 	AppendBranchSummary(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
@@ -3172,6 +3175,12 @@ func (_ Unimplemented) ReviewCapability(w http.ResponseWriter, r *http.Request, 
 
 // (POST /capabilities/{capability_id}/status)
 func (_ Unimplemented) SetCapabilityStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params SetCapabilityStatusParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete an owner-only conversation and its completed task history
+// (DELETE /conversations/{conversation_id})
+func (_ Unimplemented) DeleteConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4035,6 +4044,31 @@ func (siw *ServerInterfaceWrapper) SetCapabilityStatus(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetCapabilityStatus(w, r, capabilityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteConversation operation middleware
+func (siw *ServerInterfaceWrapper) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "conversation_id" -------------
+	var conversationId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "conversation_id", chi.URLParam(r, "conversation_id"), &conversationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "conversation_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteConversation(w, r, conversationId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7042,6 +7076,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/status", wrapper.SetCapabilityStatus)
 	})
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/conversations/{conversation_id}", wrapper.DeleteConversation)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/conversations/{conversation_id}/branch-summary", wrapper.AppendBranchSummary)
 	})
 	r.Group(func(r chi.Router) {
@@ -7728,6 +7765,43 @@ type SetCapabilityStatusdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response SetCapabilityStatusdefaultApplicationProblemPlusJSONResponse) VisitSetCapabilityStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type DeleteConversationRequestObject struct {
+	ConversationId openapi_types.UUID `json:"conversation_id"`
+}
+
+type DeleteConversationResponseObject interface {
+	VisitDeleteConversationResponse(w http.ResponseWriter) error
+}
+
+type DeleteConversation204Response struct {
+}
+
+func (response DeleteConversation204Response) VisitDeleteConversationResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteConversation409ApplicationProblemPlusJSONResponse Problem
+
+func (response DeleteConversation409ApplicationProblemPlusJSONResponse) VisitDeleteConversationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type DeleteConversationdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteConversationdefaultApplicationProblemPlusJSONResponse) VisitDeleteConversationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -10212,6 +10286,9 @@ type StrictServerInterface interface {
 
 	// (POST /capabilities/{capability_id}/status)
 	SetCapabilityStatus(ctx context.Context, request SetCapabilityStatusRequestObject) (SetCapabilityStatusResponseObject, error)
+	// Delete an owner-only conversation and its completed task history
+	// (DELETE /conversations/{conversation_id})
+	DeleteConversation(ctx context.Context, request DeleteConversationRequestObject) (DeleteConversationResponseObject, error)
 
 	// (POST /conversations/{conversation_id}/branch-summary)
 	AppendBranchSummary(ctx context.Context, request AppendBranchSummaryRequestObject) (AppendBranchSummaryResponseObject, error)
@@ -10886,6 +10963,32 @@ func (sh *strictHandler) SetCapabilityStatus(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetCapabilityStatusResponseObject); ok {
 		if err := validResponse.VisitSetCapabilityStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteConversation operation middleware
+func (sh *strictHandler) DeleteConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID) {
+	var request DeleteConversationRequestObject
+
+	request.ConversationId = conversationId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteConversation(ctx, request.(DeleteConversationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteConversation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteConversationResponseObject); ok {
+		if err := validResponse.VisitDeleteConversationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

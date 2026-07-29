@@ -48,6 +48,25 @@ type TypedProviderProjectTurnStreamModel interface {
 	StreamMessagesWithModelRef(ctx context.Context, systemPrompt string, messages []core.ModelMessage, maxOutputTokens int, requested core.ModelRef, fallbackModel string, onDelta func(string) error) (core.ModelResult, error)
 }
 
+// ChatToolStreamModel extends streaming with tool definitions so the chat mode
+// can offer read-only workspace tools to the model without creating a full Task/Run.
+type ChatToolStreamModel interface {
+	StreamMessagesWithTools(ctx context.Context, systemPrompt string, messages []core.ModelMessage, maxOutputTokens int, requested core.ModelRef, fallbackModel string, toolDefinitions []ChatToolDefinition, onDelta func(string) error) (core.ModelResult, error)
+}
+
+// ChatToolDefinition is a minimal tool schema for chat-mode tool use.
+type ChatToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
+// ChatToolExecutor executes a single read-only tool call during a chat turn.
+// It returns the tool result text and an error if execution fails.
+type ChatToolExecutor interface {
+	ExecuteChatTool(ctx context.Context, projectID string, call core.ToolCall) (string, error)
+}
+
 type AdvisorReportFinalizer interface {
 	FinalizeAdvisorReport(ctx context.Context, scope core.Scope, reportID string, model core.ModelResult, modelErr error) (core.AdvisorReport, error)
 }

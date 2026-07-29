@@ -982,13 +982,13 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .thread-welcome-mark { width: 36px; height: 36px; display: grid; place-items: center; margin-bottom: 18px; border-radius: 8px; background: #242421; color: #fff; font: 700 15px var(--font-mono); }
 .thread-welcome h1 { max-width: 100%; font-size: 22px; font-weight: 630; }
 .thread-welcome p { max-width: 520px; margin-top: 8px; color: #797973; font-size: 13px; }
-.thread-message { width: 100%; margin: 0 auto 30px; }
-.message-role { margin-bottom: 7px; color: #6d6d67; font-size: 11px; font-weight: 650; }
-.message-body { color: #272725; font-size: 14px; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thread-message { width: 100%; margin: 0 auto 12px; }
+.message-role { margin-bottom: 5px; color: #6d6d67; font-size: 11px; font-weight: 650; }
+.message-body { color: #272725; font-size: 14px; line-height: 1.68; white-space: normal; overflow-wrap: anywhere; }
 .thread-message.streaming .message-body { color: #555550; }
 .stream-caret { width: 2px; height: 1.05em; margin-left: 3px; display: inline-block; vertical-align: -.15em; background: #4d6f5e; animation: stream-blink .8s steps(1) infinite; }
 @keyframes stream-blink { 50% { opacity: 0; } }
-.thread-message.user .message-body { width: fit-content; max-width: 85%; margin-left: auto; padding: 10px 13px; border-radius: 8px; background: #f0f0ed; }
+.thread-message.user .message-body { width: fit-content; max-width: 85%; margin-left: auto; padding: 10px 13px; border-radius: 8px; background: #f0f0ed; white-space: pre-wrap; }
 .thread-message.user .message-role { text-align: right; }
 .thread-message.user.conversation-command .message-body { border: 1px solid #d9d6cf; background: #faf9f6; color: #555550; font-family: "SFMono-Regular", Consolas, monospace; }
 .message-task-link { width: fit-content; margin-top: 9px; display: flex; align-items: center; gap: 5px; color: #5c5c56; font-size: 11px; text-decoration: none; }
@@ -2706,6 +2706,7 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .message-task-failure { display: flex; gap: 6px; padding: 8px 10px; background: #fff3f2; border: 1px solid #edc0bc; border-radius: 6px; color: #9b342f; }
 .message-task-failure strong { font-size: 12px; display: block; }
 .message-task-failure p { margin: 2px 0 0; font-size: 11px; }
+.message-task-failure small { display: block; margin-top: 4px; color: #7d4b47; font-size: 10px; }
 
 .message-artifacts-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--color-border-subtle, #ecece7); background: var(--color-bg, #fff); border-radius: 4px; font-size: 12px; color: var(--color-accent, #3e956b); cursor: pointer; }
 .message-artifacts-trigger:hover { background: var(--color-bg-inset, #f4f4f0); }
@@ -3242,28 +3243,39 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sidebar-label em { font-style: normal; font-weight: 500; }
 .thread-nav, .workspace-project-list { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 0 7px; overflow: auto; }
 .thread-nav { flex: 1; }
-.thread-nav a, .workspace-project-list a {
+.thread-nav-row { position: relative; display: flex; align-items: stretch; border-radius: 6px; }
+.thread-nav-row > a, .workspace-project-list a {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  min-width: 0;
+  flex: 1;
   min-height: 42px;
-  padding: 7px 9px;
+  padding: 7px 30px 7px 9px;
   border-radius: 6px;
   color: var(--ink-soft);
   text-decoration: none;
 }
-.thread-nav a > svg { margin-top: 2px; flex: 0 0 auto; }
-.thread-nav a > span, .workspace-project-list a > span:last-child { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.thread-nav-row > a > svg { margin-top: 2px; flex: 0 0 auto; }
+.thread-nav-row > a > span:not(.thread-task-state), .workspace-project-list a > span:last-child { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .thread-nav strong, .thread-nav small, .workspace-project-list strong, .workspace-project-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-nav strong, .workspace-project-list strong { color: var(--ink); font-size: 12px; font-weight: 560; }
 .thread-nav small, .workspace-project-list small { color: var(--ink-faint); font-size: 10px; }
-.thread-nav small { display: flex; align-items: center; gap: 5px; }
-.thread-nav small > em { margin-left: auto; flex: 0 0 auto; font-size: 9px; font-style: normal; font-weight: 650; }
+.thread-task-state { display: inline-grid; place-items: center; width: 18px; height: 18px; margin: 10px 6px 0 -28px; flex: 0 0 auto; border-radius: 50%; color: var(--ink-faint); }
+.thread-task-state.succeeded { color: var(--success); }
 .thread-task-state.running, .thread-task-state.queued { color: var(--signal-blue); }
 .thread-task-state.waiting_approval, .thread-task-state.waiting_input, .thread-task-state.paused { color: #9a5d12; }
 .thread-task-state.blocked, .thread-task-state.failed { color: #a5332d; }
-.thread-nav a:hover, .workspace-project-list a:hover { background: rgba(255,255,255,.58); }
-.thread-nav a.active { background: #dde4f5; color: var(--signal-blue); }
+.thread-nav-row:hover, .workspace-project-list a:hover { background: rgba(255,255,255,.58); }
+.thread-nav-row.active { background: #dde4f5; color: var(--signal-blue); }
+.thread-more { position: absolute; top: 8px; right: 5px; display: none; width: 24px; height: 24px; place-items: center; padding: 0; border: 0; border-radius: 5px; background: color-mix(in srgb, var(--surface) 90%, transparent); color: var(--ink-faint); cursor: pointer; }
+.thread-nav-row:hover .thread-more, .thread-nav-row:focus-within .thread-more { display: grid; }
+.thread-more:hover { color: var(--ink); background: var(--surface-hover); }
+.thread-delete-confirm { position: absolute; inset: 4px; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 5px; padding: 0 5px; border-radius: 5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.thread-delete-confirm button { padding: 4px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--ink-soft); font-size: 10px; cursor: pointer; }
+.thread-delete-confirm button.danger { background: #a5332d; color: #fff; }
+.thread-delete-confirm button:disabled { cursor: wait; opacity: .65; }
+.thread-delete-error { margin: 4px 4px 8px; padding: 7px 8px; border-radius: 5px; background: #fff3f2; color: #9b342f; font-size: 10px; line-height: 1.4; }
 .thread-nav-empty { padding: 12px 10px; color: var(--ink-faint); font-size: 11px; }
 .project-tools { display: flex; flex-direction: column; gap: 2px; padding: 8px 7px; border-top: 1px solid var(--line); }
 .project-tools a { display: flex; align-items: center; gap: 9px; height: 31px; padding: 0 9px; border-radius: 6px; color: var(--ink-soft); font-size: 12px; text-decoration: none; }
@@ -3539,15 +3551,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* ===== Assistant content: thinking fold + markdown ===== */
 .assistant-content { display: grid; gap: 4px; }
+.assistant-markdown { white-space: normal; }
 .assistant-markdown > :first-child { margin-top: 0; }
 .assistant-markdown > :last-child { margin-bottom: 0; }
-.assistant-markdown p { margin: 0 0 10px; line-height: 1.72; }
-.assistant-markdown h1, .assistant-markdown h2, .assistant-markdown h3, .assistant-markdown h4 { margin: 18px 0 8px; font-weight: 650; line-height: 1.4; color: var(--ink); }
+.assistant-markdown p { margin: 0 0 7px; line-height: 1.68; }
+.assistant-markdown h1, .assistant-markdown h2, .assistant-markdown h3, .assistant-markdown h4 { margin: 14px 0 6px; font-weight: 650; line-height: 1.4; color: var(--ink); }
 .assistant-markdown h1 { font-size: 19px; }
 .assistant-markdown h2 { font-size: 17px; }
 .assistant-markdown h3 { font-size: 15px; }
 .assistant-markdown h4 { font-size: 14px; }
-.assistant-markdown ul, .assistant-markdown ol { margin: 0 0 10px; padding-left: 22px; }
+.assistant-markdown ul, .assistant-markdown ol { margin: 0 0 8px; padding-left: 22px; }
 .assistant-markdown li { margin: 2px 0; line-height: 1.6; }
 .assistant-markdown li > p { margin: 0; }
 .assistant-markdown li > ul, .assistant-markdown li > ol { margin: 2px 0 0; }
@@ -3592,6 +3605,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .task-stream-status svg { flex-shrink: 0; }
 .task-stream-status.running { color: var(--signal-blue); }
 .task-stream-status:not(.running) { color: var(--success); }
+.task-stream-status.failed { color: #a5332d; }
+.task-skill-summary { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 220px; padding: 2px 6px; border-radius: 999px; background: var(--surface-subtle); color: var(--ink-faint); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-skill-summary.loaded { color: #5b4aa3; background: color-mix(in srgb, #7562c7 10%, var(--surface)); }
+.task-skill-summary svg { flex: 0 0 auto; }
 .message-task-stream-head small { margin-left: auto; color: var(--ink-faint); font-size: 10px; white-space: nowrap; }
 .message-task-stream-head .message-task-link { margin-top: 0; flex-shrink: 0; }
 .message-task-detail { border-top: 1px solid var(--line); }
@@ -3629,7 +3646,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .project-sidebar { background: #141820; }
   .master-list, .resource-types, .tree-canvas { background: #141820; }
   .new-thread-button, .danger-button { background: var(--surface); }
-  .thread-nav a.active, .master-list > button.active, .resource-types button.active { background: #232d49; }
+  .thread-nav-row.active, .master-list > button.active, .resource-types button.active { background: #232d49; }
   .codex-content .conversation-header { background: rgba(23,26,34,.94); }
   .codex-content .thread-message.user .message-body { background: #222630; }
   .assistant-markdown code { background: #20242e; border-color: #2a303c; }
@@ -3648,6 +3665,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .codex-shell { grid-template-columns: 56px minmax(0, 1fr); }
   .project-sidebar { position: fixed; left: 56px; top: 0; bottom: 0; width: 280px; z-index: 25; transform: translateX(-105%); box-shadow: 12px 0 30px rgba(9,16,40,.18); }
   .project-sidebar.open { transform: translateX(0); }
+  .thread-more { display: grid; }
+  .thread-task-state { margin: 10px 32px 0 -54px; }
   .codex-main { grid-column: 2; }
   .mobile-topbar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
   .mobile-topbar button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; background: transparent; color: var(--ink); }
@@ -3811,7 +3830,7 @@ html[data-theme="dark"] {
   --canvas: #11131a; --surface: #171a22; --surface-subtle: #20242e; --surface-hover: #252a35;
   --line: #2a303c; --line-strong: #3a4250; --ink: #eef1f6; --ink-soft: #aab1bf; --ink-faint: #7f8796;
 }
-html[data-density="comfortable"] .thread-message { padding-top: 15px; padding-bottom: 15px; }
+html[data-density="comfortable"] .thread-message { padding-top: 4px; padding-bottom: 4px; }
 
 @media (max-width: 767px) {
   .terminal-page, .settings-page, .migration-page { padding: 18px 12px 42px; }

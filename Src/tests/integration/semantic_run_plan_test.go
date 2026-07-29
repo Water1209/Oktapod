@@ -80,6 +80,65 @@ func TestModelPublishesGoalSpecificSemanticPlanBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestModelPlanRevisionContinuesAfterHistoricalPlanCompleted(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "plan-model", "tool_calling": true}}})
+			return
+		}
+		arguments, _ := json.Marshal(map[string]any{
+			"explanation": "基于已保存证据继续交付。",
+			"items": []map[string]any{
+				{"title": "整理平台证据", "description": "汇总已经取得的官方来源。", "status": "in_progress"},
+				{"title": "写入调研文档", "description": "生成可直接阅读的 Markdown 文件。", "status": "pending"},
+			},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+					"id": "publish-plan-after-completion", "type": "function",
+					"function": map[string]any{"name": core.ToolUpdatePlan, "arguments": string(arguments)},
+				}},
+			}}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10},
+		})
+	}))
+	defer provider.Close()
+
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Historical Plan User"}, core.Organization{ID: testOrgID, Name: "Historical Plan Org"}, func() string { return "fake-plan-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Historical plan", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "继续生成调研文档", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "historical-plan", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openTaskControlDatabase(t, databasePath)
+	if _, err := db.Exec(`UPDATE run_plan_revisions SET status = 'completed' WHERE run_id = ?`, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := okruntime.NewWorker("historical-plan-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+		t.Fatalf("publish plan after completion worked=%v err=%v", worked, runErr)
+	}
+	plan, err := service.GetActiveRunPlan(context.Background(), task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Revision != 2 || len(plan.Items) != 2 || plan.Items[0].Title != "整理平台证据" {
+		t.Fatalf("continued plan=%#v", plan)
+	}
+}
+
 func TestRuntimePlanStructureRewriteProjectsProgressOntoStableRevision(t *testing.T) {
 	modelCalls := 0
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -177,5 +236,116 @@ func TestRuntimePlanStructureRewriteProjectsProgressOntoStableRevision(t *testin
 	}
 	if !foundNoProgressRecovery {
 		t.Fatal("missing plan.no_progress_ignored recovery event")
+	}
+}
+
+func TestPlanStatusRegressionIsAutomaticallyRepaired(t *testing.T) {
+	modelCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "plan-recovery-model", "tool_calling": true}}})
+			return
+		}
+		modelCalls++
+		var toolName string
+		var arguments any
+		switch modelCalls {
+		case 1:
+			toolName = core.ToolUpdatePlan
+			arguments = map[string]any{"items": []map[string]any{
+				{"title": "检索权威证据", "description": "获得可引用来源。", "status": "in_progress"},
+				{"title": "形成证据摘要", "description": "保留已完成进度并交付。", "status": "pending"},
+			}}
+		case 2:
+			toolName = core.ToolWebSearch
+			arguments = map[string]any{"query": "verified source", "max_results": 3}
+		case 3:
+			toolName = core.ToolUpdatePlan
+			arguments = map[string]any{"items": []map[string]any{
+				{"title": "检索权威证据", "description": "已获得可引用来源。", "status": "completed"},
+				{"title": "形成证据摘要", "description": "正在整理证据。", "status": "in_progress"},
+			}}
+		case 4:
+			toolName = core.ToolUpdatePlan
+			arguments = map[string]any{"items": []map[string]any{
+				{"title": "检索权威证据", "description": "错误地回退已完成项。", "status": "pending"},
+				{"title": "形成证据摘要", "description": "仍在整理。", "status": "in_progress"},
+			}}
+		case 5:
+			toolName = core.ToolUpdatePlan
+			arguments = map[string]any{"items": []map[string]any{
+				{"title": "检索权威证据", "description": "保持完成。", "status": "completed"},
+				{"title": "形成证据摘要", "description": "摘要已形成。", "status": "completed"},
+			}}
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "已基于权威证据完成摘要。"}}},
+				"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 10},
+			})
+			return
+		}
+		encoded, _ := json.Marshal(arguments)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+					"id": "call", "type": "function", "function": map[string]any{"name": toolName, "arguments": string(encoded)},
+				}},
+			}}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10},
+		})
+	}))
+	defer provider.Close()
+
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan Recovery User"}, core.Organization{ID: testOrgID, Name: "Plan Recovery Org"}, func() string { return "fake-plan-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Plan regression recovery", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "检索权威证据并形成摘要", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "plan-regression-recovery", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("plan-regression-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil))).WithWebSearchExecutor(semanticPlanSearch{})
+	var completed core.Task
+	for iteration := 0; iteration < 10; iteration++ {
+		if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
+		}
+		completed, err = service.GetTask(context.Background(), task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Status == core.StatusSucceeded {
+			break
+		}
+		if completed.Status == core.StatusBlocked || completed.Status == core.StatusFailed {
+			t.Fatalf("plan regression escaped automatic recovery: %#v", completed)
+		}
+	}
+	if completed.Status != core.StatusSucceeded {
+		t.Fatalf("task did not finish after plan repair: %#v", completed)
+	}
+	plan, err := service.GetActiveRunPlan(context.Background(), task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 2 || plan.Items[0].Status != core.RunPlanItemCompleted || plan.Items[1].Status != core.RunPlanItemCompleted {
+		t.Fatalf("repaired plan=%#v", plan)
+	}
+	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRegressionRecovery := false
+	foundModelRetry := false
+	for _, event := range events {
+		foundRegressionRecovery = foundRegressionRecovery || event.EventType == "plan.status_regression_ignored"
+		foundModelRetry = foundModelRetry || event.EventType == "model.retry_queued"
+	}
+	if !foundRegressionRecovery || !foundModelRetry {
+		t.Fatalf("missing recovery events: %#v", events)
 	}
 }
