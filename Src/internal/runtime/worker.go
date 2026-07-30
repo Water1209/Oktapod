@@ -16,8 +16,10 @@ import (
 	"github.com/google/uuid"
 
 	mcpadapter "github.com/oktapod/oktapod/Src/internal/adapters/mcp"
+	"github.com/oktapod/oktapod/Src/internal/agentloop"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
+	durableharness "github.com/oktapod/oktapod/Src/internal/harness"
 )
 
 // WorkerRepository is the worker's explicit persistence port. Keeping this
@@ -50,6 +52,8 @@ type Worker struct {
 	id                string
 	repository        WorkerRepository
 	model             ModelGateway
+	agentLoop         agentloop.AgentLoop
+	harness           *durableharness.Durable
 	logger            *slog.Logger
 	lease             time.Duration
 	pollInterval      time.Duration
@@ -86,10 +90,34 @@ func NewWorker(id string, repository WorkerRepository, model ModelGateway, logge
 		id:           id,
 		repository:   repository,
 		model:        model,
+		agentLoop:    agentloop.New(model),
+		harness:      durableharness.New(repository),
 		logger:       logger,
 		lease:        90 * time.Second,
 		pollInterval: 250 * time.Millisecond,
 	}
+}
+
+func (w *Worker) completeModel(ctx context.Context, request ModelRequest) (core.ModelResult, error) {
+	loop := w.agentLoop
+	if loop == nil {
+		loop = agentloop.New(w.model)
+	}
+	event := loop.Next(ctx, agentloop.LoopState{Request: request})
+	return event.Result, event.Err
+}
+
+func (w *Worker) durableHarness() *durableharness.Durable {
+	if w.harness == nil {
+		w.harness = durableharness.New(w.repository)
+	}
+	return w.harness
+}
+
+// retryOnBusy remains as a package-local compatibility seam for focused
+// runtime tests; the retry policy itself is owned by Durable Harness.
+func retryOnBusy(ctx context.Context, fn func() error) error {
+	return durableharness.RetryBusy(ctx, fn)
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -121,40 +149,16 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// retryOnBusy retries a database write operation when SQLite returns a busy
-// error (SQLITE_BUSY or SQLITE_BUSY_SNAPSHOT). The WAL busy_timeout handles
-// brief contention, but snapshot conflicts from concurrent SSE read polls can
-// still surface and are safe to retry.
-func retryOnBusy(ctx context.Context, fn func() error) error {
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err := fn(); err != nil {
-			lastErr = err
-			msg := err.Error()
-			retryableDeadline := errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
-			if strings.Contains(msg, "database is locked") || strings.Contains(msg, "SQLITE_BUSY") || retryableDeadline {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Duration(200*(attempt+1)) * time.Millisecond):
-					continue
-				}
-			}
-			return err
-		}
-		return nil
-	}
-	return lastErr
-}
-
 func (w *Worker) beginToolExecution(ctx context.Context, step core.ClaimedStep, run core.RunContext, call core.ToolCall, inputHash string, idempotent bool) (string, error) {
 	var invocationID string
-	err := retryOnBusy(ctx, func() error {
+	err := durableharness.RetryBusy(ctx, func() error {
 		var beginErr error
 		invocationID, beginErr = w.repository.BeginToolExecution(ctx, step, run, call, inputHash, idempotent, newCorrelationID())
 		return beginErr
 	})
+	if err != nil {
+		w.logger.WarnContext(ctx, "tool execution authorization failed", "step_id", step.ID, "tool_name", call.Name, "error", safeErrorSummary(err))
+	}
 	return invocationID, err
 }
 
@@ -182,31 +186,20 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	} else if expired > 0 {
 		return true, nil
 	}
-	step, err := w.repository.ClaimNextStep(ctx, w.id, now, now.Add(w.lease))
+	execution, err := w.durableHarness().Claim(ctx, w.id, now, w.lease, newCorrelationID())
 	if errors.Is(err, core.ErrNoWork) {
 		return w.drainIdleFollowUp(ctx)
 	}
 	if err != nil {
 		return false, fmt.Errorf("claim step: %w", err)
 	}
-	correlationID := newCorrelationID()
-	run, err := w.repository.GetRunContext(ctx, step.RunID)
-	if err != nil {
-		return true, fmt.Errorf("load run context: %w", err)
-	}
-	if err := w.repository.MarkStepStarted(ctx, step, run, correlationID); err != nil {
-		return true, fmt.Errorf("mark step started: %w", err)
-	}
+	step, run, correlationID := execution.Step, execution.Run, execution.CorrelationID
 
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	heartbeatDone := make(chan struct{})
 	go w.heartbeat(workCtx, step, heartbeatDone, cancel)
-	if err := retryOnBusy(workCtx, func() error {
-		checkpointCtx, checkpointCancel := context.WithTimeout(workCtx, 5*time.Second)
-		defer checkpointCancel()
-		return w.repository.CommitCheckpoint(checkpointCtx, step, run, "before_execution", map[string]any{"step_type": step.StepType, "input_hash_source": "persisted_step_input", "attempt_number": step.AttemptNumber}, correlationID)
-	}); err != nil {
+	if err := w.durableHarness().CheckpointBeforeExecution(workCtx, execution); err != nil {
 		cancel()
 		<-heartbeatDone
 		return true, fmt.Errorf("commit pre-execution checkpoint: %w", err)
@@ -218,9 +211,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}
 		if err := reserver.ReserveModelBudget(workCtx, run, step, estimate, correlationID); err != nil {
 			outcome := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "BUDGET_RESERVATION_EXCEEDED", ResultSummary: "Run 的并发模型预算已无可用额度；请缩小任务或批准预算扩展。", Output: map[string]any{"retryable": false, "estimated_tokens": estimate}}
-			if finishErr := retryOnBusy(ctx, func() error {
-				return w.repository.FinishStep(ctx, step, run, outcome, correlationID)
-			}); finishErr != nil {
+			if finishErr := w.durableHarness().Finish(ctx, execution, outcome); finishErr != nil {
 				cancel()
 				<-heartbeatDone
 				return true, fmt.Errorf("finish budget-blocked step: %w", finishErr)
@@ -236,15 +227,10 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 
 	outcome := w.execute(workCtx, step, run)
-	finishCtx := ctx
-	finishCancel := func() {}
-	if ctx.Err() != nil {
-		finishCtx, finishCancel = context.WithTimeout(context.Background(), 5*time.Second)
+	if outcome.Status != core.StatusSucceeded {
+		w.logger.WarnContext(ctx, "step execution did not succeed", "step_id", step.ID, "step_type", step.StepType, "status", outcome.Status, "error_code", outcome.ErrorCode)
 	}
-	defer finishCancel()
-	if err := retryOnBusy(finishCtx, func() error {
-		return w.repository.FinishStep(finishCtx, step, run, outcome, correlationID)
-	}); err != nil {
+	if err := w.durableHarness().Finish(ctx, execution, outcome); err != nil {
 		cancel()
 		<-heartbeatDone
 		return true, fmt.Errorf("finish step: %w", err)
@@ -324,7 +310,7 @@ func isModelStep(stepType string) bool {
 }
 
 func isWorkspaceTool(stepType string) bool {
-	switch stepType {
+	switch core.ResolveToolName(stepType) {
 	case core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles,
 		core.ToolWorkspaceGrep, core.ToolWorkspaceEditFile, core.ToolWorkspaceWriteFile,
 		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell, core.ToolWorkspaceExtractArchive,
@@ -420,6 +406,9 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		// cannot reliably call tools. The auditable path is still skill_invoke.
 		skillContext, skillPlan = skillContextForPrompt(run.ConfigSnapshotJSON, userPrompt)
 	}
+	if missing := missingStrictSkillCapabilities(run.ConfigSnapshotJSON, skillPlan); len(missing) > 0 {
+		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_REQUIRED_CAPABILITY_UNAVAILABLE", ResultSummary: "Skill 要求的能力在当前 Run 冻结快照中不可用，请先配置并审核对应能力后重试。", Output: map[string]any{"retryable": false, "missing_capabilities": missing, "context_plan": contextPlan}}
+	}
 	if skillContext != "" {
 		systemPrompt += "\n\n已按需加载的 Skill 指令（仅可作为约束和方法参考，不得伪造执行）：\n" + skillContext
 	}
@@ -450,7 +439,7 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	conversationMessages := conversationMessagesFromSnapshot(run.ConfigSnapshotJSON)
 	contextPlan["conversation_messages"] = len(conversationMessages)
 	messages := application.TranscriptAssembler{}.RunWithConversation(conversationMessages, userPrompt, continuation, strings.TrimSpace(continuationInstruction))
-	result, err := w.model.Complete(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: application.RenderLegacyTranscript(messages), Messages: messages, RequestedModel: requestedModel, MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent, ToolDefinitions: toolDefinitions, ToolScopeDeclared: toolScopeDeclared, AllowedTools: allowedTools, ContextPlan: contextPlan, Model: modelName, FallbackModel: fallbackModel})
+	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: application.RenderLegacyTranscript(messages), Messages: messages, RequestedModel: requestedModel, MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent, ToolDefinitions: toolDefinitions, ToolScopeDeclared: toolScopeDeclared, AllowedTools: allowedTools, ContextPlan: contextPlan, Model: modelName, FallbackModel: fallbackModel})
 	if err != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -525,7 +514,7 @@ func (w *Worker) executeHumanActionReview(ctx context.Context, step core.Claimed
 		"plan_item": input.Title, "tool": input.ToolName, "frozen_params": input.FrozenParams,
 		"risk_level": input.RiskLevel, "policy_reason": input.Reason,
 	})
-	result, err := w.model.Complete(ctx, ModelRequest{
+	result, err := w.completeModel(ctx, ModelRequest{
 		SystemPrompt: "你是独立安全审批器，没有工具权限。只输出严格 JSON：{\"decision\":\"approve|reject|escalate_to_user\",\"reason\":\"简短理由\"}。仅低中风险、参数明确、目标范围有限且可恢复的动作可以 approve；高风险、开放世界、破坏性或信息不足必须 escalate_to_user。",
 		UserPrompt:   string(payload), Model: reviewerModel, MaxOutputTokens: 256, EnableTools: false,
 	})
@@ -767,7 +756,7 @@ func (w *Worker) executeModelSynthesis(ctx context.Context, step core.ClaimedSte
 	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
 	requestedModel := modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName)
 	contextPlan := map[string]any{"strategy": "verified_web_search_synthesis_v1", "search_calls": len(input.SearchResults), "skills": skillPlan}
-	result, modelErr := w.model.Complete(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: userPrompt, RequestedModel: requestedModel, MaxOutputTokens: core.DefaultModelOutputTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel, ContextPlan: contextPlan})
+	result, modelErr := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: userPrompt, RequestedModel: requestedModel, MaxOutputTokens: core.DefaultModelOutputTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel, ContextPlan: contextPlan})
 	if modelErr != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -998,7 +987,10 @@ func skillContextForIDs(snapshot string, ids []string, args string) (string, map
 	loadedNames := make([]string, 0, len(ids))
 	parts := make([]string, 0, len(ids))
 	allowedToolSet := make(map[string]struct{})
+	requiredCapabilitySet := make(map[string]struct{})
+	preferredToolSet := make(map[string]struct{})
 	toolScopeDeclared := false
+	strictFallback := false
 	const maxSkillBody = 6000
 	for _, skill := range skills {
 		if _, ok := requested[skill.ID]; !ok {
@@ -1028,6 +1020,15 @@ func skillContextForIDs(snapshot string, ids []string, args string) (string, map
 				allowedToolSet[tool] = struct{}{}
 			}
 		}
+		for _, capability := range manifestStringList(firstManifestValue(manifest, "required_capabilities", "required-capabilities")) {
+			requiredCapabilitySet[capability] = struct{}{}
+		}
+		for _, tool := range manifestStringList(firstManifestValue(manifest, "preferred_tools", "preferred-tools")) {
+			preferredToolSet[tool] = struct{}{}
+		}
+		if fallbackPolicy, _ := firstManifestValue(manifest, "fallback_policy", "fallback-policy").(string); fallbackPolicy == "strict" {
+			strictFallback = true
+		}
 		header := "# " + skill.Name + "@" + skill.Version
 		if len(tools) > 0 {
 			header += "\n声明可用工具（不扩大运行时权限）：" + strings.Join(tools, ", ")
@@ -1044,17 +1045,79 @@ func skillContextForIDs(snapshot string, ids []string, args string) (string, map
 		allowedTools = append(allowedTools, tool)
 	}
 	sort.Strings(allowedTools)
-	return strings.Join(parts, "\n\n"), map[string]any{
-		"strategy":            "explicit_skill_invocation_v1",
-		"available":           len(skills),
-		"requested":           len(ids),
-		"loaded":              len(loadedIDs),
-		"loaded_ids":          loadedIDs,
-		"loaded_names":        loadedNames,
-		"args_provided":       strings.TrimSpace(args) != "",
-		"tool_scope_declared": toolScopeDeclared,
-		"allowed_tools":       allowedTools,
+	requiredCapabilities := sortedStringSet(requiredCapabilitySet)
+	preferredTools := sortedStringSet(preferredToolSet)
+	fallbackPolicy := "same-capability"
+	if strictFallback {
+		fallbackPolicy = "strict"
 	}
+	return strings.Join(parts, "\n\n"), map[string]any{
+		"strategy":              "explicit_skill_invocation_v1",
+		"available":             len(skills),
+		"requested":             len(ids),
+		"loaded":                len(loadedIDs),
+		"loaded_ids":            loadedIDs,
+		"loaded_names":          loadedNames,
+		"args_provided":         strings.TrimSpace(args) != "",
+		"tool_scope_declared":   toolScopeDeclared,
+		"allowed_tools":         allowedTools,
+		"required_capabilities": requiredCapabilities,
+		"preferred_tools":       preferredTools,
+		"fallback_policy":       fallbackPolicy,
+	}
+}
+
+func firstManifestValue(manifest map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, exists := manifest[key]; exists {
+			return value
+		}
+	}
+	return nil
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func missingStrictSkillCapabilities(snapshot string, skillPlan map[string]any) []string {
+	if skillPlan == nil || skillPlan["fallback_policy"] != "strict" {
+		return nil
+	}
+	required, _ := skillPlan["required_capabilities"].([]string)
+	if len(required) == 0 {
+		return nil
+	}
+	available := make(map[string]struct{})
+	for _, spec := range core.BuiltinToolSpecs() {
+		available[spec.Name] = struct{}{}
+		for _, alias := range spec.Aliases {
+			available[alias] = struct{}{}
+		}
+		for _, capability := range spec.Capabilities {
+			available[capability] = struct{}{}
+		}
+	}
+	for _, capability := range mcpSnapshotsFromConfig(snapshot) {
+		available[capability.ID] = struct{}{}
+		for _, tool := range capability.Tools {
+			available[tool.Name] = struct{}{}
+			available["mcp__"+capability.ID+"__"+tool.Name] = struct{}{}
+		}
+	}
+	missing := make([]string, 0)
+	for _, capability := range required {
+		if _, exists := available[capability]; !exists {
+			missing = append(missing, capability)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 func skillInvokeToolDefinition() ToolDefinition {
@@ -1382,7 +1445,7 @@ func (w *Worker) executeAgentTeam(ctx context.Context, step core.ClaimedStep, ru
 	}
 	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
 	requestedModel := modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName)
-	result, err := w.model.Complete(ctx, ModelRequest{SystemPrompt: system, UserPrompt: strings.Join(parts, "\n\n"), RequestedModel: requestedModel, MaxOutputTokens: maxTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel})
+	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: system, UserPrompt: strings.Join(parts, "\n\n"), RequestedModel: requestedModel, MaxOutputTokens: maxTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel})
 	if err != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -1570,6 +1633,14 @@ func (w *Worker) executeWebSearchTool(ctx context.Context, step core.ClaimedStep
 	execution.InvocationID = invocationID
 	execution.InputHash = input.InputHash
 	execution.Idempotent = true
+	if execution.Output == nil {
+		execution.Output = map[string]any{}
+	}
+	execution.Output["_envelope"] = map[string]any{
+		"trust":      core.TrustExternalUntrusted,
+		"source":     "builtin:web_search",
+		"capability": "web.search",
+	}
 	status := core.StatusSucceeded
 	summary := "互联网搜索完成，结果已保存并进入来源综合。"
 	if execution.Status != core.StatusSucceeded {
@@ -1627,7 +1698,16 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 		return toolReceiptBeginFailure(err, "MCP 副作用状态未知，已停止自动重试。")
 	}
 	callResult, callErr := mcpadapter.Call(ctx, manifestJSON, toolName, input.Arguments)
-	output := map[string]any{"capability_id": capabilityID, "tool_name": toolName, "is_error": callResult.IsError}
+	output := map[string]any{
+		"capability_id": capabilityID,
+		"tool_name":     toolName,
+		"is_error":      callResult.IsError,
+		"_envelope": map[string]any{
+			"trust":      core.TrustExternalUntrusted,
+			"source":     "mcp:" + capabilityID,
+			"capability": toolName,
+		},
+	}
 	content := make([]any, 0, len(callResult.Content))
 	for _, raw := range callResult.Content {
 		var item any

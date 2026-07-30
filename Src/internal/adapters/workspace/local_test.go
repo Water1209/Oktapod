@@ -55,6 +55,17 @@ func TestWorkspaceReadListFindGrepEditAndConflict(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAcceptsConciseReadAlias(t *testing.T) {
+	executor, projectRoot := newWorkspaceTestExecutor(t)
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("alias works"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execution := executeWorkspaceTest(t, executor, "read", map[string]any{"path": "README.md"})
+	if execution.Status != core.StatusSucceeded || execution.Output["content"] != "alias works" {
+		t.Fatalf("alias execution=%#v", execution)
+	}
+}
+
 func TestWorkspaceRejectsBinaryAndSymlinkTraversal(t *testing.T) {
 	executor, projectRoot := newWorkspaceTestExecutor(t)
 	if err := os.WriteFile(filepath.Join(projectRoot, "binary.bin"), []byte{0, 1, 2}, 0o600); err != nil {
@@ -78,6 +89,43 @@ func TestWorkspaceRejectsBinaryAndSymlinkTraversal(t *testing.T) {
 	}
 }
 
+func TestGovernedHostEnvironmentIsolatesHomeSecretsAndGitConfiguration(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SSH_AUTH_SOCK", "should-not-leak")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "should-not-leak")
+	t.Setenv("OKTAPOD_MODEL_API_KEY", "should-not-leak")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "host.gitconfig"))
+
+	environment, err := safeEnvironment(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{}
+	for _, item := range environment {
+		name, value, _ := strings.Cut(item, "=")
+		values[name] = value
+	}
+	for _, denied := range []string{"SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY", "OKTAPOD_MODEL_API_KEY"} {
+		if _, exists := values[denied]; exists {
+			t.Fatalf("%s leaked into governed host environment", denied)
+		}
+	}
+	if values["HOME"] == "" || values["HOME"] == os.Getenv("HOME") {
+		t.Fatalf("HOME was not isolated: %q", values["HOME"])
+	}
+	if values["GIT_CONFIG_NOSYSTEM"] != "1" || values["GIT_TERMINAL_PROMPT"] != "0" || values["GIT_CONFIG_COUNT"] != "2" {
+		t.Fatalf("Git isolation is incomplete: %#v", values)
+	}
+}
+
+func TestCommandOutputUsesBoundedExcerptBeforeArtifactPersistence(t *testing.T) {
+	value := strings.Repeat("x", maxCommandOutput+32)
+	excerpt, truncated := boundedTextExcerpt(value, maxCommandOutput)
+	if !truncated || len(excerpt) <= maxCommandOutput || !strings.Contains(excerpt, "continued in Artifact") {
+		t.Fatalf("unexpected bounded command excerpt: truncated=%v length=%d", truncated, len(excerpt))
+	}
+}
+
 func TestWorkspaceGitReadAndMutationPreconditions(t *testing.T) {
 	executor, projectRoot := newWorkspaceTestExecutor(t)
 	runGitSetup(t, projectRoot, "init")
@@ -93,6 +141,10 @@ func TestWorkspaceGitReadAndMutationPreconditions(t *testing.T) {
 	runGitSetup(t, projectRoot, "commit", "-m", "initial")
 	status := executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
 	statusHash := status.Output["status_hash"].(string)
+	baselineHead, _ := status.Output["head"].(string)
+	if len(baselineHead) < 7 {
+		t.Fatalf("git status did not expose a frozen HEAD: %+v", status)
+	}
 	branch := executeWorkspaceTest(t, executor, core.ToolGitBranch, map[string]any{"name": "feature/test", "expected_status_hash": statusHash})
 	if branch.Status != core.StatusSucceeded {
 		t.Fatalf("branch=%+v", branch)
@@ -107,6 +159,10 @@ func TestWorkspaceGitReadAndMutationPreconditions(t *testing.T) {
 	diff := executeWorkspaceTest(t, executor, core.ToolGitDiff, map[string]any{"path": "tracked.txt", "staged": false})
 	if diff.Status != core.StatusSucceeded || !strings.Contains(diff.Output["diff"].(string), "changed") {
 		t.Fatalf("diff=%+v", diff)
+	}
+	baselineDiff := executeWorkspaceTest(t, executor, core.ToolGitDiff, map[string]any{"baseline": baselineHead})
+	if baselineDiff.Status != core.StatusSucceeded || !strings.Contains(baselineDiff.Output["diff"].(string), "changed") {
+		t.Fatalf("baseline diff=%+v", baselineDiff)
 	}
 	changedStatus := executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
 	restore := executeWorkspaceTest(t, executor, core.ToolGitRestore, map[string]any{"path": "tracked.txt", "expected_status_hash": changedStatus.Output["status_hash"].(string)})

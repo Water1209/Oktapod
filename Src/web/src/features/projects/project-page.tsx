@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import * as Select from '@radix-ui/react-select'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, ExternalLink, File as FileIcon, FileBox, FileUp, Folder, FolderPlus, HardDrive, Infinity as InfinityIcon, LockKeyhole, MessageSquare, MoreHorizontal, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, Search, Settings2, SlidersHorizontal, Sparkles, Upload, Users, Workflow, XCircle } from 'lucide-react'
-import { api, type AgentTeamRoom, type Approval, type ApprovalRule, type Artifact, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type RunEvent, type RunUsage, type Scene, type Task, type TaskMode, type TeamDefinition, type Visibility } from '../../shared/api/client'
+import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, File as FileIcon, FileBox, Folder, FolderPlus, HardDrive, Infinity as InfinityIcon, LockKeyhole, MessageSquare, MoreHorizontal, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, Search, Settings2, SlidersHorizontal, Sparkles, Upload, Users, Workflow, XCircle } from 'lucide-react'
+import { api, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type Scene, type TaskMode, type TeamDefinition, type Visibility } from '../../shared/api/client'
 import { AssistantContent } from '../../shared/assistant-content'
 import { useBootstrap } from '../../shared/bootstrap-context'
 import { TASK_RUNTIME_DEFAULTS } from '../../shared/runtime-defaults'
@@ -14,6 +14,7 @@ import { MessageTaskStream } from '../tasks/message-task-stream'
 import { TaskStatusStrip } from '../tasks/task-status-strip'
 import { useRunEvents } from '../runs/use-run-events'
 import { isCompactCommand, parseSkillInvocation, skillCommandName } from './skill-command'
+import { InspectorChanges, InspectorContext, InspectorEvents, InspectorRun, InspectorSecurity, InspectorUsage } from './project-inspector'
 
 const statusLabels: Record<string, string> = {
   queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '执行受阻', succeeded: '已完成', failed: '失败', canceled: '已取消',
@@ -176,7 +177,7 @@ function ProjectWorkspace() {
 
         <div className="composer-stack">
           <TaskStatusStrip activeTask={allConversationTasks[0]} conversationId={activeConversationId} />
-          <TaskComposer key={`composer-${activeConversationKey}-${composerPrefill?.nonce ?? 0}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} projectDefaultModel={project.data.default_model} agents={agents.data?.items ?? []} teams={teams.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} models={models.data?.items ?? []} providers={providers.data?.items ?? []} providerDefaultModel={models.data?.default_model ?? ''} initialValue={composerPrefill?.value} onComposerDraft={handleComposerDraft} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
+          <TaskComposer key={`composer-${activeConversationKey}-${composerPrefill?.nonce ?? 0}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} agents={agents.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} providers={providers.data?.items ?? []} initialValue={composerPrefill?.value} onComposerDraft={handleComposerDraft} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
         </div>
       </main>
 
@@ -194,7 +195,7 @@ function ProjectWorkspace() {
           {managementTab === 'context' ? <InspectorContext projectModel={project.data.default_model} events={inspectedRunEvents.data.items} /> : null}
           {managementTab === 'tools' ? <InspectorEvents events={inspectedRunEvents.data.items.filter((item) => item.event_type.includes('tool'))} empty="当前 Run 尚无工具事件。" /> : null}
           {managementTab === 'security' ? <InspectorSecurity projectId={projectId} taskId={inspectedTask?.id} approvals={inspectedApprovals.data?.items ?? []} /> : null}
-          {managementTab === 'changes' ? <InspectorChanges artifacts={inspectedArtifacts.data?.items ?? []} /> : null}
+          {managementTab === 'changes' ? <InspectorChanges runId={inspectedTask?.run_id} artifacts={inspectedArtifacts.data?.items ?? []} /> : null}
           {managementTab === 'trace' ? <InspectorEvents events={inspectedRunEvents.data.items} empty="当前 Run 尚无事件。" /> : null}
           {managementTab === 'usage' ? <InspectorUsage usage={inspectedUsage.data} /> : null}
           {managementTab === 'overview' ? <div className="project-overview-list"><button type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /><span><strong>项目设置</strong><small>{project.data.description || '补充项目目标与模型策略'}</small></span><ChevronRight size={15} /></button><div><Bot size={16} /><span><strong>默认智能体</strong><small>Oktapod Generalist</small></span></div><div><Sparkles size={16} /><span><strong>模型策略</strong><small>{project.data.default_model || '由 Provider 自动选择'}</small></span></div><div><LockKeyhole size={16} /><span><strong>可见范围</strong><small>仅当前用户</small></span></div></div> : null}
@@ -214,90 +215,6 @@ function ProjectWorkspace() {
       <ProjectSettingsDialog project={project.data} models={models.data?.items ?? []} providerDefaultModel={models.data?.default_model ?? ''} modelsError={models.error?.message} open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   )
-}
-
-function InspectorRun({ task, events, usage, artifacts, agentTeam }: { task?: Task; events: RunEvent[]; usage?: RunUsage; artifacts: Artifact[]; agentTeam?: AgentTeamRoom }) {
-  const queryClient = useQueryClient()
-  const accept = useMutation({
-    mutationFn: () => api.acceptTaskOutcome(task!.id),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['tasks', task?.project_id] })
-      await queryClient.invalidateQueries({ queryKey: ['task', task?.id] })
-    },
-  })
-  if (!task) return <div className="inspector-empty"><ActivityIcon /><strong>当前 Thread 尚无 Run</strong><span>发送任务后，状态、恢复点和控制入口会显示在这里。</span></div>
-  const latest = events.at(-1)
-  return <section className="inspector-section" aria-label={task.goal}>
-    <span className={`task-status-badge ${task.status}`}>{statusLabels[task.status] ?? task.status}</span>
-    <h3>{task.title || task.goal}</h3>
-    <p>{task.goal}</p>
-    <dl className="inspector-facts"><div><dt>Run</dt><dd>{task.run_id.slice(0, 12)}</dd></div><div><dt>Mode</dt><dd>{task.mode}</dd></div><div><dt>事件</dt><dd>{events.length}</dd></div><div><dt>Cursor</dt><dd>{latest?.stream_seq ?? 0}</dd></div>{usage ? <><div><dt>模型用量</dt><dd>{usage.model_calls} 次 · {(usage.input_tokens + usage.output_tokens).toLocaleString()} Token</dd></div><div><dt>Latency</dt><dd>{usage.latency_ms.toLocaleString()} ms</dd></div></> : null}</dl>
-    {task.error_code ? <div className="inspector-alert"><XCircle size={15} /><span><strong>{task.error_code}</strong><small>{task.result_summary || '打开 Trace 查看恢复信息。'}</small></span></div> : null}
-    {task.status === 'succeeded' && task.result_summary ? <section className="inspector-result" aria-label="任务结果"><header><strong>任务结果</strong>{task.accepted ? <span><Check size={12} />已接受</span> : null}</header><p>{task.result_summary}</p>{!task.accepted ? <button className="primary-button" type="button" disabled={accept.isPending} onClick={() => accept.mutate()}><Check size={13} />接受成果</button> : null}{accept.error ? <small className="approval-error">{accept.error.message}</small> : null}</section> : null}
-    {task.mode === 'agent_team' ? <InspectorAgentTeam room={agentTeam} /> : null}
-    {artifacts.length ? <div className="inspector-artifacts">{artifacts.map((artifact) => <InspectorArtifactRow key={artifact.id} artifact={artifact} />)}</div> : null}
-  </section>
-}
-
-function InspectorAgentTeam({ room }: { room?: AgentTeamRoom }) {
-  const roleLabels = { coordinator: '协调者', researcher: '研究者', builder: '构建者', reviewer: '审查者' }
-  return <section className="inspector-agent-team" aria-label="Agent Team 协作室"><header><strong>Agent Team 协作室</strong><small>group cursor {room?.next_cursor ?? 0}</small></header>{room?.members.length ? <div>{room.members.map((member) => <span key={member.id}><strong>{member.display_name}</strong><small>{roleLabels[member.role]} · {member.status}</small></span>)}</div> : <p>正在恢复成员状态…</p>}</section>
-}
-
-function InspectorArtifactRow({ artifact }: { artifact: Artifact }) {
-  const [visibility, setVisibility] = useState<Visibility>('private')
-  const queryClient = useQueryClient()
-  const publish = useMutation({ mutationFn: () => api.publishArtifact(artifact.id, { name: artifact.name, visibility }), onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['assets', artifact.project_id] }) })
-  return <div className="artifact-publish-row"><span><strong>{artifact.name}</strong><small>{artifact.kind} · {artifact.media_type} · {artifact.size_bytes} B</small></span><a className="artifact-open-link" href={api.artifactPreviewUrl(artifact.id)} target="_blank" rel="noreferrer"><ExternalLink size={13} />直接打开</a><select aria-label={`${artifact.name} 发布可见性`} value={visibility} disabled={publish.isPending || publish.isSuccess} onChange={(event) => setVisibility(event.target.value as Visibility)}><option value="private">仅自己</option><option value="project">项目成员</option></select><button type="button" disabled={publish.isPending || publish.isSuccess} onClick={() => publish.mutate()}><FileUp size={13} />{publish.isSuccess ? '已发布' : publish.isPending ? '发布中' : '发布到资产'}</button></div>
-}
-
-function InspectorContext({ projectModel, events }: { projectModel: string; events: RunEvent[] }) {
-  const latestModel = [...events].reverse().map((event) => event.payload.model).find((value): value is string => typeof value === 'string' && value.trim() !== '')
-  const provider = [...events].reverse().map((event) => event.payload.provider_id).find((value): value is string => typeof value === 'string' && value.trim() !== '')
-  const thinking = [...events].reverse().map((event) => event.payload.thinking).find((value): value is string => typeof value === 'string' && value.trim() !== '')
-  return <div className="inspector-section"><h3>冻结上下文</h3><p>显示当前 Run 已记录的有效配置；下一 Turn 的 Composer 变更不会改写本次快照。</p><dl className="inspector-facts"><div><dt>Model</dt><dd>{latestModel || projectModel || '自动选择'}</dd></div><div><dt>Provider</dt><dd>{provider || '默认实例'}</dd></div><div><dt>Thinking</dt><dd>{thinking || 'auto'}</dd></div><div><dt>消息策略</dt><dd>Session Leaf</dd></div></dl></div>
-}
-
-function InspectorUsage({ usage }: { usage?: RunUsage }) {
-  if (!usage) return <div className="inspector-empty"><Clock3 size={18} /><strong>尚无用量记录</strong><span>首次模型调用完成后更新。</span></div>
-  return <div className="inspector-section"><h3>Run Usage</h3><dl className="inspector-facts"><div><dt>调用</dt><dd>{usage.model_calls}</dd></div><div><dt>输入</dt><dd>{usage.input_tokens.toLocaleString()}</dd></div><div><dt>输出</dt><dd>{usage.output_tokens.toLocaleString()}</dd></div><div><dt>Reasoning</dt><dd>{usage.reasoning_tokens.toLocaleString()}</dd></div><div><dt>Cache</dt><dd>{usage.cached_tokens.toLocaleString()}</dd></div><div><dt>Latency</dt><dd>{usage.latency_ms.toLocaleString()} ms</dd></div></dl><small className="inspector-note">Reasoning 为输出子集，不重复计入总 Token。</small></div>
-}
-
-function InspectorEvents({ events, empty }: { events: RunEvent[]; empty: string }) {
-  if (!events.length) return <div className="inspector-empty"><Workflow size={18} /><strong>{empty}</strong></div>
-  return <div className="inspector-event-list">{events.map((event) => <article key={event.id}><span className="activity-node" /><div><strong>{event.event_type}</strong><small>#{event.stream_seq} · {new Date(event.occurred_at).toLocaleTimeString('zh-CN')}</small><code>{eventSummary(event.payload)}</code></div></article>)}</div>
-}
-
-function InspectorSecurity({ projectId, taskId, approvals }: { projectId: string; taskId?: string; approvals: Approval[] }) {
-  const relevant = taskId ? approvals.filter((approval) => approval.task_id === taskId) : []
-  const [openedAt] = useState(() => Date.now())
-  const queryClient = useQueryClient()
-  const rules = useQuery({ queryKey: ['project-approval-rules', projectId], queryFn: () => api.projectApprovalRules(projectId) })
-  const revoke = useMutation({
-    mutationFn: (rule: ApprovalRule) => api.revokeProjectApprovalRule(projectId, rule.id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project-approval-rules', projectId] }),
-  })
-  const activeRules = (rules.data?.items ?? []).filter((rule) => !rule.revoked_at && new Date(rule.expires_at).getTime() > openedAt)
-  return <div className="inspector-section"><h3>Security</h3><p>Full Access 和项目规则只减少逐次确认，确定性路径、网络和命令黑名单始终生效。</p>{relevant.length ? <div className="inspector-event-list">{relevant.map((approval) => <article key={approval.id}><span className={`activity-node ${approval.status}`} /><div><strong>{approval.tool_name}</strong><small>{approval.status} · {approval.risk_level}</small></div></article>)}</div> : <div className="inspector-empty compact"><LockKeyhole size={16} /><strong>当前 Run 无审批记录</strong></div>}<h3>项目审批规则</h3>{activeRules.length ? <div className="inspector-event-list">{activeRules.map((rule) => <article key={rule.id}><span className="activity-node approved" /><div><strong>{rule.tool_name}</strong><small>{rule.rule_key} · 至 {new Date(rule.expires_at).toLocaleString('zh-CN')}</small></div><button type="button" disabled={revoke.isPending} onClick={() => revoke.mutate(rule)}>撤销</button></article>)}</div> : <div className="inspector-empty compact"><LockKeyhole size={16} /><strong>没有生效中的项目规则</strong></div>}{revoke.error ? <small className="approval-error">{revoke.error.message}</small> : null}</div>
-}
-
-function InspectorChanges({ artifacts }: { artifacts: Artifact[] }) {
-  const fileArtifacts = artifacts.filter((artifact) => artifact.kind.includes('file') || artifact.name.includes('.') || artifact.media_type.startsWith('text/'))
-  if (!fileArtifacts.length) return <div className="inspector-empty"><FileIcon size={18} /><strong>当前 Run 尚无文件变化</strong><span>文件写入、Diff 与测试产物会按 Run 聚合。</span></div>
-  return <div className="inspector-section"><h3>Changes</h3><div className="inspector-file-list">{fileArtifacts.map((artifact) => <a key={artifact.id} href={api.artifactContentUrl(artifact.id)} target="_blank" rel="noreferrer"><FileIcon size={14} /><span><strong>{artifact.name}</strong><small>{artifact.kind} · {artifact.media_type}</small></span><ChevronRight size={14} /></a>)}</div><small className="inspector-note">Release 1A 提供只读产物与整文件操作；Hunk 恢复属于 1B。</small></div>
-}
-
-function eventSummary(payload: Record<string, unknown>) {
-  const preferred = ['tool_name', 'name', 'model', 'status', 'message']
-  const parts = preferred.flatMap((key) => {
-    const value = payload[key]
-    return typeof value === 'string' && value.trim() ? [`${key}: ${value}`] : []
-  })
-  return parts.slice(0, 3).join(' · ') || '已持久化事件'
-}
-
-function ActivityIcon() {
-  return <span className="activity-node large" aria-hidden="true" />
 }
 
 function ProjectSettingsDialog({ project, models, providerDefaultModel, modelsError, open, onOpenChange }: { project: Awaited<ReturnType<typeof api.project>>; models: { id: string }[]; providerDefaultModel: string; modelsError?: string; open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -749,7 +666,7 @@ function skillDescription(skill: Capability) {
   }
 }
 
-function TaskComposer({ projectId, conversationId, activeTask, projectDefaultModel, agents, skills, models, providers, providerDefaultModel, initialValue, onComposerDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; projectDefaultModel: string; agents: Awaited<ReturnType<typeof api.agents>>['items']; teams: TeamDefinition[]; skills: Capability[]; models: { id: string }[]; providers: ProviderInstance[]; providerDefaultModel: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
+function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, initialValue, onComposerDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
   const bootstrap = useBootstrap()
   const storageKey = `oktapod.composer.${bootstrap.user.id}.${projectId}.${conversationId ?? 'new'}`
   const permissionStorageKey = `oktapod.permission-mode.${bootstrap.user.id}.${projectId}`
@@ -765,7 +682,6 @@ function TaskComposer({ projectId, conversationId, activeTask, projectDefaultMod
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [agentId, setAgentId] = useState('default')
   const [providerId, setProviderId] = useState('default')
-  const [model, setModel] = useState('')
   const [thinking, setThinking] = useState<'auto' | 'off' | 'low' | 'medium' | 'high'>('auto')
   const [skillCommandError, setSkillCommandError] = useState('')
   const [capabilityInstallMessage, setCapabilityInstallMessage] = useState('')
@@ -774,7 +690,7 @@ function TaskComposer({ projectId, conversationId, activeTask, projectDefaultMod
   const capabilityAttachmentRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
   const submit = useMutation({
-    mutationFn: ({ content, invocation, queueKind }: { content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering' }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode, visibility: 'private', permission_mode: permissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: model || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs }, { onRoute, onDelta }),
+    mutationFn: ({ content, invocation, queueKind }: { content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering' }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode, visibility: 'private', permission_mode: permissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs }, { onRoute, onDelta }),
     onSuccess: async (result) => {
       onConversationSelected(result.conversation.id)
       await queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
@@ -850,15 +766,6 @@ function TaskComposer({ projectId, conversationId, activeTask, projectDefaultMod
   }
 
   const enabledAgents = agents.filter((agent) => agent.status === 'enabled')
-  const defaultModelLabel = projectDefaultModel
-    ? `项目默认 · ${projectDefaultModel}`
-    : providerDefaultModel
-      ? `系统默认 · ${providerDefaultModel}`
-      : '自动选择模型'
-  const modelItems: [string, string][] = [
-    ['default', defaultModelLabel],
-    ...Array.from(new Set([model, ...models.map((item) => item.id)].filter(Boolean))).map((id) => [id, id] as [string, string]),
-  ]
   const executorItems: [string, string][] = enabledAgents.length > 0
 	? [['default', '内置执行器'], ...enabledAgents.map((agent) => [agent.id, agent.name] as [string, string])]
 	: [['default', '内置执行器']]
@@ -892,7 +799,7 @@ function TaskComposer({ projectId, conversationId, activeTask, projectDefaultMod
         <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={setProviderId} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} /> : null}</div>
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"], ["agent_team", "Agent Team"]]} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "Full Access"]]} /><InlineSelect value={model || 'default'} onValueChange={(value) => setModel(value === 'default' ? '' : value)} items={modelItems} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景与执行器" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}<button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button></div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"], ["agent_team", "Agent Team"]]} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "Full Access"]]} /><span className="composer-execution-boundary" title="命令在当前宿主机受策略和凭据隔离控制，但不具备容器或操作系统级强隔离">宿主受控 · 非强沙箱</span><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景与执行器" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}<button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button></div></div>
     </form>
     <Dialog.Root open={fullAccessOpen} onOpenChange={setFullAccessOpen}>
       <Dialog.Portal>

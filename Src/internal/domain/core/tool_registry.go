@@ -4,17 +4,29 @@ package core
 // Provider adapters map this schema to their wire format and never own tool
 // names, safety semantics, or business policy.
 type ToolSpec struct {
-	Name        string
-	Description string
-	Parameters  map[string]any
-	Sequential  bool
+	Identity       string
+	Name           string
+	Aliases        []string
+	Description    string
+	Parameters     map[string]any
+	Source         string
+	Capabilities   []string
+	ReadOnly       bool
+	Destructive    bool
+	OpenWorld      bool
+	Idempotent     bool
+	MaxOutputBytes int
+	ExecutorKind   string
+	ValidatorKind  string
+	RendererKind   string
+	Sequential     bool
 }
 
 func BuiltinToolSpecs() []ToolSpec {
 	path := map[string]any{"type": "string", "minLength": 1, "maxLength": 500}
 	cursor := map[string]any{"type": "integer", "minimum": 0}
 	limit := map[string]any{"type": "integer", "minimum": 1, "maximum": 500}
-	return []ToolSpec{
+	specs := []ToolSpec{
 		{
 			Name: ToolUpdatePlan, Description: "Publish or replace the complete semantic execution plan for the current Run. Use outcome-oriented user-visible steps, never raw tool calls. This control action must be called alone.",
 			Sequential: true,
@@ -68,7 +80,7 @@ func BuiltinToolSpecs() []ToolSpec {
 		{Name: ToolWorkspaceRunCommand, Description: "Run a single command (e.g. 'go build', 'npm test'). For shell pipes and redirects, use workspace_shell.", Sequential: true, Parameters: objectSchema([]string{"program", "args"}, map[string]any{"program": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "args": map[string]any{"type": "array", "maxItems": 64, "items": map[string]any{"type": "string", "maxLength": 2000}}})},
 		{Name: ToolWorkspaceShell, Description: "Execute a shell command in the project workspace. Supports pipes, redirects, and command chaining. Use for compound operations like 'git clone xxx && npm install'. Destructive commands are rejected.", Sequential: true, Parameters: objectSchema([]string{"command"}, map[string]any{"command": map[string]any{"type": "string", "minLength": 1, "maxLength": 10000}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300}})},
 		{Name: ToolGitStatus, Description: "Read bounded Git status and return a precondition hash.", Parameters: emptyObjectSchema()},
-		{Name: ToolGitDiff, Description: "Read a bounded Git diff against HEAD or the index.", Parameters: objectSchema(nil, map[string]any{"path": map[string]any{"type": "string", "maxLength": 500}, "staged": map[string]any{"type": "boolean"}})},
+		{Name: ToolGitDiff, Description: "Read a bounded Git diff against HEAD, the index, or a frozen commit baseline.", Parameters: objectSchema(nil, map[string]any{"path": map[string]any{"type": "string", "maxLength": 500}, "staged": map[string]any{"type": "boolean"}, "baseline": map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{7,64}$"}})},
 		{Name: ToolGitLog, Description: "Read a bounded recent Git log.", Parameters: objectSchema(nil, map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}})},
 		{Name: ToolGitConflicts, Description: "List unresolved local merge conflicts without changing the index or working tree.", Parameters: emptyObjectSchema()},
 		{Name: ToolGitBranch, Description: "Create a local branch after validating the frozen repository status hash.", Sequential: true, Parameters: objectSchema([]string{"name", "expected_status_hash"}, map[string]any{"name": map[string]any{"type": "string", "minLength": 1, "maxLength": 200}, "expected_status_hash": map[string]any{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}})},
@@ -77,6 +89,110 @@ func BuiltinToolSpecs() []ToolSpec {
 		{Name: ToolGitRestore, Description: "Restore one complete file from HEAD after validating the frozen repository status hash.", Sequential: true, Parameters: objectSchema([]string{"path", "expected_status_hash"}, map[string]any{"path": path, "expected_status_hash": map[string]any{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}})},
 		{Name: ToolGitRestoreHunk, Description: "Reverse one numbered unstaged diff hunk after validating the frozen repository status hash.", Sequential: true, Parameters: objectSchema([]string{"path", "hunk_index", "expected_status_hash"}, map[string]any{"path": path, "hunk_index": map[string]any{"type": "integer", "minimum": 0, "maximum": 10000}, "expected_status_hash": map[string]any{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}})},
 		{Name: ToolWorkspaceExtractArchive, Description: "Extract a ZIP archive into a project-relative directory. Use to unpack user-provided attachments for reading and reference.", Sequential: true, Parameters: objectSchema([]string{"archive_path", "dest_dir"}, map[string]any{"archive_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "dest_dir": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}})},
+	}
+	for index := range specs {
+		applyBuiltinToolMetadata(&specs[index])
+	}
+	return specs
+}
+
+func applyBuiltinToolMetadata(spec *ToolSpec) {
+	spec.Identity = "native:" + spec.Name
+	spec.Source = "native"
+	spec.MaxOutputBytes = 50 << 10
+	spec.ExecutorKind = "native"
+	spec.ValidatorKind = "deterministic_policy"
+	spec.RendererKind = "receipt"
+	planned := PlanTool(ToolCall{Name: spec.Name, Arguments: minimumValidToolArguments(spec.Name)})
+	spec.Idempotent = planned.Idempotent
+	spec.ReadOnly = planned.RiskLevel == "L0" && spec.Name != ToolUpdatePlan && spec.Name != ToolRequestInput && spec.Name != ToolRequestPermission && spec.Name != ToolSkillInvoke
+	spec.Destructive = planned.RiskLevel == "L2" || planned.RiskLevel == "L3"
+	spec.OpenWorld = spec.Name == ToolWebSearch
+	if spec.Name == ToolWebSearch {
+		spec.Source = "builtin"
+		spec.Identity = "builtin:" + spec.Name
+	}
+	switch spec.Name {
+	case ToolWorkspaceReadFile:
+		spec.Aliases, spec.Capabilities = []string{"read"}, []string{"repository.read"}
+	case ToolWorkspaceEditFile:
+		spec.Aliases, spec.Capabilities = []string{"edit"}, []string{"repository.write"}
+	case ToolWorkspaceWriteFile:
+		spec.Aliases, spec.Capabilities = []string{"write"}, []string{"repository.write"}
+	case ToolWorkspaceListFiles:
+		spec.Aliases, spec.Capabilities = []string{"ls"}, []string{"repository.read"}
+	case ToolWorkspaceFindFiles:
+		spec.Aliases, spec.Capabilities = []string{"find"}, []string{"repository.search"}
+	case ToolWorkspaceGrep:
+		spec.Aliases, spec.Capabilities = []string{"grep"}, []string{"repository.search"}
+	case ToolWorkspaceRunCommand:
+		spec.Aliases, spec.Capabilities = []string{"run_command"}, []string{"workspace.command"}
+	case ToolWebSearch:
+		spec.Capabilities = []string{"web.search"}
+	}
+}
+
+// ResolveToolName keeps persisted V1 tool identities compatible while allowing
+// new model catalogs to expose concise Pi-style invocation aliases.
+func ResolveToolName(name string) string {
+	switch name {
+	case "read":
+		return ToolWorkspaceReadFile
+	case "edit":
+		return ToolWorkspaceEditFile
+	case "write":
+		return ToolWorkspaceWriteFile
+	case "ls":
+		return ToolWorkspaceListFiles
+	case "find":
+		return ToolWorkspaceFindFiles
+	case "grep":
+		return ToolWorkspaceGrep
+	case "run_command":
+		return ToolWorkspaceRunCommand
+	default:
+		return name
+	}
+}
+
+func minimumValidToolArguments(name string) map[string]any {
+	switch name {
+	case ToolWorkspaceReadFile:
+		return map[string]any{"path": "file.txt"}
+	case ToolWorkspaceEditFile:
+		return map[string]any{"path": "file.txt", "preimage_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "old_text": "a", "new_text": "b"}
+	case ToolWorkspaceWriteFile:
+		return map[string]any{"path": "file.txt", "content": ""}
+	case ToolWorkspaceFindFiles:
+		return map[string]any{"pattern": "*"}
+	case ToolWorkspaceGrep:
+		return map[string]any{"query": "a"}
+	case ToolWorkspaceRunCommand:
+		return map[string]any{"program": "go", "args": []any{"version"}}
+	case ToolGitBranch:
+		return map[string]any{"name": "branch", "expected_status_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	case ToolGitCommit:
+		return map[string]any{"message": "message", "expected_status_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	case ToolGitCommitPaths:
+		return map[string]any{"message": "message", "paths": []any{"file.txt"}, "expected_status_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	case ToolGitRestore:
+		return map[string]any{"path": "file.txt", "expected_status_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	case ToolGitRestoreHunk:
+		return map[string]any{"path": "file.txt", "hunk_index": float64(0), "expected_status_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	case ToolUpdatePlan:
+		return map[string]any{"items": []any{map[string]any{"title": "step", "description": "step", "status": "in_progress"}}}
+	case ToolRequestInput:
+		return map[string]any{"prompt": "input"}
+	case ToolRequestPermission:
+		return map[string]any{"capability": "workspace_command", "reason": "needed"}
+	case ToolSkillInvoke:
+		return map[string]any{"skill": "skill"}
+	case ToolWebSearch:
+		return map[string]any{"query": "query"}
+	case ToolWorkspaceExtractArchive:
+		return map[string]any{"archive_path": "archive.zip", "dest_dir": "out"}
+	default:
+		return map[string]any{}
 	}
 }
 

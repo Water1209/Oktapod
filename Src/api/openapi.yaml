@@ -1888,6 +1888,27 @@ paths:
                       $ref: "#/components/schemas/ApprovalRule"
         default:
           $ref: "#/components/responses/Problem"
+  /runs/{run_id}/changes:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getRunChanges
+      parameters:
+        - name: baseline
+          in: query
+          schema: { type: string, enum: [run_start, head, index], default: run_start }
+      responses:
+        "200":
+          description: Bounded Git changes for an immutable Run, HEAD, or index baseline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunChanges"
+        default:
+          $ref: "#/components/responses/Problem"
   /projects/{project_id}/approval-rules/{rule_id}:
     parameters:
       - name: project_id
@@ -2396,7 +2417,7 @@ components:
         updated_at: { type: string, format: date-time }
     MCPHealth:
       type: object
-      required: [id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, last_error, connected_at, updated_at]
+      required: [id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, schema_hash, config_version, health_state, last_error, connected_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         capability_id: { type: string, format: uuid }
@@ -2406,6 +2427,9 @@ components:
         protocol: { type: string }
         tool_count: { type: integer, format: int64 }
         tools_json: { type: string }
+        schema_hash: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        config_version: { type: integer, format: int64, minimum: 1 }
+        health_state: { type: string, enum: [unknown, disabled, needs-auth, connected, failed] }
         last_error: { type: string }
         connected_at: { type: string, format: date-time, nullable: true }
         updated_at: { type: string, format: date-time }
@@ -3040,6 +3064,20 @@ components:
         remaining_tokens: { type: integer, format: int64 }
         reserved_calls: { type: integer, format: int64 }
         reserved_tokens: { type: integer, format: int64 }
+    RunChanges:
+      type: object
+      required: [run_id, project_id, baseline, baseline_head, current_head, dirty_at_start, status_hash, diff, truncated, baseline_notice]
+      properties:
+        run_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        baseline: { type: string, enum: [run_start, head, index] }
+        baseline_head: { type: string }
+        current_head: { type: string }
+        dirty_at_start: { type: boolean }
+        status_hash: { type: string }
+        diff: { type: string }
+        truncated: { type: boolean }
+        baseline_notice: { type: string }
     UsageBucket:
       type: object
       required: [key, label, model_calls, input_tokens, output_tokens, cached_tokens, reasoning_tokens, estimated_calls, latency_ms, cost_decimal]

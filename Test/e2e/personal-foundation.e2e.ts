@@ -37,9 +37,7 @@ test('Personal 用户能创建项目并看到缺少凭证的可恢复阻塞证�
   const taskTitle = '输出一条 E2E 验收结果'
   await page.getByRole('textbox', { name: '消息' }).fill(taskTitle)
   await page.getByRole('button', { name: '发送' }).click()
-  const linkedTask = page.getByRole('link', { name: '查看任务详情' }).last()
-  await expect(linkedTask).toBeVisible({ timeout: 15_000 })
-  await linkedTask.click()
-  await expect(page.locator('.message-task-stream')).toContainText('数据库中没有可用的模型配置')
-  await expect(page.locator('.message-task-stream')).toContainText('当前工作空间尚未保存模型配置')
+  const taskStream = page.locator('.message-task-stream')
+  await expect(taskStream).toContainText('数据库中没有可用的模型配置', { timeout: 15_000 })
+  await expect(taskStream).toContainText('当前工作空间尚未保存模型配置')
 })

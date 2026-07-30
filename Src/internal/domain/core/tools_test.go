@@ -25,6 +25,47 @@ func TestPlanToolFailsClosedForUnsafeInputs(t *testing.T) {
 	}
 }
 
+func TestExecutionAuthorizationBindsToolInputScopeRiskAndPolicy(t *testing.T) {
+	call := ToolCall{ID: "call-1", Name: ToolWorkspaceWriteFile, Arguments: map[string]any{"path": "result.md", "content": "ok"}}
+	planned := PlanTool(call)
+	authorization := ExecutionAuthorization{
+		ToolIdentity: call.Name, InputHash: planned.InputHash,
+		OrganizationID: "org-1", ProjectID: "project-1", RunID: "run-1",
+		RiskLevel: planned.RiskLevel, PolicyDecision: planned.Decision, PolicyVersion: ToolPolicyVersion,
+	}
+	if err := ValidateExecutionAuthorization(planned, authorization); err != nil {
+		t.Fatalf("valid authorization rejected: %v", err)
+	}
+	authorization.InputHash = "sha256:changed"
+	if err := ValidateExecutionAuthorization(planned, authorization); err == nil {
+		t.Fatal("changed frozen input was authorized")
+	}
+}
+
+func TestBuiltinToolSpecCarriesExecutionAndCapabilityMetadata(t *testing.T) {
+	var read ToolSpec
+	for _, spec := range BuiltinToolSpecs() {
+		if spec.Name == ToolWorkspaceReadFile {
+			read = spec
+			break
+		}
+	}
+	if read.Identity != "native:"+ToolWorkspaceReadFile || read.Source != "native" || !read.ReadOnly || read.ExecutorKind == "" || read.ValidatorKind == "" || read.RendererKind == "" {
+		t.Fatalf("read ToolSpec metadata incomplete: %#v", read)
+	}
+	if len(read.Aliases) != 1 || read.Aliases[0] != "read" || len(read.Capabilities) != 1 || read.Capabilities[0] != "repository.read" {
+		t.Fatalf("read ToolSpec aliases/capabilities incomplete: %#v", read)
+	}
+}
+
+func TestConciseToolAliasUsesCanonicalPolicyWithoutChangingInvocationIdentity(t *testing.T) {
+	call := ToolCall{ID: "call-1", Name: "read", Arguments: map[string]any{"path": "README.md"}}
+	planned := PlanTool(call)
+	if planned.Decision != PolicyAllow || planned.Call.Name != "read" || ResolveToolName(planned.Call.Name) != ToolWorkspaceReadFile {
+		t.Fatalf("alias plan=%#v", planned)
+	}
+}
+
 func TestPlanToolUsesAllowAskDenyPrecedence(t *testing.T) {
 	t.Parallel()
 	write := PlanTool(ToolCall{Name: ToolWorkspaceWriteFile, Arguments: map[string]any{"path": "notes/result.md", "content": "safe"}})

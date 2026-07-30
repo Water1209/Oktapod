@@ -62,6 +62,15 @@ func TestSkillContextMatchesChineseTriggersAndListsMetadataOnlyCatalog(t *testin
 	}
 }
 
+func TestStrictSkillCapabilityConstraintUsesFrozenRunTools(t *testing.T) {
+	snapshot := `{"skill_capabilities":[{"id":"skill-1","name":"release-check","version":"1.0.0","content_hash":"sha256:x","manifest_json":"{\"description\":\"release\",\"instructions\":\"check\",\"required-capabilities\":[\"repository.read\",\"external.ticket.write\"],\"preferred-tools\":[\"grep\"],\"fallback-policy\":\"strict\"}"}]}`
+	_, plan := skillContextForIDs(snapshot, []string{"skill-1"}, "")
+	missing := missingStrictSkillCapabilities(snapshot, plan)
+	if len(missing) != 1 || missing[0] != "external.ticket.write" {
+		t.Fatalf("missing=%v, want external.ticket.write only", missing)
+	}
+}
+
 func TestPlanExecuteTurnCannotRepublishPlanBeforeProducingEvidence(t *testing.T) {
 	definitions := []ToolDefinition{
 		{Name: core.ToolUpdatePlan},

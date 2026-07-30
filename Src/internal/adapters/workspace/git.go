@@ -25,10 +25,16 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 		if err != nil {
 			return workspaceFailure(result, "GIT_STATUS_FAILED", err)
 		}
-		return workspaceSuccess(result, map[string]any{"status": redactText(status), "status_hash": statusHash})
+		head, _, headErr := l.runGit(ctx, root, "rev-parse", "HEAD")
+		if headErr != nil {
+			return workspaceFailure(result, "GIT_STATUS_FAILED", headErr)
+		}
+		return workspaceSuccess(result, map[string]any{"status": redactText(status), "status_hash": statusHash, "head": strings.TrimSpace(head)})
 	case core.ToolGitDiff:
 		args := []string{"diff", "--no-ext-diff"}
-		if staged, _ := call.Arguments["staged"].(bool); staged {
+		if baseline := stringArgument(call.Arguments, "baseline"); baseline != "" {
+			args = append(args, baseline)
+		} else if staged, _ := call.Arguments["staged"].(bool); staged {
 			args = append(args, "--cached")
 		}
 		if path := stringArgument(call.Arguments, "path"); path != "" {

@@ -30,9 +30,7 @@ async function sendTaskMessage(page: Page, content: string, mode: '任务' | 'Ag
 
 
 async function openLinkedTask(page: Page) {
-  const link = page.getByRole('link', { name: '查看任务详情' }).last()
-  await expect(link).toBeVisible({ timeout: 15_000 })
-  await link.click()
+  await expect(page.locator('.task-capsule')).toBeVisible({ timeout: 15_000 })
   const openInspector = page.getByRole('button', { name: '打开检查器', exact: true })
   if (await openInspector.isVisible()) await openInspector.click()
 }
@@ -56,7 +54,7 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
   await sendTaskMessage(page, goal)
   await openLinkedTask(page)
 
-  await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.task-capsule').getByText('已完成', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.getByRole('button', { name: 'Usage', exact: true }).click()
   await expect(page.locator('.inspector-facts div').filter({ hasText: '调用' }).getByText('2', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Run', exact: true }).click()
@@ -111,8 +109,7 @@ test('任务执行流默认收敛并支持多 Markdown 文件审阅', async ({ p
   await sendTaskMessage(page, goal)
 
   const taskStream = page.locator('.message-task-stream')
-  await expect(taskStream.getByText('执行计划', { exact: true })).toBeVisible({ timeout: 45_000 })
-  await expect(taskStream.locator('.message-execution-steps')).toContainText('任务已创建')
+  await expect(taskStream.getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
   const artifactsButton = taskStream.getByRole('button', { name: /2 个文件/ })
   await expect(artifactsButton).toBeVisible({ timeout: 15_000 })
   await artifactsButton.click()
@@ -155,8 +152,6 @@ test('L2 命令建立可撤销项目规则后只执行一次并由代码验收',
   await commandApproval.getByRole('button', { name: '本项目允许 30 天' }).click()
   await page.getByRole('dialog').getByRole('button', { name: '确认授权' }).click()
   await expect(commandApproval).toHaveCount(0)
-  await page.getByRole('link', { name: '查看任务详情' }).filter({ hasText: '查看任务详情' }).last().click()
-
   await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
   const openInspector = page.getByRole('button', { name: '打开检查器', exact: true })
   if (await openInspector.isVisible()) await openInspector.click()
@@ -188,7 +183,7 @@ test('完全访问在有效窗口内跳过命令审批并自动完成', async ({
   await composer.getByRole('combobox').nth(0).click()
   await page.getByRole('option', { name: 'Task', exact: true }).click()
   await composer.getByRole('combobox').nth(1).click()
-  await page.getByRole('option', { name: 'Full Access · 30 min', exact: true }).click()
+  await page.getByRole('option', { name: 'Full Access', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: '确认启用' }).click()
   await page.getByRole('button', { name: '执行设置' }).click()
   await page.locator('.composer-advanced .inline-select').first().click()
@@ -279,7 +274,7 @@ test('SSE 首次断线后按游标重连且终态事件不丢', async ({ page })
   await sendTaskMessage(page, goal)
   await openLinkedTask(page)
 
-  await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.task-capsule').getByText('已完成', { exact: true })).toBeVisible({ timeout: 15_000 })
   await page.getByRole('button', { name: 'Trace', exact: true }).click()
   await expect(page.locator('.inspector-event-list article').filter({ hasText: 'step.succeeded' })).toHaveCount(1)
   expect(aborted).toBe(true)

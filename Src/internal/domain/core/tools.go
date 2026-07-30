@@ -19,8 +19,47 @@ type PlannedTool struct {
 	Idempotent    bool
 }
 
+const ToolPolicyVersion = "tool-policy-v1"
+
+// ExecutionAuthorization is the immutable view checked immediately before a
+// side effect starts. Approval rows remain the durable source of authority;
+// this value binds them to the exact tool, input, scope, risk and policy.
+type ExecutionAuthorization struct {
+	ToolIdentity   string
+	InputHash      string
+	OrganizationID string
+	ProjectID      string
+	RunID          string
+	RiskLevel      string
+	PolicyDecision string
+	PolicyVersion  string
+}
+
+func ValidateExecutionAuthorization(planned PlannedTool, authorization ExecutionAuthorization) error {
+	if planned.Decision == PolicyDeny {
+		return fmt.Errorf("current policy denies tool execution")
+	}
+	if authorization.ToolIdentity != planned.Call.Name || authorization.InputHash == "" || authorization.InputHash != planned.InputHash {
+		return fmt.Errorf("tool identity or frozen input changed")
+	}
+	if authorization.OrganizationID == "" || authorization.ProjectID == "" || authorization.RunID == "" {
+		return fmt.Errorf("execution scope is incomplete")
+	}
+	if authorization.RiskLevel != planned.RiskLevel {
+		return fmt.Errorf("tool risk classification changed")
+	}
+	if authorization.PolicyDecision != PolicyAllow && authorization.PolicyDecision != PolicyAsk {
+		return fmt.Errorf("persisted policy decision is not executable")
+	}
+	if authorization.PolicyVersion != ToolPolicyVersion {
+		return fmt.Errorf("tool policy version changed")
+	}
+	return nil
+}
+
 func PlanTool(call ToolCall) PlannedTool {
 	planned := PlannedTool{Call: call, RiskLevel: "L3", Decision: PolicyDeny, Reason: "tool is not registered", Idempotent: false}
+	resolvedName := ResolveToolName(call.Name)
 	body, err := json.Marshal(call.Arguments)
 	if err != nil {
 		planned.Reason = "tool arguments cannot be serialized"
@@ -30,7 +69,7 @@ func PlanTool(call ToolCall) PlannedTool {
 	sum := sha256.Sum256(append([]byte(call.Name+"\n"), body...))
 	planned.InputHash = "sha256:" + hex.EncodeToString(sum[:])
 
-	switch call.Name {
+	switch resolvedName {
 	case ToolUpdatePlan:
 		planned.RiskLevel = "L0"
 		planned.Idempotent = true
@@ -74,7 +113,7 @@ func PlanTool(call ToolCall) PlannedTool {
 	case ToolWorkspaceReadFile, ToolWorkspaceListFiles, ToolWorkspaceFindFiles, ToolWorkspaceGrep:
 		planned.RiskLevel = "L0"
 		planned.Idempotent = true
-		if err := validateReadToolArguments(call.Name, call.Arguments); err != nil {
+		if err := validateReadToolArguments(resolvedName, call.Arguments); err != nil {
 			planned.Decision = PolicyDeny
 			planned.Reason = err.Error()
 			return planned
@@ -94,7 +133,7 @@ func PlanTool(call ToolCall) PlannedTool {
 	case ToolGitStatus, ToolGitDiff, ToolGitLog, ToolGitConflicts:
 		planned.RiskLevel = "L0"
 		planned.Idempotent = true
-		if err := validateGitReadArguments(call.Name, call.Arguments); err != nil {
+		if err := validateGitReadArguments(resolvedName, call.Arguments); err != nil {
 			planned.Decision = PolicyDeny
 			planned.Reason = err.Error()
 			return planned
@@ -104,7 +143,7 @@ func PlanTool(call ToolCall) PlannedTool {
 	case ToolGitBranch, ToolGitCommit, ToolGitCommitPaths, ToolGitRestore, ToolGitRestoreHunk:
 		planned.RiskLevel = "L2"
 		planned.Idempotent = false
-		if err := validateGitMutationArguments(call.Name, call.Arguments); err != nil {
+		if err := validateGitMutationArguments(resolvedName, call.Arguments); err != nil {
 			planned.Decision = PolicyDeny
 			planned.Reason = err.Error()
 			return planned
@@ -231,8 +270,8 @@ func validateGitReadArguments(name string, arguments map[string]any) error {
 		}
 	case ToolGitDiff:
 		for key := range arguments {
-			if key != "path" && key != "staged" {
-				return fmt.Errorf("git_diff accepts only path and staged")
+			if key != "path" && key != "staged" && key != "baseline" {
+				return fmt.Errorf("git_diff accepts only path, staged, and baseline")
 			}
 		}
 		if path, ok := arguments["path"]; ok {
@@ -243,6 +282,12 @@ func validateGitReadArguments(name string, arguments map[string]any) error {
 		if staged, ok := arguments["staged"]; ok {
 			if _, valid := staged.(bool); !valid {
 				return fmt.Errorf("staged must be boolean")
+			}
+		}
+		if baseline, ok := arguments["baseline"]; ok {
+			text, valid := baseline.(string)
+			if !valid || len(text) < 7 || len(text) > 64 || strings.Trim(text, "0123456789abcdefABCDEF") != "" {
+				return fmt.Errorf("baseline must be a 7-64 character hexadecimal commit id")
 			}
 		}
 	case ToolGitLog:

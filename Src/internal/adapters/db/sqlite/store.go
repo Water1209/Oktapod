@@ -2898,6 +2898,9 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 	if _, err := q.CreateRun(ctx, sqlitegen.CreateRunParams{ID: runID, OrganizationID: scope.OrganizationID, ProjectID: projectID, TaskID: taskID, ConfigSnapshotJson: string(snapshot), CreatedAt: now, UpdatedAt: now}); err != nil {
 		return core.Task{}, fmt.Errorf("create run: %w", err)
 	}
+	if err := freezeRunToolSnapshots(ctx, tx, runID, configSnapshot, now); err != nil {
+		return core.Task{}, fmt.Errorf("freeze run tool snapshots: %w", err)
+	}
 	runPlanRevisionID, runPlanItemIDs, err := createInitialRunPlan(ctx, tx, scope, projectID, taskID, runID, input, now)
 	if err != nil {
 		return core.Task{}, fmt.Errorf("create run plan: %w", err)
@@ -5111,15 +5114,17 @@ func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, 
 		status = core.MCPStatusConnected
 	}
 	toolsJSON, _ := json.Marshal(health.Tools)
+	toolsHash := sha256.Sum256(toolsJSON)
+	schemaHash := "sha256:" + hex.EncodeToString(toolsHash[:])
 	now := formatTime(time.Now())
 	connectionID := ""
 	_ = s.db.QueryRowContext(ctx, `SELECT id FROM mcp_connections WHERE capability_id = ?`, capabilityID).Scan(&connectionID)
 	if connectionID == "" {
 		connectionID, _ = newID()
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO mcp_connections(id, organization_id, project_id, capability_id, transport, status, protocol, tool_count, tools_json, last_error, connected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, connectionID, scope.OrganizationID, projectID, capabilityID, health.Transport, status, health.Protocol, len(health.Tools), string(toolsJSON), health.LastError, nullableTime(health.ConnectedAt), now, now); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO mcp_connections(id, organization_id, project_id, capability_id, transport, status, protocol, tool_count, tools_json, schema_hash, config_version, health_state, last_error, connected_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`, connectionID, scope.OrganizationID, projectID, capabilityID, health.Transport, status, health.Protocol, len(health.Tools), string(toolsJSON), schemaHash, status, health.LastError, nullableTime(health.ConnectedAt), now, now); err != nil {
 			return core.MCPHealth{}, err
 		}
-	} else if _, err := s.db.ExecContext(ctx, `UPDATE mcp_connections SET status = ?, transport = ?, protocol = ?, tool_count = ?, tools_json = ?, last_error = ?, connected_at = ?, updated_at = ? WHERE capability_id = ? AND organization_id = ?`, status, health.Transport, health.Protocol, len(health.Tools), string(toolsJSON), health.LastError, nullableTime(health.ConnectedAt), now, capabilityID, scope.OrganizationID); err != nil {
+	} else if _, err := s.db.ExecContext(ctx, `UPDATE mcp_connections SET status = ?, transport = ?, protocol = ?, tool_count = ?, tools_json = ?, schema_hash = ?, config_version = config_version + 1, health_state = ?, last_error = ?, connected_at = ?, updated_at = ? WHERE capability_id = ? AND organization_id = ?`, status, health.Transport, health.Protocol, len(health.Tools), string(toolsJSON), schemaHash, status, health.LastError, nullableTime(health.ConnectedAt), now, capabilityID, scope.OrganizationID); err != nil {
 		return core.MCPHealth{}, err
 	}
 	s.writeCapabilityAudit(ctx, scope, projectID, "mcp.connected", capabilityID, map[string]any{"status": status, "tool_count": len(health.Tools), "error": health.LastError}, correlationID)
@@ -5136,7 +5141,7 @@ func (s *Store) DisconnectMCP(ctx context.Context, scope core.Scope, capabilityI
 		return core.MCPHealth{}, err
 	}
 	now := formatTime(time.Now())
-	if _, err := s.db.ExecContext(ctx, `UPDATE mcp_connections SET status = 'disabled', last_error = '', updated_at = ? WHERE capability_id = ? AND organization_id = ?`, now, capabilityID, scope.OrganizationID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE mcp_connections SET status = 'disabled', health_state = 'disabled', last_error = '', updated_at = ? WHERE capability_id = ? AND organization_id = ?`, now, capabilityID, scope.OrganizationID); err != nil {
 		return core.MCPHealth{}, err
 	}
 	s.writeCapabilityAudit(ctx, scope, projectID, "mcp.disconnected", capabilityID, map[string]any{"status": core.MCPStatusDisabled}, correlationID)
@@ -5148,13 +5153,72 @@ func (s *Store) GetMCPHealth(ctx context.Context, scope core.Scope, capabilityID
 	var connectedAt, updatedAt string
 	// Connection health is project-scoped read data: any active project member
 	// may use an enabled MCP capability, while connect/disconnect remains owner-only.
-	err := s.db.QueryRowContext(ctx, `SELECT id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, last_error, connected_at, updated_at FROM mcp_connections WHERE capability_id = ? AND organization_id = ? AND EXISTS (SELECT 1 FROM capabilities c JOIN project_memberships pm ON pm.project_id = c.project_id AND pm.user_id = ? AND pm.status = 'active' WHERE c.id = mcp_connections.capability_id AND c.organization_id = ?)`, capabilityID, scope.OrganizationID, scope.UserID, scope.OrganizationID).Scan(&item.ID, &item.CapabilityID, &item.ProjectID, &item.Transport, &item.Status, &item.Protocol, &item.ToolCount, &item.ToolsJSON, &item.LastError, &connectedAt, &updatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, schema_hash, config_version, health_state, last_error, connected_at, updated_at FROM mcp_connections WHERE capability_id = ? AND organization_id = ? AND EXISTS (SELECT 1 FROM capabilities c JOIN project_memberships pm ON pm.project_id = c.project_id AND pm.user_id = ? AND pm.status = 'active' WHERE c.id = mcp_connections.capability_id AND c.organization_id = ?)`, capabilityID, scope.OrganizationID, scope.UserID, scope.OrganizationID).Scan(&item.ID, &item.CapabilityID, &item.ProjectID, &item.Transport, &item.Status, &item.Protocol, &item.ToolCount, &item.ToolsJSON, &item.SchemaHash, &item.ConfigVersion, &item.HealthState, &item.LastError, &connectedAt, &updatedAt)
 	if err != nil {
 		return core.MCPHealth{}, err
 	}
 	item.ConnectedAt = mustParseTimeOrZero(connectedAt)
 	item.UpdatedAt = mustParseTime(updatedAt)
 	return item, nil
+}
+
+func freezeRunToolSnapshots(ctx context.Context, tx *sql.Tx, runID string, config map[string]any, now string) error {
+	insert := func(identity, invocation, source, capabilityID string, schema map[string]any, capabilities []string, reason string) error {
+		schemaJSON, err := json.Marshal(schema)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(schemaJSON)
+		capabilitiesJSON, err := json.Marshal(capabilities)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO run_tool_snapshots
+			    (run_id, revision, tool_identity, invocation_name, source, capability_id,
+			     schema_hash, capabilities_json, selection_reason, policy_version, created_at)
+			VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			runID, identity, invocation, source, capabilityID,
+			"sha256:"+hex.EncodeToString(sum[:]), string(capabilitiesJSON), reason, core.ToolPolicyVersion, now,
+		)
+		return err
+	}
+	for _, spec := range core.BuiltinToolSpecs() {
+		if err := insert(spec.Identity, spec.Name, spec.Source, "", spec.Parameters, spec.Capabilities, "builtin_at_run_creation"); err != nil {
+			return err
+		}
+	}
+	rawMCP, ok := config["mcp_capabilities"]
+	if !ok {
+		return nil
+	}
+	body, err := json.Marshal(rawMCP)
+	if err != nil {
+		return err
+	}
+	var snapshots []struct {
+		ID    string `json:"id"`
+		Tools []struct {
+			Name        string         `json:"name"`
+			InputSchema map[string]any `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &snapshots); err != nil {
+		return err
+	}
+	for _, capability := range snapshots {
+		for _, tool := range capability.Tools {
+			if capability.ID == "" || tool.Name == "" {
+				continue
+			}
+			identity := "mcp:" + capability.ID + ":" + tool.Name
+			invocation := "mcp__" + capability.ID + "__" + tool.Name
+			if err := insert(identity, invocation, "mcp", capability.ID, tool.InputSchema, nil, "enabled_and_healthy_at_run_creation"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func nullableTime(value time.Time) string {
@@ -6639,13 +6703,33 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 	if owned != 1 {
 		return "", fmt.Errorf("LEASE_LOST: cannot execute tool step %s fence %d", step.ID, step.FenceToken)
 	}
+	var storedName string
 	var storedHash string
+	var storedRisk string
+	var storedDecision string
 	var toolStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT arguments_hash, status FROM tool_calls WHERE id = ? AND step_id = ? AND run_id = ?`, call.ID, step.ID, run.RunID).Scan(&storedHash, &toolStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT tool_name, arguments_hash, risk_level, policy_decision, status FROM tool_calls WHERE id = ? AND step_id = ? AND run_id = ?`, call.ID, step.ID, run.RunID).Scan(&storedName, &storedHash, &storedRisk, &storedDecision, &toolStatus); err != nil {
 		return "", err
 	}
-	if storedHash != inputHash || (toolStatus != "queued" && toolStatus != "running") {
-		return "", fmt.Errorf("TOOL_INPUT_CHANGED: frozen tool input or state no longer matches")
+	planned := core.PlanTool(call)
+	if strings.HasPrefix(call.Name, "mcp__") {
+		risk, plannedIdempotent, reason := mcpPolicyFromSnapshot(run.ConfigSnapshotJSON, call.Name)
+		planned.RiskLevel = risk
+		planned.Idempotent = plannedIdempotent
+		if reason != "" {
+			planned.Reason = reason
+		}
+	}
+	authorization := core.ExecutionAuthorization{
+		ToolIdentity: storedName, InputHash: storedHash,
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		RiskLevel: storedRisk, PolicyDecision: storedDecision, PolicyVersion: core.ToolPolicyVersion,
+	}
+	if authErr := core.ValidateExecutionAuthorization(planned, authorization); authErr != nil || storedHash != inputHash || (toolStatus != "queued" && toolStatus != "running") {
+		if authErr == nil {
+			authErr = errors.New("frozen tool input or state no longer matches")
+		}
+		return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: %w", authErr)
 	}
 
 	var receiptID string
@@ -8866,6 +8950,18 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		toolStatus = "succeeded"
 		validationStatus = "passed"
 	}
+	if step.StepType == core.ToolWorkspaceRunCommand && execution.Output != nil {
+		if content, _ := execution.Output["artifact_content"].(string); content != "" {
+			delete(execution.Output, "artifact_content")
+			artifact, persistErr := s.persistCommandOutputArtifact(ctx, tx, q, step, run, []byte(content), now, correlationID)
+			if persistErr != nil {
+				return persistErr
+			}
+			execution.Output["artifact_id"] = artifact.ID
+			execution.Output["artifact_name"] = artifact.Name
+			execution.Output["artifact_size_bytes"] = artifact.SizeBytes
+		}
+	}
 	outputJSON, err := json.Marshal(execution.Output)
 	if err != nil {
 		return err
@@ -8931,6 +9027,44 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		return s.persistWorkspaceFileArtifact(ctx, tx, q, step, run, execution, now, correlationID)
 	}
 	return nil
+}
+
+func (s *Store) persistCommandOutputArtifact(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, content []byte, now, correlationID string) (core.Artifact, error) {
+	persisted, err := s.persistBlob(ctx, content, "text/plain; charset=utf-8")
+	if err != nil {
+		return core.Artifact{}, fmt.Errorf("persist command output artifact: %w", err)
+	}
+	if err := ensureBlob(ctx, tx, persisted, now); err != nil {
+		return core.Artifact{}, err
+	}
+	artifactID, err := newID()
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	name := "command-output-" + step.ID + ".log"
+	row, err := q.CreateArtifact(ctx, sqlitegen.CreateArtifactParams{
+		ID: artifactID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID,
+		TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, Name: name,
+		Kind: "evidence", MediaType: persisted.MediaType, ContentHash: persisted.ContentHash,
+		SizeBytes: persisted.SizeBytes, Visibility: run.Visibility, SourceType: "command_output",
+		CreatedAt: now,
+	})
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	artifact, err := artifactFromRow(row)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	if err := s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		EventType: "artifact.created", ActorType: "worker", ActorID: step.OwnerID,
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{"artifact_id": row.ID, "step_id": step.ID, "name": row.Name, "kind": row.Kind, "source_type": row.SourceType, "content_hash": row.ContentHash, "size_bytes": row.SizeBytes, "media_type": row.MediaType},
+	}); err != nil {
+		return core.Artifact{}, err
+	}
+	return artifact, nil
 }
 
 func (s *Store) persistWorkspaceFileArtifact(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, execution core.ToolExecution, now, correlationID string) error {

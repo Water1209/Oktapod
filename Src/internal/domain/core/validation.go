@@ -87,6 +87,19 @@ func validateSkillManifest(manifest map[string]any) error {
 	if err := validateSkillStringList(manifest, "allowed_tools", 64, 200, true); err != nil {
 		return err
 	}
+	for _, key := range []string{"required_capabilities", "required-capabilities", "preferred_tools", "preferred-tools"} {
+		if err := validateSkillStringList(manifest, key, 64, 200, true); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{"fallback_policy", "fallback-policy"} {
+		if raw, exists := manifest[key]; exists {
+			policy, ok := raw.(string)
+			if !ok || (policy != "strict" && policy != "same-capability") {
+				return &ValidationError{Field: "manifest_json." + key, Message: "must be strict or same-capability"}
+			}
+		}
+	}
 	return nil
 }
 

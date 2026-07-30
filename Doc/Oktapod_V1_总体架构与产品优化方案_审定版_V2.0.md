@@ -17,11 +17,11 @@ GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V
 
 2. **过度工程风险**：V1 引入完整 ToolSpec / Capability Ontology / ExecutionGrant 签名体系 / 沙箱网络策略 / 多阶段 CI 门禁，范围仍大于"一个可发布的 Coding Agent"。V1 必须再砍一刀：**只保留能支撑"读-改-验-Diff-恢复"主链路的最小安全与扩展能力**，其余标记为 V1.1+。
 
-3. **落地风险**：方案未区分"必须新写"与"直接采用 Pi 已验证语义"。Oktapod 当前缺失 `read/edit/ls/find/grep` 等基础工具（见 `pi-vs-oktapod-tools-security.md` 第 15-25 行），这些工具的语义、截断策略、Continuation 提示、错误恢复引导，Pi 已冻结验证。**不应重新设计，应直接移植 Pi 语义，再用 Oktapod 的 Receipt/Grant 体系包裹**。
+3. **落地风险**：方案未区分"必须新写"与"已有实现补齐语义"。Oktapod 已具备 Workspace/Git、Receipt、审批、MCP、Skill 和持久 Run；后续应保留这些行为，对照 Pi 冻结语义补齐截断、Continuation、编辑和命令恢复差距，而不是从零重写。
 
 **修正后的 V1 总原则**：
 
-> **内核端口先行 → 安全门禁与 CI 伴随端口 → 原生工具对齐 Pi → MCP/Skill 通用化 → 沙箱与体验闭环。**
+> **冻结现有行为 → 内核端口与 Harness 拆分 → 安全门禁与 CI → 工具/MCP/Skill 契约统一 → Changes 与恢复闭环。**
 > 每一步无行为变化、全量测试绿、可独立验收。
 
 ---
@@ -33,7 +33,7 @@ GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V
 用户只说一句开发目标，Agent 能：
 
 ```text
-读项目 → 改代码 → 跑验证 → 展示 Diff → 接受/撤销/提交 → 异常后可恢复
+读项目 → 拆任务->任务执行迭代 → 跑验证 → 展示 Diff → 接受/撤销/提交 → 异常后可恢复
 ```
 
 其他一切能力（Team、Schedule、Memory、Advisor、能力市场、多 Agent、浏览器自动化、复杂计划 UI）**代码可保留，入口全部隐藏，不投入新工时**。
@@ -43,25 +43,26 @@ GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V
 | 域 | 交付项 | 说明 |
 |---|---|---|
 | **Agent 核心** | 单 Agent 主循环；ToolBatch 并行；Steering；上下文压缩；Run 持久化与恢复 | 从 Worker 拆出 Pure Agent Loop + Durable Harness |
-| **原生工具** | `read` / `edit` / `write` / `ls` / `find` / `grep` / `git_status` / `git_diff` / `git_restore` / `git_commit` / `run_command` / `update_plan` | **语义直接采用 Pi**；用 Oktapod Receipt/Grant 包裹 |
-| **MCP** | Registry（STDIO + Streamable HTTP）；`initialize`/`tools/list`/`tools/call`；Schema Hash 快照；健康状态 | 搜索等全部走 MCP，删除内建 `web_search` |
+| **原生工具** | `read` / `edit` / `write` / `ls` / `find` / `grep` / `git_status` / `git_diff` / `git_restore` / `git_commit` / `run_command` / `update_plan` | 复用现有 Workspace/Git，实现简洁别名并补齐 Pi 语义；用 Oktapod Receipt/ExecutionAuthorization 包裹 |
+| **MCP** | Registry（STDIO + Streamable HTTP）；`initialize`/`tools/list`/`tools/call`；Schema Hash 快照；健康状态 | 复用现有 Capability/MCP 数据与审核流程；内建搜索保留为无凭据能力，MCP 搜索为可选首选 |
 | **Skill** | 严格 `allowed-tools` + 新增 `required-capabilities` / `preferred-tools` / `fallback-policy`（仅 `strict` / `same-capability`） | 见第 6 章 |
-| **安全** | ExecutionGrant（HMAC 签名，非零信任）；项目级命令沙箱（最小：只挂载 Workspace、隔离 HOME、禁宿主凭据、非 root、进程树终止）；Git 隔离；External Content Envelope | **V1 不做网络默认拒绝的完整沙箱**，仅做"命令执行不继承宿主凭据 + 工作区隔离" |
+| **安全** | ExecutionAuthorization；宿主受控执行（隔离 HOME、禁宿主凭据、进程树终止）；Git 隔离；External Content Envelope | UI 明示宿主模式不是强沙箱；容器/OS 强隔离进入 V1.1 |
 | **体验** | 单一 Composer；实时 stdout/stderr；审批卡；Diff 查看/接受/撤销；Inspector 默认收起 | 高级配置全部移入项目设置 |
-| **工程** | Docker 多阶段构建（含前端）；`go test` / `go vet` / `go test -race` / 前端 lint+test+build / Docker smoke / OpenAPI drift / SQLite migration check | **V1 不做 SBOM、依赖扫描、完整 E2E、PostgreSQL migration、Playwright 全链路**，这些进 V1.1 |
+| **工程** | Docker 多阶段构建（含前端）；`go test` / `go vet` / `go test -race` / 前端 lint+test+build / Playwright 主链路 / Docker smoke / OpenAPI drift / SQLite migration check | **V1 不做 SBOM、依赖扫描、PostgreSQL migration 和企业级完整安全矩阵**，这些进 V1.1 |
 
 ### 1.3 V1 明确不交付（比 GPT-5.6 更严格）
 
 - 网络级零信任沙箱（默认拒绝网络、受控授权）；
 - 完整 Tool Ontology 与跨 Provider 参数转换；
-- MCP 自动安装 / 自动升级；
+- MCP 静默自动安装 / 自动升级（允许经校验、审核、启用的对话式安装）；
 - 能力市场；
 - 多 Agent / Team 编排 UI；
 - 长期后台自治任务；
 - 浏览器完整自动化；
 - 每次工具替代都询问用户；
 - SBOM / 依赖扫描 / 完整安全测试矩阵；
-- PostgreSQL 迁移门禁（V1 仅 SQLite，代码保留 PG 适配）。
+- PostgreSQL 迁移门禁（V1 仅 SQLite，代码保留 PG 适配）；
+- 交互式 xterm、Pi 全版本精确导入、完整设置服务端化和原生 Anthropic/Gemini 真实凭据门禁。
 
 > **判断依据**：V1 是"个人开发者/小团队本地优先 Coding Agent"。网络零信任、企业级 SBOM、多 Agent 协作不是首版付费/留存理由。先让"读-改-验-恢复"在本地跑稳，再谈企业能力。
 
@@ -88,16 +89,16 @@ V1 动工第一周必须先完成：
 凡 Pi 已冻结验证的语义（read 截断策略、edit 唯一匹配约束、bash 流式累积与整树终止、grep/find/ls 参数与 `.gitignore` 尊重、Continuation 提示格式），**直接移植，不重新设计**。Oktapod 的增量价值只在：
 
 - 每次工具调用生成 Receipt（输入 Hash、输出 Hash、副作用、耗时）；
-- 需要审批的工具走 ExecutionGrant；
+- 需要审批的工具走 ExecutionAuthorization；
 - 状态持久化到 SQLite，支持崩溃恢复。
 
 ### 2.3 新增：安全门禁与 CI 伴随端口落地，不滞后
 
-不是"先拆完再补安全"，而是**每拆一个端口，同步落地该端口的安全校验与 CI 检查**。例如拆 `ExecutionPolicy` 端口时，同步实现 ExecutionGrant 签发/验证，并把"无 Grant 拒绝执行"加入 `go test` 单元测试。
+不是"先拆完再补安全"，而是**每拆一个端口，同步落地该端口的安全校验与 CI 检查**。例如拆 `ExecutionPolicy` 端口时，同步实现 ExecutionAuthorization 验证，并把"授权与冻结输入不一致时拒绝执行"加入 `go test` 单元测试。
 
 ### 2.4 强化：极简核心，能力外置（GPT-5.6 正确，保留）
 
-核心只负责 Agent Loop、状态、工具协议、安全、恢复、审计。搜索、网页抓取、GitHub、数据库、浏览器等全部走 MCP。删除内建 `web_search`，不建设 `WebSearchAdapter` / `SearchProviderRouter` / `CanonicalWebSearch`。
+核心只负责 Agent Loop、状态、工具协议、安全、恢复、审计。搜索、网页抓取、GitHub、数据库、浏览器等通过统一 ToolSpec 接入；MCP 是主要扩展机制。现有内建搜索作为无需外部凭据的内置 ToolSpec 保留，避免首装失能，不再向 Worker 添加搜索专用分支。
 
 ### 2.5 强化：系统限定边界，模型发挥智能（GPT-5.6 正确，保留）
 
@@ -151,7 +152,7 @@ V1 动工第一周必须先完成：
 └──────────────────────┬──────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────┐
-│   ExecutionPolicy → ExecutionGrant → Broker │
+│ ExecutionPolicy → ExecutionAuthorization → Broker │
 └──────────────┬─────────────────┬────────────┘
                │                 │
        ┌───────▼──────┐  ┌───────▼──────────┐
@@ -215,33 +216,32 @@ type ExecutionPolicy interface {
 }
 ```
 
-所有工具执行前必须经过 `ExecutionPolicy.Evaluate`。`Ask` 工具必须持有有效 `ExecutionGrant` 才能执行，否则 fail-closed。
+所有工具执行前必须经过 `ExecutionPolicy.Evaluate`。`Ask` 工具必须持有有效 `ExecutionAuthorization` 才能执行，否则 fail-closed。
 
-### 4.4 ExecutionGrant（V1 简化版）
+### 4.4 ExecutionAuthorization（V1）
 
-V1 采用 **HMAC-SHA256 签名**（非零信任 PKI），字段：
+V1 复用持久审批、审批规则和 Receipt 形成执行授权视图，字段：
 
 ```text
-grant_id / run_id / step_id / tool_call_id /
-tool_identity / input_hash / scope / risk /
-approval_rule / expires_at / policy_version / signature
+authorization_id / approval_id / approval_rule_id /
+run_id / step_id / tool_call_id / tool_identity /
+input_hash / scope / risk / expires_at / policy_version
 ```
 
-Executor 验证：存在性、签名、Input Hash、Tool 一致、未过期、作用域匹配。**V1 不做跨进程零信任验证**，只做本进程内不可伪造授权证明。
+Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存在、Input Hash、Tool、Risk、Policy Version、有效期和 Scope。任一字段变化即 fail-closed。当前同进程、同数据库威胁模型下，额外 HMAC 不能防止拥有数据库写权限的攻击者伪造审批，反而引入密钥生命周期和重启恢复故障，因此 V1 不新增 HMAC Grant 表。
 
 ### 4.5 Project Sandbox（V1 最小可行）
 
-V1 不做完整容器/网络沙箱，只做：
+V1 的默认模式命名为 `governed_host`，只承诺：
 
-- 命令执行只挂载当前 Workspace；
-- 临时目录独立；
-- 默认禁止读取宿主 `HOME`（除显式白名单）；
-- 默认禁止继承 SSH / AWS / Git 凭据；
-- 非 root 运行；
+- Native 文件工具限制在当前 Workspace；
+- 为子进程提供独立临时目录和 HOME；
+- 默认不继承 SSH / AWS / Git / Provider 凭据；
+- Git 禁用系统配置、credential helper、prompt 和 hooks；
 - 进程树终止；
 - 资源限制（CPU / 内存 / 超时）。
 
-宿主直接执行仅作为开发模式，UI 明确标注："宿主受控执行，非沙箱"。
+任意宿主 Shell 进程仍可能通过绝对路径访问宿主文件，因此 UI 必须标注："宿主受控执行，非强沙箱"。非 root、挂载隔离和网络默认拒绝只在容器/OS 强沙箱模式下声明。
 
 **V1.1 再补**：网络默认拒绝、受控网络授权、完整容器沙箱。
 
@@ -266,13 +266,13 @@ run_command / update_plan
 - `find`：走 `fd --glob`；默认 1000 条；`.gitignore` 尊重。
 - `ls`：默认 500 条；目录带 `/` 后缀。
 
-**Oktapod 增量**：每次调用生成 Receipt；`write`/`edit`/`git_commit`/`run_command` 需 ExecutionGrant。
+**Oktapod 增量**：每次调用生成 Receipt；`write`/`edit`/`git_commit`/`run_command` 需 ExecutionAuthorization。
 
 ### 5.2 MCP 工具
 
-以下全部走 MCP：互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库、第三方研究工具。
+互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。
 
-V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。Tavily 只是可选 MCP Server，不进入核心依赖。
+现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。Tavily 是可选首选，不进入核心依赖。
 
 ### 5.3 单一 ToolSpec（V1 简化版）
 
@@ -372,7 +372,7 @@ internal/
     registry/         # Unified Tool Registry / ToolSpec
     native/           # read/edit/write/ls/find/grep/git/run_command
     policy/           # ExecutionPolicy
-    grants/           # ExecutionGrant
+    authorization/    # ExecutionAuthorization
     execution/        # Broker / Executors
   mcp/
     registry/ transport/ discovery/ execution/ health/
@@ -389,20 +389,14 @@ internal/
 ## 9. V1 数据模型新增（终版）
 
 ```sql
--- MCP
-mcp_servers(id, name, transport, command_or_url, credential_ref, scope, trust_state, enabled, config_version, health_state)
-mcp_tools(id, server_id, remote_name, description, input_schema, schema_hash, annotations, enabled)
-
--- 能力
-tool_capabilities(tool_id, capability, source, approval_state, approved_by)
-skill_tool_constraints(skill_version_id, constraint_type, value, fallback_policy, max_risk)
+-- 复用 capabilities + mcp_connections
+mcp_connections(..., tools_json, schema_hash, config_version, health_state)
 
 -- 运行快照
-run_tool_snapshots(run_id, revision, tool_id, schema_hash, capabilities, selection_reason, policy_version)
-
--- 执行授权
-execution_grants(grant_id, run_id, step_id, tool_call_id, tool_identity, input_hash, scope, expires_at, policy_version, signature)
+run_tool_snapshots(run_id, revision, tool_identity, source, capability_id, schema_hash, capabilities_json, selection_reason, policy_version)
 ```
+
+Skill 工具约束保存在已审核 Manifest；执行授权复用 approval、approval rule、tool call 和 Receipt 数据，V1 不建立重复表。
 
 ---
 
@@ -439,7 +433,7 @@ source / trust / content_hash / receipt_id / server_id / tool_name / URLs / cont
 Node/pnpm 前端构建 → Go 构建 → 最小运行镜像
 ```
 
-当前 Team Dockerfile 未构建前端，属于直接发布阻断项。
+当前 `Deploy/Dockerfile` 未构建前端，属于直接发布阻断项。运行镜像必须非 root、无内置凭据，并提供真实产品健康检查。
 
 ### 11.2 Required Checks（V1 终版，比 GPT-5.6 精简）
 
@@ -455,7 +449,7 @@ SQLite migration check
 Docker smoke
 ```
 
-**V1.1 再补**：PostgreSQL migration、Playwright happy path、security unit tests、dependency scan、SBOM。
+V1 主链路仍必须执行现有 Playwright 套件和 Windows/Linux 各一次真实浏览器验收；V1.1 再补 PostgreSQL migration、完整安全矩阵、dependency scan 和 SBOM。
 
 ### 11.3 代码规模红线
 
@@ -472,11 +466,11 @@ Docker smoke
 | ADR-001 | V1 是单 Agent Coding 产品 | 不是完整 Agent 平台 |
 | ADR-002 | Pure Agent Loop 与 Durable Harness 分离 | Loop 不依赖 DB，Harness 负责持久化 |
 | ADR-003 | 原生工具语义直接采用 Pi | Oktapod 只加 Receipt/Grant/持久化 |
-| ADR-004 | 删除内建搜索 | 搜索由第三方 MCP 提供，Tavily 是可选插件 |
+| ADR-004 | 搜索统一为 ToolSpec | 内建搜索提供无凭据基线，Tavily 等 MCP 可作为已审核首选 |
 | ADR-005 | Skill 支持严格约束与能力自适应 | `allowed-tools` 严格绑定；`required-capabilities` 同类可替代 |
 | ADR-006 | 系统限定合法候选，模型负责选择 | 候选 1~3 个，系统过滤，模型决策 |
 | ADR-007 | 工具替代过程可见 | 不静默切换 Provider |
-| ADR-008 | 副作用执行必须持 ExecutionGrant | Ask 工具无 Grant 100% 拒绝 |
+| ADR-008 | 副作用执行必须持 ExecutionAuthorization | Ask 工具无有效审批授权 100% 拒绝 |
 | ADR-009 | 单一 Composer | 高级配置进入项目设置和 Inspector |
 | ADR-010 | Docker/CI/恢复测试是发布前置 | V1 精简门禁，V1.1 补完整矩阵 |
 | ADR-011 | **内核端口先行** | 先拆 Repository/Principal/Policy/Artifact，再长功能 |
@@ -491,9 +485,9 @@ Docker smoke
 | 实施顺序 | 阶段 A 先补 Docker/CI/Grant，阶段 B 再拆 Loop/Harness | **先拆内核端口，安全/CI 伴随端口落地，功能最后长** | 避免在耦合 Worker 上建门禁，减少返工 |
 | 原生工具 | 未明确是否重新设计 | **直接采用 Pi 语义**，Oktapod 只加安全与持久化 | Pi 已冻结验证，重新设计浪费且风险高 |
 | 沙箱范围 | 项目级沙箱 + 网络默认拒绝 | **V1 最小沙箱**（隔离 HOME/凭据/工作区/进程树），网络沙箱进 V1.1 | V1 是本地优先产品，网络零信任非首版必需 |
-| CI 门禁 | 13 项全量 | **8 项精简**，SBOM/依赖扫描/完整 E2E/PG migration 进 V1.1 | 先保证主链路稳定，再补企业级门禁 |
+| CI 门禁 | 13 项全量 | **9 项核心门禁**，保留现有 Playwright 主链路；SBOM/依赖扫描/PG migration 进 V1.1 | 先证明用户闭环，再补企业级门禁 |
 | ToolSpec | 完整 Ontology | **V1 简化版**，复杂分类进 V1.1 | 避免过度工程 |
-| 执行授权 | 零信任签名 | **HMAC 简化版**，跨进程零信任进 V1.1 | 满足不可伪造即可，不过度设计 |
+| 执行授权 | 零信任签名 | **持久审批 + 冻结输入 + 执行前重评估**，跨进程零信任进 V1.1 | 与当前威胁模型一致，避免无效密钥复杂度 |
 
 ---
 

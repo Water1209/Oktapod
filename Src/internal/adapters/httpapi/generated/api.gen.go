@@ -426,6 +426,15 @@ const (
 	InboxItemKindTaskRecovery      InboxItemKind = "task_recovery"
 )
 
+// Defines values for MCPHealthHealthState.
+const (
+	MCPHealthHealthStateConnected MCPHealthHealthState = "connected"
+	MCPHealthHealthStateDisabled  MCPHealthHealthState = "disabled"
+	MCPHealthHealthStateFailed    MCPHealthHealthState = "failed"
+	MCPHealthHealthStateNeedsAuth MCPHealthHealthState = "needs-auth"
+	MCPHealthHealthStateUnknown   MCPHealthHealthState = "unknown"
+)
+
 // Defines values for MCPHealthStatus.
 const (
 	MCPHealthStatusConnected MCPHealthStatus = "connected"
@@ -662,6 +671,13 @@ const (
 	ReviewCapabilityRequestDecisionRejected ReviewCapabilityRequestDecision = "rejected"
 )
 
+// Defines values for RunChangesBaseline.
+const (
+	RunChangesBaselineHead     RunChangesBaseline = "head"
+	RunChangesBaselineIndex    RunChangesBaseline = "index"
+	RunChangesBaselineRunStart RunChangesBaseline = "run_start"
+)
+
 // Defines values for RunPlanItemStatus.
 const (
 	RunPlanItemStatusBlocked     RunPlanItemStatus = "blocked"
@@ -863,20 +879,27 @@ const (
 
 // Defines values for ListHumanActionsParamsStatus.
 const (
-	All         ListHumanActionsParamsStatus = "all"
-	Answered    ListHumanActionsParamsStatus = "answered"
-	Approved    ListHumanActionsParamsStatus = "approved"
-	Expired     ListHumanActionsParamsStatus = "expired"
-	Rejected    ListHumanActionsParamsStatus = "rejected"
-	Reviewing   ListHumanActionsParamsStatus = "reviewing"
-	Superseded  ListHumanActionsParamsStatus = "superseded"
-	WaitingUser ListHumanActionsParamsStatus = "waiting_user"
+	ListHumanActionsParamsStatusAll         ListHumanActionsParamsStatus = "all"
+	ListHumanActionsParamsStatusAnswered    ListHumanActionsParamsStatus = "answered"
+	ListHumanActionsParamsStatusApproved    ListHumanActionsParamsStatus = "approved"
+	ListHumanActionsParamsStatusExpired     ListHumanActionsParamsStatus = "expired"
+	ListHumanActionsParamsStatusRejected    ListHumanActionsParamsStatus = "rejected"
+	ListHumanActionsParamsStatusReviewing   ListHumanActionsParamsStatus = "reviewing"
+	ListHumanActionsParamsStatusSuperseded  ListHumanActionsParamsStatus = "superseded"
+	ListHumanActionsParamsStatusWaitingUser ListHumanActionsParamsStatus = "waiting_user"
 )
 
 // Defines values for ListProjectAssetsParamsKind.
 const (
 	ListProjectAssetsParamsKindFile   ListProjectAssetsParamsKind = "file"
 	ListProjectAssetsParamsKindFolder ListProjectAssetsParamsKind = "folder"
+)
+
+// Defines values for GetRunChangesParamsBaseline.
+const (
+	GetRunChangesParamsBaselineHead     GetRunChangesParamsBaseline = "head"
+	GetRunChangesParamsBaselineIndex    GetRunChangesParamsBaseline = "index"
+	GetRunChangesParamsBaselineRunStart GetRunChangesParamsBaseline = "run_start"
 )
 
 // Defines values for SetScheduleStatusJSONBodyStatus.
@@ -1647,18 +1670,24 @@ type LabelSessionEntryRequest struct {
 
 // MCPHealth defines model for MCPHealth.
 type MCPHealth struct {
-	CapabilityId openapi_types.UUID `json:"capability_id"`
-	ConnectedAt  *time.Time         `json:"connected_at"`
-	Id           openapi_types.UUID `json:"id"`
-	LastError    string             `json:"last_error"`
-	ProjectId    openapi_types.UUID `json:"project_id"`
-	Protocol     string             `json:"protocol"`
-	Status       MCPHealthStatus    `json:"status"`
-	ToolCount    int64              `json:"tool_count"`
-	ToolsJson    string             `json:"tools_json"`
-	Transport    MCPHealthTransport `json:"transport"`
-	UpdatedAt    time.Time          `json:"updated_at"`
+	CapabilityId  openapi_types.UUID   `json:"capability_id"`
+	ConfigVersion int64                `json:"config_version"`
+	ConnectedAt   *time.Time           `json:"connected_at"`
+	HealthState   MCPHealthHealthState `json:"health_state"`
+	Id            openapi_types.UUID   `json:"id"`
+	LastError     string               `json:"last_error"`
+	ProjectId     openapi_types.UUID   `json:"project_id"`
+	Protocol      string               `json:"protocol"`
+	SchemaHash    string               `json:"schema_hash"`
+	Status        MCPHealthStatus      `json:"status"`
+	ToolCount     int64                `json:"tool_count"`
+	ToolsJson     string               `json:"tools_json"`
+	Transport     MCPHealthTransport   `json:"transport"`
+	UpdatedAt     time.Time            `json:"updated_at"`
 }
+
+// MCPHealthHealthState defines model for MCPHealth.HealthState.
+type MCPHealthHealthState string
 
 // MCPHealthStatus defines model for MCPHealth.Status.
 type MCPHealthStatus string
@@ -2062,6 +2091,23 @@ type ReviewCapabilityRequest struct {
 
 // ReviewCapabilityRequestDecision defines model for ReviewCapabilityRequest.Decision.
 type ReviewCapabilityRequestDecision string
+
+// RunChanges defines model for RunChanges.
+type RunChanges struct {
+	Baseline       RunChangesBaseline `json:"baseline"`
+	BaselineHead   string             `json:"baseline_head"`
+	BaselineNotice string             `json:"baseline_notice"`
+	CurrentHead    string             `json:"current_head"`
+	Diff           string             `json:"diff"`
+	DirtyAtStart   bool               `json:"dirty_at_start"`
+	ProjectId      openapi_types.UUID `json:"project_id"`
+	RunId          openapi_types.UUID `json:"run_id"`
+	StatusHash     string             `json:"status_hash"`
+	Truncated      bool               `json:"truncated"`
+}
+
+// RunChangesBaseline defines model for RunChanges.Baseline.
+type RunChangesBaseline string
 
 // RunEvent defines model for RunEvent.
 type RunEvent struct {
@@ -2627,6 +2673,14 @@ type GetProjectUsageParams struct {
 	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
 }
 
+// GetRunChangesParams defines parameters for GetRunChanges.
+type GetRunChangesParams struct {
+	Baseline *GetRunChangesParamsBaseline `form:"baseline,omitempty" json:"baseline,omitempty"`
+}
+
+// GetRunChangesParamsBaseline defines parameters for GetRunChanges.
+type GetRunChangesParamsBaseline string
+
 // ListRunEventsParams defines parameters for ListRunEvents.
 type ListRunEventsParams struct {
 	After *int64 `form:"after,omitempty" json:"after,omitempty"`
@@ -3066,6 +3120,9 @@ type ServerInterface interface {
 
 	// (PUT /runs/{run_id}/budget)
 	UpdateRunBudget(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
+
+	// (GET /runs/{run_id}/changes)
+	GetRunChanges(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID, params GetRunChangesParams)
 
 	// (GET /runs/{run_id}/events)
 	ListRunEvents(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID, params ListRunEventsParams)
@@ -3531,6 +3588,11 @@ func (_ Unimplemented) ListRunArtifacts(w http.ResponseWriter, r *http.Request, 
 
 // (PUT /runs/{run_id}/budget)
 func (_ Unimplemented) UpdateRunBudget(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /runs/{run_id}/changes)
+func (_ Unimplemented) GetRunChanges(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID, params GetRunChangesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6463,6 +6525,42 @@ func (siw *ServerInterfaceWrapper) UpdateRunBudget(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// GetRunChanges operation middleware
+func (siw *ServerInterfaceWrapper) GetRunChanges(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "run_id" -------------
+	var runId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "run_id", chi.URLParam(r, "run_id"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetRunChangesParams
+
+	// ------------- Optional query parameter "baseline" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "baseline", r.URL.Query(), &params.Baseline)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "baseline", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRunChanges(w, r, runId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListRunEvents operation middleware
 func (siw *ServerInterfaceWrapper) ListRunEvents(w http.ResponseWriter, r *http.Request) {
 
@@ -7284,6 +7382,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/runs/{run_id}/budget", wrapper.UpdateRunBudget)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/runs/{run_id}/changes", wrapper.GetRunChanges)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/runs/{run_id}/events", wrapper.ListRunEvents)
@@ -9887,6 +9988,36 @@ func (response UpdateRunBudgetdefaultApplicationProblemPlusJSONResponse) VisitUp
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type GetRunChangesRequestObject struct {
+	RunId  openapi_types.UUID `json:"run_id"`
+	Params GetRunChangesParams
+}
+
+type GetRunChangesResponseObject interface {
+	VisitGetRunChangesResponse(w http.ResponseWriter) error
+}
+
+type GetRunChanges200JSONResponse RunChanges
+
+func (response GetRunChanges200JSONResponse) VisitGetRunChangesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRunChangesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetRunChangesdefaultApplicationProblemPlusJSONResponse) VisitGetRunChangesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type ListRunEventsRequestObject struct {
 	RunId  openapi_types.UUID `json:"run_id"`
 	Params ListRunEventsParams
@@ -10496,6 +10627,9 @@ type StrictServerInterface interface {
 
 	// (PUT /runs/{run_id}/budget)
 	UpdateRunBudget(ctx context.Context, request UpdateRunBudgetRequestObject) (UpdateRunBudgetResponseObject, error)
+
+	// (GET /runs/{run_id}/changes)
+	GetRunChanges(ctx context.Context, request GetRunChangesRequestObject) (GetRunChangesResponseObject, error)
 
 	// (GET /runs/{run_id}/events)
 	ListRunEvents(ctx context.Context, request ListRunEventsRequestObject) (ListRunEventsResponseObject, error)
@@ -13020,6 +13154,33 @@ func (sh *strictHandler) UpdateRunBudget(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateRunBudgetResponseObject); ok {
 		if err := validResponse.VisitUpdateRunBudgetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetRunChanges operation middleware
+func (sh *strictHandler) GetRunChanges(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID, params GetRunChangesParams) {
+	var request GetRunChangesRequestObject
+
+	request.RunId = runId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRunChanges(ctx, request.(GetRunChangesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRunChanges")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRunChangesResponseObject); ok {
+		if err := validResponse.VisitGetRunChangesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

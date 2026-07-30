@@ -67,6 +67,13 @@ type ChatToolExecutor interface {
 	ExecuteChatTool(ctx context.Context, projectID string, call core.ToolCall) (string, error)
 }
 
+// WorkspaceReader exposes structured, read-only workspace results to
+// application use cases such as immutable Run baselines and the Changes
+// inspector. Mutating calls remain inside the Durable Harness.
+type WorkspaceReader interface {
+	Execute(ctx context.Context, projectID string, call core.ToolCall) core.ToolExecution
+}
+
 type AdvisorReportFinalizer interface {
 	FinalizeAdvisorReport(ctx context.Context, scope core.Scope, reportID string, model core.ModelResult, modelErr error) (core.AdvisorReport, error)
 }

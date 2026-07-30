@@ -22,7 +22,10 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
-const maxCommandOutput = 1 << 20
+const (
+	maxCommandOutput         = 1 << 20
+	maxCommandArtifactOutput = 16 << 20
+)
 
 type Local struct {
 	root            string
@@ -53,29 +56,31 @@ func (l *Local) Execute(ctx context.Context, projectID string, call core.ToolCal
 		result.Output = map[string]any{"reason": err.Error()}
 		return result
 	}
-	switch call.Name {
+	resolvedCall := call
+	resolvedCall.Name = core.ResolveToolName(call.Name)
+	switch resolvedCall.Name {
 	case core.ToolWorkspaceReadFile:
-		return l.readFile(projectRoot, call, planned)
+		return l.readFile(projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceListFiles:
-		return l.listFiles(projectRoot, call, planned)
+		return l.listFiles(projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceFindFiles:
-		return l.findFiles(projectRoot, call, planned)
+		return l.findFiles(projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceGrep:
-		return l.grepFiles(projectRoot, call, planned)
+		return l.grepFiles(projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceEditFile:
-		return l.editFile(projectRoot, call, planned)
+		return l.editFile(projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceWriteFile:
-		return l.writeFile(projectRoot, call, planned)
+		return l.writeFile(projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceRunCommand:
-		return l.runCommand(ctx, projectRoot, call, planned)
+		return l.runCommand(ctx, projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceShell:
-		return l.executeShell(ctx, projectRoot, call, planned)
+		return l.executeShell(ctx, projectRoot, resolvedCall, planned)
 	case core.ToolWorkspaceExtractArchive:
-		return l.extractArchive(projectRoot, call, planned)
+		return l.extractArchive(projectRoot, resolvedCall, planned)
 	case core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolGitConflicts,
 		core.ToolGitBranch, core.ToolGitCommit, core.ToolGitCommitPaths,
 		core.ToolGitRestore, core.ToolGitRestoreHunk:
-		return l.executeGit(ctx, projectRoot, call, planned)
+		return l.executeGit(ctx, projectRoot, resolvedCall, planned)
 	default:
 		return result
 	}
@@ -315,9 +320,9 @@ func (l *Local) executeShell(ctx context.Context, projectRoot string, call core.
 	cmd.Stderr = stderr
 	err = cmd.Run()
 	result.Output = map[string]any{
-		"command":         command,
-		"stdout":          stdout.String(),
-		"stderr":          stderr.String(),
+		"command":          command,
+		"stdout":           stdout.String(),
+		"stderr":           stderr.String(),
 		"stdout_truncated": stdout.truncated,
 		"stderr_truncated": stderr.truncated,
 	}
@@ -388,18 +393,26 @@ func (l *Local) runCommand(ctx context.Context, projectRoot string, call core.To
 		return result
 	}
 	command.Env = environment
-	stdout := &boundedBuffer{limit: maxCommandOutput}
-	stderr := &boundedBuffer{limit: maxCommandOutput}
+	stdout := &boundedBuffer{limit: maxCommandArtifactOutput}
+	stderr := &boundedBuffer{limit: maxCommandArtifactOutput}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	err = command.Run()
+	stdoutText := stdout.String()
+	stderrText := stderr.String()
+	stdoutExcerpt, stdoutExcerptTruncated := boundedTextExcerpt(stdoutText, maxCommandOutput)
+	stderrExcerpt, stderrExcerptTruncated := boundedTextExcerpt(stderrText, maxCommandOutput)
 	result.Output = map[string]any{
 		"program":          program,
 		"args":             args,
-		"stdout":           stdout.String(),
-		"stderr":           stderr.String(),
-		"stdout_truncated": stdout.truncated,
-		"stderr_truncated": stderr.truncated,
+		"stdout":           stdoutExcerpt,
+		"stderr":           stderrExcerpt,
+		"stdout_truncated": stdout.truncated || stdoutExcerptTruncated,
+		"stderr_truncated": stderr.truncated || stderrExcerptTruncated,
+	}
+	if stdoutExcerptTruncated || stderrExcerptTruncated {
+		result.Output["artifact_content"] = "STDOUT\n" + stdoutText + "\n\nSTDERR\n" + stderrText
+		result.Output["artifact_truncated"] = stdout.truncated || stderr.truncated
 	}
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()
@@ -425,6 +438,13 @@ func (l *Local) runCommand(ctx context.Context, projectRoot string, call core.To
 	result.ErrorCode = "COMMAND_START_FAILED"
 	result.Output["reason"] = err.Error()
 	return result
+}
+
+func boundedTextExcerpt(value string, limit int) (string, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+	return value[:limit] + "\n… output continued in Artifact …", true
 }
 
 // secureJoin resolves a project-relative path and rejects traversal attempts
@@ -501,6 +521,14 @@ func safeEnvironment(projectRoot string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	disabledHooks, err := secureParent(runtimeHome, "git-hooks-disabled")
+	if err != nil {
+		return nil, err
+	}
+	nullConfig := "/dev/null"
+	if runtime.GOOS == "windows" {
+		nullConfig = "NUL"
+	}
 	result = append(result,
 		"HOME="+runtimeHome,
 		"USERPROFILE="+runtimeHome,
@@ -511,6 +539,15 @@ func safeEnvironment(projectRoot string) ([]string, error) {
 		"GOSUMDB=off",
 		"GOTOOLCHAIN=local",
 		"GOTELEMETRY=off",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+nullConfig,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_ASKPASS=",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0=",
+		"GIT_CONFIG_KEY_1=core.hooksPath",
+		"GIT_CONFIG_VALUE_1="+disabledHooks,
 		"CI=1",
 		"NO_COLOR=1",
 	)

@@ -192,6 +192,14 @@ const (
 	StepHumanActionReview         = "human_action_review"
 )
 
+const TrustExternalUntrusted = "external_untrusted"
+
+type ExternalContentEnvelope struct {
+	Trust      string
+	Source     string
+	Capability string
+}
+
 var (
 	ErrNoWork            = errors.New("no ready work")
 	ErrInvalidCredential = errors.New("invalid credentials")
@@ -1053,17 +1061,20 @@ type MCPTool struct {
 }
 
 type MCPHealth struct {
-	ID           string
-	CapabilityID string
-	ProjectID    string
-	Transport    string
-	Status       string
-	Protocol     string
-	ToolCount    int64
-	ToolsJSON    string
-	LastError    string
-	ConnectedAt  time.Time
-	UpdatedAt    time.Time
+	ID            string
+	CapabilityID  string
+	ProjectID     string
+	Transport     string
+	Status        string
+	Protocol      string
+	ToolCount     int64
+	ToolsJSON     string
+	SchemaHash    string
+	ConfigVersion int64
+	HealthState   string
+	LastError     string
+	ConnectedAt   time.Time
+	UpdatedAt     time.Time
 }
 
 type CreateCapabilityInput struct {
@@ -1226,6 +1237,19 @@ type RunUsage struct {
 	RemainingTokens int64
 	ReservedCalls   int64
 	ReservedTokens  int64
+}
+
+type RunChanges struct {
+	RunID          string
+	ProjectID      string
+	Baseline       string
+	BaselineHead   string
+	CurrentHead    string
+	DirtyAtStart   bool
+	StatusHash     string
+	Diff           string
+	Truncated      bool
+	BaselineNotice string
 }
 
 // ProjectUsage is an aggregate that is safe to expose only to project

@@ -11,8 +11,12 @@
     "build": "pnpm build:web && go build -o Build/ ./Src/cmd/oktapod",
     "lint": "pnpm --dir Src/web lint",
     "test:web": "pnpm --dir Src/web test",
+    "test:race": "go test -race ./...",
+    "test:migrations": "go test ./Src/internal/adapters/db/sqlite -run Migration -count=1",
+    "verify:openapi": "node Test/openapi-drift.mjs",
     "test": "go test ./... && pnpm test:web",
-    "verify": "go vet ./... && pnpm lint && pnpm test && pnpm build",
+    "verify": "go vet ./... && pnpm lint && pnpm test && pnpm build && pnpm test:migrations && pnpm verify:openapi",
+    "verify:ci": "pnpm verify && pnpm test:race",
     "test:e2e": "pnpm --dir Src/web test:e2e"
   },
   "devDependencies": {

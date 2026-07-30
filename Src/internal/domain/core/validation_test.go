@@ -28,6 +28,23 @@ func TestValidateCreateAgentConfigScopesAndBudgets(t *testing.T) {
 	}
 }
 
+func TestValidateSkillCapabilitySelectionPolicy(t *testing.T) {
+	input := CreateCapabilityInput{
+		Kind:         CapabilityKindSkill,
+		Name:         "release-check",
+		Version:      "1.0.0",
+		ScopeType:    CapabilityScopeProject,
+		ManifestJSON: `{"description":"release","required-capabilities":["repository.read"],"preferred-tools":["grep"],"fallback-policy":"same-capability"}`,
+	}
+	if err := ValidateCreateCapability(input); err != nil {
+		t.Fatalf("valid skill constraints rejected: %v", err)
+	}
+	input.ManifestJSON = `{"description":"release","fallback-policy":"any-tool"}`
+	if err := ValidateCreateCapability(input); err == nil {
+		t.Fatal("unsafe fallback policy was accepted")
+	}
+}
+
 func TestCapabilityPermissionDiffRedactsValuesAndSorts(t *testing.T) {
 	got := CapabilityPermissionDiff(`{"tools":[{"name":"send"},{"name":"search"}],"permissions":["workspace.write"],"network":{"url":"https://secret.invalid"},"env":{"TOKEN":"do-not-show"}}`)
 	want := []string{"field:env", "field:network", "permissions:workspace.write", "tool:search", "tool:send"}

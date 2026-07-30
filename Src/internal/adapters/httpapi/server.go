@@ -2291,6 +2291,37 @@ func (s *Server) ListRunArtifacts(ctx context.Context, request generated.ListRun
 	return generated.ListRunArtifacts200JSONResponse{Items: items}, nil
 }
 
+func (s *Server) GetRunChanges(ctx context.Context, request generated.GetRunChangesRequestObject) (generated.GetRunChangesResponseObject, error) {
+	baseline := "run_start"
+	if request.Params.Baseline != nil {
+		baseline = string(*request.Params.Baseline)
+	}
+	changes, err := s.service.GetRunChanges(ctx, request.RunId.String(), baseline)
+	if err != nil {
+		return nil, err
+	}
+	projectID, err := uuid.Parse(changes.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	runID, err := uuid.Parse(changes.RunID)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetRunChanges200JSONResponse{
+		RunId:          runID,
+		ProjectId:      projectID,
+		Baseline:       generated.RunChangesBaseline(changes.Baseline),
+		BaselineHead:   changes.BaselineHead,
+		CurrentHead:    changes.CurrentHead,
+		DirtyAtStart:   changes.DirtyAtStart,
+		StatusHash:     changes.StatusHash,
+		Diff:           changes.Diff,
+		Truncated:      changes.Truncated,
+		BaselineNotice: changes.BaselineNotice,
+	}, nil
+}
+
 func (s *Server) ListApprovals(ctx context.Context, request generated.ListApprovalsRequestObject) (generated.ListApprovalsResponseObject, error) {
 	status := core.ApprovalPending
 	if request.Params.Status != nil {
@@ -2867,7 +2898,14 @@ func mcpHealthResponse(health core.MCPHealth) (generated.MCPHealth, error) {
 		value := health.ConnectedAt
 		connectedAt = &value
 	}
-	return generated.MCPHealth{Id: id, CapabilityId: capabilityID, ProjectId: projectID, Transport: generated.MCPHealthTransport(health.Transport), Status: generated.MCPHealthStatus(health.Status), Protocol: health.Protocol, ToolCount: health.ToolCount, ToolsJson: health.ToolsJSON, LastError: health.LastError, ConnectedAt: connectedAt, UpdatedAt: health.UpdatedAt}, nil
+	return generated.MCPHealth{
+		Id: id, CapabilityId: capabilityID, ProjectId: projectID,
+		Transport: generated.MCPHealthTransport(health.Transport), Status: generated.MCPHealthStatus(health.Status),
+		Protocol: health.Protocol, ToolCount: health.ToolCount, ToolsJson: health.ToolsJSON,
+		SchemaHash: health.SchemaHash, ConfigVersion: health.ConfigVersion,
+		HealthState: generated.MCPHealthHealthState(health.HealthState),
+		LastError:   health.LastError, ConnectedAt: connectedAt, UpdatedAt: health.UpdatedAt,
+	}, nil
 }
 
 func memoryResponse(memory core.Memory) (generated.Memory, error) {

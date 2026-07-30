@@ -457,6 +457,19 @@ export interface RunUsage {
   reserved_tokens: number
 }
 
+export interface RunChanges {
+  run_id: string
+  project_id: string
+  baseline: 'run_start' | 'head' | 'index'
+  baseline_head: string
+  current_head: string
+  dirty_at_start: boolean
+  status_hash: string
+  diff: string
+  truncated: boolean
+  baseline_notice: string
+}
+
 export interface UsageBucket {
   key: string
   label: string
@@ -995,6 +1008,7 @@ export const api = {
       body: JSON.stringify({ approve, trigger_reason: triggerReason }),
     }),
   runArtifacts: (runId: string) => request<{ items: Artifact[] }>(`/runs/${runId}/artifacts`),
+  runChanges: (runId: string, baseline: RunChanges['baseline']) => request<RunChanges>(`/runs/${runId}/changes?baseline=${baseline}`),
   approvals: (status: 'pending' | 'approved' | 'rejected' | 'all' = 'pending') => request<{ items: Approval[] }>(`/approvals?status=${status}`),
   sideEffectReceipts: (status: 'started' | 'succeeded' | 'failed' | 'unknown' | 'all' = 'unknown') => request<{ items: SideEffectReceipt[] }>(`/side-effect-receipts?status=${status}`),
   inbox: () => request<{ items: InboxItem[]; history: InboxHistoryItem[] }>('/inbox'),

@@ -41,6 +41,7 @@ type Service struct {
 	providerSecrets  ProviderSecretStore
 	providerCatalogs ProviderCatalogFactory
 	chatToolExec     ChatToolExecutor
+	workspaceReader  WorkspaceReader
 	workspaceRoot    string
 }
 
@@ -70,6 +71,9 @@ func (s *Service) WithModelCatalog(catalog ModelCatalog) *Service {
 // find, grep) to answer questions without creating a full Task/Run.
 func (s *Service) WithChatToolExecutor(executor ChatToolExecutor, workspaceRoot string) *Service {
 	s.chatToolExec = executor
+	if reader, ok := executor.(WorkspaceReader); ok {
+		s.workspaceReader = reader
+	}
 	s.workspaceRoot = strings.TrimSpace(workspaceRoot)
 	return s
 }
@@ -529,6 +533,22 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			"network":           false,
 		},
 	}
+	if s.workspaceReader != nil {
+		baseline := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{
+			ID:   "run-baseline",
+			Name: core.ToolGitStatus,
+		})
+		if baseline.Status == core.StatusSucceeded {
+			statusText, _ := baseline.Output["status"].(string)
+			snapshot["workspace_baseline"] = map[string]any{
+				"kind":        "git",
+				"head":        baseline.Output["head"],
+				"status_hash": baseline.Output["status_hash"],
+				"dirty":       gitStatusHasChanges(statusText),
+				"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+			}
+		}
+	}
 	if input.MaxModelCalls > 0 {
 		snapshot["max_model_calls"] = input.MaxModelCalls
 	}
@@ -576,7 +596,11 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			if json.Unmarshal([]byte(health.ToolsJSON), &tools) != nil {
 				continue
 			}
-			mcpSnapshots = append(mcpSnapshots, map[string]any{"id": capability.ID, "name": capability.Name, "manifest_json": capability.ManifestJSON, "tools": tools})
+			mcpSnapshots = append(mcpSnapshots, map[string]any{
+				"id": capability.ID, "name": capability.Name, "manifest_json": capability.ManifestJSON,
+				"tools": tools, "schema_hash": health.SchemaHash, "config_version": health.ConfigVersion,
+				"health_state": health.HealthState,
+			})
 		}
 		if len(mcpSnapshots) > 0 {
 			snapshot["mcp_capabilities"] = mcpSnapshots
@@ -700,6 +724,16 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	return retryTransientSQLiteValue(ctx, func() (core.Task, error) {
 		return s.repository.CreateTask(ctx, s.ScopeFor(ctx), projectID, input, snapshot, correlationID, idempotency)
 	})
+}
+
+func gitStatusHasChanges(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "##") {
+			return true
+		}
+	}
+	return false
 }
 
 // AppendConversationMessage starts a new executable Task while preserving the
@@ -1571,6 +1605,79 @@ func (s *Service) CreateAdvisorReport(ctx context.Context, runID string, input c
 
 func (s *Service) ListRunArtifacts(ctx context.Context, runID string) ([]core.Artifact, error) {
 	return s.repository.ListRunArtifacts(ctx, s.ScopeFor(ctx), runID)
+}
+
+func (s *Service) GetRunChanges(ctx context.Context, runID, baseline string) (core.RunChanges, error) {
+	if s.workspaceReader == nil {
+		return core.RunChanges{}, &core.ResourceConflictError{Resource: "workspace changes", Reason: "workspace reader is unavailable"}
+	}
+	run, err := s.repository.GetRunContext(ctx, runID)
+	if err != nil {
+		return core.RunChanges{}, err
+	}
+	if _, err := s.repository.GetProject(ctx, s.ScopeFor(ctx), run.ProjectID); err != nil {
+		return core.RunChanges{}, err
+	}
+	switch baseline {
+	case "", "run_start":
+		baseline = "run_start"
+	case "head", "index":
+	default:
+		return core.RunChanges{}, &core.ValidationError{Field: "baseline", Message: "must be run_start, head, or index"}
+	}
+
+	var snapshot struct {
+		WorkspaceBaseline struct {
+			Head       string `json:"head"`
+			StatusHash string `json:"status_hash"`
+			Dirty      bool   `json:"dirty"`
+		} `json:"workspace_baseline"`
+	}
+	if err := json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot); err != nil {
+		return core.RunChanges{}, fmt.Errorf("decode run workspace baseline: %w", err)
+	}
+	status := s.workspaceReader.Execute(ctx, run.ProjectID, core.ToolCall{ID: "changes-status", Name: core.ToolGitStatus})
+	if status.Status != core.StatusSucceeded {
+		return core.RunChanges{}, &core.ResourceConflictError{Resource: "workspace changes", Reason: "project workspace is not an available Git repository"}
+	}
+	currentHead, _ := status.Output["head"].(string)
+	statusHash, _ := status.Output["status_hash"].(string)
+	diffCall := core.ToolCall{ID: "changes-diff", Name: core.ToolGitDiff, Arguments: map[string]any{}}
+	baselineHead := currentHead
+	notice := ""
+	switch baseline {
+	case "run_start":
+		baselineHead = snapshot.WorkspaceBaseline.Head
+		if baselineHead == "" {
+			return core.RunChanges{}, &core.ResourceConflictError{Resource: "workspace changes", Reason: "this Run predates immutable workspace baselines"}
+		}
+		diffCall.Arguments["baseline"] = baselineHead
+		if snapshot.WorkspaceBaseline.Dirty {
+			notice = "Run 开始时工作区已有未提交修改；该视图包含这些前置修改。"
+		}
+	case "head":
+		diffCall.Arguments["baseline"] = currentHead
+	case "index":
+		// No baseline argument means working tree versus index.
+	}
+	execution := s.workspaceReader.Execute(ctx, run.ProjectID, diffCall)
+	if execution.Status != core.StatusSucceeded {
+		return core.RunChanges{}, &core.ResourceConflictError{Resource: "workspace changes", Reason: "unable to read workspace diff"}
+	}
+	diff, _ := execution.Output["diff"].(string)
+	truncated, _ := execution.Output["truncated"].(bool)
+	return core.RunChanges{
+		RunID:          runID,
+		ProjectID:      run.ProjectID,
+		Baseline:       baseline,
+		BaselineHead:   baselineHead,
+		CurrentHead:    currentHead,
+		DirtyAtStart:   snapshot.WorkspaceBaseline.Dirty,
+		StatusHash:     statusHash,
+		Diff:           diff,
+		Truncated:      truncated,
+		BaselineNotice: notice,
+	}, nil
 }
 
 func (s *Service) GetAgentTeamRoom(ctx context.Context, runID string) (core.AgentTeamRoom, error) {
