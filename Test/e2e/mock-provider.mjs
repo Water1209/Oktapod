@@ -54,6 +54,31 @@ const server = createServer(async (request, response) => {
       }))
       return
     }
+    if (userContent.includes('提交以下已选文件')) {
+      if (hasToolResults) {
+        response.end(JSON.stringify({
+          id: 'provider-e2e-changes-commit-finished',
+          choices: [{ message: { role: 'assistant', content: '已按所选路径完成提交并复核工作区状态。' } }],
+          usage: { prompt_tokens: 24, completion_tokens: 8 },
+        }))
+        return
+      }
+      const statusHash = userContent.match(/状态哈希为 ([^。\s]+)/)?.[1] ?? ''
+      const message = userContent.match(/提交信息为：(.+?)。当前工作区/)?.[1] ?? 'Commit selected changes'
+      const paths = userContent.split(/\r?\n/).filter((line) => line.startsWith('- ')).map((line) => line.slice(2).trim()).filter(Boolean)
+      response.end(JSON.stringify({
+        id: 'provider-e2e-changes-commit',
+        choices: [{ message: {
+          role: 'assistant',
+          content: '核对冻结状态后，只提交用户在 Changes 中选择的文件。',
+          tool_calls: [
+            { id: 'provider-e2e-git-commit-paths', type: 'function', function: { name: 'git_commit_paths', arguments: JSON.stringify({ message, paths, expected_status_hash: statusHash }) } },
+          ],
+        } }],
+        usage: { prompt_tokens: 30, completion_tokens: 14 },
+      }))
+      return
+    }
     if (userContent.includes('返回 E2E 模型执行结果')) {
       if (hasToolResults) {
         response.end(JSON.stringify({

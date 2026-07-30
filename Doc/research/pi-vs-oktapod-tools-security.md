@@ -1,5 +1,7 @@
 # Pi vs Oktapod：工具体系与安全/审批策略对比
 
+> **研究快照说明（2026-07-30）**：正文冻结在 V1 改造前，因此“无 read/edit/grep”“Session Tree 未实现”等判断已过时。当前实现已有 Workspace/Git 工具、简洁别名、CAS、Artifact、ExecutionAuthorization、Session Tree V2 和受治理 Changes；本文只保留为决策证据，不作为发布真源。
+
 对比基线：
 - **Pi**：`E:\git\pi`，冻结基线 `b1c444d`。核心路径：`packages/coding-agent/src/core/tools/`（read/write/edit/bash/grep/find/ls）、`packages/coding-agent/src/core/session-manager.ts`、`packages/coding-agent/src/core/agent-session.ts`、`packages/coding-agent/src/core/trust-manager.ts`、`packages/coding-agent/src/core/project-trust.ts`、`packages/coding-agent/src/core/compaction/branch-summarization.ts`。
 - **Oktapod**：`E:\git\Oktapod\Src`。核心路径：`Src/internal/adapters/workspace/local.go`、`Src/internal/runtime/worker.go`（`executeWorkspaceTool` / `executeSkillInvoke` / `executeMCPTool` / `executeWebSearchTool`）、`Src/internal/domain/core/tools.go`（`PlanTool` + 校验器）、`Src/internal/domain/core/permission.go`（`FullAccessActive`）、`Src/internal/adapters/db/sqlite/store.go`（审批落库 + `conversation_approval_rules` + `ApplyConversationSteering`）、`Src/db/migrations/sqlite/000044_session_entries.up.sql`、`Src/internal/adapters/model/openaicompat/client.go`（`workspaceTools()` 工具 schema 下发）。

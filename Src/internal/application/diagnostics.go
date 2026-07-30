@@ -7,7 +7,10 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
-const RuntimeVersion = "0.1.0"
+// RuntimeVersion is replaced by release and container builds through -ldflags.
+// Keeping developer builds explicit prevents an unversioned local binary from
+// being mistaken for a published artifact.
+var RuntimeVersion = "dev"
 
 type RuntimeDiagnosticsRepository interface {
 	RuntimeDiagnostics(context.Context, string, time.Time) (core.RuntimeDiagnostics, error)

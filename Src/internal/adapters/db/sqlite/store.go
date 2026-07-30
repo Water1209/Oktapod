@@ -3218,6 +3218,16 @@ func (s *Store) applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, com
 		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'canceled' WHERE run_id = ? AND status = 'active'`, runID); err != nil {
 			return nil, err
 		}
+		// Steering belongs to the aborted Run and must not be replayed later.
+		// Follow-up/Next Turn items deliberately remain pending so the user's
+		// next request starts after the cancellation reaches a terminal state.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE conversation_message_queue
+			SET status = 'canceled'
+			WHERE active_task_id = (SELECT task_id FROM runs WHERE id = ?)
+			  AND kind = 'steering' AND status IN ('pending', 'claimed')`, runID); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	case core.TaskCommandRetry:
 		return s.retryTaskFromFrontier(ctx, tx, runID, now, correlationID)

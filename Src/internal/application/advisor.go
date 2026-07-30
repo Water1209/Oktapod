@@ -74,6 +74,13 @@ type WorkspaceReader interface {
 	Execute(ctx context.Context, projectID string, call core.ToolCall) core.ToolExecution
 }
 
+// ProjectWorkspaceInitializer establishes the deterministic local baseline
+// required by Changes. It is intentionally separate from generic tool
+// execution so creating a project never depends on a model-generated command.
+type ProjectWorkspaceInitializer interface {
+	InitializeProject(ctx context.Context, projectID string) error
+}
+
 type AdvisorReportFinalizer interface {
 	FinalizeAdvisorReport(ctx context.Context, scope core.Scope, reportID string, model core.ModelResult, modelErr error) (core.AdvisorReport, error)
 }

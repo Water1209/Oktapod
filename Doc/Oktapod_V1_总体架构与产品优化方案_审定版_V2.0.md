@@ -1,11 +1,13 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.0
-> **文档类型**：架构决策 / 实施输入 / AI Coding 执行总纲
-> **编制日期**：2026-07-29
-> **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Oktapod_第一阶段补全改造方案_V1.0.md`（V2.0 内核先行修订版）
+> **文档版本**：V2.0（V1.0.0 发布事实修订）
+> **文档类型**：架构决策 / 发布基线 / 后续演进边界
+> **编制日期**：2026-07-30
+> **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
-> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），当前 git 分支 `main`，最近提交 `d1f5c93 feat: establish Oktapod MVP agent runtime`
+> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），`main@22b29bc` 及 V1.0.0 发布收口改动
+
+> **阅读规则**：本文件同时保留目标架构和当前落地边界。发布完成度只以《Oktapod V1 验收状态与追踪矩阵》为准；目标目录、代码行数或尚未物理迁移的职责不得当作已完成事实。
 
 ---
 
@@ -13,7 +15,7 @@
 
 GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V1 战略基线。但直接按其执行存在**三类结构性风险**，必须在动工前修正：
 
-1. **顺序风险**：把"Pure Agent Loop / Durable Harness 拆分"放在阶段 B，把"Docker/CI/Grant"放在阶段 A。这意味着在 Worker 仍是"模型循环 + 租约 + 队列 + Prompt + Skill + MCP + 审批 + 重试 + Team 编排"的巨型耦合体时，先补安全门禁和 CI。结果是：门禁建在沙地上，阶段 B 一拆，门禁和测试大面积返工。**正确顺序是"内核端口先行，安全门禁与 CI 伴随端口落地，功能最后长"**——与《第一阶段补全改造方案 V2.0》一致。
+1. **顺序风险**：把"Pure Agent Loop / Durable Harness 拆分"放在阶段 B，把"Docker/CI/Grant"放在阶段 A。这意味着在 Worker 仍是"模型循环 + 租约 + 队列 + Prompt + Skill + MCP + 审批 + 重试 + Team 编排"的巨型耦合体时，先补安全门禁和 CI。结果是：门禁建在沙地上，阶段 B 一拆，门禁和测试大面积返工。**正确顺序是"内核端口先行，安全门禁与 CI 伴随端口落地，功能最后长"**——与归档的第一阶段补全方案一致。
 
 2. **过度工程风险**：V1 引入完整 ToolSpec / Capability Ontology / ExecutionGrant 签名体系 / 沙箱网络策略 / 多阶段 CI 门禁，范围仍大于"一个可发布的 Coding Agent"。V1 必须再砍一刀：**只保留能支撑"读-改-验-Diff-恢复"主链路的最小安全与扩展能力**，其余标记为 V1.1+。
 
@@ -36,7 +38,7 @@ GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V
 读项目 → 拆任务->任务执行迭代 → 跑验证 → 展示 Diff → 接受/撤销/提交 → 异常后可恢复
 ```
 
-其他一切能力（Team、Schedule、Memory、Advisor、能力市场、多 Agent、浏览器自动化、复杂计划 UI）**代码可保留，入口全部隐藏，不投入新工时**。
+Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以保留，但不计入 V1 个人版完成度，也不要求为发布删除。新增工时优先服务单 Agent 主链路。
 
 ### 1.2 V1 必须交付（终版清单）
 
@@ -47,7 +49,7 @@ GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V
 | **MCP** | Registry（STDIO + Streamable HTTP）；`initialize`/`tools/list`/`tools/call`；Schema Hash 快照；健康状态 | 复用现有 Capability/MCP 数据与审核流程；内建搜索保留为无凭据能力，MCP 搜索为可选首选 |
 | **Skill** | 严格 `allowed-tools` + 新增 `required-capabilities` / `preferred-tools` / `fallback-policy`（仅 `strict` / `same-capability`） | 见第 6 章 |
 | **安全** | ExecutionAuthorization；宿主受控执行（隔离 HOME、禁宿主凭据、进程树终止）；Git 隔离；External Content Envelope | UI 明示宿主模式不是强沙箱；容器/OS 强隔离进入 V1.1 |
-| **体验** | 单一 Composer；实时 stdout/stderr；审批卡；Diff 查看/接受/撤销；Inspector 默认收起 | 高级配置全部移入项目设置 |
+| **体验** | 单一 Composer；可见执行状态；审批卡；Diff 文件/Hunk 查看、接受、撤销和选择提交；Inspector 默认收起 | 命令逐块 stdout/stderr 直播进入 V1.1；V1 保证完成事件与完整长输出 Artifact |
 | **工程** | Docker 多阶段构建（含前端）；`go test` / `go vet` / `go test -race` / 前端 lint+test+build / Playwright 主链路 / Docker smoke / OpenAPI drift / SQLite migration check | **V1 不做 SBOM、依赖扫描、PostgreSQL migration 和企业级完整安全矩阵**，这些进 V1.1 |
 
 ### 1.3 V1 明确不交付（比 GPT-5.6 更严格）
@@ -72,21 +74,21 @@ GPT-5.6 方案**方向正确、收敛果断、范围控制得当**，可作为 V
 
 ### 2.1 新增：内核端口先行，功能后长
 
-所有功能（工具、MCP、Skill、Grant、沙箱）必须挂在**已拆分的窄端口**上，不允许继续向 `application/repository.go` 105 方法巨型接口或 `runtime/worker.go` 添方法。
+所有新功能（工具、MCP、Skill、授权、沙箱）优先挂在窄端口上。现有 Worker 的物理迁移按真实行为逐段进行，不为满足目录或行数制造空接口。
 
-V1 动工第一周必须先完成：
+V1 已建立：
 
-- `Repository` 按领域拆 6 接口（Session / Project / Task / Run / Resource / Usage）；
+- `Repository` 的身份、项目、会话、运行、资源、审批/Receipt、用量等调用方窄接口；SQLite Store 可同时实现这些端口；
 - `PrincipalResolver` + `Authorizer` 端口；
 - `ExecutionPolicy` 端口（审批、路径、网络、预算统一入口）；
 - `ArtifactStore` 端口；
-- `PureAgentLoop` 接口与 `DurableHarness` 接口分离。
+- `agentloop` 与 `harness` 的稳定状态/事件/授权/检查点契约；模型调用与队列装配仍按行为测试逐步从 Worker 迁移。
 
 **无行为变化，全量测试绿，方可进入下一阶段。**
 
 ### 2.2 新增：Pi 语义直接采用，Oktapod 只加安全与持久化
 
-凡 Pi 已冻结验证的语义（read 截断策略、edit 唯一匹配约束、bash 流式累积与整树终止、grep/find/ls 参数与 `.gitignore` 尊重、Continuation 提示格式），**直接移植，不重新设计**。Oktapod 的增量价值只在：
+凡 Pi 已冻结验证的语义，先转成 Oktapod 合同测试，再决定复用或适配；不要求逐行、逐版本精确移植。Oktapod 的增量价值在：
 
 - 每次工具调用生成 Receipt（输入 Hash、输出 Hash、副作用、耗时）；
 - 需要审批的工具走 ExecutionAuthorization；
@@ -167,7 +169,7 @@ V1 动工第一周必须先完成：
 └──────────────────────────────────────────────┘
 ```
 
-**关键修正**：`ExecutionPolicy` 不再是散在 Worker 里的判断，而是统一端口；`Prompt & Context Planner` 与 `Tool Context Planner` 分离，前者管 Prompt Bundle 与压缩，后者管工具候选过滤与排序。
+**当前边界**：`ExecutionPolicy` 与 `ExecutionAuthorization` 已形成统一执行门禁；Prompt/Context 与 Tool Context 是逻辑边界，仍有部分编排位于 Worker。V1 以行为合同和安全不变量为门禁，后续再继续物理拆分。
 
 ---
 
@@ -200,11 +202,15 @@ TurnCompleted / TurnFailed / ContextLimitReached
 
 **不依赖**：DB、HTTP、用户 Session、SQLite、MCP Transport、具体工具实现、审批存储、UI。
 
+当前 `Src/internal/agentloop` 已承载稳定状态、事件与终止判断，Provider 调用、ToolBatch 编排的部分实现仍在 Worker。该物理差距是维护性事项，只要 Golden Trace 与恢复合同不回退，不阻塞 V1 个人版发布。
+
 ### 4.2 Durable Harness
 
 职责：Run 生命周期、Lease、Save Point、Checkpoint、ToolBatch 持久化、预算、恢复、Steering、Follow-up、Exactly-once Receipt、Worker 重启恢复。
 
 **关键约束**：Pure Agent Loop 只产生事件，Harness 决定如何持久化。Loop 不知道 SQLite 存在。
+
+当前 `Src/internal/harness` 已承载授权和检查点契约，持久 Lease、队列与恢复实现仍由 runtime + Repository Ports 组合。迁移继续遵循“每次移动真实行为并锁定语义”，不建设空壳目录。
 
 ### 4.3 ExecutionPolicy 端口（V1 新增，替代散点审批）
 
@@ -239,7 +245,7 @@ V1 的默认模式命名为 `governed_host`，只承诺：
 - 默认不继承 SSH / AWS / Git / Provider 凭据；
 - Git 禁用系统配置、credential helper、prompt 和 hooks；
 - 进程树终止；
-- 资源限制（CPU / 内存 / 超时）。
+- 命令超时与进程树终止。
 
 任意宿主 Shell 进程仍可能通过绝对路径访问宿主文件，因此 UI 必须标注："宿主受控执行，非强沙箱"。非 root、挂载隔离和网络默认拒绝只在容器/OS 强沙箱模式下声明。
 
@@ -249,7 +255,7 @@ V1 的默认模式命名为 `governed_host`，只承诺：
 
 ## 5. 统一工具体系（V1 终版）
 
-### 5.1 原生工具（直接采用 Pi 语义）
+### 5.1 原生工具（对照冻结 Pi 语义）
 
 ```text
 read / edit / write / ls / find / grep /
@@ -257,16 +263,15 @@ git_status / git_diff / git_restore / git_commit /
 run_command / update_plan
 ```
 
-**移植要求**：
+**V1 已采用的合同**：
 
-- `read`：2000 行 / 50KB `truncateHead`；offset/limit Continuation 提示；首行超字节建议改用 `run_command: sed -n ... | head -c ...`；图片走附件通道。
-- `edit`：`edits[{oldText,newText}]`；oldText 唯一不重叠；BOM 剥离、CRLF/LF 归一化；返回 unified patch + firstChangedLine；走文件变更队列防并发。
-- `run_command`：stdout/stderr 流式累积；2000 行 / 50KB `truncateTail`；超长自动落 temp 文件并返回 `Full output: <path>`；timeout 整树终止；env 剥离 `OKTAPOD_*` 再注入。
-- `grep`：走 `rg --json`；100 匹配上限；行 500 字符截断；`.gitignore` 尊重。
-- `find`：走 `fd --glob`；默认 1000 条；`.gitignore` 尊重。
-- `ls`：默认 500 条；目录带 `/` 后缀。
+- `read/list/find/grep`：有界输出、Continuation、路径约束、二进制和 symlink 拒绝；
+- `edit/write`：唯一编辑、BOM/CRLF 兼容、CAS/原子替换和冲突反馈；
+- `run_command`：参数化单程序执行、隔离环境、超时与进程树终止；事件保留受限摘要，长输出保存 Artifact；
+- Git：状态 Hash、冲突检测、按 Hunk 恢复、选择路径提交、审批和 Receipt；
+- 新 Run 暴露简洁别名，历史 `workspace_*` 名称继续解析到同一实现。
 
-**Oktapod 增量**：每次调用生成 Receipt；`write`/`edit`/`git_commit`/`run_command` 需 ExecutionAuthorization。
+逐块 stdout/stderr 直播、Pi 所有边界值与历史格式精确兼容进入 V1.1。
 
 ### 5.2 MCP 工具
 
@@ -276,16 +281,17 @@ run_command / update_plan
 
 ### 5.3 单一 ToolSpec（V1 简化版）
 
-V1 不建设完整 Tool Ontology，ToolSpec 仅包含：
+V1 不建设完整 Tool Ontology，当前 ToolSpec 包含：
 
 ```text
-Name / Description / InputSchema / OutputSchema /
-Source: native | mcp / ServerID / Capabilities /
+Identity / Name / Aliases / Description / Parameters /
+Source / Capabilities /
 ReadOnly / Destructive / OpenWorld / Idempotent /
-MaxOutput / Executor / Validator / Renderer
+MaxOutputBytes / ExecutorKind / ValidatorKind /
+RendererKind / Sequential
 ```
 
-`RiskClassifier` / `Sequential` / 复杂策略进 V1.1。
+复杂能力本体和跨 Provider 参数转换进 V1.1。
 
 ---
 
@@ -315,7 +321,7 @@ fallback-policy: same-capability   # 或 strict
 **V1 只支持**：
 
 - `strict`：首选不可用 → 阻塞 → 提示用户配置；
-- `same-capability`：首选不可用 → 系统过滤同能力候选（权限/风险/健康/快照/Schema 已审核）→ 向模型暴露 1~3 个候选 → 模型选择。
+- `same-capability`：只能从 Run 冻结的已审核、启用、健康工具中向模型暴露候选；确定性排名与跨 Provider 参数转换进入 V1.1。
 
 **V1 不支持**：每次询问用户、跨能力替代、自动跨 Provider 参数转换。
 
@@ -334,13 +340,13 @@ web.search / web.extract / repository.search / repository.read
 ### 7.1 不进行后台静默替换
 
 错误：`tavily_search` 失败 → 系统偷偷调另一家。
-正确：`tavily_search` 返回失败 Receipt → Agent 收到失败观察 → Tool Context Planner 补充同能力候选 → 下一轮模型选择另一个工具。
+正确：`tavily_search` 返回失败 Receipt → Agent 收到失败观察 → 下一轮只在 Run 冻结的合法工具中选择。V1.1 再补确定性同能力排名。
 
 ### 7.2 错误分类与处理
 
 | 类型 | 判定 | V1 处理 |
 |---|---|---|
-| Transport Failure | 连接失败/进程退出/超时/5xx | 允许同能力候选 |
+| Transport Failure | 连接失败/进程退出/超时/5xx | 返回可见失败 Receipt；可在冻结候选中恢复 |
 | Authentication Failure | 401/403/凭据缺失/OAuth 失效 | 移出候选，Inspector 显示配置错误 |
 | Rate Limit | 429/额度耗尽 | 允许同能力候选，必须显示 Provider 限流 |
 | Empty Result | 结果为空 | 模型决定：改写查询/放宽条件/换工具/说明无结果 |
@@ -350,7 +356,7 @@ web.search / web.extract / repository.search / repository.read
 
 ## 8. 数据与代码模块拆分（V1 终版）
 
-### 8.1 Store 拆分（第一周必须完成）
+### 8.1 Repository Ports（当前事实）
 
 ```text
 IdentityStore / ProjectStore / ConversationStore /
@@ -358,30 +364,19 @@ RunStore / ToolLedger / ApprovalStore /
 CapabilityStore / MCPStore / UsageStore / ArtifactStore
 ```
 
-跨领域事务通过 `UnitOfWork` / `Transaction Script` 显式组合。当前 `application/repository.go` 105 方法巨型接口是 AI 持续开发场景中的高风险结构，必须先拆。
+Application 已提供按调用方划分的窄接口，SQLite Store 继续实现多个端口，以保留跨领域事务。聚合 `Repository` 仍作为兼容组合接口存在；后续只在减少真实耦合时继续拆分。
 
-### 8.2 代码包结构（V1 终版）
+### 8.2 当前代码包结构
 
 ```text
 internal/
-  agentloop/          # Pure Agent Loop
-  harness/            # Durable Harness
-  prompt/             # Prompt Bundle / Registry
-  contextplanner/     # Context + Tool Context Planner
-  tools/
-    registry/         # Unified Tool Registry / ToolSpec
-    native/           # read/edit/write/ls/find/grep/git/run_command
-    policy/           # ExecutionPolicy
-    authorization/    # ExecutionAuthorization
-    execution/        # Broker / Executors
-  mcp/
-    registry/ transport/ discovery/ execution/ health/
-  skills/
-    manifest/ resolver/ constraints/
-  sandbox/            # Project Sandbox (V1 最小)
-  application/        # Commands / Services
-  stores/             # 拆分后的 Store
-  observability/      # 日志 / 指标 / Trace
+  agentloop/          # 稳定 Loop 状态与事件
+  harness/            # 授权、检查点与恢复契约
+  application/        # 用例与 Repository Ports
+  runtime/            # Worker、Scheduler、恢复与装配
+  domain/core/        # ToolSpec、Policy、领域不变量
+  adapters/           # SQLite/PostgreSQL/HTTP/Model/MCP/Workspace/Secret
+  bootstrap/          # Profile、配置和生命周期
 ```
 
 ---
@@ -433,7 +428,7 @@ source / trust / content_hash / receipt_id / server_id / tool_name / URLs / cont
 Node/pnpm 前端构建 → Go 构建 → 最小运行镜像
 ```
 
-当前 `Deploy/Dockerfile` 未构建前端，属于直接发布阻断项。运行镜像必须非 root、无内置凭据，并提供真实产品健康检查。
+当前 `Deploy/Dockerfile` 已完成前端与 Go 多阶段构建、版本注入、非 root 运行、健康检查和无内置凭据；`Test/docker-smoke.mjs` 验证注册、鉴权、版本与个人项目创建。
 
 ### 11.2 Required Checks（V1 终版，比 GPT-5.6 精简）
 
@@ -449,13 +444,13 @@ SQLite migration check
 Docker smoke
 ```
 
-V1 主链路仍必须执行现有 Playwright 套件和 Windows/Linux 各一次真实浏览器验收；V1.1 再补 PostgreSQL migration、完整安全矩阵、dependency scan 和 SBOM。
+V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Linux CI 完成 clean install、race、build 和 Docker 产品烟测。Linux 浏览器全视口、PostgreSQL migration、完整安全矩阵、dependency scan 和 SBOM 进入 V1.1。
 
-### 11.3 代码规模红线
+### 11.3 代码规模观察指标
 
-- 核心文件 ≤ 800 行；
-- 主页面组件 ≤ 300 行；
-- Store / Application Port 按领域拆分，禁止出现新的 100+ 方法接口。
+- 约 800 行核心文件、约 300 行主页面用于提示职责聚集，不是发布门禁；
+- 真正门禁是单一职责、变更耦合、可测试性、行为不回退与用户体验；
+- 不新增没有调用方收益的巨型接口，也不为达行数目标制造空抽象。
 
 ---
 
@@ -463,9 +458,9 @@ V1 主链路仍必须执行现有 Playwright 套件和 Windows/Linux 各一次�
 
 | ADR | 决策 | 说明 |
 |---|---|---|
-| ADR-001 | V1 是单 Agent Coding 产品 | 不是完整 Agent 平台 |
-| ADR-002 | Pure Agent Loop 与 Durable Harness 分离 | Loop 不依赖 DB，Harness 负责持久化 |
-| ADR-003 | 原生工具语义直接采用 Pi | Oktapod 只加 Receipt/Grant/持久化 |
+| ADR-001 | V1 发布单 Agent 个人版主链路 | Team/Schedule 等兼容代码可保留，不计完成度 |
+| ADR-002 | Agent Loop 与 Durable Harness 建立稳定边界 | 先锁合同，再逐段迁移真实行为 |
+| ADR-003 | 原生工具对照 Pi 冻结语义 | 保留 Oktapod 的 Receipt/Authorization/持久化差异 |
 | ADR-004 | 搜索统一为 ToolSpec | 内建搜索提供无凭据基线，Tavily 等 MCP 可作为已审核首选 |
 | ADR-005 | Skill 支持严格约束与能力自适应 | `allowed-tools` 严格绑定；`required-capabilities` 同类可替代 |
 | ADR-006 | 系统限定合法候选，模型负责选择 | 候选 1~3 个，系统过滤，模型决策 |
@@ -483,7 +478,7 @@ V1 主链路仍必须执行现有 Playwright 套件和 Windows/Linux 各一次�
 | 维度 | GPT-5.6 V1.0 | 本审定版 V2.0 | 理由 |
 |---|---|---|---|
 | 实施顺序 | 阶段 A 先补 Docker/CI/Grant，阶段 B 再拆 Loop/Harness | **先拆内核端口，安全/CI 伴随端口落地，功能最后长** | 避免在耦合 Worker 上建门禁，减少返工 |
-| 原生工具 | 未明确是否重新设计 | **直接采用 Pi 语义**，Oktapod 只加安全与持久化 | Pi 已冻结验证，重新设计浪费且风险高 |
+| 原生工具 | 未明确是否重新设计 | **以 Pi 冻结语义做合同基线**，保留 Oktapod 安全与持久化差异 | 复用成熟语义但不假装逐版本完全一致 |
 | 沙箱范围 | 项目级沙箱 + 网络默认拒绝 | **V1 最小沙箱**（隔离 HOME/凭据/工作区/进程树），网络沙箱进 V1.1 | V1 是本地优先产品，网络零信任非首版必需 |
 | CI 门禁 | 13 项全量 | **9 项核心门禁**，保留现有 Playwright 主链路；SBOM/依赖扫描/PG migration 进 V1.1 | 先证明用户闭环，再补企业级门禁 |
 | ToolSpec | 完整 Ontology | **V1 简化版**，复杂分类进 V1.1 | 避免过度工程 |
@@ -507,4 +502,4 @@ Oktapod V1 不追求功能数量，追求：
 
 ---
 
-**下一步**：阅读配套执行文件 `Oktapod_V1_执行计划与验收门禁_V1.0.md`，获取按周划分的任务卡、验收门禁与 AI Coding 执行指令。
+**发布状态**：阅读 `Oktapod_V1_发布说明_V1.0.0.md` 和 `Oktapod_V1_验收状态与追踪矩阵.md`。本文件只定义架构决策，不单独声明完成。

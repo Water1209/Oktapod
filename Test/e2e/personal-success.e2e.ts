@@ -87,6 +87,38 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
   await page.getByRole('textbox', { name: '搜索资产' }).fill('验收资产')
   await expect(page.getByRole('link', { name: '下载 验收资产.txt' })).toHaveAttribute('href', /\/api\/v1\/assets\/.+\/content/)
 })
+
+test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径', async ({ page }) => {
+  test.setTimeout(90_000)
+  const suffix = Date.now().toString(36)
+  await page.goto('/')
+  await page.getByRole('button', { name: '打开项目' }).click()
+  await page.getByRole('textbox', { name: '项目名称' }).fill(`Changes 闭环 ${suffix}`)
+  await page.getByRole('textbox', { name: '目标说明' }).fill('验证 Diff 查看与选择提交都进入受治理任务')
+  await page.getByRole('button', { name: '建立工作空间' }).click()
+
+  await sendTaskMessage(page, '返回 E2E 模型执行结果')
+  await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
+  await openLinkedTask(page)
+  await page.getByRole('button', { name: 'Changes', exact: true }).click()
+
+  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行结果.md' })).toBeVisible()
+  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })).toBeVisible()
+  await page.getByRole('checkbox', { name: '选择 执行结果.md' }).check()
+  await page.getByRole('textbox', { name: 'Git 提交信息' }).fill('Commit selected result')
+  await page.getByRole('button', { name: '提交所选' }).click()
+
+  const approval = page.locator('.human-action-card').filter({ hasText: '执行结果.md' })
+  await expect(approval).toContainText('执行结果.md', { timeout: 15_000 })
+  await approval.getByRole('button', { name: '批准一次' }).click()
+  await expect(page.locator('.message-task-stream').last().getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
+
+  await page.getByRole('button', { name: 'Changes', exact: true }).click()
+  await page.getByRole('button', { name: 'Git HEAD', exact: true }).click()
+  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: '选择 执行结果.md' })).toHaveCount(0)
+})
+
 test('任务执行流默认收敛并支持多 Markdown 文件审阅', async ({ page }) => {
   test.setTimeout(90_000)
   const consoleProblems: string[] = []

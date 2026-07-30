@@ -282,9 +282,18 @@ func (s *Service) CreateProject(ctx context.Context, input core.CreateProjectInp
 		return core.Project{}, err
 	}
 	idempotency := core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(input)}
-	return retryTransientSQLiteValue(ctx, func() (core.Project, error) {
+	project, err := retryTransientSQLiteValue(ctx, func() (core.Project, error) {
 		return s.repository.CreateProject(ctx, s.ScopeFor(ctx), input, idempotency)
 	})
+	if err != nil {
+		return core.Project{}, err
+	}
+	if initializer, ok := s.chatToolExec.(ProjectWorkspaceInitializer); ok {
+		if err := initializer.InitializeProject(ctx, project.ID); err != nil {
+			return core.Project{}, fmt.Errorf("initialize project workspace: %w", err)
+		}
+	}
+	return project, nil
 }
 
 func (s *Service) GetProject(ctx context.Context, projectID string) (core.Project, error) {

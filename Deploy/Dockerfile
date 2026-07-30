@@ -10,14 +10,21 @@ COPY Src/web Src/web
 RUN pnpm --dir Src/web build
 
 FROM golang:1.26-bookworm AS build
+ARG OKTAPOD_VERSION=1.0.0
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY Src Src
 COPY --from=web /src/Src/web/dist Src/web/dist
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/oktapod ./Src/cmd/oktapod
+RUN CGO_ENABLED=1 go build -trimpath \
+    -ldflags="-s -w -X github.com/oktapod/oktapod/Src/internal/application.RuntimeVersion=${OKTAPOD_VERSION}" \
+    -o /out/oktapod ./Src/cmd/oktapod
 
 FROM debian:bookworm-slim
+ARG OKTAPOD_VERSION=1.0.0
+LABEL org.opencontainers.image.title="Oktapod" \
+    org.opencontainers.image.version="${OKTAPOD_VERSION}" \
+    org.opencontainers.image.source="https://github.com/Water1209/Oktapod"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl sqlite3 \
     && rm -rf /var/lib/apt/lists/* \

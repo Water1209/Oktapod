@@ -40,6 +40,29 @@ func NewLocal(root string) (*Local, error) {
 	return &Local{root: absolute, executionPolicy: application.StaticExecutionPolicy{}}, nil
 }
 
+func (l *Local) InitializeProject(ctx context.Context, projectID string) error {
+	root, err := l.projectRoot(projectID)
+	if err != nil {
+		return err
+	}
+	if top, _, topErr := l.runGit(ctx, root, "rev-parse", "--show-toplevel"); topErr == nil && samePath(strings.TrimSpace(top), root) {
+		return nil
+	}
+	if _, _, err := l.runGit(ctx, root, "init", "--quiet", "--initial-branch=main"); err != nil {
+		return fmt.Errorf("initialize Git repository: %w", err)
+	}
+	if _, _, err := l.runGit(ctx, root, "config", "--local", "user.name", "Oktapod User"); err != nil {
+		return fmt.Errorf("configure Git user name: %w", err)
+	}
+	if _, _, err := l.runGit(ctx, root, "config", "--local", "user.email", "oktapod@local.invalid"); err != nil {
+		return fmt.Errorf("configure Git user email: %w", err)
+	}
+	if _, _, err := l.runGit(ctx, root, "commit", "--quiet", "--allow-empty", "-m", "Initialize Oktapod workspace"); err != nil {
+		return fmt.Errorf("create Git baseline: %w", err)
+	}
+	return nil
+}
+
 func (l *Local) Execute(ctx context.Context, projectID string, call core.ToolCall) core.ToolExecution {
 	planned, policyErr := l.executionPolicy.EvaluateExecution(ctx, application.Principal{}, application.ExecutionRequest{ProjectID: projectID, Call: call})
 	if policyErr != nil {
@@ -543,11 +566,13 @@ func safeEnvironment(projectRoot string) ([]string, error) {
 		"GIT_CONFIG_GLOBAL="+nullConfig,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
-		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_COUNT=3",
 		"GIT_CONFIG_KEY_0=credential.helper",
 		"GIT_CONFIG_VALUE_0=",
 		"GIT_CONFIG_KEY_1=core.hooksPath",
 		"GIT_CONFIG_VALUE_1="+disabledHooks,
+		"GIT_CONFIG_KEY_2=core.quotePath",
+		"GIT_CONFIG_VALUE_2=false",
 		"CI=1",
 		"NO_COLOR=1",
 	)

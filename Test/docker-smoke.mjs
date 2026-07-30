@@ -26,6 +26,14 @@ if (!cookie || !csrf) throw new Error('registration did not return session and C
 const bootstrap = await fetch(`${baseURL}/bootstrap`, { headers: { Cookie: cookie } })
 if (!bootstrap.ok) throw new Error(`authenticated bootstrap failed: ${bootstrap.status}`)
 
+const expectedVersion = process.env.OKTAPOD_EXPECT_VERSION || '1.0.0'
+const diagnostics = await fetch(`${baseURL}/diagnostics`, { headers: { Cookie: cookie } })
+if (!diagnostics.ok) throw new Error(`diagnostics failed: ${diagnostics.status}`)
+const runtime = await diagnostics.json()
+if (runtime.version !== expectedVersion) {
+  throw new Error(`runtime version mismatch: ${runtime.version || '<empty>'}, expected ${expectedVersion}`)
+}
+
 const createProject = await fetch(`${baseURL}/projects`, {
   method: 'POST',
   headers: {
@@ -40,4 +48,4 @@ if (createProject.status !== 201) throw new Error(`project creation failed: ${cr
 const project = await createProject.json()
 if (!project.id) throw new Error('created project has no id')
 
-process.stdout.write(`Docker smoke passed for project ${project.id}\n`)
+process.stdout.write(`Oktapod ${runtime.version} smoke passed for project ${project.id}\n`)

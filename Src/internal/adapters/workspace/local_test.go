@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,7 +114,7 @@ func TestGovernedHostEnvironmentIsolatesHomeSecretsAndGitConfiguration(t *testin
 	if values["HOME"] == "" || values["HOME"] == os.Getenv("HOME") {
 		t.Fatalf("HOME was not isolated: %q", values["HOME"])
 	}
-	if values["GIT_CONFIG_NOSYSTEM"] != "1" || values["GIT_TERMINAL_PROMPT"] != "0" || values["GIT_CONFIG_COUNT"] != "2" {
+	if values["GIT_CONFIG_NOSYSTEM"] != "1" || values["GIT_TERMINAL_PROMPT"] != "0" || values["GIT_CONFIG_COUNT"] != "3" || values["GIT_CONFIG_VALUE_2"] != "false" {
 		t.Fatalf("Git isolation is incomplete: %#v", values)
 	}
 }
@@ -216,6 +217,40 @@ func TestWorkspaceGitReadAndMutationPreconditions(t *testing.T) {
 	remaining := executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
 	if !strings.Contains(remaining.Output["status"].(string), "tracked.txt") || strings.Contains(remaining.Output["status"].(string), "selected.txt") {
 		t.Fatalf("remaining status=%+v", remaining)
+	}
+}
+
+func TestInitializeProjectTracksUntrackedDiffCommitAndRestore(t *testing.T) {
+	executor, projectRoot := newWorkspaceTestExecutor(t)
+	if err := executor.InitializeProject(context.Background(), workspaceTestProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "created.txt"), []byte("created\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diff := executeWorkspaceTest(t, executor, core.ToolGitDiff, map[string]any{})
+	if diff.Status != core.StatusSucceeded || !strings.Contains(diff.Output["diff"].(string), "created.txt") {
+		t.Fatalf("untracked diff=%+v", diff)
+	}
+	status := executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
+	commit := executeWorkspaceTest(t, executor, core.ToolGitCommitPaths, map[string]any{
+		"message": "commit created file", "paths": []any{"created.txt"}, "expected_status_hash": status.Output["status_hash"].(string),
+	})
+	if commit.Status != core.StatusSucceeded {
+		t.Fatalf("untracked commit=%+v", commit)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "discard.txt"), []byte("discard\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status = executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
+	restore := executeWorkspaceTest(t, executor, core.ToolGitRestore, map[string]any{
+		"path": "discard.txt", "expected_status_hash": status.Output["status_hash"].(string),
+	})
+	if restore.Status != core.StatusSucceeded {
+		t.Fatalf("untracked restore=%+v", restore)
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "discard.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("untracked restore left file behind: %v", err)
 	}
 }
 

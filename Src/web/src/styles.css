@@ -1034,6 +1034,21 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .changes-meta { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
 .changes-meta em { margin-left: auto; color: var(--warning); font-style: normal; }
 .changes-diff { max-height: 48vh; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-subtle); padding: 10px; color: var(--text-main); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+.changes-file-list { display: grid; gap: 7px; max-height: 46vh; margin-top: 8px; overflow: auto; }
+.changes-file-list details { border: 1px solid var(--line); border-radius: 7px; background: var(--surface-subtle); overflow: hidden; }
+.changes-file-list summary { display: flex; align-items: center; gap: 7px; padding: 7px 9px; cursor: pointer; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.changes-file-list summary input { margin: 0; }
+.changes-file-list summary span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.changes-file-list summary small { color: var(--text-muted); font: 11px var(--font-sans); }
+.changes-file-list pre { margin: 0; overflow-x: auto; border-top: 1px solid var(--line); padding: 7px 9px; color: var(--text-main); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+.changes-hunk > a { display: block; border-top: 1px solid var(--line); padding: 5px 9px; color: var(--signal-blue); background: color-mix(in srgb, var(--signal-blue) 8%, transparent); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-decoration: none; }
+.changes-actions { display: grid; grid-template-columns: auto auto minmax(90px, 1fr) auto; gap: 6px; margin-top: 8px; }
+.changes-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); color: var(--text-main); padding: 5px 8px; }
+.changes-actions input { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-raised); color: var(--text-main); padding: 5px 8px; }
+@media (max-width: 520px) {
+  .changes-actions { grid-template-columns: 1fr 1fr; }
+  .changes-actions input { grid-column: 1 / -1; }
+}
 .composer-icon, .composer-send { width: 30px; height: 30px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #666660; cursor: pointer; }
 .composer-icon:hover, .composer-icon.active { background: #eeeeeb; color: #252523; }
 .composer-send { background: #292927; color: #fff; }

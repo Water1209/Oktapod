@@ -1,6 +1,8 @@
 # Pi vs Oktapod — Provider 与模型层对比
 
-> 基线：pi@b1c444d（packages/ai、packages/coding-agent/src/core/model-*）vs Oktapod 当前 Src/。
+> **研究快照说明（2026-07-30）**：正文比较的是 Provider Registry 落地前的代码，故“无 Thinking/缓存/Web 端点”等结论已过时。当前实现支持多 Provider 实例、Run 模型快照、Thinking、目录缓存、错误脱敏及 OpenAI-compatible 真实主链路；本文仅用于追溯原始差距。
+
+> 基线：pi@b1c444d（packages/ai、packages/coding-agent/src/core/model-*）vs 本研究形成时的 Oktapod Src/。
 > 结论先行：**模型层全面落后于 Pi，按"直接用 Pi 语义"改造。**
 
 ## 对比表

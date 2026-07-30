@@ -76,8 +76,12 @@ func run() error {
 	if command == "context" {
 		return runContext(os.Args[2:])
 	}
+	if command == "version" {
+		fmt.Fprintln(os.Stdout, application.RuntimeVersion)
+		return nil
+	}
 	if command != "serve" {
-		return fmt.Errorf("unsupported command %q; use serve, model, context, preflight, backup, restore, export, or import", command)
+		return fmt.Errorf("unsupported command %q; use serve, model, context, preflight, backup, restore, export, import, or version", command)
 	}
 
 	config, err := bootstrap.LoadConfig()
@@ -224,7 +228,7 @@ func run() error {
 	}
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("Oktapod started", "profile", config.Profile, "listen", config.ListenAddress, "data_root", config.DataRoot, "model_endpoint", modelEndpoint, "model_configured", modelConfigured)
+		logger.Info("Oktapod started", "version", application.RuntimeVersion, "profile", config.Profile, "listen", config.ListenAddress, "data_root", config.DataRoot, "model_endpoint", modelEndpoint, "model_configured", modelConfigured)
 		serverErrors <- httpServer.ListenAndServe()
 	}()
 

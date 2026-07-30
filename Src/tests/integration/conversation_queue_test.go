@@ -552,3 +552,32 @@ func TestConversationSteeringPromotionScopedToConversation(t *testing.T) {
 		t.Fatalf("promoted=%#v err=%v", promoted, err)
 	}
 }
+
+func TestConversationAbortDropsSteeringAndPreservesNextTurn(t *testing.T) {
+	t.Parallel()
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "fake-test-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Abort queue", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "active work", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueueTurn(t, repository, project.ID, task.ConversationID, task.ID, "当前步骤后调整", "steering")
+	next := enqueueTurn(t, repository, project.ID, task.ConversationID, task.ID, "取消后继续处理", "follow_up")
+
+	if _, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "abort-queue", "abort-queue"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := service.ListConversationQueue(context.Background(), task.ConversationID, "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != next.ID || pending[0].Kind != "follow_up" {
+		t.Fatalf("abort pending queue=%#v; expected only preserved Next Turn", pending)
+	}
+}

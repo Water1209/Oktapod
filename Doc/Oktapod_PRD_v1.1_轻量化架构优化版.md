@@ -1,6 +1,6 @@
 # Oktapod 产品需求文档（PRD）
 
-> **当前实现决策覆盖（2026-07-26）**：本文保留为历史产品蓝图。第一阶段实际交付以《Oktapod 第一阶段产品功能设计 V1.0》和《Oktapod MVP 验收测试方案与状态 v0.1》为准：当前采用注册用户 + Owner-only 个人私有项目、React/TypeScript + TanStack Router/Query 前端，以及 REST 写操作 + 可恢复 SSE 读事件；本文中的 HTMX/templ、WebSocket 和无注册用户表述不再指导第一阶段实现。Git 远程操作降为后续评估项。
+> **当前实现决策覆盖（2026-07-30）**：本文保留为完整产品蓝图，不是 V1.0.0 完成度真源。V1 发布注册用户 + Owner-only 个人私有项目、SQLite、React/TypeScript、REST 写操作 + 可恢复 SSE 和单 Agent Coding 主链路；内建搜索、Team、Schedule、Memory、Agent Team 等已有兼容能力不强制删除，但只有个人版“读-改-验-Diff-恢复”计入发布完成度。当前范围、架构和证据分别以 V1 总体架构、执行计划及验收矩阵为准；本文中的 HTMX/templ、WebSocket、团队主流程和能力市场表述不指导 V1.0.0。
 
 > **文档版本**：V1.1
 > **文档状态**：架构轻量化修订版 / 研发输入

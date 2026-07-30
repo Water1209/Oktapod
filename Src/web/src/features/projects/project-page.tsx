@@ -195,7 +195,7 @@ function ProjectWorkspace() {
           {managementTab === 'context' ? <InspectorContext projectModel={project.data.default_model} events={inspectedRunEvents.data.items} /> : null}
           {managementTab === 'tools' ? <InspectorEvents events={inspectedRunEvents.data.items.filter((item) => item.event_type.includes('tool'))} empty="当前 Run 尚无工具事件。" /> : null}
           {managementTab === 'security' ? <InspectorSecurity projectId={projectId} taskId={inspectedTask?.id} approvals={inspectedApprovals.data?.items ?? []} /> : null}
-          {managementTab === 'changes' ? <InspectorChanges runId={inspectedTask?.run_id} artifacts={inspectedArtifacts.data?.items ?? []} /> : null}
+          {managementTab === 'changes' ? <InspectorChanges task={inspectedTask} artifacts={inspectedArtifacts.data?.items ?? []} /> : null}
           {managementTab === 'trace' ? <InspectorEvents events={inspectedRunEvents.data.items} empty="当前 Run 尚无事件。" /> : null}
           {managementTab === 'usage' ? <InspectorUsage usage={inspectedUsage.data} /> : null}
           {managementTab === 'overview' ? <div className="project-overview-list"><button type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /><span><strong>项目设置</strong><small>{project.data.description || '补充项目目标与模型策略'}</small></span><ChevronRight size={15} /></button><div><Bot size={16} /><span><strong>默认智能体</strong><small>Oktapod Generalist</small></span></div><div><Sparkles size={16} /><span><strong>模型策略</strong><small>{project.data.default_model || '由 Provider 自动选择'}</small></span></div><div><LockKeyhole size={16} /><span><strong>可见范围</strong><small>仅当前用户</small></span></div></div> : null}

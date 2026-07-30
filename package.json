@@ -1,5 +1,6 @@
 {
   "name": "oktapod",
+  "version": "1.0.0",
   "private": true,
   "packageManager": "pnpm@10.28.2",
   "engines": {
@@ -9,6 +10,8 @@
     "dev": "pnpm --dir Src/web dev",
     "build:web": "pnpm --dir Src/web build",
     "build": "pnpm build:web && go build -o Build/ ./Src/cmd/oktapod",
+    "release:build": "node Test/build-release.mjs",
+    "release:smoke": "node Test/release-smoke.mjs",
     "lint": "pnpm --dir Src/web lint",
     "test:web": "pnpm --dir Src/web test",
     "test:race": "go test -race ./...",

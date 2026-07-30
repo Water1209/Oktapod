@@ -1,5 +1,7 @@
 # Pi vs Oktapod：Agent 核心逻辑与提示词对比
 
+> **研究快照说明（2026-07-30）**：正文比较的是 V1 改造前代码，用于解释差距来源，不代表当前实现。当前代码已增加 typed model protocol、TranscriptAssembler、截断零执行、`agentloop`/`harness` 契约、持久计划与恢复；发布状态只以 V1 验收矩阵为准。
+
 对比基线：
 - **Pi**：`E:\git\pi`，冻结基线 `b1c444d`。核心文件：`packages/agent/src/agent-loop.ts`、`packages/agent/src/agent.ts`、`packages/agent/src/harness/`（system-prompt、compaction、agent-harness）、`packages/coding-agent/src/core/system-prompt.ts`。
 - **Oktapod**：`E:\git\Oktapod\Src`。核心文件：`Src/internal/runtime/worker.go`、`Src/internal/application/conversation_compaction.go`、`Src/internal/adapters/db/sqlite/store.go`（`ApplyConversationSteering`、`queueModelContinuation`、`collectContinuationHistory`）。

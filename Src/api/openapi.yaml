@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: Oktapod API
-  version: 0.1.0
-  description: Contract-first API for the Oktapod MVP control plane.
+  version: 1.0.0
+  description: Contract-first API for the Oktapod V1 control plane.
 servers:
   - url: /api/v1
 paths:

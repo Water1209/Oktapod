@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -44,6 +45,11 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 			args = append(args, "--", filepathSlash(path))
 		}
 		output, truncated, err := l.runGit(ctx, root, args...)
+		if err != nil {
+			return workspaceFailure(result, "GIT_DIFF_FAILED", err)
+		}
+		output, untrackedTruncated, err := l.appendUntrackedDiffs(ctx, root, output, stringArgument(call.Arguments, "path"))
+		truncated = truncated || untrackedTruncated
 		if err != nil {
 			return workspaceFailure(result, "GIT_DIFF_FAILED", err)
 		}
@@ -91,19 +97,30 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 		output, truncated, err = l.runGit(ctx, root, "commit", "-m", stringArgument(call.Arguments, "message"))
 	case core.ToolGitCommitPaths:
 		args := []string{"commit", "--only", "-m", stringArgument(call.Arguments, "message"), "--"}
+		addArgs := []string{"add", "--"}
 		for _, path := range stringSliceArgument(call.Arguments, "paths") {
 			if _, pathErr := securePotentialFilePath(root, path); pathErr != nil {
 				return workspaceFailure(result, "WORKSPACE_PATH_DENIED", pathErr)
 			}
+			addArgs = append(addArgs, filepathSlash(path))
 			args = append(args, filepathSlash(path))
+		}
+		if _, _, err = l.runGit(ctx, root, addArgs...); err != nil {
+			break
 		}
 		output, truncated, err = l.runGit(ctx, root, args...)
 	case core.ToolGitRestore:
 		path := stringArgument(call.Arguments, "path")
-		if _, pathErr := securePotentialFilePath(root, path); pathErr != nil {
+		target, pathErr := secureExistingPath(root, path, false)
+		if pathErr != nil {
 			return workspaceFailure(result, "WORKSPACE_PATH_DENIED", pathErr)
 		}
-		output, truncated, err = l.runGit(ctx, root, "restore", "--source=HEAD", "--worktree", "--", filepathSlash(path))
+		if _, _, trackedErr := l.runGit(ctx, root, "ls-files", "--error-unmatch", "--", filepathSlash(path)); trackedErr != nil {
+			err = os.Remove(target)
+			output = "removed untracked file " + filepathSlash(path)
+		} else {
+			output, truncated, err = l.runGit(ctx, root, "restore", "--source=HEAD", "--worktree", "--", filepathSlash(path))
+		}
 	case core.ToolGitRestoreHunk:
 		path := stringArgument(call.Arguments, "path")
 		if _, pathErr := securePotentialFilePath(root, path); pathErr != nil {
@@ -149,6 +166,10 @@ func (l *Local) runGit(ctx context.Context, root string, args ...string) (string
 }
 
 func (l *Local) runGitInput(ctx context.Context, root, input string, args ...string) (string, bool, error) {
+	return l.runGitInputAllowed(ctx, root, input, -1, args...)
+}
+
+func (l *Local) runGitInputAllowed(ctx context.Context, root, input string, allowedExitCode int, args ...string) (string, bool, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, "git", args...)
@@ -166,6 +187,10 @@ func (l *Local) runGitInput(ctx context.Context, root, input string, args ...str
 	command.Stdout, command.Stderr = stdout, stderr
 	err = command.Run()
 	if err != nil {
+		var exitError *exec.ExitError
+		if allowedExitCode >= 0 && errors.As(err, &exitError) && exitError.ExitCode() == allowedExitCode {
+			return stdout.String(), stdout.truncated || stderr.truncated, nil
+		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = err.Error()
@@ -173,6 +198,42 @@ func (l *Local) runGitInput(ctx context.Context, root, input string, args ...str
 		return stdout.String(), stdout.truncated || stderr.truncated, errors.New(redactText(detail))
 	}
 	return stdout.String(), stdout.truncated, nil
+}
+
+func (l *Local) appendUntrackedDiffs(ctx context.Context, root, trackedDiff, selectedPath string) (string, bool, error) {
+	output := &boundedBuffer{limit: maxCommandOutput}
+	_, _ = output.Write([]byte(trackedDiff))
+	untracked, listTruncated, err := l.runGit(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", output.truncated || listTruncated, err
+	}
+	selectedPath = filepathSlash(strings.TrimSpace(selectedPath))
+	untrackedPaths := strings.Split(untracked, "\x00")
+	if listTruncated && len(untrackedPaths) > 0 {
+		// A bounded listing may end in the middle of a path. Preserve the
+		// completed entries and report truncation instead of resolving an
+		// incomplete path or failing the whole diff.
+		untrackedPaths = untrackedPaths[:len(untrackedPaths)-1]
+	}
+	for _, path := range untrackedPaths {
+		path = filepathSlash(path)
+		if path == "" || (selectedPath != "" && path != selectedPath && !strings.HasPrefix(path, strings.TrimSuffix(selectedPath, "/")+"/")) {
+			continue
+		}
+		if _, err := secureExistingPath(root, path, false); err != nil {
+			return "", output.truncated || listTruncated, err
+		}
+		diff, truncated, err := l.runGitInputAllowed(ctx, root, "", 1, "diff", "--no-index", "--no-ext-diff", "--", "/dev/null", path)
+		if err != nil {
+			return "", output.truncated || listTruncated || truncated, err
+		}
+		if output.String() != "" && !strings.HasSuffix(output.String(), "\n") {
+			_, _ = output.Write([]byte("\n"))
+		}
+		_, _ = output.Write([]byte(diff))
+		listTruncated = listTruncated || truncated
+	}
+	return output.String(), output.truncated || listTruncated, nil
 }
 
 func selectDiffHunk(diff string, index int) (string, error) {

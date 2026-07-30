@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.1
-> 更新日期：2026-07-29
+> 版本：V1.2
+> 更新日期：2026-07-30
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -37,17 +37,17 @@ V1 唯一交付目标：
 
 ## 2. 执行批次
 
-### 2.1 当前执行记录（2026-07-29）
+### 2.1 当前执行记录（2026-07-30）
 
 | 批次 | 状态 | 已落地证据 | 仍未关闭 |
 |---|---|---|---|
-| B0 | `PASS` | 本计划、总体架构、README、部署指南和追踪矩阵已统一范围与真源 | 后续批次仍须同步事实 |
-| B1 | `PARTIAL` | Repository 已拆为窄端口；`agentloop`、`harness` 已提取并有测试 | Worker 与 `project-page.tsx` 仍未达到目标行数 |
-| B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、多阶段非 root Docker、CI/OpenAPI/迁移门禁已落地 | 本机无 CGO，race 待 Linux CI；Docker 需真实 runner 验证 |
-| B3 | `PARTIAL` | 统一 `ToolSpec` 元数据、简洁别名解析、旧名兼容已落地 | 命令增量事件与完整长输出 Artifact 未关闭 |
-| B4 | `PARTIAL` | MCP Schema Hash/配置版本/健康状态、Run Tool Snapshot、Skill strict/same-capability 字段及 strict 阻塞已落地 | 外部 Envelope 和完整同能力选择仍待关闭 |
-| B5 | `PARTIAL` | Composer 范围收敛、宿主边界提示、Run/HEAD/Index Changes API 与 UI 已落地 | 行/Hunk、撤销、选择提交及页面物理拆分未关闭 |
-| B6 | `PARTIAL` | `pnpm verify` 全绿；Playwright foundation 1/1、success 22/22；Docker smoke 已覆盖注册、会话和建项目脚本 | Linux/真实 Docker/真实 Provider/全故障矩阵待执行 |
+| B0 | `PASS` | 架构、计划、README、发布说明、部署指南、归档说明和追踪矩阵已统一为 V1.0.0 范围 | 后续变更仍须同步事实 |
+| B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与 Inspector 组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
+| B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、多阶段非 root Docker、版本注入、CI/OpenAPI/迁移门禁已落地 | Windows 本机无 Docker daemon 且 CGO 关闭；等待 Linux CI 关闭 tag 门禁 |
+| B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
+| B4 | `PASS` | MCP Schema/配置/健康版本、Run Tool Snapshot、Skill 约束、strict 阻塞和 `external_untrusted` Envelope 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
+| B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
+| B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Linux race 与 Docker 产品烟测须在 tag 前由 CI 通过 |
 
 ### B0：统一基线和验收真源
 
@@ -70,8 +70,8 @@ V1 唯一交付目标：
 - 保留现有 PrincipalResolver、Authorizer 和 BlobStore，不建立平行实现。
 - 提取 `agentloop`：模型调用、ToolCall 解析、ToolBatch 提议、ToolResult 观察和终止判断。
 - 提取 `harness`：Run、Lease、Checkpoint、审批、Receipt、预算、Steering、Follow-up 和恢复。
-- Worker 只负责队列调度和装配；核心文件不超过 800 行。
-- 将 `project-page.tsx` 拆为 Thread、Composer、Inspector、Changes 等业务组件，主页面控制在约 300 行。
+- Worker 逐步收敛为队列调度和装配；复杂度、职责数量和变更耦合是主指标，约 800 行仅作拆分参考。
+- 将 `project-page.tsx` 中的 Inspector、Changes 等稳定业务块提取为组件；约 300 行仅作维护参考，不作为用户闭环发布门禁。
 
 门禁：
 
@@ -110,7 +110,7 @@ pnpm verify
 - 单一 `ToolSpec` 包含稳定身份、调用名、Schema、来源、风险、读写属性、幂等性、输出限制、Executor、Validator 和 Renderer。
 - 复用现有 Workspace/Git 实现，补齐 Pi 的截断、Continuation、BOM/CRLF、唯一编辑、二进制、`.gitignore` 和进程树终止语义。
 - 新 Run 可暴露 `read/edit/write/ls/find/grep/run_command` 简洁别名；历史 `workspace_*` 名称继续映射到同一实现。
-- `run_command` 产生可恢复的 started/stdout/stderr/progress/truncated/artifact/completed/failed/cancelled 事件。
+- `run_command` 产生可恢复的 started/completed/failed/cancelled、截断摘要和 Artifact；逐块 stdout/stderr/progress 直播进入 V1.1。
 - 长输出保存为 Artifact；事件和模型上下文只接收受限摘要。
 
 门禁：
@@ -125,7 +125,7 @@ pnpm verify
 - 复用 `capabilities`、`mcp_connections`、审核和安装任务。
 - MCP 增加 Schema Hash、配置版本、健康状态和 Run Tool Snapshot；变更只影响下一 Run。
 - Skill Manifest 支持 `required-capabilities`、`preferred-tools`、`fallback-policy`。
-- `strict` 在首选不可用时阻塞；`same-capability` 仅暴露已审核、启用、健康、风险匹配的同能力候选。
+- `strict` 在首选不可用时阻塞；`same-capability` 只能从 Run 冻结的已审核、启用、健康工具中向模型暴露候选。确定性候选排名和参数转换进入 V1.1。
 - 对话式安装必须完成解析、隔离校验、权限差异、人工审核、启用、调用和 Receipt，模型不能静默安装。
 - 内建搜索进入统一 ToolSpec，作为无需外部凭据的可用能力；Tavily MCP 是可选首选，不是核心依赖。
 - MCP、搜索、网页和仓库指令统一包裹为 `external_untrusted` Envelope。
@@ -156,9 +156,9 @@ pnpm verify
 
 交付：
 
-- OHCS Golden Trace 覆盖多轮文本、Tool 配对、并行/串行、Steering、Follow-up、Abort、Compaction、Tree、Provider 切换和恢复。
-- 故障注入覆盖 Worker kill、模型超时、MCP 中断、审批过期、SQLite Busy、Receipt 写失败和 SSE 断线。
-- Windows 与干净 Linux 依赖树分别完成真实浏览器主链路。
+- OHCS 语义证据覆盖多轮文本、Tool 配对、并行/串行、Steering、Follow-up、Abort、Compaction、Tree、Provider 切换和恢复；证据可由统一 Golden Trace 与相邻契约测试共同组成。
+- V1 必选故障覆盖 Worker kill、审批过期、SQLite Busy、Receipt 写失败保护和 SSE 重连；完整模型/MCP/网络故障矩阵进入发布后加固。
+- Windows 完成真实浏览器主链路；Linux CI 完成 clean install、race、build 和 Docker 产品烟测。Linux 真实浏览器全视口矩阵进入后续加固。
 - 使用 SecretStore 注入的真实 Provider 验证流式、文件读改、命令测试、审批、Diff、撤销/提交和恢复。
 - Docker smoke 覆盖真实产品流程，不只检查端口。
 
@@ -176,7 +176,7 @@ pnpm --dir Src/web test:e2e:turn
 pnpm --dir Src/web test:e2e:approval
 ```
 
-- 权威矩阵全部 V1 必选项为 `PASS`。
+- 权威矩阵中全部 V1 必选项为 `PASS`；明确列入 V1.1/团队边界的项目不阻塞个人版。
 - 不自动 tag、不 push；没有证据的项目保持 `PARTIAL/NOT_STARTED/N/A`。
 
 ## 3. 接口与数据决策
