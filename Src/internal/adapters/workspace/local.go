@@ -320,12 +320,7 @@ func (l *Local) executeShell(ctx context.Context, projectRoot string, call core.
 	}
 	shellCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(shellCtx, "cmd", "/c", command)
-	} else {
-		cmd = exec.CommandContext(shellCtx, "bash", "-c", command)
-	}
+	cmd := shellCommand(shellCtx, command)
 	configureCommand(cmd)
 	cmd.Cancel = func() error { return terminateProcessTree(cmd) }
 	cmd.WaitDelay = 2 * time.Second
@@ -359,6 +354,21 @@ func (l *Local) executeShell(ctx context.Context, projectRoot string, call core.
 	}
 	if err != nil {
 		result.Status = core.StatusFailed
+		if errors.Is(shellCtx.Err(), context.DeadlineExceeded) {
+			result.ErrorCode = "TOOL_TIMEOUT"
+			return result
+		}
+		if errors.Is(shellCtx.Err(), context.Canceled) {
+			result.ErrorCode = "TOOL_CANCELED"
+			return result
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			result.ErrorCode = "COMMAND_EXIT_NONZERO"
+			return result
+		}
+		result.ErrorCode = "COMMAND_START_FAILED"
+		result.Output["reason"] = err.Error()
 		return result
 	}
 	result.Status = core.StatusSucceeded

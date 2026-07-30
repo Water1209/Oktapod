@@ -96,7 +96,7 @@
 | R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填；同协议多实例与同名模型隔离；Registry REST；SecretStore 补偿；脱敏测试；stale-while-revalidate；Run ModelRef/Thinking/Catalog 冻结及下一 Turn 生效全绿 |
 | R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行保留；取消终态、SQLite Busy 退避和未知副作用保护通过 |
-| R1A-010 | Codex 式工作台 | `PASS` | 四区 Shell、统一 Thread、桌面右侧 Inspector、Composer、Activity Spine、内联任务/审批及 1440/1280/1024/768/390 响应式 E2E 通过；项目侧栏已去除重复 Resources 和未完成 Terminal 入口 |
+| R1A-010 | Codex 式工作台 | `PASS` | 四区 Shell、统一 Thread、桌面右侧 Inspector、Composer、Activity Spine、内联任务/审批及 1440/1280/1024/768/390 响应式 E2E 通过；Thread 操作收敛到“编辑名称/删除”下拉，执行记录的搜索/展开位于卡片顶部，任务流显示实际 Agent |
 | R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效 |
 | R1A-012 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；Inspector 文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
@@ -176,3 +176,4 @@
 | 2026-07-28 | Skill/Harness 全流程复验 | 浏览器真实导入 `researchpilot`：同版本同 Hash 幂等返回原 Skill；`/researchpilot` 产生 `skill.invoked/skill.loaded`，目标特定 5 项计划实时刷新，搜索失败进入 `tool.recovery_queued` 后继续并最终完成 5/5；对话流式输出 Physical AI 中文简报和 16 个 Markdown 来源链接。同步修复计划空转、运行中结构改写、无进度自恢复、空域名参数归一化和成功搜索收敛门禁 |
 | 2026-07-28 | 仓库与初始化安全收口 | 构建/文档路径统一为 `Build/` 与 `Doc/`；`sqlc` 输出回归 `Src/internal/`；浏览器自动化、旧生成目录和本机构建产物纳入忽略规则；移除源码与文档中的共享默认登录口令，首次使用改为页面注册 |
 | 2026-07-30 | V1.0.0 RC 发布收口 | 新项目自动建立空 Git 基线；Changes 支持中文未跟踪文件并由原 Thread 审批提交；Abort 保留 Next Turn；`pnpm verify`、Web 20/20、Playwright foundation 1/1 + success 23/23、带版本 Windows 工件与独立临时数据目录产品烟测通过；工件 SHA256 `749c8e705bf0b5829a4ac8bbfff49a90c5e09d16b7168352e08b09eacb322d31` |
+| 2026-07-30 | Thread 状态与失败恢复修复 | 初始计划占位在同一修订内替换为模型语义步骤；模型绕过 `update_plan` 直接执行时占位项原地物化为本次真实目标，无效/占位/过早完成/工具混用计划自动重试；可授予权限进入审批，确定性拒绝及其混合工具批次转模型修正，旧拒绝步骤保留审计但不再污染最终状态；重试优先恢复策略拒绝检查点；成功任务同步全部计划步骤为完成。Auto 分类断线改为先持久化 Task，空 Thread “继续”拒绝无上下文猜测；Thread 名称编辑/删除下拉、任务流 Agent 标识、顶部执行记录搜索/展开已实现。`pnpm verify` 全绿，正式 `127.0.0.1:8787` HTML 创建/验证/打开流程已通过 |

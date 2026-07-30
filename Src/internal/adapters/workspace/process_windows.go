@@ -11,7 +11,10 @@ import (
 )
 
 func configureCommand(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.HideWindow = true
 }
 
 func terminateProcessTree(command *exec.Cmd) error {

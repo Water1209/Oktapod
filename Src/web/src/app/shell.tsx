@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, GitCompareArrows, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, ShieldAlert, ShieldCheck, SlidersHorizontal, Sparkles, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, GitCompareArrows, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Wrench, X } from 'lucide-react'
 import { api, type Bootstrap } from '../shared/api/client'
 import { assistantExcerpt } from '../shared/assistant-segments'
 import { BootstrapContext } from '../shared/bootstrap-context'
@@ -9,7 +9,9 @@ import { BootstrapContext } from '../shared/bootstrap-context'
 export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && window.localStorage.getItem('oktapod.sidebar.collapsed') === '1')
-  const [deleteTarget, setDeleteTarget] = useState<string>()
+  const [threadMenuTarget, setThreadMenuTarget] = useState<string>()
+  const [renameTarget, setRenameTarget] = useState<string>()
+  const [renameTitle, setRenameTitle] = useState('')
   const location = useRouterState({ select: (state) => state.location })
   const queryClient = useQueryClient()
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
@@ -25,7 +27,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
   const deleteConversation = useMutation({
     mutationFn: (conversationId: string) => api.deleteConversation(conversationId),
     onSuccess: async (_, conversationId) => {
-      setDeleteTarget(undefined)
+      setThreadMenuTarget(undefined)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['conversations', currentProject?.id] }),
         queryClient.invalidateQueries({ queryKey: ['tasks', currentProject?.id] }),
@@ -33,6 +35,14 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
       if (conversationId === activeThreadId && currentProject) {
         window.location.assign(`/projects/${currentProject.id}?conversation=new`)
       }
+    },
+  })
+  const renameConversation = useMutation({
+    mutationFn: ({ conversationId, title }: { conversationId: string; title: string }) => api.renameConversation(conversationId, title),
+    onSuccess: async () => {
+      setRenameTarget(undefined)
+      setThreadMenuTarget(undefined)
+      await queryClient.invalidateQueries({ queryKey: ['conversations', currentProject?.id] })
     },
   })
   const closeMobile = () => setMobileOpen(false)
@@ -74,13 +84,23 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
         <div className="thread-nav">
           {conversations.data?.items.map((thread) => {
             const latestTask = projectTasks.data?.items.find((task) => task.conversation_id === thread.id)
-            const deleting = deleteTarget === thread.id
-            return <div className={`thread-nav-row${thread.id === activeThreadId ? ' active' : ''}${deleting ? ' confirming-delete' : ''}`} key={thread.id}>
+            const menuOpen = threadMenuTarget === thread.id
+            const renaming = renameTarget === thread.id
+            return <div className={`thread-nav-row${thread.id === activeThreadId ? ' active' : ''}`} key={thread.id}>
               <Link to="/projects/$projectId/threads/$threadId" params={{ projectId: currentProject.id, threadId: thread.id }} onClick={closeMobile}><MessageSquare size={14} /><span><strong>{thread.title || '未命名 Thread'}</strong><small>{thread.last_message ? assistantExcerpt(thread.last_message, 90) : '尚无消息'}</small></span>{latestTask ? <ThreadStatusIcon status={latestTask.status} /> : null}</Link>
-              {deleting ? <span className="thread-delete-confirm"><button type="button" onClick={() => setDeleteTarget(undefined)}>取消</button><button className="danger" type="button" disabled={deleteConversation.isPending} onClick={() => deleteConversation.mutate(thread.id)}>{deleteConversation.isPending ? '删除中' : '删除'}</button></span> : <button className="thread-more" type="button" aria-label={`管理 ${thread.title || '未命名 Thread'}`} title="会话操作" onClick={() => { deleteConversation.reset(); setDeleteTarget(thread.id) }}><MoreHorizontal size={14} /></button>}
+              <button className="thread-more" type="button" aria-label={`管理 ${thread.title || '未命名 Thread'}`} title="会话操作" aria-expanded={menuOpen} onClick={() => { deleteConversation.reset(); renameConversation.reset(); setRenameTarget(undefined); setThreadMenuTarget((value) => value === thread.id ? undefined : thread.id) }}><MoreHorizontal size={14} /></button>
+              {menuOpen ? <div className="thread-action-menu">
+                {renaming ? <form onSubmit={(event) => { event.preventDefault(); const title = renameTitle.trim(); if (title) renameConversation.mutate({ conversationId: thread.id, title }) }}>
+                  <input autoFocus aria-label="Thread 名称" value={renameTitle} maxLength={200} onChange={(event) => setRenameTitle(event.target.value)} />
+                  <button type="submit" aria-label="保存名称" disabled={!renameTitle.trim() || renameConversation.isPending}><Check size={13} /></button>
+                </form> : <>
+                  <button type="button" onClick={() => { setRenameTarget(thread.id); setRenameTitle(thread.title || '') }}><Pencil size={13} />编辑名称</button>
+                  <button className="danger" type="button" disabled={deleteConversation.isPending} onClick={() => deleteConversation.mutate(thread.id)}><Trash2 size={13} />{deleteConversation.isPending ? '删除中' : '删除'}</button>
+                </>}
+              </div> : null}
             </div>
           })}
-          {deleteConversation.error ? <p className="thread-delete-error" role="alert">{deleteConversation.error.message}</p> : null}
+          {deleteConversation.error || renameConversation.error ? <p className="thread-delete-error" role="alert">{deleteConversation.error?.message || renameConversation.error?.message}</p> : null}
           {!conversations.isLoading && conversations.data?.items.length === 0 ? <p className="thread-nav-empty">发送第一条消息后，Thread 会出现在这里。</p> : null}
         </div>
         <nav className="project-tools" aria-label="项目工具">

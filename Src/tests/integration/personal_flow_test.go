@@ -231,6 +231,10 @@ func TestConversationDeletionRequiresIdleTaskAndRemovesHistory(t *testing.T) {
 			t.Fatalf("active deletion error=%T %v", err, err)
 		}
 	}
+	renamed, err := service.RenameConversation(t.Context(), task.ConversationID, "新的 Thread 名称")
+	if err != nil || renamed.Title != "新的 Thread 名称" {
+		t.Fatalf("renamed conversation=%#v err=%v", renamed, err)
+	}
 	if _, err := service.ControlTask(t.Context(), task.ID, core.ControlTaskInput{Command: "cancel"}, "cancel-before-delete", "cancel-before-delete"); err != nil {
 		t.Fatal(err)
 	}

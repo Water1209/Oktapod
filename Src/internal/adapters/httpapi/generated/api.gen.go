@@ -2486,6 +2486,11 @@ type SetCapabilityStatusParams struct {
 // SetCapabilityStatusJSONBodyStatus defines parameters for SetCapabilityStatus.
 type SetCapabilityStatusJSONBodyStatus string
 
+// RenameConversationJSONBody defines parameters for RenameConversation.
+type RenameConversationJSONBody struct {
+	Title string `json:"title"`
+}
+
 // ListSessionEntriesParams defines parameters for ListSessionEntries.
 type ListSessionEntriesParams struct {
 	AfterEntrySeq *int64 `form:"after_entry_seq,omitempty" json:"after_entry_seq,omitempty"`
@@ -2758,6 +2763,9 @@ type ReviewCapabilityJSONRequestBody = ReviewCapabilityRequest
 // SetCapabilityStatusJSONRequestBody defines body for SetCapabilityStatus for application/json ContentType.
 type SetCapabilityStatusJSONRequestBody SetCapabilityStatusJSONBody
 
+// RenameConversationJSONRequestBody defines body for RenameConversation for application/json ContentType.
+type RenameConversationJSONRequestBody RenameConversationJSONBody
+
 // AppendBranchSummaryJSONRequestBody defines body for AppendBranchSummary for application/json ContentType.
 type AppendBranchSummaryJSONRequestBody = BranchSummaryRequest
 
@@ -2913,6 +2921,9 @@ type ServerInterface interface {
 	// Delete an owner-only conversation and its completed task history
 	// (DELETE /conversations/{conversation_id})
 	DeleteConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
+	// Rename an owner-only conversation
+	// (PATCH /conversations/{conversation_id})
+	RenameConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
 
 	// (POST /conversations/{conversation_id}/branch-summary)
 	AppendBranchSummary(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
@@ -3238,6 +3249,12 @@ func (_ Unimplemented) SetCapabilityStatus(w http.ResponseWriter, r *http.Reques
 // Delete an owner-only conversation and its completed task history
 // (DELETE /conversations/{conversation_id})
 func (_ Unimplemented) DeleteConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Rename an owner-only conversation
+// (PATCH /conversations/{conversation_id})
+func (_ Unimplemented) RenameConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4131,6 +4148,31 @@ func (siw *ServerInterfaceWrapper) DeleteConversation(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteConversation(w, r, conversationId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RenameConversation operation middleware
+func (siw *ServerInterfaceWrapper) RenameConversation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "conversation_id" -------------
+	var conversationId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "conversation_id", chi.URLParam(r, "conversation_id"), &conversationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "conversation_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RenameConversation(w, r, conversationId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7177,6 +7219,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Delete(options.BaseURL+"/conversations/{conversation_id}", wrapper.DeleteConversation)
 	})
 	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/conversations/{conversation_id}", wrapper.RenameConversation)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/conversations/{conversation_id}/branch-summary", wrapper.AppendBranchSummary)
 	})
 	r.Group(func(r chi.Router) {
@@ -7903,6 +7948,36 @@ type DeleteConversationdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response DeleteConversationdefaultApplicationProblemPlusJSONResponse) VisitDeleteConversationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type RenameConversationRequestObject struct {
+	ConversationId openapi_types.UUID `json:"conversation_id"`
+	Body           *RenameConversationJSONRequestBody
+}
+
+type RenameConversationResponseObject interface {
+	VisitRenameConversationResponse(w http.ResponseWriter) error
+}
+
+type RenameConversation200JSONResponse Conversation
+
+func (response RenameConversation200JSONResponse) VisitRenameConversationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RenameConversationdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RenameConversationdefaultApplicationProblemPlusJSONResponse) VisitRenameConversationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -10420,6 +10495,9 @@ type StrictServerInterface interface {
 	// Delete an owner-only conversation and its completed task history
 	// (DELETE /conversations/{conversation_id})
 	DeleteConversation(ctx context.Context, request DeleteConversationRequestObject) (DeleteConversationResponseObject, error)
+	// Rename an owner-only conversation
+	// (PATCH /conversations/{conversation_id})
+	RenameConversation(ctx context.Context, request RenameConversationRequestObject) (RenameConversationResponseObject, error)
 
 	// (POST /conversations/{conversation_id}/branch-summary)
 	AppendBranchSummary(ctx context.Context, request AppendBranchSummaryRequestObject) (AppendBranchSummaryResponseObject, error)
@@ -11123,6 +11201,39 @@ func (sh *strictHandler) DeleteConversation(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteConversationResponseObject); ok {
 		if err := validResponse.VisitDeleteConversationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RenameConversation operation middleware
+func (sh *strictHandler) RenameConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID) {
+	var request RenameConversationRequestObject
+
+	request.ConversationId = conversationId
+
+	var body RenameConversationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RenameConversation(ctx, request.(RenameConversationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RenameConversation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RenameConversationResponseObject); ok {
+		if err := validResponse.VisitRenameConversationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

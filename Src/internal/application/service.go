@@ -870,7 +870,11 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		}{projectID, input})})
 	}
 
-	if mode == core.ModeAuto && conversationID != "" && isTaskRecoveryIntent(content) {
+	recoveryIntent := mode == core.ModeAuto && isTaskRecoveryIntent(content)
+	if recoveryIntent && conversationID == "" {
+		return core.ProjectTurnResult{}, &core.ValidationError{Field: "content", Message: "当前新 Thread 没有可继续的任务，请先发送完整目标"}
+	}
+	if recoveryIntent {
 		tasks, listErr := s.repository.ListTasks(ctx, s.ScopeFor(ctx), projectID, 100)
 		if listErr != nil {
 			return core.ProjectTurnResult{}, listErr
@@ -921,6 +925,7 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 			result.Task = &updated
 			return result, nil
 		}
+		return core.ProjectTurnResult{}, &core.ValidationError{Field: "content", Message: "当前 Thread 没有失败或执行中的任务可继续，请描述要完成的目标"}
 	}
 
 	var classification core.ModelResult
@@ -933,11 +938,11 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		var classifyErr error
 		classification, classifyErr = s.classifyProjectTurn(ctx, project, content, input.Model, input.FallbackModel, input.ProviderID)
 		if classifyErr != nil {
-			// Classification is a best-effort router. When the model call fails
-			// (rate limit, timeout, empty response), fall back to chat instead of
-			// blocking the user's turn with a hard error. Chat mode streams the
-			// answer directly and is the safer default for arbitrary input.
-			route, classificationReason = TurnRouteChat, "classify_fallback_chat"
+			// Auto routing must not lose the user's first message when the model
+			// is temporarily unavailable. A task is persisted before any worker
+			// model call, so the same Thread can be resumed after connectivity is
+			// restored instead of asking a context-free "继续" turn to guess.
+			route, classificationReason = TurnRouteTask, "classify_fallback_task"
 		} else {
 			route, classificationReason = parseTurnRoute(classification.Content)
 			if route == "" {
@@ -1426,6 +1431,21 @@ func (s *Service) DeleteConversation(ctx context.Context, conversationID, correl
 		return &core.ValidationError{Field: "conversation_id", Message: "is required"}
 	}
 	return s.repository.DeleteConversation(ctx, s.ScopeFor(ctx), conversationID, correlationID)
+}
+
+func (s *Service) RenameConversation(ctx context.Context, conversationID, title string) (core.Conversation, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	title = strings.TrimSpace(title)
+	if conversationID == "" {
+		return core.Conversation{}, &core.ValidationError{Field: "conversation_id", Message: "is required"}
+	}
+	if title == "" {
+		return core.Conversation{}, &core.ValidationError{Field: "title", Message: "is required"}
+	}
+	if len([]rune(title)) > 200 {
+		return core.Conversation{}, &core.ValidationError{Field: "title", Message: "must not exceed 200 characters"}
+	}
+	return s.repository.RenameConversation(ctx, s.ScopeFor(ctx), conversationID, title)
 }
 
 func (s *Service) ListMessages(ctx context.Context, conversationID string, after int64) ([]core.Message, error) {

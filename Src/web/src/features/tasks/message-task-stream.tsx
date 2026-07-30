@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, FileText, LoaderCircle, Puzzle } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, FileText, ListTree, LoaderCircle, Puzzle, Search, X } from 'lucide-react'
 import type { Artifact, Task } from '../../shared/api/client'
 import { api } from '../../shared/api/client'
 import { buildTaskTimeline, taskFailureInfo, type TaskTimelineItem } from '../tasks/task-progress-model'
@@ -38,6 +38,9 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
   active?: boolean
   onRequestFileReview: (artifacts: Artifact[], task: Task) => void
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => api.task(taskId), enabled: !!taskId, refetchInterval: active ? 1_000 : false })
   const eventsQuery = useRunEvents(runId, Boolean(active))
   const refetchEvents = eventsQuery.refetch
@@ -64,11 +67,22 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
     if (event.event_type !== 'skill.loaded' || !Array.isArray(event.payload.skill_names)) return []
     return event.payload.skill_names.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
   })))
+  const agentName = liveEvents.reduce((name, event) => {
+    if (name || event.event_type !== 'run.created') return name
+    return typeof event.payload.agent_name === 'string' && event.payload.agent_name.trim() ? event.payload.agent_name.trim() : ''
+  }, '') || 'Oktapod'
+  const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
+  const visibleTimeline = normalizedQuery
+    ? timeline.filter((step) => [step.label, step.detail, step.tool?.input, step.tool?.result, step.tool?.output]
+      .some((value) => value?.toLocaleLowerCase('zh-CN').includes(normalizedQuery)))
+    : timeline
   const hasExecutionEvidence = taskActive || Boolean(failure) || artifacts.length > 0 || timeline.some((step) => Boolean(step.tool))
   if (!hasExecutionEvidence) return null
 
-  return <div className={`message-task-stream${taskActive ? ' active' : ''}`}>
-    <div className="message-task-stream-head">
+  return <>
+    <div className="thread-task-agent"><span aria-hidden="true">{agentName.slice(0, 1).toUpperCase()}</span><strong>{agentName}</strong></div>
+    <div className={`message-task-stream${taskActive ? ' active' : ''}`}>
+      <div className="message-task-stream-head">
       <span className={`task-stream-status${taskActive ? ' running' : ''}${taskFailed ? ' failed' : ''}`}>
         {taskActive ? <LoaderCircle className="spin" size={12} /> : taskFailed ? <AlertTriangle size={12} /> : <Check size={12} />}
         {taskActive ? (runningStep?.label ?? '任务执行中') : failure ? failure.title : '任务已完成'}
@@ -77,21 +91,26 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
         <Puzzle size={11} />{skillNames.length ? skillNames.join('、') : '未加载 Skill'}
       </span>
       {artifacts.length > 0 ? <small>{artifacts.length} 个文件</small> : null}
-    </div>
-    {failure ? <div className="message-task-failure" role="alert">
-      <AlertTriangle size={14} />
-      <div><p>{failure.detail}</p><small>{failure.action}</small></div>
-    </div> : null}
-    <details className="message-task-detail">
-      <summary>执行记录</summary>
-      {timeline.length > 0 ? <div className="message-execution-steps">
-        {timeline.map((step) => <StepLine key={step.id} step={step} />)}
+        <span className="message-task-stream-actions">
+          <button type="button" className={searchOpen ? 'active' : ''} aria-label="搜索执行记录" title="搜索执行记录" onClick={() => { setSearchOpen((value) => !value); setDetailsOpen(true) }}><Search size={13} /></button>
+          <button type="button" className={detailsOpen ? 'active' : ''} aria-label={detailsOpen ? '收起执行记录' : '展开执行记录'} title={detailsOpen ? '收起执行记录' : '展开执行记录'} onClick={() => setDetailsOpen((value) => !value)}><ListTree size={14} /></button>
+        </span>
+      </div>
+      {searchOpen ? <label className="message-task-search"><Search size={12} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索步骤、输入或输出" /><button type="button" aria-label="关闭搜索" onClick={() => { setQuery(''); setSearchOpen(false) }}><X size={12} /></button></label> : null}
+      {failure ? <div className="message-task-failure" role="alert">
+        <AlertTriangle size={14} />
+        <div><p>{failure.detail}</p><small>{failure.action}</small></div>
       </div> : null}
-    </details>
-    {artifacts.length > 0 ? <div className="message-artifacts">
-      <button type="button" className="message-artifacts-trigger" onClick={() => onRequestFileReview(artifacts, taskQuery.data!)}>
-        <FileText size={14} /><span>📄 {artifacts.length} 个文件</span><small>在右侧面板打开</small>
-      </button>
-    </div> : null}
-  </div>
+      {detailsOpen ? <div className="message-task-detail">
+        {visibleTimeline.length > 0 ? <div className="message-execution-steps">
+          {visibleTimeline.map((step) => <StepLine key={step.id} step={step} />)}
+        </div> : <p className="message-task-search-empty">{normalizedQuery ? '没有匹配的执行记录' : '暂无执行记录'}</p>}
+      </div> : null}
+      {artifacts.length > 0 ? <div className="message-artifacts">
+        <button type="button" className="message-artifacts-trigger" onClick={() => onRequestFileReview(artifacts, taskQuery.data!)}>
+          <FileText size={14} /><span>{artifacts.length} 个文件</span><small>在右侧面板打开</small>
+        </button>
+      </div> : null}
+    </div>
+  </>
 }

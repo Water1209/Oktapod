@@ -159,6 +159,15 @@ func PlanTool(call ToolCall) PlannedTool {
 		}
 		planned.Decision = PolicyAsk
 		planned.Reason = "direct command execution requires an explicit one-time approval"
+	case ToolWorkspaceShell:
+		planned.RiskLevel = "L2"
+		if err := validateShellArguments(call.Arguments); err != nil {
+			planned.Decision = PolicyDeny
+			planned.Reason = err.Error()
+			return planned
+		}
+		planned.Decision = PolicyAsk
+		planned.Reason = "shell execution requires an explicit one-time approval"
 	default:
 		if strings.HasPrefix(call.Name, "mcp__") && strings.Count(call.Name, "__") >= 2 {
 			// MCP calls are external side effects. They are always persisted,
@@ -536,6 +545,29 @@ func validateCommandArguments(arguments map[string]any) error {
 		arg, ok := raw.(string)
 		if !ok || len([]rune(arg)) > 2000 || strings.ContainsRune(arg, 0) {
 			return fmt.Errorf("each command argument must be a valid bounded string")
+		}
+	}
+	return nil
+}
+
+func validateShellArguments(arguments map[string]any) error {
+	if len(arguments) < 1 || len(arguments) > 2 {
+		return fmt.Errorf("workspace_shell accepts command plus optional timeout_seconds")
+	}
+	for key := range arguments {
+		if key != "command" && key != "timeout_seconds" {
+			return fmt.Errorf("workspace_shell received unsupported argument %s", key)
+		}
+	}
+	command, ok := arguments["command"].(string)
+	command = strings.TrimSpace(command)
+	if !ok || command == "" || len([]rune(command)) > 10000 || strings.ContainsRune(command, 0) {
+		return fmt.Errorf("command must be a bounded non-empty string")
+	}
+	if timeout, exists := arguments["timeout_seconds"]; exists {
+		number, valid := timeout.(float64)
+		if !valid || number < 1 || number > 300 || number != float64(int(number)) {
+			return fmt.Errorf("timeout_seconds must be an integer from 1 to 300")
 		}
 	}
 	return nil

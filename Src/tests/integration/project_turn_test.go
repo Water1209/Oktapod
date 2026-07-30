@@ -283,6 +283,48 @@ func TestProjectTurnAutoTaskCreatesTaskWithoutConfirmationState(t *testing.T) {
 	}
 }
 
+func TestProjectTurnAutoPersistsTaskWhenClassifierIsUnavailable(t *testing.T) {
+	service, _, closeStore := newProjectTurnService(t, &projectTurnModelStub{})
+	defer closeStore()
+
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Offline routing", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{
+		Content:    "创建一个 HTML 页面，保存文件并测试网页",
+		Mode:       core.ModeAuto,
+		Visibility: core.VisibilityPrivate,
+	}, "00000000-0000-7000-8000-000000000203", "turn-offline-0001")
+	if err != nil {
+		t.Fatalf("offline auto turn: %v", err)
+	}
+	if result.Route != application.TurnRouteTask || result.Task == nil || result.Task.ConversationID == "" {
+		t.Fatalf("offline turn was not persisted as a resumable task: %#v", result)
+	}
+	messages, err := service.ListMessages(t.Context(), result.Task.ConversationID, 0)
+	if err != nil || len(messages) != 1 || messages[0].Content != "创建一个 HTML 页面，保存文件并测试网页" {
+		t.Fatalf("persisted offline messages=%#v err=%v", messages, err)
+	}
+}
+
+func TestProjectTurnRejectsContextFreeRecoveryIntent(t *testing.T) {
+	service, _, closeStore := newProjectTurnService(t, &projectTurnModelStub{})
+	defer closeStore()
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Empty thread", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{Content: "继续", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "", "empty-recovery")
+	if err == nil || !strings.Contains(err.Error(), "没有可继续") {
+		t.Fatalf("context-free recovery error=%v", err)
+	}
+	conversations, listErr := service.ListConversations(t.Context(), project.ID)
+	if listErr != nil || len(conversations) != 0 {
+		t.Fatalf("context-free recovery created conversation=%#v err=%v", conversations, listErr)
+	}
+}
+
 func TestProjectTurnRecoveryIntentRetriesLatestFailedTaskInPlace(t *testing.T) {
 	model := &projectTurnModelStub{}
 	service, databasePath, closeStore := newProjectTurnService(t, model)

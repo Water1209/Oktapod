@@ -136,8 +136,9 @@ func TestFullAccessKeepsMCPAskAndFrozenCapabilityBoundary(t *testing.T) {
 	}
 }
 
-func TestFullAccessCannotBypassCommandHardDeny(t *testing.T) {
+func TestFullAccessHardDenyQueuesModelRepairWithoutApproval(t *testing.T) {
 	t.Parallel()
+	modelCalls := 0
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
 			w.Header().Set("Content-Type", "application/json")
@@ -149,7 +150,15 @@ func TestFullAccessCannotBypassCommandHardDeny(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "full-access-deny", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "denied-shell-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceRunCommand, "arguments": `{"program":"powershell","args":["-Command","Get-ChildItem"]}`}}}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
+		modelCalls++
+		if modelCalls == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "full-access-deny", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+				{"id": "denied-shell-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceRunCommand, "arguments": `{"program":"powershell","args":["-Command","Get-ChildItem"]}`}},
+				{"id": "superseded-write-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": `{"path":"should-not-run.txt","content":"superseded"}`}},
+			}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "full-access-repaired", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "已改用允许的能力完成任务。"}}}, "usage": map[string]any{"prompt_tokens": 14, "completion_tokens": 7}})
 	}))
 	defer provider.Close()
 
@@ -169,9 +178,9 @@ func TestFullAccessCannotBypassCommandHardDeny(t *testing.T) {
 	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
 		t.Fatalf("worker worked=%v err=%v", worked, runErr)
 	}
-	blocked, err := service.GetTask(context.Background(), task.ID)
-	if err != nil || blocked.Status != core.StatusBlocked || blocked.ErrorCode != "TOOL_POLICY_DENIED" {
-		t.Fatalf("hard deny task=%#v err=%v", blocked, err)
+	running, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || running.Status != core.StatusRunning || running.ErrorCode != "" {
+		t.Fatalf("hard deny should queue model repair instead of blocking task=%#v err=%v", running, err)
 	}
 	if approvals, err := service.ListApprovals(context.Background(), core.ApprovalPending); err != nil || len(approvals) != 0 {
 		t.Fatalf("hard deny should not create an approvable request: %#v err=%v", approvals, err)
@@ -184,5 +193,17 @@ func TestFullAccessCannotBypassCommandHardDeny(t *testing.T) {
 		return event.EventType == "tool.planned" && event.Payload["policy_decision"] == core.PolicyDeny
 	}) {
 		t.Fatalf("hard deny was not persisted: %#v", events)
+	}
+	if !slices.ContainsFunc(events, func(event core.RunEvent) bool {
+		return event.EventType == "model.retry_queued" && event.Payload["error_code"] == "TOOL_POLICY_DENIED"
+	}) {
+		t.Fatalf("hard deny did not queue a visible model repair: %#v", events)
+	}
+	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+		t.Fatalf("repair worker worked=%v err=%v", worked, runErr)
+	}
+	succeeded, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || succeeded.Status != core.StatusSucceeded || modelCalls != 2 {
+		t.Fatalf("model repair did not resume the task task=%#v calls=%d err=%v", succeeded, modelCalls, err)
 	}
 }

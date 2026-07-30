@@ -76,6 +76,10 @@ func TestPlanToolUsesAllowAskDenyPrecedence(t *testing.T) {
 	if command.Decision != PolicyAsk || command.RiskLevel != "L2" || command.Idempotent {
 		t.Fatalf("command plan=%#v", command)
 	}
+	shell := PlanTool(ToolCall{Name: ToolWorkspaceShell, Arguments: map[string]any{"command": "go test ./...", "timeout_seconds": float64(60)}})
+	if shell.Decision != PolicyAsk || shell.RiskLevel != "L2" || shell.Idempotent {
+		t.Fatalf("shell plan=%#v", shell)
+	}
 	if command.InputHash == write.InputHash {
 		t.Fatal("different frozen inputs produced the same hash")
 	}
@@ -137,6 +141,7 @@ func TestPlanToolClassifiesWorkspaceAndGitRegistry(t *testing.T) {
 		{ToolCall{Name: ToolWorkspaceFindFiles, Arguments: map[string]any{"pattern": "*.go"}}, PolicyAllow, true},
 		{ToolCall{Name: ToolWorkspaceGrep, Arguments: map[string]any{"query": "TODO"}}, PolicyAllow, true},
 		{ToolCall{Name: ToolWorkspaceEditFile, Arguments: map[string]any{"path": "README.md", "preimage_hash": hash, "old_text": "old", "new_text": "new"}}, PolicyAllow, true},
+		{ToolCall{Name: ToolWorkspaceShell, Arguments: map[string]any{"command": "go test ./...", "timeout_seconds": float64(120)}}, PolicyAsk, false},
 		{ToolCall{Name: ToolGitStatus, Arguments: map[string]any{}}, PolicyAllow, true},
 		{ToolCall{Name: ToolGitDiff, Arguments: map[string]any{"staged": false}}, PolicyAllow, true},
 		{ToolCall{Name: ToolGitLog, Arguments: map[string]any{"limit": float64(10)}}, PolicyAllow, true},
@@ -159,6 +164,7 @@ func TestPlanToolDeniesWorkspaceCASAndGitPreconditionErrors(t *testing.T) {
 	tests := []ToolCall{
 		{Name: ToolWorkspaceReadFile, Arguments: map[string]any{"path": "../secret"}},
 		{Name: ToolWorkspaceEditFile, Arguments: map[string]any{"path": "a", "preimage_hash": "bad", "old_text": "x", "new_text": "y"}},
+		{Name: ToolWorkspaceShell, Arguments: map[string]any{"command": "", "timeout_seconds": float64(301)}},
 		{Name: ToolGitBranch, Arguments: map[string]any{"name": "-unsafe", "expected_status_hash": "bad"}},
 		{Name: ToolGitCommit, Arguments: map[string]any{"message": "", "expected_status_hash": "bad"}},
 		{Name: ToolGitCommitPaths, Arguments: map[string]any{"message": "x", "paths": []any{"../secret"}, "expected_status_hash": "bad"}},

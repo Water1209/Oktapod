@@ -73,6 +73,7 @@ type ProjectRepository interface {
 
 type ConversationRepository interface {
 	GetConversation(ctx context.Context, scope core.Scope, conversationID string) (core.Conversation, error)
+	RenameConversation(ctx context.Context, scope core.Scope, conversationID, title string) (core.Conversation, error)
 	DeleteConversation(ctx context.Context, scope core.Scope, conversationID, correlationID string) error
 	ListConversations(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Conversation, error)
 	ListMessages(ctx context.Context, scope core.Scope, conversationID string, after int64, limit int) ([]core.Message, error)

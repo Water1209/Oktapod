@@ -22,6 +22,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
     queryFn: () => api.runPlan(task!.run_id),
     enabled: Boolean(task?.run_id),
   })
+  const refetchPlan = plan.refetch
   const actions = useQuery({
     queryKey: ['human-actions', conversationId, active?.run_id, 'active'],
     queryFn: () => api.humanActions({ conversationId, runId: active!.run_id }),
@@ -67,6 +68,10 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
     void queryClient.invalidateQueries({ queryKey: ['run-plan', active?.run_id] })
     void queryClient.invalidateQueries({ queryKey: ['human-actions', conversationId, active?.run_id] })
   }, [active?.run_id, conversationId, latestPlanOrActionSeq, queryClient])
+  useEffect(() => {
+    if (!task?.run_id) return
+    void refetchPlan()
+  }, [refetchPlan, task?.run_id, task?.status])
 
   const pendingActions = useMemo(
     () => (actions.data?.items ?? []).filter((item) => item.status === 'waiting_user' || item.status === 'reviewing'),

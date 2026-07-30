@@ -1212,6 +1212,27 @@ paths:
         schema:
           type: string
           format: uuid
+    patch:
+      operationId: renameConversation
+      summary: Rename an owner-only conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "200":
+          description: Conversation renamed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+        default:
+          $ref: "#/components/responses/Problem"
     delete:
       operationId: deleteConversation
       summary: Delete an owner-only conversation and its completed task history

@@ -75,8 +75,170 @@ func TestModelPublishesGoalSpecificSemanticPlanBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Revision != 2 || len(plan.Items) != 3 || plan.Items[0].Title != "收集今日关键政策与产业动态" || plan.Items[0].Status != core.RunPlanItemRunning {
+	if plan.Revision != 1 || len(plan.Items) != 3 || plan.Items[0].Title != "收集今日关键政策与产业动态" || plan.Items[0].Status != core.RunPlanItemRunning {
 		t.Fatalf("semantic plan=%#v", plan)
+	}
+}
+
+func TestSingleItemSemanticPlanReplacesInitialPlanningPlaceholder(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "plan-model", "tool_calling": true}}})
+			return
+		}
+		arguments, _ := json.Marshal(map[string]any{
+			"explanation": "创建并验证一个可打开的测试页面。",
+			"items": []map[string]any{{
+				"title":       "创建并验证 HTML 测试页面",
+				"description": "保存页面文件并确认页面内容可以正常加载。",
+				"status":      "in_progress",
+			}},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+					"id": "publish-single-plan", "type": "function",
+					"function": map[string]any{"name": core.ToolUpdatePlan, "arguments": string(arguments)},
+				}},
+			}}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10},
+		})
+	}))
+	defer provider.Close()
+
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Single Plan User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Single semantic plan", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "创建一个 HTML 测试文件并验证", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "single-semantic-plan", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("single-plan-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+		t.Fatalf("publish single plan worked=%v err=%v", worked, runErr)
+	}
+	plan, err := service.GetActiveRunPlan(context.Background(), task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Revision != 1 || len(plan.Items) != 1 || plan.Items[0].Title != "创建并验证 HTML 测试页面" || plan.Items[0].Status != core.RunPlanItemRunning {
+		t.Fatalf("single semantic plan=%#v", plan)
+	}
+}
+
+func TestInvalidInitialPlanQueuesModelRepair(t *testing.T) {
+	modelCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "plan-repair-model", "tool_calling": true}}})
+			return
+		}
+		modelCalls++
+		items := []map[string]any{}
+		if modelCalls > 1 {
+			items = []map[string]any{
+				{"title": "创建 HTML 测试文件", "description": "在工作区保存目标 HTML 文件。", "status": "in_progress"},
+				{"title": "读取并验证文件内容", "description": "重新读取文件并核对关键结构。", "status": "pending"},
+			}
+		}
+		arguments, _ := json.Marshal(map[string]any{"explanation": "创建后读取验证。", "items": items})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+					"id": "publish-plan", "type": "function",
+					"function": map[string]any{"name": core.ToolUpdatePlan, "arguments": string(arguments)},
+				}},
+			}}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10},
+		})
+	}))
+	defer provider.Close()
+
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan Repair User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Plan repair", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "创建并验证 HTML 文件", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "invalid-plan-repair", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("invalid-plan-repair-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+		t.Fatalf("invalid plan worked=%v err=%v", worked, runErr)
+	}
+	running, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || running.Status != core.StatusRunning {
+		t.Fatalf("invalid plan should queue model repair task=%#v err=%v", running, err)
+	}
+	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+		t.Fatalf("repaired plan worked=%v err=%v", worked, runErr)
+	}
+	plan, err := service.GetActiveRunPlan(context.Background(), task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelCalls != 2 || len(plan.Items) != 2 || plan.Items[0].Title != "创建 HTML 测试文件" {
+		t.Fatalf("repaired plan=%#v calls=%d", plan, modelCalls)
+	}
+}
+
+func TestToolExecutionMaterializesGoalSpecificFallbackPlan(t *testing.T) {
+	modelCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "plan-required-model", "tool_calling": true}}})
+			return
+		}
+		modelCalls++
+		toolName := core.ToolWorkspaceWriteFile
+		arguments := map[string]any{"path": "must-wait.html", "content": "<html></html>"}
+		encoded, _ := json.Marshal(arguments)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+					"id": "call", "type": "function", "function": map[string]any{"name": toolName, "arguments": string(encoded)},
+				}},
+			}}},
+			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10},
+		})
+	}))
+	defer provider.Close()
+
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan Required User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Plan required", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "创建并验证 HTML 文件", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "plan-required", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("plan-required-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+		t.Fatalf("premature tool worked=%v err=%v", worked, runErr)
+	}
+	running, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || (running.Status != core.StatusQueued && running.Status != core.StatusRunning) {
+		t.Fatalf("fallback plan should keep task executable task=%#v err=%v", running, err)
+	}
+	plan, err := service.GetActiveRunPlan(context.Background(), task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelCalls != 1 || len(plan.Items) != 1 || plan.Items[0].Title != "创建并验证 HTML 文件" || plan.Items[0].Status != core.RunPlanItemRunning {
+		t.Fatalf("goal-specific fallback did not replace placeholder: %#v calls=%d", plan, modelCalls)
 	}
 }
 
@@ -213,7 +375,7 @@ func TestRuntimePlanStructureRewriteProjectsProgressOntoStableRevision(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Revision != 2 || len(plan.Items) != 3 {
+	if plan.Revision != 1 || len(plan.Items) != 3 {
 		t.Fatalf("stable plan=%#v", plan)
 	}
 	if plan.Items[0].Title != "检索基础模型证据" || plan.Items[0].Status != core.RunPlanItemCompleted ||

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -124,6 +125,30 @@ func TestCommandOutputUsesBoundedExcerptBeforeArtifactPersistence(t *testing.T) 
 	excerpt, truncated := boundedTextExcerpt(value, maxCommandOutput)
 	if !truncated || len(excerpt) <= maxCommandOutput || !strings.Contains(excerpt, "continued in Artifact") {
 		t.Fatalf("unexpected bounded command excerpt: truncated=%v length=%d", truncated, len(excerpt))
+	}
+}
+
+func TestWorkspaceShellNonZeroExitIsRecoverable(t *testing.T) {
+	executor, _ := newWorkspaceTestExecutor(t)
+	command := "exit 7"
+	if goruntime.GOOS == "windows" {
+		command = "exit /b 7"
+	}
+	execution := executeWorkspaceTest(t, executor, core.ToolWorkspaceShell, map[string]any{"command": command})
+	if execution.Status != core.StatusFailed || execution.ErrorCode != "COMMAND_EXIT_NONZERO" || execution.ExitCode != 7 {
+		t.Fatalf("shell execution=%+v", execution)
+	}
+}
+
+func TestWorkspaceShellPreservesQuotedArguments(t *testing.T) {
+	executor, _ := newWorkspaceTestExecutor(t)
+	command := `printf '"quoted value"'`
+	if goruntime.GOOS == "windows" {
+		command = `echo "quoted value"`
+	}
+	execution := executeWorkspaceTest(t, executor, core.ToolWorkspaceShell, map[string]any{"command": command})
+	if execution.Status != core.StatusSucceeded || !strings.Contains(execution.Output["stdout"].(string), `"quoted value"`) {
+		t.Fatalf("quoted shell execution=%+v", execution)
 	}
 }
 

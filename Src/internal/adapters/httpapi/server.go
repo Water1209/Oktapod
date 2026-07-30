@@ -818,6 +818,21 @@ func (s *Server) DeleteConversation(ctx context.Context, request generated.Delet
 	return generated.DeleteConversation204Response{}, nil
 }
 
+func (s *Server) RenameConversation(ctx context.Context, request generated.RenameConversationRequestObject) (generated.RenameConversationResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	conversation, err := s.service.RenameConversation(ctx, request.ConversationId.String(), request.Body.Title)
+	if err != nil {
+		return nil, err
+	}
+	response, err := conversationResponse(conversation)
+	if err != nil {
+		return nil, err
+	}
+	return generated.RenameConversation200JSONResponse(response), nil
+}
+
 func (s *Server) ListConversationMessages(ctx context.Context, request generated.ListConversationMessagesRequestObject) (generated.ListConversationMessagesResponseObject, error) {
 	after := int64(0)
 	if request.Params.After != nil {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"time"
@@ -358,6 +359,8 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	}
 	if modelStage(step.InputJSON) == "plan_execute" {
 		continuationInstruction = "语义执行计划已经持久化发布。现在按计划执行唯一标记为 in_progress 的子任务。完成该语义项后，单独调用 update_plan 提交同一完整清单，将它标记 completed，并把下一个标记 in_progress；不要把工具调用写进计划。全部语义项完成后直接交付最终回答。"
+	} else if modelStage(step.InputJSON) == "permission_replan" {
+		continuationInstruction = "用户已经批准本次任务所需的能力范围。基于生效后的工具范围重新规划原目标；保留已完成结果，不要把权限批准误解为拒绝或新的用户需求。"
 	}
 	if len(continuation) > 0 || steering != "" {
 		continuationInstruction += "\n\n长文交付必须主动分段：单个 workspace_write_file 的 content 不得超过 3000 个字符；超出时按章节写入多个名称明确的文件，并在最终总结中列出全部文件。不要等待参数截断后再拆分。"
@@ -381,6 +384,8 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，提交完整、具体、面向用户结果的语义子任务清单。初次计划中尚无执行证据：不得把任何项目标记 completed，且必须恰好把第一个项目标记 in_progress，其余均为 pending。标题必须体现本次目标的真实工作（例如检索哪些主题、比较哪些维度、产出什么交付物），禁止使用“理解目标”“完成目标”“生成下一步计划”“验证并交付”等通用占位步骤，也禁止把 read_file、web_search 等工具调用写成计划项。计划发布后系统会恢复同一 Run 执行。"
 	} else if modelStage(step.InputJSON) == "steering_replan" {
 		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，基于用户 Steering 重规划尚未完成的语义子任务。保留真实完成项，不得把未执行工作标记 completed；最多一个项目为 in_progress。标题必须描述用户结果而非工具调用。"
+	} else if modelStage(step.InputJSON) == "permission_replan" {
+		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，基于刚批准的能力范围更新原目标的完整语义计划。保留真实完成项，不得把未执行工作标记 completed；最多一个项目为 in_progress。标题必须描述用户结果而非工具或权限动作。"
 	}
 	contextPlan["builtin_tool_definitions"] = len(core.BuiltinToolSpecs())
 	selectedContext, selectedContextPlan := w.contextForPrompt(ctx, run)
@@ -617,6 +622,10 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 		LegacyRetryCount int    `json:"model_compat_retry_count"`
 		RetryReason      string `json:"model_retry_reason"`
 		LegacyReason     string `json:"model_compat_retry_reason"`
+		PolicyDenials    []struct {
+			ToolName string `json:"tool_name"`
+			Reason   string `json:"reason"`
+		} `json:"model_policy_denials"`
 	}
 	if json.Unmarshal([]byte(inputJSON), &input) != nil {
 		return ""
@@ -636,6 +645,19 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 	}
 	if input.RetryReason == "RUN_PLAN_STATUS_REGRESSION" {
 		hint += " 上一次 update_plan 试图把已完成项改回未完成，系统已拒绝并保留原计划。先读取当前持久化计划，再提交同一完整清单；所有 completed 项必须继续保持 completed，只推进当前项和后续项。"
+	}
+	if isRunPlanRepairReason(input.RetryReason) {
+		hint += " 请重新单独调用一次 update_plan：提交 1 到 12 个目标特定的完整语义步骤，每项包含具体 title、description 和合法 status；不要使用“制定执行计划”等占位文案，不要同时调用其他工具，也不要在尚无执行证据时把所有步骤标为 completed。"
+	}
+	if input.RetryReason == "TOOL_POLICY_DENIED" || strings.HasPrefix(input.RetryReason, "SKILL_") || input.RetryReason == "UPDATE_PLAN_MUST_BE_EXCLUSIVE" {
+		hint += " 这是不可审批的确定性策略限制，不代表用户拒绝。请换用允许的工具或参数继续执行；不要再次调用相同的被拒动作，也不要把任务判失败。"
+		if len(input.PolicyDenials) > 0 {
+			details := make([]string, 0, len(input.PolicyDenials))
+			for _, denial := range input.PolicyDenials {
+				details = append(details, fmt.Sprintf("%s（%s）", strings.TrimSpace(denial.ToolName), strings.TrimSpace(denial.Reason)))
+			}
+			hint += " 被拒动作：" + strings.Join(details, "；") + "。"
+		}
 	}
 	if input.RetryCount >= 2 && input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_TRUNCATED" {
 		hint += " 本次禁止在单个工具参数中生成整篇长文；先写入较短的结构或分段文件，再用后续工具调用逐段补全。"
@@ -677,8 +699,31 @@ func modelRetryReasonLabel(reason string) string {
 		return "没有返回可用内容"
 	case "RUN_PLAN_STATUS_REGRESSION":
 		return "提交了会回退已完成进度的执行计划"
+	case "RUN_PLAN_INVALID":
+		return "提交了结构不完整的执行计划"
+	case "RUN_PLAN_PLACEHOLDER_DENIED":
+		return "提交了占位执行计划"
+	case "RUN_PLAN_PREMATURE_COMPLETION":
+		return "在没有执行证据时提前完成了计划"
+	case "RUN_PLAN_REQUIRED":
+		return "在语义执行计划建立前尝试执行工具"
+	case "UPDATE_PLAN_MUST_BE_EXCLUSIVE":
+		return "把计划更新与其他工具混在同一响应中"
+	case "TOOL_POLICY_DENIED":
+		return "规划了不符合确定性策略的工具或参数"
+	case "SKILL_INVOKE_MUST_BE_EXCLUSIVE", "SKILL_RECURSIVE_INVOCATION_DENIED":
+		return "规划了不符合 Skill 调用约束的动作"
 	default:
 		return "返回了无法解析的响应"
+	}
+}
+
+func isRunPlanRepairReason(reason string) bool {
+	switch reason {
+	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_PREMATURE_COMPLETION", "RUN_PLAN_REQUIRED", "UPDATE_PLAN_MUST_BE_EXCLUSIVE":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1803,6 +1848,11 @@ Hard-to-reverse or destructive actions (deleting files, force-pushing, sending m
 # Output
 Report outcomes faithfully. State what you did, what worked, what failed. Do not claim success without verification. Use file paths in results. For reports or deliverables, generate real files with file tools and list file paths in the final summary.
 `
+	}
+	if goruntime.GOOS == "windows" {
+		system += "\n\n# Host platform\nThe workspace host is Windows. workspace_shell runs through cmd.exe /c: use Windows commands such as `where`, and do not emit POSIX-only commands such as `which`, `/dev/null`, `bash`, or `sh`."
+	} else {
+		system += "\n\n# Host platform\nThe workspace host is " + goruntime.GOOS + ". workspace_shell runs through bash -c; use commands supported by this platform."
 	}
 	parts := []string{"目标：" + run.Goal}
 	if strings.TrimSpace(run.Acceptance) != "" {

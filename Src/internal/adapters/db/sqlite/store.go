@@ -772,6 +772,24 @@ func (s *Store) DeleteConversation(ctx context.Context, scope core.Scope, conver
 	return err
 }
 
+func (s *Store) RenameConversation(ctx context.Context, scope core.Scope, conversationID, title string) (core.Conversation, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE conversations SET title = ?, updated_at = ?
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ?`,
+		title, formatTime(time.Now()), conversationID, scope.OrganizationID, scope.UserID)
+	if err != nil {
+		return core.Conversation{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return core.Conversation{}, err
+	}
+	if affected == 0 {
+		return core.Conversation{}, sql.ErrNoRows
+	}
+	return s.GetConversation(ctx, scope, conversationID)
+}
+
 func (s *Store) deleteConversationTx(ctx context.Context, scope core.Scope, conversationID, correlationID string) error {
 	conversation, err := s.GetConversation(ctx, scope, conversationID)
 	if err != nil {
@@ -2974,7 +2992,7 @@ WHERE id = ?`,
 		ActorID:        scope.UserID,
 		CorrelationID:  correlationID,
 		Visibility:     input.Visibility,
-		Payload:        map[string]any{"task_id": taskID, "step_id": stepID, "mode": input.Mode, "requested_mode": configSnapshot["requested_mode"], "classification_reason": configSnapshot["classification_reason"], "permission_mode": configSnapshot["permission_mode"], "status": core.StatusQueued},
+		Payload:        map[string]any{"task_id": taskID, "step_id": stepID, "mode": input.Mode, "requested_mode": configSnapshot["requested_mode"], "classification_reason": configSnapshot["classification_reason"], "permission_mode": configSnapshot["permission_mode"], "agent_name": runAgentDisplayName(configSnapshot), "status": core.StatusQueued},
 	}); err != nil {
 		return core.Task{}, err
 	}
@@ -3014,6 +3032,15 @@ WHERE id = ?`,
 func snapshotString(snapshot map[string]any, key string) string {
 	value, _ := snapshot[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func runAgentDisplayName(snapshot map[string]any) string {
+	if agent, ok := snapshot["agent"].(map[string]any); ok {
+		if name, ok := agent["name"].(string); ok && strings.TrimSpace(name) != "" {
+			return strings.TrimSpace(name)
+		}
+	}
+	return "Oktapod"
 }
 
 func createInitialRunPlan(ctx context.Context, tx *sql.Tx, scope core.Scope, projectID, taskID, runID string, input core.CreateTaskInput, now string) (string, []string, error) {
@@ -3257,16 +3284,6 @@ func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, no
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	if continuationStepID, batchID, resumed, resumeErr := s.resumeCompletedToolBatch(ctx, tx, runID, now, correlationID); resumeErr != nil {
-		return nil, resumeErr
-	} else if resumed {
-		return map[string]any{
-			"step_id":       continuationStepID,
-			"retry_scope":   "completed_batch_continuation",
-			"tool_batch_id": batchID,
-		}, nil
-	}
-
 	var frontier *taskControlStep
 	for index := range steps {
 		step := &steps[index]
@@ -3279,6 +3296,22 @@ func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, no
 		if frontier == nil || step.Position > frontier.Position {
 			frontier = step
 		}
+	}
+	if frontier != nil {
+		if repair, repaired, err := s.retryDeniedToolThroughModel(ctx, tx, runID, *frontier, now, correlationID); err != nil {
+			return nil, err
+		} else if repaired {
+			return repair, nil
+		}
+	}
+	if continuationStepID, batchID, resumed, resumeErr := s.resumeCompletedToolBatch(ctx, tx, runID, now, correlationID); resumeErr != nil {
+		return nil, resumeErr
+	} else if resumed {
+		return map[string]any{
+			"step_id":       continuationStepID,
+			"retry_scope":   "completed_batch_continuation",
+			"tool_batch_id": batchID,
+		}, nil
 	}
 	if frontier == nil {
 		return s.retryPlanControlFailure(ctx, tx, runID, steps, now)
@@ -3326,6 +3359,139 @@ func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, no
 		return nil, err
 	}
 	return map[string]any{"step_id": frontier.ID, "step_position": frontier.Position, "retry_scope": "frontier_only", "superseded_steps": superseded}, nil
+}
+
+func (s *Store) retryDeniedToolThroughModel(ctx context.Context, tx *sql.Tx, runID string, frontier taskControlStep, now, correlationID string) (map[string]any, bool, error) {
+	var toolName, policyDecision, toolBatchID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT tool_name, policy_decision, tool_batch_id
+		FROM tool_calls
+		WHERE run_id = ? AND step_id = ?
+		ORDER BY position DESC LIMIT 1`, runID, frontier.ID).Scan(&toolName, &policyDecision, &toolBatchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if policyDecision != core.PolicyDeny {
+		err = tx.QueryRowContext(ctx, `
+			SELECT tool_name
+			FROM tool_calls
+			WHERE run_id = ? AND tool_batch_id = ? AND policy_decision = 'deny'
+			ORDER BY position LIMIT 1`, runID, toolBatchID).Scan(&toolName)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	var frontierInput map[string]any
+	if json.Unmarshal([]byte(frontier.InputJSON), &frontierInput) != nil {
+		return nil, false, fmt.Errorf("MODEL_RETRY_INPUT_INVALID: denied tool frontier input is not JSON")
+	}
+	sourceStepID, _ := frontierInput["model_source_step_id"].(string)
+	if strings.TrimSpace(sourceStepID) == "" {
+		return nil, false, &core.ResourceConflictError{Resource: "task", Reason: "denied tool has no model checkpoint"}
+	}
+	var sourceStep core.ClaimedStep
+	sourceStep.ID = sourceStepID
+	sourceStep.RunID = runID
+	if err := tx.QueryRowContext(ctx, `
+		SELECT organization_id, project_id, step_type, input_json, owner_id
+		FROM steps WHERE id = ? AND run_id = ?`,
+		sourceStepID, runID,
+	).Scan(&sourceStep.OrganizationID, &sourceStep.ProjectID, &sourceStep.StepType, &sourceStep.InputJSON, &sourceStep.OwnerID); err != nil {
+		return nil, false, err
+	}
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return nil, false, err
+	}
+	recoveryStepID, retryCount, queued, err := s.queueModelInteractionRetry(ctx, tx, sourceStep, run, "TOOL_POLICY_DENIED", now)
+	if err != nil {
+		return nil, false, err
+	}
+	if !queued {
+		return nil, false, &core.ResourceConflictError{Resource: "task", Reason: "policy repair retry limit reached"}
+	}
+	planRevisionID, _ := frontierInput["plan_revision_id"].(string)
+	planItemID, _ := frontierInput["run_plan_item_id"].(string)
+	var recoveryInputJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT input_json FROM steps WHERE id = ?`, recoveryStepID).Scan(&recoveryInputJSON); err != nil {
+		return nil, false, err
+	}
+	var recoveryInput map[string]any
+	if json.Unmarshal([]byte(recoveryInputJSON), &recoveryInput) != nil {
+		return nil, false, fmt.Errorf("MODEL_RETRY_INPUT_INVALID: policy repair input is not JSON")
+	}
+	recoveryInput["manual_retry"] = true
+	recoveryInput["model_policy_denials"] = []map[string]any{{
+		"tool_name": toolName,
+		"reason":    "该工具或参数被确定性策略禁止，不能通过审批放行",
+	}}
+	encodedRecoveryInput, err := json.Marshal(recoveryInput)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE steps
+		SET input_json = ?, plan_revision_id = ?, run_plan_item_id = ?, updated_at = ?
+		WHERE id = ?`, string(encodedRecoveryInput), planRevisionID, planItemID, now, recoveryStepID); err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(planRevisionID) != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'active' WHERE id = ?`, planRevisionID); err != nil {
+			return nil, false, err
+		}
+	}
+	if strings.TrimSpace(planItemID) != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE run_plan_items
+			SET status = 'running', completed_at = '', result_summary = '', updated_at = ?
+			WHERE id = ? AND status = 'blocked'`, now, planItemID); err != nil {
+			return nil, false, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE steps
+		SET status = 'canceled', owner_id = '', lease_until = '',
+		    error_code = 'POLICY_REPAIR_QUEUED', updated_at = ?
+		WHERE tool_batch_id = ? AND run_id = ? AND status = 'blocked'`, now, toolBatchID, runID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tool_calls
+		SET status = 'rejected',
+		    error_code = CASE WHEN policy_decision = 'deny' THEN 'POLICY_REPAIR_QUEUED' ELSE 'PLAN_SUPERSEDED' END,
+		    updated_at = ?
+		WHERE tool_batch_id = ? AND run_id = ? AND status = 'blocked'`, now, toolBatchID, runID); err != nil {
+		return nil, false, err
+	}
+	q := s.queries.WithTx(tx)
+	if err := s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		EventType: "model.retry_queued", ActorType: "system", ActorID: sourceStep.OwnerID,
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{
+			"step_id": recoveryStepID, "source_step_id": sourceStep.ID,
+			"retry_count": retryCount, "max_retries": core.DefaultModelRetryLimit,
+			"error_code": "TOOL_POLICY_DENIED", "manual_retry": true,
+			"policy_denials": []map[string]any{{"tool_name": toolName}},
+		},
+	}); err != nil {
+		return nil, false, err
+	}
+	var position int64
+	if err := tx.QueryRowContext(ctx, `SELECT position FROM steps WHERE id = ?`, recoveryStepID).Scan(&position); err != nil {
+		return nil, false, err
+	}
+	return map[string]any{
+		"step_id": recoveryStepID, "step_position": position,
+		"retry_scope": "model_policy_repair", "source_step_id": sourceStep.ID,
+		"plan_revision_id": planRevisionID, "run_plan_item_id": planItemID,
+	}, true, nil
 }
 
 func (s *Store) resumeCompletedToolBatch(ctx context.Context, tx *sql.Tx, runID, now, correlationID string) (continuationStepID, batchID string, resumed bool, err error) {
@@ -3391,7 +3557,7 @@ func (s *Store) retryPlanControlFailure(ctx context.Context, tx *sql.Tx, runID s
 		WHERE r.id = ?`, runID).Scan(&errorCode); err != nil {
 		return nil, err
 	}
-	if errorCode != "RUN_PLAN_STATUS_REGRESSION" {
+	if errorCode != "RUN_PLAN_STATUS_REGRESSION" && !isRepairableRunPlanError(errorCode) {
 		return nil, &core.ResourceConflictError{Resource: "task", Reason: "no retryable checkpoint remains; resolve the cause or fork a new task"}
 	}
 
@@ -3885,13 +4051,25 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 		if err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE run_plan_items
+			SET title = '正在基于已批准权限更新执行计划',
+			    description = '权限已生效，模型将基于新增能力生成真实语义步骤。',
+			    updated_at = ?
+			WHERE id = ?`, now, resumePlanItemID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET trigger = 'permission_change', goal_summary = ? WHERE id = ?`, truncateText(run.Goal, 1000), resumePlanRevisionID); err != nil {
 			return err
 		}
 		planChanged = true
 	}
+	resumeStage := "human_action_resume"
+	if action.Kind == core.HumanActionPermissionEscalation && input.Decision == core.ApprovalApproved {
+		resumeStage = "permission_replan"
+	}
 	resumeInput := map[string]any{
-		"stage": "human_action_resume", "human_action_id": action.ID,
+		"stage": resumeStage, "human_action_id": action.ID,
 		"human_action_kind": action.Kind, "decision": input.Decision,
 		"answer": input.Answer, "note": input.Note, "source_step_id": action.StepID,
 	}
@@ -7419,9 +7597,21 @@ func completionInvariantFailure(ctx context.Context, tx *sql.Tx, run core.RunCon
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
 	var revisionID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM run_plan_revisions WHERE run_id = ? AND status = 'active' ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&revisionID); errors.Is(err, sql.ErrNoRows) {
+	err := tx.QueryRowContext(ctx, `SELECT id FROM run_plan_revisions WHERE run_id = ? AND status = 'active' ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&revisionID)
+	if errors.Is(err, sql.ErrNoRows) && (taskStatus == core.StatusSucceeded || taskStatus == core.StatusFailed || taskStatus == core.StatusBlocked) {
+		// A retried legacy Run may still carry a blocked plan revision even
+		// after its denied tool batch has been superseded. Terminal task state
+		// must reconcile that latest durable plan instead of leaving stale
+		// pending items such as 0/3 beside a succeeded task.
+		err = tx.QueryRowContext(ctx, `
+			SELECT id FROM run_plan_revisions
+			WHERE run_id = ? AND status = 'blocked'
+			ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&revisionID)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return err
 	}
 	switch taskStatus {
@@ -7976,11 +8166,24 @@ func (s *Store) planHumanInteraction(ctx context.Context, tx *sql.Tx, q *sqliteg
 
 func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, calls []core.ToolCall, now, correlationID string) (string, string, error) {
 	if len(calls) == 1 && calls[0].Name == core.ToolUpdatePlan {
-		return s.publishModelRunPlan(ctx, tx, q, modelStep, run, calls[0], now, correlationID)
+		status, errorCode, err := s.publishModelRunPlan(ctx, tx, q, modelStep, run, calls[0], now, correlationID)
+		if err != nil || status != core.StatusBlocked || !isRepairableRunPlanError(errorCode) {
+			return status, errorCode, err
+		}
+		return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, errorCode, now, correlationID)
 	}
 	for _, call := range calls {
 		if call.Name == core.ToolUpdatePlan {
-			return core.StatusBlocked, "UPDATE_PLAN_MUST_BE_EXCLUSIVE", nil
+			return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "UPDATE_PLAN_MUST_BE_EXCLUSIVE", now, correlationID)
+		}
+	}
+	provisionalPlan, err := activeRunPlanIsProvisional(ctx, tx, run.RunID)
+	if err != nil {
+		return "", "", err
+	}
+	if provisionalPlan {
+		if err := s.materializeGoalFallbackPlan(ctx, tx, q, modelStep, run, now, correlationID); err != nil {
+			return "", "", err
 		}
 	}
 	if len(calls) == 1 && (calls[0].Name == core.ToolRequestInput || calls[0].Name == core.ToolRequestPermission) {
@@ -8249,10 +8452,72 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		if _, err := tx.ExecContext(ctx, `UPDATE tool_batches SET status = ?, updated_at = ? WHERE id = ?`, batchStatus, now, batchID); err != nil {
 			return "", "", err
 		}
-		if violationCode != "" {
-			return core.StatusBlocked, violationCode, nil
+		denialCode := violationCode
+		if denialCode == "" {
+			denialCode = "TOOL_POLICY_DENIED"
 		}
-		return core.StatusBlocked, "TOOL_POLICY_DENIED", nil
+		recoveryStepID, retryCount, queued, err := s.queueModelInteractionRetry(ctx, tx, modelStep, run, denialCode, now)
+		if err != nil {
+			return "", "", err
+		}
+		if !queued {
+			return core.StatusBlocked, denialCode, nil
+		}
+		denials := make([]map[string]any, 0, len(plans))
+		for _, plan := range plans {
+			if plan.Decision != core.PolicyDeny {
+				continue
+			}
+			denials = append(denials, map[string]any{
+				"tool_name": plan.Call.Name,
+				"reason":    plan.Reason,
+			})
+		}
+		var recoveryInputJSON string
+		if err := tx.QueryRowContext(ctx, `SELECT input_json FROM steps WHERE id = ?`, recoveryStepID).Scan(&recoveryInputJSON); err != nil {
+			return "", "", err
+		}
+		var recoveryInput map[string]any
+		if json.Unmarshal([]byte(recoveryInputJSON), &recoveryInput) != nil {
+			return "", "", fmt.Errorf("MODEL_RETRY_INPUT_INVALID: recovery step input is not JSON")
+		}
+		recoveryInput["model_policy_denials"] = denials
+		encodedRecoveryInput, err := json.Marshal(recoveryInput)
+		if err != nil {
+			return "", "", err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE steps SET input_json = ?, plan_revision_id = ?, run_plan_item_id = ?, updated_at = ? WHERE id = ?`, string(encodedRecoveryInput), planRevisionID, executionPlanItemID, now, recoveryStepID); err != nil {
+			return "", "", err
+		}
+		for _, deniedStepID := range stepIDs {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE steps
+				SET status = 'canceled', error_code = 'POLICY_REPAIR_QUEUED', updated_at = ?
+				WHERE id = ? AND status = 'blocked'`, now, deniedStepID); err != nil {
+				return "", "", err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE tool_calls
+				SET status = 'rejected',
+				    error_code = CASE WHEN policy_decision = 'deny' THEN 'POLICY_REPAIR_QUEUED' ELSE 'PLAN_SUPERSEDED' END,
+				    updated_at = ?
+				WHERE step_id = ? AND status = 'blocked'`, now, deniedStepID); err != nil {
+				return "", "", err
+			}
+		}
+		if err := s.appendEvent(ctx, q, eventInput{
+			OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+			EventType: "model.retry_queued", ActorType: "system", ActorID: modelStep.OwnerID,
+			CorrelationID: correlationID, Visibility: run.Visibility,
+			Payload: map[string]any{
+				"step_id": recoveryStepID, "source_step_id": modelStep.ID,
+				"retry_count": retryCount, "max_retries": core.DefaultModelRetryLimit,
+				"error_code": denialCode, "policy_denials": denials,
+			},
+		}); err != nil {
+			return "", "", err
+		}
+		return core.StatusRunning, "", nil
 	}
 	if hasQueued {
 		batchStatus = "running"
@@ -8272,6 +8537,108 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		return "", "", err
 	}
 	return core.StatusSucceeded, "", nil
+}
+
+func isRepairableRunPlanError(errorCode string) bool {
+	switch errorCode {
+	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_PREMATURE_COMPLETION", "RUN_PLAN_REQUIRED", "UPDATE_PLAN_MUST_BE_EXCLUSIVE":
+		return true
+	default:
+		return false
+	}
+}
+
+func activeRunPlanIsProvisional(ctx context.Context, tx *sql.Tx, runID string) (bool, error) {
+	var itemCount int
+	var title string
+	err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(i.id), COALESCE(MAX(i.title), '')
+		FROM run_plan_revisions p
+		LEFT JOIN run_plan_items i ON i.plan_revision_id = p.id
+		WHERE p.run_id = ? AND p.status = 'active'
+		  AND p.revision = (
+			SELECT MAX(revision) FROM run_plan_revisions
+			WHERE run_id = ? AND status = 'active'
+		  )`, runID, runID).Scan(&itemCount, &title)
+	if err != nil {
+		return false, err
+	}
+	if itemCount != 1 {
+		return false, nil
+	}
+	switch strings.TrimSpace(title) {
+	case "正在制定执行计划", "正在根据追加要求重新规划", "正在基于已批准权限更新执行计划":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func (s *Store) materializeGoalFallbackPlan(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, now, correlationID string) error {
+	var revisionID, itemID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT p.id, i.id
+		FROM run_plan_revisions p
+		JOIN run_plan_items i ON i.plan_revision_id = p.id
+		WHERE p.run_id = ? AND p.status = 'active'
+		ORDER BY p.revision DESC, i.position
+		LIMIT 1`, run.RunID).Scan(&revisionID, &itemID); err != nil {
+		return err
+	}
+	title := truncateText(strings.TrimSpace(run.Goal), 160)
+	if title == "" {
+		title = truncateText(strings.TrimSpace(run.Title), 160)
+	}
+	if title == "" {
+		title = "完成当前任务目标"
+	}
+	description := truncateText("按当前目标执行必要动作并保留可验证结果："+strings.TrimSpace(run.Goal), 500)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE run_plan_items
+		SET title = ?, description = ?, status = 'running',
+		    started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
+		    completed_at = '', result_summary = '', updated_at = ?
+		WHERE id = ?`, title, description, now, now, itemID); err != nil {
+		return err
+	}
+	return s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		EventType: "plan.fallback_materialized", ActorType: "system", ActorID: modelStep.OwnerID,
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{
+			"plan_revision_id": revisionID, "run_plan_item_id": itemID,
+			"title": title, "reason": "model emitted executable tools before update_plan",
+		},
+	})
+}
+
+func (s *Store) queueRunPlanModelRepair(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, errorCode, now, correlationID string) (string, string, error) {
+	recoveryStepID, retryCount, queued, err := s.queueModelInteractionRetry(ctx, tx, modelStep, run, errorCode, now)
+	if err != nil {
+		return "", "", err
+	}
+	if !queued {
+		return core.StatusBlocked, errorCode, nil
+	}
+	planRevisionID, planItemID := activeExecutionPlanBinding(ctx, tx, run.RunID)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ?, updated_at = ?
+		WHERE id = ?`, planRevisionID, planItemID, now, recoveryStepID); err != nil {
+		return "", "", err
+	}
+	if err := s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		EventType: "model.retry_queued", ActorType: "system", ActorID: modelStep.OwnerID,
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{
+			"step_id": recoveryStepID, "source_step_id": modelStep.ID,
+			"retry_count": retryCount, "max_retries": core.DefaultModelRetryLimit,
+			"error_code": errorCode,
+		},
+	}); err != nil {
+		return "", "", err
+	}
+	return core.StatusRunning, "", nil
 }
 
 func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, call core.ToolCall, now, correlationID string) (string, string, error) {
@@ -8342,24 +8709,98 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 		}
 	}
 	samePlan := previousID != ""
+	existingItemIDs := make([]string, 0, len(items))
 	existingTitles := make([]string, 0, len(items))
 	existingDescriptions := make([]string, 0, len(items))
 	if samePlan {
-		rows, queryErr := tx.QueryContext(ctx, `SELECT title, description, status FROM run_plan_items WHERE plan_revision_id = ? ORDER BY position`, previousID)
+		rows, queryErr := tx.QueryContext(ctx, `SELECT id, title, description, status FROM run_plan_items WHERE plan_revision_id = ? ORDER BY position`, previousID)
 		if queryErr != nil {
 			return "", "", queryErr
 		}
 		for rows.Next() {
-			var title, description, status string
-			if err := rows.Scan(&title, &description, &status); err != nil {
+			var itemID, title, description, status string
+			if err := rows.Scan(&itemID, &title, &description, &status); err != nil {
 				_ = rows.Close()
 				return "", "", err
 			}
+			existingItemIDs = append(existingItemIDs, itemID)
 			existingTitles = append(existingTitles, title)
 			existingDescriptions = append(existingDescriptions, description)
 		}
 		if err := rows.Close(); err != nil {
 			return "", "", err
+		}
+		provisionalPlan := len(existingTitles) == 1 && (stage == "plan" && existingTitles[0] == "正在制定执行计划" ||
+			stage == "steering_replan" && existingTitles[0] == "正在根据追加要求重新规划" ||
+			stage == "permission_replan" && existingTitles[0] == "正在基于已批准权限更新执行计划")
+		if provisionalPlan {
+			firstItemID := ""
+			for index, item := range items {
+				itemID := existingItemIDs[0]
+				if index > 0 {
+					var idErr error
+					itemID, idErr = newID()
+					if idErr != nil {
+						return "", "", idErr
+					}
+				}
+				dbStatus := map[string]string{"pending": core.RunPlanItemPending, "in_progress": core.RunPlanItemRunning, "completed": core.RunPlanItemCompleted}[item.Status]
+				startedAt, completedAt := "", ""
+				if dbStatus == core.RunPlanItemRunning {
+					firstItemID, startedAt = itemID, now
+				}
+				if dbStatus == core.RunPlanItemCompleted {
+					startedAt, completedAt = now, now
+				}
+				if index == 0 {
+					if _, err := tx.ExecContext(ctx, `
+						UPDATE run_plan_items
+						SET position = 1, title = ?, description = ?, status = ?,
+						    started_at = ?, completed_at = ?, result_summary = '', updated_at = ?
+						WHERE id = ?`,
+						item.Title, item.Description, dbStatus, startedAt, completedAt, now, itemID); err != nil {
+						return "", "", err
+					}
+					continue
+				}
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO run_plan_items (
+						id, organization_id, project_id, task_id, run_id, plan_revision_id,
+						position, title, description, status, started_at, completed_at, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					itemID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, previousID,
+					index+1, item.Title, item.Description, dbStatus, startedAt, completedAt, now, now,
+				); err != nil {
+					return "", "", err
+				}
+			}
+			history, historyErr := s.collectContinuationHistory(ctx, tx, run)
+			if historyErr != nil {
+				return "", "", historyErr
+			}
+			nextStepID, nextErr := insertQueuedModelStep(ctx, tx, run, map[string]any{
+				"history": history, "stage": "plan_execute", "source_step_id": modelStep.ID,
+				"plan_revision_id": previousID,
+			}, now)
+			if nextErr != nil {
+				return "", "", nextErr
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE id = ?`, previousID, firstItemID, nextStepID); err != nil {
+				return "", "", err
+			}
+			explanation, _ := call.Arguments["explanation"].(string)
+			if err := s.appendEvent(ctx, q, eventInput{
+				OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+				EventType: "plan.state_changed", ActorType: "agent", ActorID: modelStep.OwnerID,
+				CorrelationID: correlationID, Visibility: run.Visibility,
+				Payload: map[string]any{
+					"plan_revision_id": previousID, "source": "model", "initial_plan_published": true,
+					"item_count": len(items), "explanation": truncateText(strings.TrimSpace(explanation), 1000),
+				},
+			}); err != nil {
+				return "", "", err
+			}
+			return core.StatusRunning, "", nil
 		}
 		if len(existingTitles) != len(items) {
 			samePlan = false
@@ -8371,7 +8812,7 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 			}
 		}
 	}
-	if previousID != "" && !samePlan && stage != "plan" && stage != "steering_replan" {
+	if previousID != "" && !samePlan && !modelStageAllowsPlanReplacement(stage) {
 		// Mid-run plan structure is immutable. Providers occasionally add,
 		// remove, or paraphrase delivery steps while reporting progress. Keep
 		// the durable list stable and project the submitted ordinal progress
@@ -8558,8 +8999,10 @@ func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitege
 		return "", "", err
 	}
 	trigger := "initial"
-	if modelStageFromInput(modelStep.InputJSON) == "steering_replan" {
+	if stage == "steering_replan" {
 		trigger = "steering"
+	} else if stage == "permission_replan" {
+		trigger = "permission_change"
 	}
 	explanation, _ := call.Arguments["explanation"].(string)
 	if _, err := tx.ExecContext(ctx, `
@@ -8628,6 +9071,10 @@ func modelStageFromInput(inputJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(inputJSON), &input)
 	return strings.TrimSpace(input.Stage)
+}
+
+func modelStageAllowsPlanReplacement(stage string) bool {
+	return stage == "plan" || stage == "steering_replan" || stage == "permission_replan"
 }
 
 func lengthTruncatedToolCalls(output map[string]any) []core.ToolCall {
