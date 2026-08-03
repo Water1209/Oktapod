@@ -421,11 +421,16 @@ func (s *Server) ListModels(ctx context.Context, _ generated.ListModelsRequestOb
 	}
 	items := make([]generated.ModelDescriptor, 0, len(models))
 	for _, model := range models {
-		items = append(items, generated.ModelDescriptor{
-			Id: model.ID, ToolCalling: boolPtr(model.ToolCalling), Vision: boolPtr(model.Vision),
+		item := generated.ModelDescriptor{
+			Id: model.ID, Vision: boolPtr(model.Vision),
 			StructuredOutput: boolPtr(model.StructuredOutput), Reasoning: boolPtr(model.Reasoning),
 			ContextWindow: int64Ptr(model.ContextWindow),
-		})
+		}
+		// 缺少能力元数据表示“未知”，不能序列化成 false 并让 UI 误判为不支持。
+		if model.ToolCallingKnown {
+			item.ToolCalling = boolPtr(model.ToolCalling)
+		}
+		items = append(items, item)
 	}
 	defaultModel, defaultErr := s.service.DefaultModel(ctx, models)
 	if defaultErr != nil {

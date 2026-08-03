@@ -8,6 +8,7 @@ import { api, type Asset, type Capability, type CapabilityKind, type CapabilityS
 import { AssistantContent } from '../../shared/assistant-content'
 import { useBootstrap } from '../../shared/bootstrap-context'
 import { TASK_RUNTIME_DEFAULTS } from '../../shared/runtime-defaults'
+import { V1_VISIBILITY, visibleInspectorTab } from '../../shared/v1-visibility'
 import { FileReviewProvider } from '../tasks/multi-file-review'
 import { useFileReview } from '../tasks/file-review-context'
 import { MessageTaskStream } from '../tasks/message-task-stream'
@@ -47,25 +48,20 @@ function ProjectWorkspace() {
   const conversations = useQuery({ queryKey: ['conversations', projectId], queryFn: () => api.conversations(projectId), refetchInterval: 2_000 })
   const activity = useQuery({ queryKey: ['project-activity', projectId], queryFn: () => api.projectActivity(projectId), refetchInterval: 1_500 })
   const planItems = useQuery({ queryKey: ['plan-items', projectId], queryFn: () => api.planItems(projectId) })
-  const schedules = useQuery({ queryKey: ['schedules', projectId], queryFn: () => api.schedules(projectId) })
   const capabilities = useQuery({ queryKey: ['capabilities', projectId], queryFn: () => api.capabilities(projectId) })
-  const [memoryQuery, setMemoryQuery] = useState('')
-  const memories = useQuery({ queryKey: ['memories', projectId, memoryQuery], queryFn: () => api.memories(projectId, memoryQuery) })
   const agents = useQuery({ queryKey: ['agents', projectId], queryFn: () => api.agents(projectId) })
-  const teams = useQuery({ queryKey: ['teams', projectId], queryFn: () => api.teams(projectId) })
   const models = useQuery({ queryKey: ['models'], queryFn: () => api.models(), retry: false, staleTime: 60_000 })
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers, retry: false, staleTime: 60_000 })
   const [membersOpen, setMembersOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const inspectorStorageKey = `oktapod.inspector.${bootstrap.user.id}.${projectId}`
   const [managementOpen, setManagementOpen] = useState(Boolean(inspectorSearch))
-  const [managementTab, setManagementTab] = useState(() => inspectorSearch || window.localStorage.getItem(inspectorStorageKey) || 'run')
+  const [managementTab, setManagementTab] = useState(() => visibleInspectorTab(inspectorSearch || window.localStorage.getItem(inspectorStorageKey) || undefined))
   const [managementMoreOpen, setManagementMoreOpen] = useState(false)
   const activeConversationId = conversationSearch === 'new' ? undefined : threadId ?? conversationSearch ?? conversations.data?.items[0]?.id
   const messages = useQuery({ queryKey: ['conversation-messages', activeConversationId], queryFn: () => api.conversationMessages(activeConversationId ?? ''), enabled: Boolean(activeConversationId), refetchInterval: 1_500 })
   const usage = useQuery({ queryKey: ['project-usage', projectId], queryFn: () => api.projectUsage(projectId), enabled: managementOpen && managementTab === 'project_usage', staleTime: 15_000 })
   const [composerDraft, setComposerDraft] = useState<ComposerDraft | undefined>()
-	const [composerPrefill, setComposerPrefill] = useState<{ value: string; nonce: number }>()
   const [pendingMessages, setPendingMessages] = useState<Awaited<ReturnType<typeof api.conversationMessages>>['items']>([])
   const [streamingAssistant, setStreamingAssistant] = useState('')
   const [streamPhase, setStreamPhase] = useState<'routing' | 'responding' | 'task' | undefined>()
@@ -74,13 +70,9 @@ function ProjectWorkspace() {
   const handleComposerDraft = (draft: ComposerDraft) => {
     setComposerDraft(draft)
     setManagementOpen(true)
-    setManagementTab(draft.kind === 'schedule' ? 'automation' : draft.kind === 'capability' ? 'capabilities' : 'agents')
+    setManagementTab(draft.kind === 'capability' ? 'tools' : 'agents')
     setManagementMoreOpen(true)
   }
-	const useSkill = (skill: Capability) => {
-		setManagementOpen(false)
-		setComposerPrefill({ value: `/${skillCommandName(skill.name)} `, nonce: Date.now() })
-	}
 
   const selectedConversation = conversations.data?.items.find((item) => item.id === activeConversationId)
   const conversationTasks = (tasks.data?.items ?? []).filter((task) => task.conversation_id === activeConversationId)
@@ -103,6 +95,7 @@ function ProjectWorkspace() {
     void queryClient.invalidateQueries({ queryKey: ['conversation-messages', id] })
   }
   const selectInspectorTab = (tab: string) => {
+    tab = visibleInspectorTab(tab)
     setManagementTab(tab)
     setManagementOpen(true)
     window.localStorage.setItem(inspectorStorageKey, tab)
@@ -132,7 +125,7 @@ function ProjectWorkspace() {
           <div><strong>{selectedConversation?.title || '新会话'}</strong><span><LockKeyhole size={12} />个人私有</span></div>
           <div className="conversation-header-actions">
             <button className="icon-control" type="button" aria-label="新建会话" title="新建会话" onClick={() => void navigate({ to: '/projects/$projectId', params: { projectId }, search: { conversation: 'new' } })}><Plus size={17} /></button>
-            {project.data.kind === 'team' ? <button className="icon-control" type="button" aria-label="项目成员" title="项目成员" onClick={() => setMembersOpen(true)}><Users size={17} /></button> : null}
+            {V1_VISIBILITY.teamProjects && project.data.kind === 'team' ? <button className="icon-control" type="button" aria-label="项目成员" title="项目成员" onClick={() => setMembersOpen(true)}><Users size={17} /></button> : null}
             <button className="icon-control" type="button" aria-label={managementOpen ? '隐藏检查器' : '打开检查器'} title={managementOpen ? '隐藏检查器' : '打开检查器'} onClick={() => { if (managementOpen) { setManagementOpen(false); updateInspectorLocation() } else selectInspectorTab(managementTab) }}>{managementOpen ? <PanelRightClose size={18} /> : <PanelRight size={18} />}</button>
           </div>
         </header>
@@ -177,7 +170,7 @@ function ProjectWorkspace() {
 
         <div className="composer-stack">
           <TaskStatusStrip activeTask={allConversationTasks[0]} conversationId={activeConversationId} />
-          <TaskComposer key={`composer-${activeConversationKey}-${composerPrefill?.nonce ?? 0}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} agents={agents.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} providers={providers.data?.items ?? []} initialValue={composerPrefill?.value} onComposerDraft={handleComposerDraft} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
+          <TaskComposer key={`composer-${activeConversationKey}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} agents={agents.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} providers={providers.data?.items ?? []} models={models.data?.items ?? []} projectDefaultModel={project.data.default_model} onComposerDraft={handleComposerDraft} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
         </div>
       </main>
 
@@ -185,10 +178,10 @@ function ProjectWorkspace() {
         <header><div><strong>检查器</strong><span>{inspectedTask?.title || project.data.name}</span></div><button className="icon-control" type="button" aria-label="关闭检查器" title="关闭检查器" onClick={() => { setManagementOpen(false); updateInspectorLocation() }}><PanelRightClose size={17} /></button></header>
         <nav aria-label="工作台检查器">
           {([['run', 'Run'], ['context', 'Context'], ['usage', 'Usage'], ['changes', 'Changes'], ['trace', 'Trace']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => selectInspectorTab(value)}>{label}</button>)}
-          <button className={managementMoreOpen || ['tools', 'security', 'overview', 'tasks', 'assets', 'capabilities', 'memories', 'activity', 'plan', 'automation', 'agents'].includes(managementTab) ? 'active' : ''} type="button" aria-expanded={managementMoreOpen} onClick={() => setManagementMoreOpen((value) => !value)}><MoreHorizontal size={14} />更多</button>
+          <button className={managementMoreOpen || ['tools', 'security', 'overview', 'tasks', 'assets', 'activity', 'plan', 'agents', 'project_usage'].includes(managementTab) ? 'active' : ''} type="button" aria-expanded={managementMoreOpen} onClick={() => setManagementMoreOpen((value) => !value)}><MoreHorizontal size={14} />更多</button>
         </nav>
         {managementMoreOpen ? <div className="panel-secondary-nav" aria-label="更多检查器与项目视图">
-          {([['tools', 'Tools'], ['security', 'Security'], ['overview', '项目'], ['tasks', '任务'], ['assets', '文件'], ['capabilities', '能力'], ['memories', '记忆'], ['activity', '动态'], ['plan', '计划'], ['automation', '自动化'], ['agents', '智能体'], ['project_usage', '项目用量']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => { selectInspectorTab(value); setManagementMoreOpen(false) }}>{label}</button>)}
+          {([['tools', 'Tools'], ['security', 'Security'], ['overview', '项目'], ['tasks', '任务'], ['assets', '文件'], ['activity', '动态'], ['plan', '计划'], ['agents', '智能体'], ['project_usage', '项目用量']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => { selectInspectorTab(value); setManagementMoreOpen(false) }}>{label}</button>)}
         </div> : null}
         <div className="panel-content">
           {managementTab === 'run' ? <InspectorRun task={inspectedTask} events={inspectedRunEvents.data.items} usage={inspectedUsage.data} artifacts={inspectedArtifacts.data?.items ?? []} agentTeam={inspectedAgentTeam.data} /> : null}
@@ -203,10 +196,7 @@ function ProjectWorkspace() {
           {managementTab === 'activity' ? <ActivityView activity={activity.data?.items ?? []} /> : null}
           {managementTab === 'plan' ? <PlanView projectId={projectId} planItems={planItems.data?.items ?? []} /> : null}
           {managementTab === 'assets' ? <AssetsView projectId={projectId} /> : null}
-          {managementTab === 'automation' ? <ScheduleView key={composerDraft?.kind === 'schedule' ? JSON.stringify(composerDraft) : 'schedule'} projectId={projectId} schedules={schedules.data?.items ?? []} draft={composerDraft?.kind === 'schedule' ? composerDraft : undefined} /> : null}
-          {managementTab === 'capabilities' ? <CapabilityView key={composerDraft?.kind === 'capability' ? JSON.stringify(composerDraft) : 'capability'} projectId={projectId} capabilities={capabilities.data?.items ?? []} draft={composerDraft?.kind === 'capability' ? composerDraft : undefined} onUseSkill={useSkill} /> : null}
-          {managementTab === 'memories' ? <MemoryView projectId={projectId} memories={memories.data?.items ?? []} query={memoryQuery} onQueryChange={setMemoryQuery} /> : null}
-          {managementTab === 'agents' ? <><AgentView key={composerDraft?.kind === 'agent' ? JSON.stringify(composerDraft) : 'agent-default'} projectId={projectId} agents={agents.data?.items ?? []} models={models.data?.items ?? []} modelsError={models.error?.message} draft={composerDraft?.kind === 'agent' ? composerDraft : undefined} /><TeamDefinitionView key={composerDraft?.kind === 'team' ? JSON.stringify(composerDraft) : 'team-default'} projectId={projectId} teams={teams.data?.items ?? []} draft={composerDraft?.kind === 'team' ? composerDraft : undefined} /></> : null}
+          {managementTab === 'agents' ? <AgentView key={composerDraft?.kind === 'agent' ? JSON.stringify(composerDraft) : 'agent-default'} projectId={projectId} agents={agents.data?.items ?? []} models={models.data?.items ?? []} modelsError={models.error?.message} draft={composerDraft?.kind === 'agent' ? composerDraft : undefined} /> : null}
           {managementTab === 'project_usage' ? <UsageView usage={usage.data} loading={usage.isLoading} error={usage.error?.message} /> : null}
         </div>
       </aside> : null}
@@ -362,7 +352,7 @@ function PlanView({ projectId, planItems }: { projectId: string; planItems: Plan
   </>
 }
 
-function ScheduleView({ projectId, schedules, draft }: { projectId: string; schedules: Awaited<ReturnType<typeof api.schedules>>['items']; draft?: Extract<ComposerDraft, { kind: 'schedule' }> }) {
+export function ScheduleView({ projectId, schedules, draft }: { projectId: string; schedules: Awaited<ReturnType<typeof api.schedules>>['items']; draft?: Extract<ComposerDraft, { kind: 'schedule' }> }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState(draft?.name ?? '')
   const [cron, setCron] = useState(draft?.cron ?? '0 9 * * *')
@@ -381,7 +371,7 @@ function ScheduleView({ projectId, schedules, draft }: { projectId: string; sche
   </div>
 }
 
-function CapabilityView({ projectId, capabilities, draft, onUseSkill }: { projectId: string; capabilities: Awaited<ReturnType<typeof api.capabilities>>['items']; draft?: Extract<ComposerDraft, { kind: 'capability' }>; onUseSkill: (skill: Capability) => void }) {
+export function CapabilityView({ projectId, capabilities, draft, onUseSkill }: { projectId: string; capabilities: Awaited<ReturnType<typeof api.capabilities>>['items']; draft?: Extract<ComposerDraft, { kind: 'capability' }>; onUseSkill: (skill: Capability) => void }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState(draft?.name ?? '')
   const [version, setVersion] = useState(draft?.version ?? '0.1.0')
@@ -483,7 +473,7 @@ function downloadCapabilityManifest(capability: Awaited<ReturnType<typeof api.ca
   URL.revokeObjectURL(url)
 }
 
-function MemoryView({ projectId, memories, query, onQueryChange }: { projectId: string; memories: Awaited<ReturnType<typeof api.memories>>['items']; query: string; onQueryChange: (query: string) => void }) {
+export function MemoryView({ projectId, memories, query, onQueryChange }: { projectId: string; memories: Awaited<ReturnType<typeof api.memories>>['items']; query: string; onQueryChange: (query: string) => void }) {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
@@ -520,7 +510,7 @@ function AgentView({ projectId, agents, models, modelsError, draft }: { projectI
   return <div className="agent-surface"><div className="automation-intro"><Bot size={22} /><div><h2>版本化 Agent</h2><p>保存指令、模型与配置版本；涉及高风险权限的 Agent 默认进入隔离态，启用前需要项目审批。</p></div><button type="button" className="secondary-button" onClick={() => importRef.current?.click()}>导入 JSON</button><input ref={importRef} className="sr-only" type="file" accept="application/json,.json" onChange={async (event) => { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; try { const value = JSON.parse(await file.text()) as Record<string, unknown>; const importedName = typeof value.name === 'string' ? value.name.trim() : ''; const importedVersion = typeof value.version === 'string' ? value.version.trim() : ''; const importedInstructions = typeof value.instructions === 'string' ? value.instructions : ''; const importedModel = typeof value.model === 'string' ? value.model.trim() : ''; if (!importedName || !importedVersion || !importedInstructions) throw new Error('JSON 必须包含 name、version、instructions'); setName(importedName); setVersion(importedVersion); setInstructions(importedInstructions); setModel(importedModel); setImportError('') } catch (error) { setImportError(error instanceof Error ? error.message : 'Agent JSON 无法解析') } }} /></div><form className="schedule-form" onSubmit={(event) => { event.preventDefault(); if (name.trim() && instructions.trim()) create.mutate() }}><input aria-label="Agent 名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="Agent 名称" required /><input aria-label="Agent 版本" value={version} onChange={(event) => setVersion(event.target.value)} placeholder="版本，例如 1.0.0" required />{models.length > 0 ? <label className="budget-input"><span>主模型</span><select aria-label="Agent 模型" value={model} onChange={(event) => setModel(event.target.value)}><option value="">项目默认模型</option>{models.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}</select></label> : <input aria-label="Agent 模型" value={model} onChange={(event) => setModel(event.target.value)} placeholder="主模型（可选；列表不可用时可手填）" />}<textarea aria-label="Agent 指令" value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="角色指令与验收要求" required /><button type="submit" disabled={create.isPending || !name.trim() || !instructions.trim()}>保存 Agent</button></form>{modelsError ? <div className="form-hint">模型列表暂不可用：{modelsError}。可手填模型 ID，或先配置模型凭证。</div> : null}{importError ? <div className="form-error">导入失败：{importError}</div> : null}{create.error ? <div className="form-error">{create.error.message}</div> : null}<div className="schedule-list">{agents.map((agent) => <article className="schedule-card" key={agent.id}><div><strong>{agent.name} <em>v{agent.version}</em></strong><small>{agent.model || '项目默认模型'} · 状态 {agent.status}</small><p>{agent.instructions}</p></div><button type="button" disabled={agent.status === 'quarantined' || toggle.isPending} onClick={() => toggle.mutate({ id: agent.id, status: agent.status === 'enabled' ? 'disabled' : 'enabled' })}>{agent.status === 'enabled' ? '停用' : '启用'}</button></article>)}{agents.length === 0 ? <WorkSurfaceEmpty icon={<Bot />} title="还没有自定义 Agent" copy="创建一个有版本、有指令、有模型策略的项目 Agent。" /> : null}</div></div>
 }
 
-function TeamDefinitionView({ projectId, teams, draft }: { projectId: string; teams: TeamDefinition[]; draft?: Extract<ComposerDraft, { kind: 'team' }> }) {
+export function TeamDefinitionView({ projectId, teams, draft }: { projectId: string; teams: TeamDefinition[]; draft?: Extract<ComposerDraft, { kind: 'team' }> }) {
   const queryClient = useQueryClient()
   const importRef = useRef<HTMLInputElement>(null)
   const [name, setName] = useState(draft?.name ?? '')
@@ -666,10 +656,11 @@ function skillDescription(skill: Capability) {
   }
 }
 
-function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, initialValue, onComposerDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
+function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, models, projectDefaultModel, initialValue, onComposerDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; models: Array<{ id: string; tool_calling?: boolean }>; projectDefaultModel: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
   const bootstrap = useBootstrap()
   const storageKey = `oktapod.composer.${bootstrap.user.id}.${projectId}.${conversationId ?? 'new'}`
   const permissionStorageKey = `oktapod.permission-mode.${bootstrap.user.id}.${projectId}`
+  const modelStorageKey = `oktapod.model-selection.${bootstrap.user.id}.${projectId}`
   const treePrefillKey = conversationId ? `oktapod.composer.prefill.${conversationId}` : ''
   const [goal, setGoal] = useState(() => initialValue ?? (treePrefillKey ? window.sessionStorage.getItem(treePrefillKey) : undefined) ?? window.localStorage.getItem(storageKey) ?? '')
   const [mode, setMode] = useState<TaskMode>(initialValue ? 'single_agent' : 'auto')
@@ -681,7 +672,8 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const [scene, setScene] = useState<Scene>('work')
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [agentId, setAgentId] = useState('default')
-  const [providerId, setProviderId] = useState('default')
+  const [providerId, setProviderId] = useState(() => readModelSelection(modelStorageKey).providerId)
+  const [model, setModel] = useState(() => readModelSelection(modelStorageKey).model)
   const [thinking, setThinking] = useState<'auto' | 'off' | 'low' | 'medium' | 'high'>('auto')
   const [skillCommandError, setSkillCommandError] = useState('')
   const [capabilityInstallMessage, setCapabilityInstallMessage] = useState('')
@@ -689,8 +681,9 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const capabilityAttachmentRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
+  const providerModels = useQuery({ queryKey: ['provider-models', providerId], queryFn: () => api.providerModels(providerId), enabled: providerId !== 'default', retry: false, staleTime: 60_000 })
   const submit = useMutation({
-    mutationFn: ({ content, invocation, queueKind }: { content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering' }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode, visibility: 'private', permission_mode: permissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs }, { onRoute, onDelta }),
+    mutationFn: ({ content, invocation, queueKind }: { content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering' }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode, visibility: 'private', permission_mode: permissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: selectedModel || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs }, { onRoute, onDelta }),
     onSuccess: async (result) => {
       onConversationSelected(result.conversation.id)
       await queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
@@ -751,7 +744,7 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     if (!goal.trim() || submit.isPending) return
     const content = goal.trim()
     const draft = parseComposerDraft(content)
-    if (draft) { onComposerDraft(draft); setGoal(''); return }
+    if (draft?.kind === 'agent') { onComposerDraft(draft); setGoal(''); return }
     const invocation = parseSkillInvocation(content, skills)
     if (content.startsWith('/') && !invocation && !isCompactCommand(content)) {
       setSkillCommandError('没有找到可用命令，请从列表选择。')
@@ -766,13 +759,39 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   }
 
   const enabledAgents = agents.filter((agent) => agent.status === 'enabled')
-  const executorItems: [string, string][] = enabledAgents.length > 0
-	? [['default', '内置执行器'], ...enabledAgents.map((agent) => [agent.id, agent.name] as [string, string])]
-	: [['default', '内置执行器']]
+  const executorItems: [string, string][] = [['default', '默认 Agent'], ...enabledAgents.map((agent) => [agent.id, agent.name] as [string, string])]
   const providerItems: [string, string][] = [
     ['default', '默认 Provider'],
     ...providers.filter((provider) => provider.status === 'active').map((provider) => [provider.provider_id, provider.display_name] as [string, string]),
   ]
+  const selectedProvider = providers.find((provider) => provider.provider_id === providerId)
+  type ToolSupport = 'yes' | 'no' | 'unknown'
+  const catalog: Array<{ id: string; toolSupport: ToolSupport }> = providerId === 'default'
+    ? models.map((item) => ({ id: item.id, toolSupport: item.tool_calling === true ? 'yes' : item.tool_calling === false ? 'no' : 'unknown' }))
+    : (providerModels.data?.items ?? []).map((item) => ({
+      id: item.model_id,
+      toolSupport: item.capabilities.tool_calling_known === true
+        ? item.capabilities.tool_calling === false ? 'no' as const : 'yes' as const
+        : 'unknown' as const,
+    }))
+  const fallbackModel = providerId === 'default'
+    ? projectDefaultModel || providers.find((provider) => provider.is_default)?.default_model_id
+    : selectedProvider?.default_model_id
+  const selectedModel = model && catalog.some((item) => item.id === model) ? model : ''
+  const modelItems: Array<[string, string, boolean?]> = [
+    ['default', fallbackModel ? `模型 · 默认（${fallbackModel}）` : '模型 · 默认'],
+    ...catalog.map((item) => [item.id, `模型 · ${item.id}${item.toolSupport === 'no' ? '（不支持工具）' : ''}`, mode === 'single_agent' && item.toolSupport === 'no'] as [string, string, boolean]),
+  ]
+  const selectProvider = (value: string) => {
+    setProviderId(value)
+    setModel('')
+    window.localStorage.setItem(modelStorageKey, JSON.stringify({ providerId: value, model: '' }))
+  }
+  const selectModel = (value: string) => {
+    const selected = value === 'default' ? '' : value
+    setModel(selected)
+    window.localStorage.setItem(modelStorageKey, JSON.stringify({ providerId, model: selected }))
+  }
   const selectPermissionMode = (value: PermissionMode) => {
     setPermissionMode(value)
     window.localStorage.setItem(permissionStorageKey, value)
@@ -796,16 +815,17 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(event.altKey ? 'follow_up' : activeTask ? 'steering' : 'follow_up') }
       }} placeholder="发消息，或描述要完成的任务" rows={2} />
       {advancedOpen ? <div className="composer-advanced">
-        <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={setProviderId} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} /> : null}</div>
+        <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={selectProvider} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' && enabledAgents.length > 0 ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} ariaLabel="执行 Agent" /> : null}</div>
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"], ["agent_team", "Agent Team"]]} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "Full Access"]]} /><span className="composer-execution-boundary" title="命令在当前宿主机受策略和凭据隔离控制，但不具备容器或操作系统级强隔离">宿主受控 · 非强沙箱</span><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景与执行器" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}<button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button></div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "完全访问"]]} ariaLabel="权限模式" /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、Provider 与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}<button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button></div></div>
+      {providerModels.error || (model && !selectedModel) ? <p className="composer-model-notice" role="status">{providerModels.error ? '模型目录暂时不可用，将使用该 Provider 的默认模型。' : '之前选择的模型已失效，已自动使用默认模型。'}</p> : null}
     </form>
     <Dialog.Root open={fullAccessOpen} onOpenChange={setFullAccessOpen}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content permission-mode-dialog" aria-describedby="full-access-description">
-          <Dialog.Title>启用 Full Access？</Dialog.Title>
+          <Dialog.Title>启用完全访问？</Dialog.Title>
           <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你在发送框中手动切换权限模式。它不会绕过路径、网络、命令黑名单或场景能力边界；破坏性和开放世界 MCP 仍需人工确认。</Dialog.Description>
           <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" onClick={() => { selectPermissionMode('full_access'); setFullAccessOpen(false) }}>确认启用</button></div>
         </Dialog.Content>
@@ -819,6 +839,15 @@ function containsDraftSecret(value: string) {
     || /\bsk-[a-z0-9_-]{16,}\b/i.test(value)
 }
 
-function InlineSelect({ value, onValueChange, items }: { value: string; onValueChange: (value: string) => void; items: [string, string][] }) {
-  return <Select.Root value={value} onValueChange={onValueChange}><Select.Trigger className="inline-select"><Select.Value /><Select.Icon><ChevronDown size={14} /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="select-content" position="popper"><Select.Viewport>{items.map(([itemValue, label]) => <Select.Item className="select-item" value={itemValue} key={itemValue}><Select.ItemText>{label}</Select.ItemText><Select.ItemIndicator><Check size={14} /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal></Select.Root>
+function readModelSelection(storageKey: string) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(storageKey) || '{}') as { providerId?: unknown; model?: unknown }
+    return { providerId: typeof saved.providerId === 'string' ? saved.providerId : 'default', model: typeof saved.model === 'string' ? saved.model : '' }
+  } catch {
+    return { providerId: 'default', model: '' }
+  }
+}
+
+function InlineSelect({ value, onValueChange, items, ariaLabel, title }: { value: string; onValueChange: (value: string) => void; items: Array<[string, string, boolean?]>; ariaLabel?: string; title?: string }) {
+  return <Select.Root value={value} onValueChange={onValueChange}><Select.Trigger className="inline-select" aria-label={ariaLabel} title={title}><Select.Value /><Select.Icon><ChevronDown size={14} /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="select-content" position="popper"><Select.Viewport>{items.map(([itemValue, label, disabled]) => <Select.Item className="select-item" value={itemValue} key={itemValue} disabled={disabled}><Select.ItemText>{label}</Select.ItemText><Select.ItemIndicator><Check size={14} /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal></Select.Root>
 }

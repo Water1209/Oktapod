@@ -58,7 +58,7 @@ try {
   }
   if (!ready) throw new Error('release process did not become healthy')
 
-  execFileSync(process.execPath, [join(root, 'Test', 'docker-smoke.mjs')], {
+  execFileSync(process.execPath, [join(root, 'Test', 'product-smoke.mjs')], {
     cwd: root,
     env: {
       ...process.env,
@@ -67,6 +67,7 @@ try {
     },
     stdio: 'inherit',
   })
+  process.stdout.write(`Release smoke service: ${baseURL.replace('/api/v1', '/')} (PID ${child.pid}, health 200)\n`)
   process.stdout.write(`Release smoke data: ${dataRoot}\n`)
 } finally {
   child.kill()
@@ -83,4 +84,5 @@ try {
   }
   closeSync(stdout)
   closeSync(stderr)
+  process.stdout.write(`Release smoke service stopped: PID ${child.pid}\n`)
 }

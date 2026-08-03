@@ -21,7 +21,7 @@ const builtinTools = [
   content_hash: '由 Run Snapshot 冻结',
 } as unknown as Capability))
 
-type ResourceFilter = 'all' | 'skill' | 'builtin' | 'plugin' | 'mcp' | 'agent'
+type ResourceFilter = 'all' | 'skill' | 'builtin' | 'mcp' | 'agent'
 type InstallType = Exclude<ResourceFilter, 'all' | 'builtin'>
 
 export function ResourcesPage() {
@@ -38,9 +38,8 @@ export function ResourcesPage() {
   ], [agents.data, capabilities.data])
   const [kind, setKind] = useState<ResourceFilter>('all')
   const filtered = items.filter((item) => {
-    if (kind === 'all') return true
+    if (kind === 'all') return item.id.startsWith('builtin-tool-') || item.kind !== 'plugin'
     if (kind === 'builtin') return item.id.startsWith('builtin-tool-')
-    if (kind === 'plugin') return item.kind === 'plugin' && !item.id.startsWith('builtin-tool-')
     return item.kind === kind
   })
   const [selectedId, setSelectedId] = useState<string>()
@@ -56,7 +55,6 @@ export function ResourcesPage() {
     ['all', PackageOpen, '全部'],
     ['skill', Braces, 'Skills'],
     ['builtin', Code2, '内置 Tools'],
-    ['plugin', Puzzle, 'Packages'],
     ['mcp', Cable, 'MCP'],
     ['agent', Bot, 'Agents'],
   ]
@@ -71,7 +69,7 @@ export function ResourcesPage() {
     </header>
     <div className="resource-explainer">
       <span><Code2 size={15} /><strong>Tools</strong> 是 Oktapod 内建动作，不需要安装。</span>
-      <span><Puzzle size={15} /><strong>Packages</strong> 是可安装扩展包，可携带 Skill 或其他能力。</span>
+      <span><Puzzle size={15} /><strong>Skill</strong> 是可安装的任务能力；V1 不展示 Package 扩展包。</span>
       <span><Cable size={15} /><strong>MCP</strong> 是外部工具协议，安装连接定义后仍需人工审核和连接。</span>
     </div>
     {installNotice ? <div className="resource-install-notice" role="status"><CheckCircle2 size={16} />{installNotice}<button type="button" aria-label="关闭安装结果" onClick={() => setInstallNotice('')}><X size={14} /></button></div> : null}
@@ -95,7 +93,7 @@ export function ResourcesPage() {
         queryClient.invalidateQueries({ queryKey: ['capabilities', resolvedProjectId] }),
         queryClient.invalidateQueries({ queryKey: ['agents', resolvedProjectId] }),
       ])
-      setKind(item.kind === 'agent' ? 'agent' : item.kind)
+      setKind(item.kind === 'skill' || item.kind === 'mcp' || item.kind === 'agent' ? item.kind : 'all')
       setSelectedId(item.id)
       setInstallNotice(notice)
       setInstallOpen(false)
@@ -194,14 +192,13 @@ function ResourceInstallDialog({ projectId, onClose, onInstalled }: { projectId:
   })
   const typeHelp: Record<InstallType, string> = {
     skill: '导入 SKILL.md 或包含完整技能目录的 ZIP。带 scripts 的技能会先进入隔离审核。',
-    plugin: '导入含 capability.yaml 的 ZIP 扩展包。Packages 不等同于内置 Tools。',
     mcp: '导入 MCP JSON/YAML 连接清单。安装后必须审核，再显式连接。',
     agent: '导入含 name、version、instructions 的 JSON；Agent 目前只支持项目级。',
   }
   return <div className="resource-install-overlay" role="presentation">
     <section className="resource-install-dialog" role="dialog" aria-modal="true" aria-labelledby="resource-install-title">
       <header><div><span className="eyebrow">Install</span><h2 id="resource-install-title">安装外部资源</h2></div><button type="button" aria-label="关闭安装窗口" onClick={onClose}><X size={17} /></button></header>
-      <div className="resource-install-kinds">{(['skill', 'plugin', 'mcp', 'agent'] as InstallType[]).map((value) => <button type="button" className={type === value ? 'active' : ''} key={value} onClick={() => { setType(value); setValidation(undefined); if (value === 'agent') setScope('project') }}>{value === 'skill' ? 'Skill' : value === 'plugin' ? 'Package' : value.toUpperCase()}</button>)}</div>
+      <div className="resource-install-kinds">{(['skill', 'mcp', 'agent'] as InstallType[]).map((value) => <button type="button" className={type === value ? 'active' : ''} key={value} onClick={() => { setType(value); setValidation(undefined); if (value === 'agent') setScope('project') }}>{value === 'skill' ? 'Skill' : value.toUpperCase()}</button>)}</div>
       <p className="resource-install-help">{typeHelp[type]}</p>
       <div className="resource-scope-choice">
         <button type="button" className={scope === 'project' ? 'active' : ''} onClick={() => { setScope('project'); setValidation(undefined) }}><strong>当前项目</strong><small>只进入这个项目的资源目录</small></button>

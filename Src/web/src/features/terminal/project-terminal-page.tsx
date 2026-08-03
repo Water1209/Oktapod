@@ -49,7 +49,7 @@ export function ProjectTerminalPage() {
       <div><span className="eyebrow">Project / Controlled terminal</span><h1>受控终端</h1><p>{project.data?.name || '项目'} · 命令通过 Tool Policy、审批、前置状态与副作用收据执行。</p></div>
       <Link className="secondary-button compact" to="/projects/$projectId" params={{ projectId }}>返回 Thread</Link>
     </header>
-    <div className="terminal-safety"><ShieldCheck size={17}/><span><strong>不是裸 Shell</strong><small>提交后会创建可恢复任务；静态黑名单、工作区边界和 Full Access 上限仍然生效。</small></span></div>
+    <div className="terminal-safety"><ShieldCheck size={17}/><span><strong>不是裸 Shell</strong><small>提交后会创建可恢复任务；静态黑名单、工作区边界和完全访问上限仍然生效。</small></span></div>
     <section className="terminal-surface" aria-label="终端会话">
       <div className="terminal-output">
         <div className="terminal-welcome"><SquareTerminal size={22}/><span>输入一条工作区命令。命令不会写入浏览器草稿或本地历史。</span></div>

@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,14 @@ func (f failingProviderRepository) UpsertProviderInstance(context.Context, strin
 
 type failingCatalog struct {
 	err error
+}
+
+type staticCatalog struct {
+	models []core.ModelDescriptor
+}
+
+func (s staticCatalog) ListModels(context.Context) ([]core.ModelDescriptor, error) {
+	return s.models, nil
 }
 
 func (f failingCatalog) ListModels(context.Context) ([]core.ModelDescriptor, error) {
@@ -127,6 +136,45 @@ func TestListProviderModelsReturnsExpiredCatalogWhileOffline(t *testing.T) {
 	}
 	if result.RedactedError == "" || strings.Contains(result.RedactedError, offlineSecret) {
 		t.Fatalf("provider error was not safely redacted: %q", result.RedactedError)
+	}
+}
+
+func TestProviderCatalogPreservesUnknownToolCallingCapability(t *testing.T) {
+	store, actor, org := openProviderTestStore(t)
+	defer store.Close()
+	secrets := &memoryProviderSecrets{values: map[string]string{}}
+	service := application.NewService(store, core.ProfilePersonal, "https://provider.invalid/v1", actor, org, func() string { return "" }).
+		WithProviderRegistry(secrets, func(core.ProviderInstance, string) application.ModelCatalog {
+			return staticCatalog{models: []core.ModelDescriptor{
+				{ID: "unknown-tool-support"},
+				{ID: "known-no-tools", ToolCallingKnown: true, ToolCalling: false},
+			}}
+		})
+	credential := "provider-secret"
+	provider, err := service.SaveProvider(t.Context(), "", application.SaveProviderInput{
+		DisplayName: "Catalog", ProtocolFamily: core.ProviderProtocolOpenAICompatible,
+		Endpoint: "https://catalog.example.test/v1", DefaultModelID: "unknown-tool-support", Credential: &credential,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := service.ListProviderModels(t.Context(), provider.ProviderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models=%+v", models)
+	}
+	knownByID := map[string]bool{}
+	for _, model := range models {
+		var capabilities map[string]bool
+		if err := json.Unmarshal([]byte(model.CapabilitiesJSON), &capabilities); err != nil {
+			t.Fatal(err)
+		}
+		knownByID[model.ModelID] = capabilities["tool_calling_known"]
+	}
+	if knownByID["unknown-tool-support"] || !knownByID["known-no-tools"] {
+		t.Fatalf("tool calling knowledge was not preserved: %+v", knownByID)
 	}
 }
 

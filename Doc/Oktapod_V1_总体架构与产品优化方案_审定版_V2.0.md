@@ -50,7 +50,7 @@ Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以�
 | **Skill** | 严格 `allowed-tools` + 新增 `required-capabilities` / `preferred-tools` / `fallback-policy`（仅 `strict` / `same-capability`） | 见第 6 章 |
 | **安全** | ExecutionAuthorization；宿主受控执行（隔离 HOME、禁宿主凭据、进程树终止）；Git 隔离；External Content Envelope | UI 明示宿主模式不是强沙箱；容器/OS 强隔离进入 V1.1 |
 | **体验** | 单一 Composer；可见执行状态；审批卡；Diff 文件/Hunk 查看、接受、撤销和选择提交；Inspector 默认收起 | 命令逐块 stdout/stderr 直播进入 V1.1；V1 保证完成事件与完整长输出 Artifact |
-| **工程** | Docker 多阶段构建（含前端）；`go test` / `go vet` / `go test -race` / 前端 lint+test+build / Playwright 主链路 / Docker smoke / OpenAPI drift / SQLite migration check | **V1 不做 SBOM、依赖扫描、PostgreSQL migration 和企业级完整安全矩阵**，这些进 V1.1 |
+| **工程** | Windows/Linux 原生构建；`go test` / `go vet` / Ubuntu `go test -race` / 前端 lint+test+build / Playwright 主链路 / 原生产品烟测 / OpenAPI drift / SQLite migration check | **V1 不做 SBOM、依赖扫描、PostgreSQL migration 和企业级完整安全矩阵**，这些进 V1.1 |
 
 ### 1.3 V1 明确不交付（比 GPT-5.6 更严格）
 
@@ -422,15 +422,9 @@ source / trust / content_hash / receipt_id / server_id / tool_name / URLs / cont
 
 ## 11. V1 工程门禁（修正后）
 
-### 11.1 Docker
+### 11.1 原生发布
 
-必须多阶段：
-
-```text
-Node/pnpm 前端构建 → Go 构建 → 最小运行镜像
-```
-
-当前 `Deploy/Dockerfile` 已完成前端与 Go 多阶段构建、版本注入、非 root 运行、健康检查和无内置凭据；`Test/docker-smoke.mjs` 验证注册、鉴权、版本与个人项目创建。
+V1 以 Windows 与 Linux 原生二进制发布；前端静态资源在发布构建时嵌入 Go 二进制。当前仓库不提供 Docker 或 Compose 路径；若将来需要容器化，必须作为新的运行时和安全设计重新评审。
 
 ### 11.2 Required Checks（V1 终版，比 GPT-5.6 精简）
 
@@ -443,10 +437,10 @@ frontend test
 frontend build
 OpenAPI drift
 SQLite migration check
-Docker smoke
+原生产品烟测
 ```
 
-V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Linux CI 完成 clean install、race、build 和 Docker 产品烟测。Linux 浏览器全视口、PostgreSQL migration、完整安全矩阵、dependency scan 和 SBOM 进入 V1.1。
+V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Ubuntu 与 Windows CI 完成 clean install、build 和原生产品烟测，Ubuntu 额外完成 race。Linux 浏览器全视口、PostgreSQL migration、完整安全矩阵、dependency scan 和 SBOM 进入 V1.1。
 
 ### 11.3 代码规模观察指标
 
@@ -469,7 +463,7 @@ V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Linux CI 完�
 | ADR-007 | 工具替代过程可见 | 不静默切换 Provider |
 | ADR-008 | 副作用执行必须持 ExecutionAuthorization | Ask 工具无有效审批授权 100% 拒绝 |
 | ADR-009 | 单一 Composer | 高级配置进入项目设置和 Inspector |
-| ADR-010 | Docker/CI/恢复测试是发布前置 | V1 精简门禁，V1.1 补完整矩阵 |
+| ADR-010 | 双平台原生 CI/恢复测试是发布前置 | V1 精简门禁，V1.1 补完整矩阵 |
 | ADR-011 | **内核端口先行** | 先拆 Repository/Principal/Policy/Artifact，再长功能 |
 | ADR-012 | **V1 最小沙箱** | 隔离 HOME/凭据/工作区/进程树，网络沙箱进 V1.1 |
 
@@ -479,7 +473,7 @@ V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Linux CI 完�
 
 | 维度 | GPT-5.6 V1.0 | 本审定版 V2.0 | 理由 |
 |---|---|---|---|
-| 实施顺序 | 阶段 A 先补 Docker/CI/Grant，阶段 B 再拆 Loop/Harness | **先拆内核端口，安全/CI 伴随端口落地，功能最后长** | 避免在耦合 Worker 上建门禁，减少返工 |
+| 实施顺序 | 阶段 A 先补发布门禁/CI/Grant，阶段 B 再拆 Loop/Harness | **先拆内核端口，安全/CI 伴随端口落地，功能最后长** | 避免在耦合 Worker 上建门禁，减少返工 |
 | 原生工具 | 未明确是否重新设计 | **以 Pi 冻结语义做合同基线**，保留 Oktapod 安全与持久化差异 | 复用成熟语义但不假装逐版本完全一致 |
 | 沙箱范围 | 项目级沙箱 + 网络默认拒绝 | **V1 最小沙箱**（隔离 HOME/凭据/工作区/进程树），网络沙箱进 V1.1 | V1 是本地优先产品，网络零信任非首版必需 |
 | CI 门禁 | 13 项全量 | **9 项核心门禁**，保留现有 Playwright 主链路；SBOM/依赖扫描/PG migration 进 V1.1 | 先证明用户闭环，再补企业级门禁 |

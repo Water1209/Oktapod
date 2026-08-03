@@ -23,7 +23,7 @@ Oktapod 是一套面向个人与企业团队的多用户 Agent OS，不按个人
 - `Src/db/`：按 SQLite/PostgreSQL 分开的迁移与查询；双方言共享契约测试，不用 ORM 隐藏差异。
 - `Src/web/`：React/TypeScript 前端；按业务 `features` 组织，生成 API 客户端放 `Src/web/src/shared/api/generated/`，仅 UI 浏览器闭环放 `Test/e2e/`。
 - `Src/tests/integration/`：跨模块契约、集成、故障、安全的白盒集成测试；`Test/e2e/`：Playwright 端到端测试。
-- `Deploy/`：镜像、Compose、配置示例和运维入口；示例不得包含真实 Secret。
+- `Deploy/`：原生发布配置示例和运维入口；示例不得包含真实 Secret。当前 V1 不提供 Docker 或 Compose 发布路径。
 
 新增代码目录必须符合上述边界；如果确需新一级目录，先在这里说明用途、命名和清理规则。构建产物统一进入被忽略的 `Build/`、`dist/`、`bin/`、`coverage/` 或系统临时目录，不在源码目录生成临时文件。`sqlc` 生成代码固定写入 `Src/internal/adapters/db/sqlite/sqlc/`，仓库根目录的 `internal/` 视为旧配置产生的本机残留，不得提交。
 

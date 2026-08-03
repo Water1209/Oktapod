@@ -6,9 +6,9 @@
 
 ## 1. 部署结论
 
-V1 默认是单机 Go 服务，内嵌 React 静态资源，数据存入 SQLite，Provider 凭据进入操作系统 SecretStore。开发运行默认监听 `127.0.0.1:8787`；Docker 镜像监听容器内 `0.0.0.0:8787`。
+V1 默认是单机 Go 服务，内嵌 React 静态资源，数据存入 SQLite，Provider 凭据进入操作系统 SecretStore。开发和原生发布运行默认监听 `127.0.0.1:8787`。
 
-`Deploy/docker-compose.team.yml` 与 PostgreSQL 仅保留后续 Team 试点边界，不属于 V1 发布或完成度。
+当前仓库不提供 Docker 或 Compose 发布路径。未来团队与 PostgreSQL 兼容边界需要重新设计容器化方案，不能作为 V1 的可用部署方式。
 
 ## 2. Windows 本机发布
 
@@ -28,22 +28,17 @@ pnpm release:smoke
 
 `pnpm release:build` 从根 `package.json` 读取版本，生成带版本二进制及同名 `.sha256`；普通 `pnpm build` 是开发构建，运行时版本为 `dev`。
 
-## 3. Docker
+## 3. 原生产品烟测
 
-```powershell
-docker build --build-arg OKTAPOD_VERSION=1.0.0 -f Deploy/Dockerfile -t oktapod:1.0.0 .
-docker run --rm --name oktapod-v1 -p 8787:8787 -v oktapod-data:/data oktapod:1.0.0
-```
-
-镜像使用 Node/pnpm 构建 Web、Go 构建二进制，并以 Debian 非 root 用户运行。健康检查是 `/api/v1/health`；发布烟测还会验证注册、Session/CSRF、`/diagnostics` 版本及个人项目创建：
+发布烟测验证健康、注册、Session/CSRF、`/diagnostics` 版本及个人项目创建：
 
 ```powershell
 $env:OKTAPOD_SMOKE_URL="http://127.0.0.1:8787/api/v1"
 $env:OKTAPOD_EXPECT_VERSION="1.0.0"
-node Test/docker-smoke.mjs
+node Test/product-smoke.mjs
 ```
 
-镜像本身不包含 Provider Key、数据库密码或登录凭据。
+发布二进制不包含 Provider Key、数据库密码或登录凭据。
 
 ## 4. Provider
 
@@ -96,7 +91,7 @@ pnpm verify
 pnpm test:e2e
 ```
 
-Linux CI 额外执行 `pnpm verify:ci`（含 race）和 Docker 产品烟测。本机没有 Docker daemon 或 CGO C 编译器时，只能形成 RC，不能把未运行门禁标记为本机已通过。
+Ubuntu CI 额外执行 `pnpm test:race`；Ubuntu 与 Windows CI 都执行 clean install、`pnpm verify`、原生发布构建和产品烟测。本机不能把未运行的跨平台门禁标记为已通过。
 
 - `MODEL_CREDENTIAL_MISSING`：SecretStore 中不存在相应凭据。
 - `WEB_SEARCH_UNAVAILABLE`：检查主机网络与内建搜索，再检查可选 MCP 健康。

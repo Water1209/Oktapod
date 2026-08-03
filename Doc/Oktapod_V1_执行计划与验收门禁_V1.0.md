@@ -31,7 +31,7 @@ V1 唯一交付目标：
 - `session_entries.entry_seq` 与 `messages.server_seq` 独立。
 - 现有工具名、Run 快照、Receipt 和 SSE cursor 保持可恢复兼容。
 - Steering 在已提交 Checkpoint 后生效；Retry 选择最新失败/阻塞前沿。
-- Full Access 仍受硬拒绝、Scope 和 MCP 人工确认约束。
+- 完全访问（内部值 `full_access`）仍受硬拒绝、Scope 和 MCP 人工确认约束。
 - 内建搜索在可替代能力完成真实验收前不得删除。
 - 不恢复独立非交互 Terminal 导航；命令在 Thread 内受 Policy、审批和 Receipt 治理。
 
@@ -43,11 +43,11 @@ V1 唯一交付目标：
 |---|---|---|---|
 | B0 | `PASS` | 架构、计划、README、发布说明、部署指南、归档说明和追踪矩阵已统一为 V1.0.0 范围 | 后续变更仍须同步事实 |
 | B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与 Inspector 组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
-| B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、多阶段非 root Docker、版本注入、CI/OpenAPI/迁移门禁已落地 | Windows 本机无 Docker daemon 且 CGO 关闭；等待 Linux CI 关闭 tag 门禁 |
+| B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、版本注入、CI/OpenAPI/迁移门禁已落地 | 等待 Ubuntu/Windows 原生 CI 关闭 tag 门禁 |
 | B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
 | B4 | `PASS` | MCP Schema/配置/健康版本、Run Tool Snapshot、Skill 约束、strict 阻塞和 `external_untrusted` Envelope 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
-| B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Linux race 与 Docker 产品烟测须在 tag 前由 CI 通过 |
+| B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
 
 ### B0：统一基线和验收真源
 
@@ -85,7 +85,7 @@ pnpm verify
 - Golden Trace 证明重构前后事件、消息、Receipt 和恢复语义一致。
 - HTTP 无 Principal 返回 401；跨用户项目访问仍被拒绝。
 
-### B2：执行授权、宿主受控执行、Docker 与 CI
+### B2：执行授权、宿主受控执行与双平台 CI
 
 交付：
 
@@ -94,14 +94,13 @@ pnpm verify
 - 不新增 HMAC ExecutionGrant 表；当前同进程/同数据库模型下 HMAC 不增加有效隔离。
 - `governed_host` 隔离临时 HOME、清理凭据环境变量、禁 Git credential/helper/hooks、限制超时并终止进程树。
 - UI 明示“宿主受控执行，非强沙箱”；容器/OS 强隔离留待 V1.1。
-- `Deploy/Dockerfile` 改为 Web 构建 → Go 构建 → 非 root 最小镜像，并加入真实健康检查。
-- CI 统一执行 Go vet/test/race、Web lint/test/build、OpenAPI drift、SQLite migration 和 Docker smoke。
+- CI 在 Ubuntu 与 Windows 统一执行 Go vet/test、Web lint/test/build、OpenAPI drift、SQLite migration、原生发布构建和产品烟测；Ubuntu 额外执行 race。
 
 门禁：
 
 - 审批篡改、过期、输入变化和 Policy 变化均拒绝执行。
 - 子进程不继承 SSH/AWS/Git/Provider Secret；Git 不读取宿主配置。
-- Docker 首次注册、登录、建项目和 Web 主链路可用。
+- 原生产品首次注册、登录、建项目和 Web 主链路可用。
 
 ### B3：统一 ToolSpec 与 Pi 语义
 
@@ -158,9 +157,9 @@ pnpm verify
 
 - OHCS 语义证据覆盖多轮文本、Tool 配对、并行/串行、Steering、Follow-up、Abort、Compaction、Tree、Provider 切换和恢复；证据可由统一 Golden Trace 与相邻契约测试共同组成。
 - V1 必选故障覆盖 Worker kill、审批过期、SQLite Busy、Receipt 写失败保护和 SSE 重连；完整模型/MCP/网络故障矩阵进入发布后加固。
-- Windows 完成真实浏览器主链路；Linux CI 完成 clean install、race、build 和 Docker 产品烟测。Linux 真实浏览器全视口矩阵进入后续加固。
+- Windows 完成真实浏览器主链路；Ubuntu 与 Windows CI 完成 clean install、build 和原生产品烟测，Ubuntu 额外完成 race。Linux 真实浏览器全视口矩阵进入后续加固。
 - 使用 SecretStore 注入的真实 Provider 验证流式、文件读改、命令测试、审批、Diff、撤销/提交和恢复。
-- Docker smoke 覆盖真实产品流程，不只检查端口。
+- 原生产品烟测覆盖真实产品流程，不只检查端口。
 
 门禁：
 

@@ -267,6 +267,7 @@ func (s *Service) refreshProviderCatalog(ctx context.Context, provider core.Prov
 		capabilities, _ := json.Marshal(map[string]bool{
 			"tool_calling": model.ToolCalling, "vision": model.Vision,
 			"structured_output": model.StructuredOutput, "reasoning": model.Reasoning,
+			"tool_calling_known": model.ToolCallingKnown,
 		})
 		entries = append(entries, core.ModelCatalogEntry{
 			ProviderID: provider.ProviderID, ModelID: model.ID,

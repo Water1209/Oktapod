@@ -21,7 +21,7 @@
 | 发布 | 状态 | 判断 |
 |---|---|---|
 | V1.0.0 本地 Release Candidate | `RC_READY` | V1 个人版必选能力已关闭；本地工件和全量门禁通过后可提交 RC |
-| V1.0.0 正式 tag | `BLOCKED` | 等待本提交进入 Linux CI，完成 race 与 Docker 产品烟测；不自动 push/tag |
+| V1.0.0 正式 tag | `BLOCKED` | 等待本提交进入 Ubuntu/Windows CI，完成双平台原生产品烟测与 Ubuntu race；不自动 push/tag |
 | 历史 Release 1A/1B | `ARCHIVED` | 原 Release 1A/1B 范围已并入 V1 统一规划，不再单独追踪 |
 
 ## 2.1 V1 差距驱动批次总览
@@ -30,11 +30,11 @@
 |---|---|---|---|
 | B0 | 基线与验收真源 | `PASS` | 执行计划、总体架构、README、部署指南和本矩阵已统一范围；后续按代码事实持续同步 |
 | B1 | 内核端口与运行时拆分 | `PASS` | Repository 窄端口、`agentloop`/`harness` 和独立 Inspector 已落地；剩余行数是维护指标，不影响行为闭环 |
-| B2 | 执行安全与工程门禁 | `PARTIAL` | `ExecutionAuthorization`、宿主 Git/Secret 隔离、多阶段非 root Docker、CI/OpenAPI/迁移门禁已落地；Windows 无 CGO，race 与 Docker 真实运行待 Linux CI |
+| B2 | 执行安全与工程门禁 | `PARTIAL` | `ExecutionAuthorization`、宿主 Git/Secret 隔离、CI/OpenAPI/迁移门禁已落地；双平台原生构建与产品烟测、Ubuntu race 仍待 CI 证据 |
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
 | B4 | MCP/Skill/搜索 | `PASS` | MCP Schema/配置/健康版本、Run Tool Snapshot、Skill 约束、strict 阻塞与外部不可信 Envelope 已落地；确定性同能力排名转 V1.1 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、文件/Hunk、接受及受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
-| B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Linux CI 的 race/Docker 仍是正式 tag 门禁 |
+| B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 
 ## 2.2 V1 正式范围决策
 
@@ -49,7 +49,7 @@
 | Team/Agent Team/Schedule 主流程 | `N/A` | 代码保留兼容能力，但 V1 完成度只计算单 Agent 个人项目主链路，不删除已有入口 |
 | 强沙箱与网络默认拒绝 | `N/A` | V1 明示 `governed_host` 非强沙箱；容器/OS 隔离进入 V1.1 |
 | 命令逐块 stdout/stderr 直播 | `N/A` | V1 保证完成事件、截断摘要与完整 Artifact；逐块直播进入 V1.1 |
-| Linux 浏览器全视口与完整故障矩阵 | `N/A` | V1 正式 tag 要求 Linux clean/race/build/Docker 烟测；全视口浏览器和企业级故障矩阵进入加固 |
+| Linux 浏览器全视口与完整故障矩阵 | `N/A` | V1 正式 tag 要求 Ubuntu race 与 Ubuntu/Windows clean/build/原生产品烟测；全视口浏览器和企业级故障矩阵进入加固 |
 
 ## 3. 基线门禁
 
@@ -102,7 +102,7 @@
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；Inspector 文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt 与真实子进程 kill 后 Lease 恢复自动化通过 |
-| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、Ask/Auto-review/Full Access、MCP 强制人工和 Composer 邻接 UI 已实现并有 Go/Web 证据 |
+| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问、MCP 强制人工和 Composer 邻接 UI 已实现并有 Go/Web 证据 |
 
 ## 6. Release 1B 验收矩阵
 
@@ -139,7 +139,7 @@
 5. README、OpenAPI、架构、计划、部署、发布说明与代码一致；
 6. 未完成项必须明确列入 V1.1/团队边界，不得伪装为已完成。
 
-正式 tag 还必须由 Linux CI 通过 race 与 Docker 产品烟测。Tag、push 和远端发布均不自动执行。
+正式 tag 还必须由 Ubuntu CI 通过 race，且 Ubuntu/Windows CI 通过原生产品烟测。Tag、push 和远端发布均不自动执行。
 
 ## 9. 证据日志
 
@@ -161,7 +161,7 @@
 | 2026-07-26 | Release 1A Codex 工作台与浏览器收口 | 四区 Shell、统一执行流、任务状态条、Inspector、Session Tree、Provider/Resources/Diagnostics；foundation 1/1、success 22/22、auth 2/2、turn 1/1、approval 1/1 |
 | 2026-07-26 | Release 1B 第一批 | 受控终端、设置、导入导出路由；Transcript 事务导入；原生 Anthropic/Gemini 合同；Hunk Restore、选择提交与冲突辅助；`pnpm verify` 全绿 |
 | 2026-07-26 | Release 1B 项目级审批规则 | 000049、二次确认、30 天窄规则、Owner 管理与撤销；定向集成测试、`pnpm verify`、approval 1/1、foundation 1/1、success 22/22 通过 |
-| 2026-07-28 | 语义计划与 Human Action | 000050～000052；Plan Revision/Item、Ask/Auto-review/Full Access、统一人工动作、MCP Annotation 风险、v2 精确签名与 Composer 邻接 UI；Go 集成、Web 18/18、foundation 1/1、success 22/22 通过，真实 Reviewer Provider 故障注入仍待补充 |
+| 2026-07-28 | 语义计划与 Human Action | 000050～000052；Plan Revision/Item、请我审批/自动审查/完全访问、统一人工动作、MCP Annotation 风险、v2 精确签名与 Composer 邻接 UI；Go 集成、Web 18/18、foundation 1/1、success 22/22 通过，真实 Reviewer Provider 故障注入仍待补充 |
 | 2026-07-26 | 原生 Provider 增量流式 | Anthropic SSE 与 Gemini streamGenerateContent 解析增量 Text/Thinking/Tool/StopReason/Usage，Adapter 合同测试通过；真实凭据验收待执行 |
 | 2026-07-26 | Release 1B 终端与导出补全 | 终端状态/结果/取消/同 Thread 上下文回填；脱敏 JSON/JSONL/HTML 与自有 JSONL Thread round-trip；success 22/22 通过 |
 | 2026-07-26 | SQLite 并发写恢复 | 注册、项目/任务创建、Transcript 导入和结果验收对 BUSY/BUSY_SNAPSHOT 有界退避并复用幂等键；并行 success 22/22 通过 |
@@ -170,7 +170,7 @@
 | 2026-07-28 | 前端美化第一批 | Assistant 正文接 Markdown（GFM）渲染、`<think>` 折叠为可展开“推理过程”、Thread 列表摘要剥离 think/markdown 噪声、执行计划折叠卡片化、用量数字层次化、Composer 聚焦高亮及 dark 适配；`pnpm verify` 与 success E2E 22/22 零回归 |
 | 2026-07-28 | 阻塞状态与跨 Run 上下文修复 | 000053 对齐 Task/Run 终态，活动任务判断改用 Run 真源；新 Run 冻结同 Thread 压缩感知消息；移除消息内重复计划/详情，Composer 与 Thread 侧栏显示阻塞状态；定向 Go、Web lint/test/build 通过 |
 | 2026-07-29 | Codex 式状态真源与 WebAccess 修复 | 初次计划禁止提前完成；联网/文档交付增加收据完成门禁；Thread 状态改为尾部图标、执行流显示 Skill、Human Action 邻接 Composer、支持受控删除 Thread；DuckDuckGo 失败自动回退 Bing RSS。真实浏览器以 `/researchpilot` 完成 Palantir 官方资料检索：初始计划为 0/3、3 次 `web_search` 均成功、最终返回 3 个官方链接；风险命令已出现 Composer 邻接审批卡并可批准/拒绝；验证用阻塞 Thread 在窄屏菜单中删除成功。适配器、定向集成、Web lint/test/build 与浏览器控制台检查均通过 |
-| 2026-07-29 | Full Access 与计划自恢复修正 | Composer 权限文案恢复为“请我审批 / 自动审查 / Full Access”；Full Access 不再自动过期，由用户手动切换且仍受硬拒绝和 MCP 人工确认约束；运行中 `update_plan` 回退已完成项时保留真实计划并自动要求模型修复，连续达到模型重试上限后才阻塞交给用户；旧版任务级计划异常即使没有失败 Step，也能从持久计划与对话历史重建恢复检查点 |
+| 2026-07-29 | 完全访问与计划自恢复修正 | Composer 权限文案为“请我审批 / 自动审查 / 完全访问”；完全访问不再自动过期，由用户手动切换且仍受硬拒绝和 MCP 人工确认约束；运行中 `update_plan` 回退已完成项时保留真实计划并自动要求模型修复，连续达到模型重试上限后才阻塞交给用户；旧版任务级计划异常即使没有失败 Step，也能从持久计划与对话历史重建恢复检查点 |
 | 2026-07-29 | Web Search 并发稳定性 | Agent 仍可并行规划工具，但共享的公共搜索适配器按请求串行访问 DuckDuckGo/Bing，避免同一批并发请求触发挑战页并被误判为“无可用结果”；并发契约测试和真实外网查询连续验证通过 |
 | 2026-07-29 | 原 Thread 恢复、计划续版与紧凑消息流 | 浏览器在原 `调研token云平台形成md文档` Thread 内发送“重新规划任务，继续”：Auto Composer 原地恢复同一 Task/Run 与 `researchpilot`，确认消息不再走聊天模型；重试选择最新可执行前沿，冻结 ToolCall/Receipt 与批次续写状态一致。修复无活动计划时 Revision 从 1 重建导致的唯一键冲突，并保持 Step 心跳到完成事务提交。真实 Run 获得成功 Web Search 收据、计划完成 4/4、写入 3 个含 10 条 URL 且无占位符的 Markdown 文件，Task 最终 `succeeded`；Assistant 源空白和 comfortable density 间距已压缩，浏览器控制台无错误。定向 Go 测试与 Web build 通过 |
 | 2026-07-28 | Skill/Harness 全流程复验 | 浏览器真实导入 `researchpilot`：同版本同 Hash 幂等返回原 Skill；`/researchpilot` 产生 `skill.invoked/skill.loaded`，目标特定 5 项计划实时刷新，搜索失败进入 `tool.recovery_queued` 后继续并最终完成 5/5；对话流式输出 Physical AI 中文简报和 16 个 Markdown 来源链接。同步修复计划空转、运行中结构改写、无进度自恢复、空域名参数归一化和成功搜索收敛门禁 |

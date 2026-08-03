@@ -6,12 +6,10 @@ const ProjectsPage = lazyNamed(() => import('../features/projects/projects-page'
 const ProjectPage = lazyNamed(() => import('../features/projects/project-page'), 'ProjectPage')
 const LegacyTaskResolver = lazyNamed(() => import('../features/tasks/legacy-task-resolver'), 'LegacyTaskResolver')
 const ApprovalInbox = lazyNamed(() => import('../features/approvals/approval-inbox'), 'ApprovalInbox')
-const InvitationAcceptPage = lazyNamed(() => import('../features/invitations/invitation-accept-page'), 'InvitationAcceptPage')
 const ProviderSettingsPage = lazyNamed(() => import('../features/providers/provider-settings-page'), 'ProviderSettingsPage')
 const ResourcesPage = lazyNamed(() => import('../features/resources/resources-page'), 'ResourcesPage')
 const DiagnosticsPage = lazyNamed(() => import('../features/diagnostics/diagnostics-page'), 'DiagnosticsPage')
 const SessionTreePage = lazyNamed(() => import('../features/sessions/session-tree-page'), 'SessionTreePage')
-const ProjectTerminalPage = lazyNamed(() => import('../features/terminal/project-terminal-page'), 'ProjectTerminalPage')
 const ImportExportPage = lazyNamed(() => import('../features/migration/import-export-page'), 'ImportExportPage')
 const SettingsPage = lazyNamed(() => import('../features/settings/settings-page'), 'SettingsPage')
 
@@ -60,10 +58,11 @@ const sessionTreeRoute = createRoute({
   component: suspend(SessionTreePage),
 })
 
+// 保留旧路径的类型兼容和已有链接可解析性，但 V1 不再暴露独立 Terminal。
 const terminalRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/projects/$projectId/terminal',
-  component: suspend(ProjectTerminalPage),
+  component: () => <Navigate to="/" />,
 })
 
 const taskRoute = createRoute({
@@ -120,11 +119,12 @@ const loginRoute = createRoute({
   component: () => <Navigate to="/" />,
 })
 
+// 邀请是团队能力；V1 保留后端兼容，但不让页面成为可访问入口。
 const invitationAcceptRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/invitations/accept',
   validateSearch: (search: Record<string, unknown>) => ({ token: typeof search.token === 'string' ? search.token : '' }),
-  component: suspend(InvitationAcceptPage),
+  component: () => <Navigate to="/" />,
 })
 
 const routeTree = rootRoute.addChildren([projectsRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])

@@ -3,7 +3,7 @@
 - `e2e/`：Playwright 端到端测试（启动真实二进制 + 浏览器，不引用 Go internal 包）。
 - `build-release.mjs`：按根 `package.json` 版本构建本机发布二进制并生成 SHA256。
 - `release-smoke.mjs`：用独立端口与数据目录启动发布二进制，再运行产品烟测。
-- `docker-smoke.mjs`：验证健康、注册、鉴权、运行时版本与个人项目创建。
+- `product-smoke.mjs`：验证健康、注册、鉴权、运行时版本与个人项目创建；协议和部署形态无关。
 
 白盒集成测试位于 `Src/tests/integration/`（Go `internal/` 可见性约束要求其在源码树内）。
 

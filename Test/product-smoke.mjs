@@ -9,7 +9,7 @@ const register = await fetch(`${baseURL}/auth/register`, {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     username: `smoke-${suffix}`,
-    display_name: 'Docker Smoke',
+    display_name: 'Product Smoke',
     password: `Smoke-${suffix}-Pass!`,
   }),
 })
@@ -38,11 +38,11 @@ const createProject = await fetch(`${baseURL}/projects`, {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
-    'Idempotency-Key': `docker-smoke-${suffix}`,
+    'Idempotency-Key': `product-smoke-${suffix}`,
     'X-CSRF-Token': csrf,
     Cookie: cookie,
   },
-  body: JSON.stringify({ name: 'Docker Smoke Project', kind: 'personal', scene: 'code' }),
+  body: JSON.stringify({ name: 'Product Smoke Project', kind: 'personal', scene: 'code' }),
 })
 if (createProject.status !== 201) throw new Error(`project creation failed: ${createProject.status} ${await createProject.text()}`)
 const project = await createProject.json()

@@ -8,7 +8,7 @@
 - `.gitignore`
 
 产品版本以根 `package.json` 为单一构建输入；`pnpm release:build` 与
-`Deploy/Dockerfile` 通过 Go ldflags 注入运行时版本，普通开发构建标记为
+原生发布构建通过 Go ldflags 注入运行时版本，普通开发构建标记为
 `dev`，避免误当发布工件。
 
 运行时环境变量样例见 `Deploy/.env.example`，完整说明见 `Doc/Oktapod_部署与运维指南_v1.0.md`。

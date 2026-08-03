@@ -2,7 +2,7 @@
 
 > **V1.0.0 Release Candidate：本地优先、可控、可审计、可恢复的智能开发 Agent**
 
-Oktapod V1 面向注册用户的个人私有项目。用户在一个 Thread 中描述目标，Agent 会先生成目标特定的语义执行计划，再读改文件、运行验证、展示 Diff 和请求审批；缺少可授予权限时进入审批，确定性策略拒绝时自动换用允许方案，模型临时断线时首条目标仍可在原 Thread 恢复。团队项目与 PostgreSQL 保留兼容边界，不进入 V1 发布完成度。
+Oktapod V1 面向注册用户的个人私有项目。用户在一个 Thread 中描述目标，Agent 会先生成目标特定的语义执行计划，再读改文件、运行验证、展示 Diff 和请求审批；发送框可选择下一次 Run 的模型与权限，只有 Provider 明确声明不支持工具时才会限制 Task 模式。缺少可授予权限时进入审批，确定性策略拒绝时自动换用允许方案，模型临时断线时首条目标仍可在原 Thread 恢复。团队项目与 PostgreSQL 保留兼容边界，不进入 V1 发布完成度。
 
 ## 快速开始
 
@@ -43,7 +43,7 @@ pnpm release:smoke
 | [V1 总体架构](Doc/Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md) | 当前架构事实与演进边界 |
 | [V1 执行计划](Doc/Oktapod_V1_执行计划与验收门禁_V1.0.md) | 差距批次、门禁与剩余工作 |
 | [V1 验收矩阵](Doc/Oktapod_V1_验收状态与追踪矩阵.md) | 发布完成度唯一真源 |
-| [部署与运维](Doc/Oktapod_部署与运维指南_v1.0.md) | 本机、Docker、Provider 与运维 |
+| [部署与运维](Doc/Oktapod_部署与运维指南_v1.0.md) | Windows/Linux 原生发布、Provider 与运维 |
 | [PRD v1.1](Doc/Oktapod_PRD_v1.1_轻量化架构优化版.md) | 历史完整产品蓝图 |
 | [三阶段架构](Doc/Oktapod_三阶段递进式架构设计_V1.0.md) | V1 之后的团队与集群演进 |
 
@@ -55,4 +55,4 @@ pnpm verify
 pnpm test:e2e
 ```
 
-Linux CI 额外执行 `pnpm verify:ci`（含 race）与 Docker 产品烟测。项目规则见 [AGENTS.md](AGENTS.md)。
+Ubuntu CI 额外执行 `pnpm test:race`；Ubuntu 与 Windows CI 都执行原生发布构建和产品烟测。项目规则见 [AGENTS.md](AGENTS.md)。

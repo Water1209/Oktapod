@@ -8,7 +8,7 @@
 
 V1.0.0 已具备形成 Release Candidate 的产品闭环。代码行数和目录纯度不作为发布门禁；门禁只判断用户主链路、安全不变量、恢复语义和可复核工件。
 
-正式 tag 与 push 前仍必须由 Linux CI 通过 race 和 Docker 产品烟测。当前仓库不会自动 tag 或 push。
+正式 tag 与 push 前仍必须由 Ubuntu CI 通过 race，并由 Ubuntu 与 Windows CI 通过原生产品烟测。当前仓库不会自动 tag 或 push。
 
 ## 2. 用户可用能力
 

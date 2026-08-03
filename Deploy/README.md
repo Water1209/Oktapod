@@ -1,17 +1,8 @@
-# Oktapod 部署
+# Oktapod 发布配置
 
-- `Dockerfile`：V1 个人模式镜像；多阶段构建 Web 与 Go，非 root 运行，默认版本 `1.0.0`。
-- `docker-compose.team.yml`：PostgreSQL + Oktapod team 模式试验边界，不属于 V1 发布路径。
-- `postgres/`：数据库初始化脚本目录（RLS、扩展等）。
-- `.env.example`：环境变量样例。
+当前 V1 只支持 Windows/Linux 原生发布二进制；不提供 Docker 或 Compose 发布路径。
 
-V1 镜像构建与启动：
+- `.env.example`：后续兼容边界的环境变量说明，不能包含真实凭据。
+- 原生构建、启动、烟测和停止方式见 `Doc/Oktapod_部署与运维指南_v1.0.md`。
 
-```powershell
-docker build --build-arg OKTAPOD_VERSION=1.0.0 -f Deploy/Dockerfile -t oktapod:1.0.0 .
-docker run --rm -p 8787:8787 -v oktapod-data:/data oktapod:1.0.0
-```
-
-Team Compose 仅用于后续单节点试点。使用前将 `.env.example` 复制为 `Deploy/.env`，为所有数据库与管理凭据填入独立随机值；仓库不提供共享默认凭据。
-
-详见 `Doc/Oktapod_部署与运维指南_v1.0.md`。
+未来若重新设计容器化，会作为新的运行时和安全方案单独评审，不能把旧命令视为当前支持。

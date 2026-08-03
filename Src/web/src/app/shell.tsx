@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, GitCompareArrows, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, GitCompareArrows, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, type Bootstrap } from '../shared/api/client'
 import { assistantExcerpt } from '../shared/assistant-segments'
 import { BootstrapContext } from '../shared/bootstrap-context'
@@ -104,8 +104,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
           {!conversations.isLoading && conversations.data?.items.length === 0 ? <p className="thread-nav-empty">发送第一条消息后，Thread 会出现在这里。</p> : null}
         </div>
         <nav className="project-tools" aria-label="项目工具">
-          <Link to="/projects/$projectId" params={{ projectId: currentProject.id }}><Sparkles size={15} />Tasks</Link>
-          <Link to="/projects/$projectId" params={{ projectId: currentProject.id }} search={{ inspector: 'files' }}><Folder size={15} />Files</Link>
+          <Link to="/projects/$projectId" params={{ projectId: currentProject.id }} search={{ inspector: 'assets' }}><Folder size={15} />Files</Link>
           <Link to="/projects/$projectId" params={{ projectId: currentProject.id }} search={{ inspector: 'changes' }}><GitCompareArrows size={15} />Changes</Link>
           <Link to="/projects/$projectId/tree" params={{ projectId: currentProject.id }} search={{ thread: activeThreadId }}><Network size={15} />Session Tree</Link>
         </nav>
@@ -113,7 +112,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
         <Link className="new-thread-button" to="/"><Plus size={15} /><span>新建任务</span></Link>
         <div className="sidebar-label"><span>最近项目</span><em>{projects.data?.items.length ?? 0}</em></div>
         <div className="workspace-project-list">{projects.data?.items.map((project) => <Link key={project.id} to="/projects/$projectId" params={{ projectId: project.id }}><span className={`project-scene ${project.scene}`}><Folder size={14} /></span><span><strong>{project.name}</strong><small>{project.description || '个人私有项目'}</small></span></Link>)}</div>
-        <nav className="project-tools global-tools"><Link to="/settings/providers"><SlidersHorizontal size={15} />Providers</Link><Link to="/import-export"><FileUp size={15} />Import / Export</Link><Link to="/diagnostics"><Wrench size={15} />Diagnostics</Link></nav>
+        <nav className="project-tools global-tools"><Link to="/import-export"><FileUp size={15} />Import / Export</Link></nav>
       </>}
       <footer className="project-sidebar-footer"><span className="account-avatar">{bootstrap.user.display_name.slice(0, 1).toUpperCase()}</span><span><strong>{bootstrap.user.display_name}</strong><small>{bootstrap.model_configured ? '模型服务已配置' : '需要配置模型服务'}</small></span><button type="button" title="退出登录" onClick={() => logout.mutate()}><LogOut size={15} /></button></footer>
     </aside>
