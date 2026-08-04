@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.2
-> 更新日期：2026-07-30
+> 版本：V1.3
+> 更新日期：2026-08-04
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -45,7 +45,7 @@ V1 唯一交付目标：
 | B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与 Inspector 组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
 | B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、版本注入、CI/OpenAPI/迁移门禁已落地 | 等待 Ubuntu/Windows 原生 CI 关闭 tag 门禁 |
 | B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
-| B4 | `PASS` | MCP Schema/配置/健康版本、Run Tool Snapshot、Skill 约束、strict 阻塞和 `external_untrusted` Envelope 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
+| B4 | `PARTIAL` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 产品级 OAuth Authorization Code/回调/刷新仍未关闭；确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
 | B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
 
@@ -126,6 +126,9 @@ pnpm verify
 - Skill Manifest 支持 `required-capabilities`、`preferred-tools`、`fallback-policy`。
 - `strict` 在首选不可用时阻塞；`same-capability` 只能从 Run 冻结的已审核、启用、健康工具中向模型暴露候选。确定性候选排名和参数转换进入 V1.1。
 - 对话式安装必须完成解析、隔离校验、权限差异、人工审核、启用、调用和 Receipt，模型不能静默安装。
+- 名称发现走官方 MCP Registry；安装前固定实际版本并展示来源，歧义候选必须人工选择。`server.json`、URL、固定版 npm/PyPI 包和本地命令进入同一草稿用例。
+- 多 Secret 只写入 SecretStore 的不透明加密集合，运行时按定义注入声明的环境变量或受控 Header；不得进入消息、事件、日志、数据库字段、导出和截图。
+- 内置 Skill Creator 只负责通过对话生成单 Skill ZIP 草稿，不直接写资源记录、不绕过 ZIP 校验和审批。
 - 内建搜索进入统一 ToolSpec，作为无需外部凭据的可用能力；Tavily MCP 是可选首选，不是核心依赖。
 - MCP、搜索、网页和仓库指令统一包裹为 `external_untrusted` Envelope。
 
@@ -133,6 +136,7 @@ pnpm verify
 
 - STDIO 与 Streamable HTTP 合同通过。
 - Schema 变化触发重审；安装幂等、同版本冲突、鉴权失败和限流可见。
+- Bearer、多 Secret 和缺凭据恢复通过；`auth.type=oauth` 在完整 Authorization Code、回调取消和刷新令牌持久化完成前只代表用户提供的 access token，不能计为产品级 OAuth 通过。
 - 外部内容不能改变权限、系统提示或安全策略。
 
 ### B5：Codex 式用户闭环

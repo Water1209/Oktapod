@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, ChevronUp, Circle, LoaderCircle, PauseCircle, RotateCw, ShieldAlert, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronUp, Circle, LoaderCircle, MoreHorizontal, PauseCircle, RotateCw, ShieldAlert } from 'lucide-react'
 import { api, type Task } from '../../shared/api/client'
 import { taskFailureInfo, taskStatusView } from './task-progress-model'
 import { useRunEvents } from '../runs/use-run-events'
@@ -152,17 +152,14 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
               <div className="task-capsule-queue-head">排队中 · {pendingQueue.length}</div>
               {pendingQueue.map((item) => (
                 <div key={item.id} className="task-capsule-queue-row">
-                  <span className="task-capsule-queue-content" title={item.content}><small>{item.kind === 'steering' ? 'Steering' : 'Follow-up'} · {new Date(item.created_at).toLocaleTimeString('zh-CN')}</small>{item.content}</span>
-                  <button
-                    type="button"
-                    className="task-capsule-steer"
-                    disabled={steer.isPending}
-                    onClick={(event) => { event.stopPropagation(); steer.mutate(item.id) }}
-                    title="引导：当前步骤完成后立即重规划"
-                  >
-                    引导
-                  </button>
-                  <button className="task-capsule-withdraw" type="button" disabled={withdraw.isPending} onClick={(event) => { event.stopPropagation(); withdraw.mutate(item.id) }} title="撤回排队项" aria-label="撤回排队项"><X size={12} /></button>
+                  <span className="task-capsule-queue-content" title={item.content}><small>{item.kind === 'steering' ? '引导当前任务' : '下一轮'} · {new Date(item.created_at).toLocaleTimeString('zh-CN')}</small>{item.content}</span>
+                  <details className="task-capsule-queue-menu" onClick={(event) => event.stopPropagation()}>
+                    <summary aria-label="排队项操作" title="排队项操作"><MoreHorizontal size={14} /></summary>
+                    <div role="menu">
+                      {item.kind !== 'steering' ? <button type="button" role="menuitem" disabled={steer.isPending} onClick={() => steer.mutate(item.id)}>改为引导当前任务</button> : null}
+                      <button className="danger" type="button" role="menuitem" disabled={withdraw.isPending} onClick={() => withdraw.mutate(item.id)} aria-label="撤回排队项">撤回</button>
+                    </div>
+                  </details>
                 </div>
               ))}
             </div>

@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import * as Select from '@radix-ui/react-select'
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, File as FileIcon, FileBox, Folder, FolderPlus, HardDrive, Infinity as InfinityIcon, LockKeyhole, MessageSquare, MoreHorizontal, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, Search, Settings2, SlidersHorizontal, Sparkles, Square, Upload, Users, Workflow, XCircle } from 'lucide-react'
-import { api, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type Scene, type TaskMode, type TeamDefinition, type Visibility } from '../../shared/api/client'
+import { api, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type ResourceInstallDraft, type Scene, type TaskMode, type TeamDefinition, type Visibility } from '../../shared/api/client'
 import { AssistantContent } from '../../shared/assistant-content'
 import { useBootstrap } from '../../shared/bootstrap-context'
 import { TASK_RUNTIME_DEFAULTS } from '../../shared/runtime-defaults'
@@ -17,7 +17,6 @@ import { useRunEvents } from '../runs/use-run-events'
 import { isCompactCommand, parseSkillInvocation, skillCommandName } from './skill-command'
 import { InspectorChanges, InspectorContext, InspectorEvents, InspectorRun, InspectorSecurity, InspectorUsage } from './project-inspector'
 import { ResourceInstallDialog } from '../resources/resources-page'
-import { mcpPresetFromInput, type ResourceInstallPreset } from '../resources/mcp-presets'
 
 const statusLabels: Record<string, string> = {
   queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '执行受阻', succeeded: '已完成', failed: '失败', canceled: '已取消',
@@ -64,6 +63,10 @@ function ProjectWorkspace() {
   const messages = useQuery({ queryKey: ['conversation-messages', activeConversationId], queryFn: () => api.conversationMessages(activeConversationId ?? ''), enabled: Boolean(activeConversationId), refetchInterval: 1_500 })
   const usage = useQuery({ queryKey: ['project-usage', projectId], queryFn: () => api.projectUsage(projectId), enabled: managementOpen && managementTab === 'project_usage', staleTime: 15_000 })
   const [composerDraft, setComposerDraft] = useState<ComposerDraft | undefined>()
+  const [resourceInstallDraft, setResourceInstallDraft] = useState<ResourceInstallDraft>()
+  const [resourceInstallConversationId, setResourceInstallConversationId] = useState('')
+  const [resourceInstallNotice, setResourceInstallNotice] = useState('')
+  const [resourceInstallError, setResourceInstallError] = useState('')
   const [pendingMessages, setPendingMessages] = useState<Awaited<ReturnType<typeof api.conversationMessages>>['items']>([])
   const [streamingAssistant, setStreamingAssistant] = useState('')
   const [streamPhase, setStreamPhase] = useState<'routing' | 'responding' | 'task' | undefined>()
@@ -172,9 +175,25 @@ function ProjectWorkspace() {
 
         <div className="composer-stack">
           <TaskStatusStrip activeTask={allConversationTasks[0]} conversationId={activeConversationId} />
-          <TaskComposer key={`composer-${activeConversationKey}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} agents={agents.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} providers={providers.data?.items ?? []} models={models.data?.items ?? []} projectDefaultModel={project.data.default_model} onComposerDraft={handleComposerDraft} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
+          {resourceInstallNotice ? <div className="composer-install-status" role="status"><Check size={14} />{resourceInstallNotice}</div> : null}
+          {resourceInstallError ? <p className="form-error composer-resource-error" role="alert">{resourceInstallError}</p> : null}
+          <TaskComposer key={`composer-${activeConversationKey}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} agents={agents.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} providers={providers.data?.items ?? []} models={models.data?.items ?? []} projectDefaultModel={project.data.default_model} onComposerDraft={handleComposerDraft} onResourceInstallDraft={(draft, conversationId) => { setResourceInstallDraft(draft); setResourceInstallConversationId(conversationId); setResourceInstallError(''); setResourceInstallNotice('') }} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
         </div>
       </main>
+
+      {resourceInstallDraft ? <ResourceInstallDialog projectId={projectId} initialDraft={resourceInstallDraft} onClose={() => { setResourceInstallDraft(undefined); if (resourceInstallConversationId) selectConversation(resourceInstallConversationId) }} onInstalled={async (capability) => {
+        try {
+          if (capability.status === 'quarantined') await api.reviewCapability(capability.id, 'approved', '用户通过对话明确请求安装并在安全窗口核对 MCP 来源、权限与凭据配置')
+          const health = await api.connectMCP(capability.id)
+          await queryClient.invalidateQueries({ queryKey: ['capabilities', projectId] })
+          setResourceInstallNotice(`${capability.name} 已安全安装并连接，发现 ${health.tool_count} 个 MCP 工具。`)
+          setResourceInstallDraft(undefined)
+          if (resourceInstallConversationId) selectConversation(resourceInstallConversationId)
+        } catch (error) {
+          setResourceInstallError(error instanceof Error ? error.message : 'MCP 安装后连接失败。')
+          throw error
+        }
+      }} /> : null}
 
       {managementOpen ? <aside className="project-management-panel">
         <header><div><strong>检查器</strong><span>{inspectedTask?.title || project.data.name}</span></div><button className="icon-control" type="button" aria-label="关闭检查器" title="关闭检查器" onClick={() => { setManagementOpen(false); updateInspectorLocation() }}><PanelRightClose size={17} /></button></header>
@@ -649,22 +668,6 @@ function parseComposerDraft(text: string): ComposerDraft | null {
   return null
 }
 
-function parseMCPInstallIntent(text: string) {
-  const normalized = text.trim()
-  if (!/mcp/i.test(normalized) || !/(安装|配置|接入|添加|install|configure|add)/i.test(normalized)) return null
-  const credential = normalized.match(/\b(?:tvly-|ghp_|github_pat_|ntn_|secret_)[a-z0-9_-]{16,}\b/i)?.[0] ?? ''
-  const safeContent = credential ? normalized.replace(credential, '[凭据已通过 SecretStore 安全配置]') : normalized
-  const url = normalized.match(/https?:\/\/[^\s，,]+/i)?.[0]
-  const command = normalized.match(/(?:npx|uvx|node|python(?:3)?)(?:\s+[^，,；;]+)+/i)?.[0]
-  const named = normalized.replace(credential, '').match(/(?:安装|配置|接入|添加|install|configure|add)\s*([^，,；;]+?)\s*MCP/i)?.[1]?.trim()
-  const source = url || command || named || 'MCP'
-  try {
-    return { preset: { ...mcpPresetFromInput(source), credential }, safeContent }
-  } catch {
-    return null
-  }
-}
-
 function skillDescription(skill: Capability) {
   try {
     const manifest = JSON.parse(skill.manifest_json) as { description?: unknown }
@@ -674,7 +677,7 @@ function skillDescription(skill: Capability) {
   }
 }
 
-function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, models, projectDefaultModel, initialValue, onComposerDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; models: Array<{ id: string; tool_calling?: boolean }>; projectDefaultModel: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
+function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, models, projectDefaultModel, initialValue, onComposerDraft, onResourceInstallDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; models: Array<{ id: string; tool_calling?: boolean }>; projectDefaultModel: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onResourceInstallDraft: (draft: ResourceInstallDraft, conversationId: string) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task' | 'resource') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
   const bootstrap = useBootstrap()
   const storageKey = `oktapod.composer.${bootstrap.user.id}.${projectId}.${conversationId ?? 'new'}`
   const permissionStorageKey = `oktapod.permission-mode.${bootstrap.user.id}.${projectId}`
@@ -700,7 +703,6 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const [thinking, setThinking] = useState<'auto' | 'off' | 'low' | 'medium' | 'high'>('auto')
   const [skillCommandError, setSkillCommandError] = useState('')
   const [capabilityInstallMessage, setCapabilityInstallMessage] = useState('')
-  const [mcpInstallIntent, setMcpInstallIntent] = useState<{ preset: ResourceInstallPreset; safeContent: string }>()
   const [selectedSkillIndex, setSelectedSkillIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const capabilityAttachmentRef = useRef<HTMLInputElement>(null)
@@ -709,7 +711,8 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const submit = useMutation({
     mutationFn: ({ content, invocation, queueKind, forcedMode }: { content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering'; forcedMode?: TaskMode }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: forcedMode ?? (isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode), visibility: 'private', permission_mode: permissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: selectedModel || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs }, { onRoute, onDelta }),
     onSuccess: async (result) => {
-      onConversationSelected(result.conversation.id)
+      if (result.resource_install_draft) onResourceInstallDraft(result.resource_install_draft, result.conversation.id)
+      else onConversationSelected(result.conversation.id)
       await queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
       await queryClient.invalidateQueries({ queryKey: ['project-activity', projectId] })
       await queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
@@ -776,15 +779,6 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const send = (queueKind: 'follow_up' | 'steering' = activeTask ? 'steering' : 'follow_up') => {
     if (!goal.trim() || submit.isPending) return
     const content = goal.trim()
-    const mcpIntent = parseMCPInstallIntent(content)
-    if (mcpIntent) {
-      setGoal('')
-      window.localStorage.removeItem(storageKey)
-      if (treePrefillKey) window.sessionStorage.removeItem(treePrefillKey)
-      setSkillCommandError('')
-      setMcpInstallIntent(mcpIntent)
-      return
-    }
     const draft = parseComposerDraft(content)
     if (draft?.kind === 'agent') { onComposerDraft(draft); setGoal(''); return }
     const invocation = parseSkillInvocation(content, skills)
@@ -856,11 +850,12 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         if (event.key === 'Escape' && activeTask && !abort.isPending) { event.preventDefault(); abort.mutate(); return }
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(event.altKey ? 'follow_up' : activeTask ? 'steering' : 'follow_up') }
       }} placeholder="发消息，或描述要完成的任务" rows={2} />
+      {activeTask ? <p className="composer-delivery-hint">Enter 引导当前任务 · Alt+Enter 排到下一轮 · 也可直接说“暂停、继续或取消当前任务”</p> : null}
       {advancedOpen ? <div className="composer-advanced">
         <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={selectProvider} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' && enabledAgents.length > 0 ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} ariaLabel="执行 Agent" /> : null}</div>
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "完全访问"]]} ariaLabel="权限模式" /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、Provider 与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask ? <button className="composer-next-turn" disabled={submit.isPending || !goal.trim()} type="button" aria-label="加入 Next Turn" title="加入 Next Turn" onClick={() => send('follow_up')}>Next Turn</button> : null}{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label={activeTask ? '发送 Steering' : '发送'} title={activeTask ? '发送 Steering' : '发送'}><ArrowUp size={18} /></button>}</div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "完全访问"]]} ariaLabel="权限模式" /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、Provider 与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
       {providerModels.error || (model && !selectedModel) ? <p className="composer-model-notice" role="status">{providerModels.error ? '模型目录暂时不可用，将使用该 Provider 的默认模型。' : '之前选择的模型已失效，已自动使用默认模型。'}</p> : null}
     </form>
     <Dialog.Root open={fullAccessOpen} onOpenChange={setFullAccessOpen}>
@@ -873,29 +868,6 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
-    {mcpInstallIntent ? <ResourceInstallDialog
-      projectId={projectId}
-      preset={mcpInstallIntent.preset}
-      onClose={() => setMcpInstallIntent(undefined)}
-      onInstalled={async (capability) => {
-        try {
-          if (capability.status === 'quarantined') await api.reviewCapability(capability.id, 'approved', '用户通过对话明确请求安装并在安全窗口核对 MCP 来源、权限与凭据配置')
-          const health = await api.connectMCP(capability.id)
-          await queryClient.invalidateQueries({ queryKey: ['capabilities', projectId] })
-          setCapabilityInstallMessage(`${capability.name} 已安全安装并连接，发现 ${health.tool_count} 个 MCP 工具；正在创建验证任务。`)
-          const remaining = mcpInstallIntent.safeContent.replace(/(?:请)?(?:安装|配置|接入|添加)\s*[^，,；;]*?MCP[，,\s]*(?:然后|并且|并)?/i, '').trim()
-          setMcpInstallIntent(undefined)
-          if (remaining) {
-            const content = `${capability.name} MCP 已由系统安全安装并连接。现在${remaining}`
-            onOptimisticMessage(content)
-            submit.mutate({ content, invocation: null, queueKind: activeTask ? 'steering' : 'follow_up', forcedMode: 'single_agent' })
-          }
-        } catch (error) {
-          setSkillCommandError(error instanceof Error ? error.message : 'MCP 安装后连接失败。')
-          throw error
-        }
-      }}
-    /> : null}
   </div>
 }
 

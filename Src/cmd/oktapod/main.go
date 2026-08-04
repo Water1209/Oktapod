@@ -20,6 +20,7 @@ import (
 	postgresdb "github.com/oktapod/oktapod/Src/internal/adapters/db/postgres"
 	"github.com/oktapod/oktapod/Src/internal/adapters/db/sqlite"
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
+	"github.com/oktapod/oktapod/Src/internal/adapters/mcpregistry"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/databaseconfigured"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/native"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
@@ -141,6 +142,7 @@ func run() error {
 		}
 		return value
 	})
+	service.WithMCPRegistry(mcpregistry.New(nil))
 	trustedCapabilityKeys, keyErr := bootstrap.CapabilityTrustedKeys(config.CapabilityTrustedKeysJSON)
 	if keyErr != nil {
 		return keyErr

@@ -582,8 +582,9 @@ type ConversationFileContext struct {
 }
 
 type ProjectTurnResult struct {
-	Queued    bool
-	QueueItem *ConversationQueueItem
+	Queued               bool
+	QueueItem            *ConversationQueueItem
+	ResourceInstallDraft *ResourceInstallDraft
 
 	Route        string
 	Conversation Conversation
@@ -1098,6 +1099,7 @@ type CreateCapabilityInput struct {
 	BundleData     []byte
 	BundleHash     string
 	Credential     string
+	Credentials    map[string]string
 	CredentialRef  string
 }
 

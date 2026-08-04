@@ -308,14 +308,14 @@ func TestProjectTurnAutoPersistsTaskWhenClassifierIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestProjectTurnRejectsContextFreeRecoveryIntent(t *testing.T) {
+func TestProjectTurnRejectsContextFreeExplicitRecoveryIntent(t *testing.T) {
 	service, _, closeStore := newProjectTurnService(t, &projectTurnModelStub{})
 	defer closeStore()
 	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Empty thread", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{Content: "继续", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "", "empty-recovery")
+	_, err = service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{Content: "继续当前任务", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "", "empty-recovery")
 	if err == nil || !strings.Contains(err.Error(), "没有可继续") {
 		t.Fatalf("context-free recovery error=%v", err)
 	}
@@ -363,7 +363,7 @@ func TestProjectTurnRecoveryIntentRetriesLatestFailedTaskInPlace(t *testing.T) {
 	if result.Task.ID != task.ID || result.Task.RunID != task.RunID || result.Task.Status != core.StatusQueued {
 		t.Fatalf("recovery created or changed task identity: %#v", result.Task)
 	}
-	if got := strings.Join(deltas, ""); got != "正在继续当前任务；原执行计划、Skill 和已完成进度保持不变。" {
+	if got := strings.Join(deltas, ""); got != "正在从安全检查点重试当前任务；已确认成功的步骤不会重新执行。" {
 		t.Fatalf("recovery acknowledgement=%q", got)
 	}
 	if len(result.Messages) != 2 {
@@ -396,6 +396,123 @@ func TestProjectTurnRecoveryIntentRetriesLatestFailedTaskInPlace(t *testing.T) {
 	messages, err := service.ListMessages(t.Context(), task.ConversationID, 0)
 	if err != nil || len(messages) != 3 {
 		t.Fatalf("replayed recovery duplicated messages=%#v err=%v", messages, err)
+	}
+}
+
+func TestProjectTurnNaturalLanguagePauseAndResumeBypassModel(t *testing.T) {
+	model := &projectTurnModelStub{}
+	service, _, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Directive workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "实现并验证任务控制", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "directive-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "请暂停当前任务", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "directive-pause", "directive-pause")
+	if err != nil || paused.Task == nil || paused.Task.ID != task.ID || paused.Task.Status != core.StatusPaused || paused.Queued {
+		t.Fatalf("pause result=%#v err=%v", paused, err)
+	}
+	resumed, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "继续当前任务", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "directive-resume", "directive-resume")
+	if err != nil || resumed.Task == nil || resumed.Task.ID != task.ID || resumed.Task.Status != core.StatusQueued || resumed.Queued {
+		t.Fatalf("resume result=%#v err=%v", resumed, err)
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("task controls unexpectedly called model: %#v", model.prompts)
+	}
+}
+
+func TestProjectTurnNaturalLanguageCancelCanClearQueue(t *testing.T) {
+	model := &projectTurnModelStub{}
+	service, databasePath, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Cancel workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "执行主任务", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "cancel-directive-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "完成后生成总结", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, QueueKind: "follow_up"}, "cancel-directive-queue", "cancel-directive-queue")
+	if err != nil || !queued.Queued {
+		t.Fatalf("queue result=%#v err=%v", queued, err)
+	}
+	canceled, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "取消当前任务并清空队列", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "cancel-directive", "cancel-directive")
+	if err != nil || canceled.Task == nil || canceled.Task.Status != core.StatusCanceled || canceled.Queued {
+		t.Fatalf("cancel result=%#v err=%v", canceled, err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var pending int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM conversation_message_queue WHERE conversation_id = ? AND status = 'pending'`, task.ConversationID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("pending queue=%d", pending)
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("cancel unexpectedly called model: %#v", model.prompts)
+	}
+}
+
+func TestProjectTurnContinueCanceledTaskCreatesSuccessorRun(t *testing.T) {
+	model := &projectTurnModelStub{}
+	service, _, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Successor workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "创建页面并完成浏览器验证", Acceptance: "页面可访问", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "successor-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err = service.ControlTask(t.Context(), previous.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "successor-cancel", "successor-cancel")
+	if err != nil || previous.Status != core.StatusCanceled {
+		t.Fatalf("cancel previous=%#v err=%v", previous, err)
+	}
+	continued, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: previous.ConversationID, Content: "恢复当前任务", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "successor-continue", "successor-continue")
+	if err != nil || continued.Task == nil {
+		t.Fatalf("continue result=%#v err=%v", continued, err)
+	}
+	if continued.Task.ID == previous.ID || continued.Task.RunID == previous.RunID || continued.Task.ConversationID != previous.ConversationID || continued.Task.Status != core.StatusQueued {
+		t.Fatalf("successor identity=%#v previous=%#v", continued.Task, previous)
+	}
+	if !strings.Contains(continued.Task.Goal, previous.Goal) || !strings.Contains(continued.Task.Goal, "保留并检查当前工作区修改") {
+		t.Fatalf("successor goal=%q", continued.Task.Goal)
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("continuation unexpectedly called model: %#v", model.prompts)
+	}
+}
+
+func TestProjectTurnNaturalLanguageMCPInstallReturnsReviewDraft(t *testing.T) {
+	model := &projectTurnModelStub{}
+	service, _, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Resource workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{Content: "请安装 https://example.com/mcp MCP", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "resource-turn", "resource-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Route != application.TurnRouteResource || result.ResourceInstallDraft == nil {
+		t.Fatalf("result=%#v", result)
+	}
+	draft := result.ResourceInstallDraft
+	if draft.MCPDefinition == nil || draft.MCPDefinition.Transport.Type != "streamable_http" || draft.Status != "validated" {
+		t.Fatalf("draft=%#v", draft)
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("resource install unexpectedly called model: %#v", model.prompts)
 	}
 }
 

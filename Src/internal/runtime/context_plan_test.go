@@ -62,6 +62,23 @@ func TestSkillContextMatchesChineseTriggersAndListsMetadataOnlyCatalog(t *testin
 	}
 }
 
+func TestBuiltInSkillCreatorLoadsWithoutInstalledCapability(t *testing.T) {
+	context, plan := skillContextForPrompt(`{}`, "请使用内置 Skill Creator 创建一个发布检查 Skill")
+	if !strings.Contains(context, "exactly one `SKILL.md`") || !strings.Contains(context, "Do not install or enable it silently") {
+		t.Fatalf("context=%q", context)
+	}
+	if plan["available"] != 1 || plan["loaded"] != 1 || plan["tool_scope_declared"] != false {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
+func TestBuiltInSkillCreatorDoesNotLoadForOrdinarySkillUse(t *testing.T) {
+	context, plan := skillContextForPrompt(`{}`, "使用发布检查 skill 执行验证")
+	if context != "" || plan["loaded"] != 0 {
+		t.Fatalf("context=%q plan=%#v", context, plan)
+	}
+}
+
 func TestStrictSkillCapabilityConstraintUsesFrozenRunTools(t *testing.T) {
 	snapshot := `{"skill_capabilities":[{"id":"skill-1","name":"release-check","version":"1.0.0","content_hash":"sha256:x","manifest_json":"{\"description\":\"release\",\"instructions\":\"check\",\"required-capabilities\":[\"repository.read\",\"external.ticket.write\"],\"preferred-tools\":[\"grep\"],\"fallback-policy\":\"strict\"}"}]}`
 	_, plan := skillContextForIDs(snapshot, []string{"skill-1"}, "")

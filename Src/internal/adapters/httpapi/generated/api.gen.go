@@ -426,6 +426,41 @@ const (
 	InboxItemKindTaskRecovery      InboxItemKind = "task_recovery"
 )
 
+// Defines values for MCPDefinitionV1AuthType.
+const (
+	Bearer       MCPDefinitionV1AuthType = "bearer"
+	CustomHeader MCPDefinitionV1AuthType = "custom_header"
+	Environment  MCPDefinitionV1AuthType = "environment"
+	None         MCPDefinitionV1AuthType = "none"
+	Oauth        MCPDefinitionV1AuthType = "oauth"
+)
+
+// Defines values for MCPDefinitionV1SchemaVersion.
+const (
+	OktapodMcpv1 MCPDefinitionV1SchemaVersion = "oktapod.mcp/v1"
+)
+
+// Defines values for MCPDefinitionV1SourceType.
+const (
+	MCPDefinitionV1SourceTypeLocal    MCPDefinitionV1SourceType = "local"
+	MCPDefinitionV1SourceTypeManual   MCPDefinitionV1SourceType = "manual"
+	MCPDefinitionV1SourceTypeNpm      MCPDefinitionV1SourceType = "npm"
+	MCPDefinitionV1SourceTypeOfficial MCPDefinitionV1SourceType = "official"
+	MCPDefinitionV1SourceTypePypi     MCPDefinitionV1SourceType = "pypi"
+	MCPDefinitionV1SourceTypeRegistry MCPDefinitionV1SourceType = "registry"
+	MCPDefinitionV1SourceTypeUrl      MCPDefinitionV1SourceType = "url"
+)
+
+// Defines values for MCPDefinitionV1Transport0Type.
+const (
+	MCPDefinitionV1Transport0TypeStdio MCPDefinitionV1Transport0Type = "stdio"
+)
+
+// Defines values for MCPDefinitionV1Transport1Type.
+const (
+	StreamableHttp MCPDefinitionV1Transport1Type = "streamable_http"
+)
+
 // Defines values for MCPHealthHealthState.
 const (
 	MCPHealthHealthStateConnected MCPHealthHealthState = "connected"
@@ -445,8 +480,8 @@ const (
 
 // Defines values for MCPHealthTransport.
 const (
-	Stdio          MCPHealthTransport = "stdio"
-	StreamableHttp MCPHealthTransport = "streamable_http"
+	MCPHealthTransportStdio          MCPHealthTransport = "stdio"
+	MCPHealthTransportStreamableHttp MCPHealthTransport = "streamable_http"
 )
 
 // Defines values for MemoryStatus.
@@ -626,8 +661,9 @@ const (
 
 // Defines values for ProjectTurnResponseRoute.
 const (
-	ProjectTurnResponseRouteChat ProjectTurnResponseRoute = "chat"
-	ProjectTurnResponseRouteTask ProjectTurnResponseRoute = "task"
+	ProjectTurnResponseRouteChat     ProjectTurnResponseRoute = "chat"
+	ProjectTurnResponseRouteResource ProjectTurnResponseRoute = "resource"
+	ProjectTurnResponseRouteTask     ProjectTurnResponseRoute = "task"
 )
 
 // Defines values for ProjectUsageCostStatus.
@@ -671,6 +707,22 @@ const (
 	ResourceAvailabilityDegraded    ResourceAvailability = "degraded"
 	ResourceAvailabilityDisabled    ResourceAvailability = "disabled"
 	ResourceAvailabilityQuarantined ResourceAvailability = "quarantined"
+)
+
+// Defines values for ResourceInstallDraftKind.
+const (
+	Agent ResourceInstallDraftKind = "agent"
+	Mcp   ResourceInstallDraftKind = "mcp"
+	Skill ResourceInstallDraftKind = "skill"
+)
+
+// Defines values for ResourceInstallDraftStatus.
+const (
+	ResourceInstallDraftStatusDraft       ResourceInstallDraftStatus = "draft"
+	ResourceInstallDraftStatusInstalled   ResourceInstallDraftStatus = "installed"
+	ResourceInstallDraftStatusNeedsSecret ResourceInstallDraftStatus = "needs_secret"
+	ResourceInstallDraftStatusRejected    ResourceInstallDraftStatus = "rejected"
+	ResourceInstallDraftStatusValidated   ResourceInstallDraftStatus = "validated"
 )
 
 // Defines values for ReviewCapabilityRequestDecision.
@@ -879,10 +931,10 @@ const (
 
 // Defines values for ListConversationQueueParamsStatus.
 const (
-	Canceled ListConversationQueueParamsStatus = "canceled"
-	Claimed  ListConversationQueueParamsStatus = "claimed"
-	Consumed ListConversationQueueParamsStatus = "consumed"
-	Pending  ListConversationQueueParamsStatus = "pending"
+	ListConversationQueueParamsStatusCanceled ListConversationQueueParamsStatus = "canceled"
+	ListConversationQueueParamsStatusClaimed  ListConversationQueueParamsStatus = "claimed"
+	ListConversationQueueParamsStatusConsumed ListConversationQueueParamsStatus = "consumed"
+	ListConversationQueueParamsStatusPending  ListConversationQueueParamsStatus = "pending"
 )
 
 // Defines values for ListHumanActionsParamsStatus.
@@ -1353,9 +1405,13 @@ type CreateCapabilityRequest struct {
 	// BundleBase64 Optional ZIP capability package encoded as base64. The server safely inspects it without executing bundled code.
 	BundleBase64 *string `json:"bundle_base64,omitempty"`
 
-	// Credential Optional MCP credential. Stored only in SecretStore and never persisted in manifest, database, audit detail, export, or API responses.
-	Credential *string                     `json:"credential,omitempty"`
-	Kind       CreateCapabilityRequestKind `json:"kind"`
+	// Credential Legacy single MCP credential. Use credentials for definitions with named Secret bindings.
+	// Deprecated:
+	Credential *string `json:"credential,omitempty"`
+
+	// Credentials Named MCP Secret values keyed by SecretBinding.name. The encrypted set is stored only in SecretStore and never persisted in manifests, database fields, audit detail, exports, or responses.
+	Credentials *map[string]string          `json:"credentials,omitempty"`
+	Kind        CreateCapabilityRequestKind `json:"kind"`
 
 	// ManifestJson JSON manifest; Skill imports may alternatively provide SKILL.md with YAML frontmatter and a Markdown instruction body, which the server normalizes to JSON before persistence.
 	ManifestJson string `json:"manifest_json"`
@@ -1684,6 +1740,61 @@ type LabelSessionEntryRequest struct {
 	Label               string `json:"label"`
 }
 
+// MCPDefinitionV1 defines model for MCPDefinitionV1.
+type MCPDefinitionV1 struct {
+	// Auth Authentication mode. In V1, oauth denotes a user-supplied OAuth access token stored in SecretStore; interactive authorization-code callback and refresh-token lifecycle are not exposed by this API.
+	Auth struct {
+		Header *string                 `json:"header,omitempty"`
+		Type   MCPDefinitionV1AuthType `json:"type"`
+	} `json:"auth"`
+	Description    *string                      `json:"description,omitempty"`
+	Headers        *map[string]string           `json:"headers,omitempty"`
+	Permissions    *[]string                    `json:"permissions,omitempty"`
+	SchemaVersion  MCPDefinitionV1SchemaVersion `json:"schema_version"`
+	SecretBindings *[]SecretBinding             `json:"secret_bindings,omitempty"`
+	Source         struct {
+		Publisher *string                   `json:"publisher,omitempty"`
+		Reference *string                   `json:"reference,omitempty"`
+		Type      MCPDefinitionV1SourceType `json:"type"`
+		Version   *string                   `json:"version,omitempty"`
+	} `json:"source"`
+	Transport MCPDefinitionV1_Transport `json:"transport"`
+}
+
+// MCPDefinitionV1AuthType defines model for MCPDefinitionV1.Auth.Type.
+type MCPDefinitionV1AuthType string
+
+// MCPDefinitionV1SchemaVersion defines model for MCPDefinitionV1.SchemaVersion.
+type MCPDefinitionV1SchemaVersion string
+
+// MCPDefinitionV1SourceType defines model for MCPDefinitionV1.Source.Type.
+type MCPDefinitionV1SourceType string
+
+// MCPDefinitionV1Transport0 defines model for .
+type MCPDefinitionV1Transport0 struct {
+	Args    *[]string                     `json:"args,omitempty"`
+	AuthEnv *string                       `json:"auth_env,omitempty"`
+	Command string                        `json:"command"`
+	Type    MCPDefinitionV1Transport0Type `json:"type"`
+}
+
+// MCPDefinitionV1Transport0Type defines model for MCPDefinitionV1.Transport.0.Type.
+type MCPDefinitionV1Transport0Type string
+
+// MCPDefinitionV1Transport1 defines model for .
+type MCPDefinitionV1Transport1 struct {
+	Type MCPDefinitionV1Transport1Type `json:"type"`
+	Url  string                        `json:"url"`
+}
+
+// MCPDefinitionV1Transport1Type defines model for MCPDefinitionV1.Transport.1.Type.
+type MCPDefinitionV1Transport1Type string
+
+// MCPDefinitionV1_Transport defines model for MCPDefinitionV1.Transport.
+type MCPDefinitionV1_Transport struct {
+	union json.RawMessage
+}
+
 // MCPHealth defines model for MCPHealth.
 type MCPHealth struct {
 	CapabilityId  openapi_types.UUID   `json:"capability_id"`
@@ -1710,6 +1821,16 @@ type MCPHealthStatus string
 
 // MCPHealthTransport defines model for MCPHealth.Transport.
 type MCPHealthTransport string
+
+// MCPInstallCandidate defines model for MCPInstallCandidate.
+type MCPInstallCandidate struct {
+	Description   *string         `json:"description,omitempty"`
+	McpDefinition MCPDefinitionV1 `json:"mcp_definition"`
+	Name          string          `json:"name"`
+	RepositoryUrl *string         `json:"repository_url,omitempty"`
+	Title         *string         `json:"title,omitempty"`
+	Version       string          `json:"version"`
+}
 
 // MaintenanceDiagnostics defines model for MaintenanceDiagnostics.
 type MaintenanceDiagnostics struct {
@@ -1997,9 +2118,10 @@ type ProjectTurnResponse struct {
 	QueueItem    *ConversationQueueItem `json:"queue_item,omitempty"`
 
 	// Queued whether the turn was queued because an active task exists
-	Queued *bool                    `json:"queued,omitempty"`
-	Route  ProjectTurnResponseRoute `json:"route"`
-	Task   *Task                    `json:"task,omitempty"`
+	Queued               *bool                    `json:"queued,omitempty"`
+	ResourceInstallDraft *ResourceInstallDraft    `json:"resource_install_draft,omitempty"`
+	Route                ProjectTurnResponseRoute `json:"route"`
+	Task                 *Task                    `json:"task,omitempty"`
 }
 
 // ProjectTurnResponseRoute defines model for ProjectTurnResponse.Route.
@@ -2101,6 +2223,28 @@ type ResolveSideEffectRequestDecision string
 
 // ResourceAvailability Stable user-facing availability. MCP is available only after a successful health check.
 type ResourceAvailability string
+
+// ResourceInstallDraft defines model for ResourceInstallDraft.
+type ResourceInstallDraft struct {
+	Candidates      *[]MCPInstallCandidate     `json:"candidates,omitempty"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	Id              openapi_types.UUID         `json:"id"`
+	Kind            ResourceInstallDraftKind   `json:"kind"`
+	McpDefinition   *MCPDefinitionV1           `json:"mcp_definition,omitempty"`
+	RequiredSecrets []SecretBinding            `json:"required_secrets"`
+	ResolvedName    *string                    `json:"resolved_name,omitempty"`
+	ResolvedVersion *string                    `json:"resolved_version,omitempty"`
+	SourceInput     string                     `json:"source_input"`
+	Status          ResourceInstallDraftStatus `json:"status"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
+	Warnings        []string                   `json:"warnings"`
+}
+
+// ResourceInstallDraftKind defines model for ResourceInstallDraft.Kind.
+type ResourceInstallDraftKind string
+
+// ResourceInstallDraftStatus defines model for ResourceInstallDraft.Status.
+type ResourceInstallDraftStatus string
 
 // ReviewCapabilityRequest defines model for ReviewCapabilityRequest.
 type ReviewCapabilityRequest struct {
@@ -2272,6 +2416,15 @@ type ScheduleStatus string
 
 // ScheduleVisibility defines model for Schedule.Visibility.
 type ScheduleVisibility string
+
+// SecretBinding defines model for SecretBinding.
+type SecretBinding struct {
+	Name     string `json:"name"`
+	Required bool   `json:"required"`
+
+	// Target Destination only. Secret values are written through SecretStore and never appear in this object.
+	Target string `json:"target"`
+}
 
 // SessionEntry defines model for SessionEntry.
 type SessionEntry struct {
@@ -2666,6 +2819,12 @@ type CreatePlanItemParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// ResolveResourceInstallDraftJSONBody defines parameters for ResolveResourceInstallDraft.
+type ResolveResourceInstallDraftJSONBody struct {
+	// SourceInput Natural-language MCP name, Registry identifier, server.json, URL, fixed package, or local command. Secret values are rejected.
+	SourceInput string `json:"source_input"`
+}
+
 // CreateScheduleParams defines parameters for CreateSchedule.
 type CreateScheduleParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -2851,6 +3010,9 @@ type CreateMemoryJSONRequestBody = CreateMemoryRequest
 // CreatePlanItemJSONRequestBody defines body for CreatePlanItem for application/json ContentType.
 type CreatePlanItemJSONRequestBody = CreatePlanItemRequest
 
+// ResolveResourceInstallDraftJSONRequestBody defines body for ResolveResourceInstallDraft for application/json ContentType.
+type ResolveResourceInstallDraftJSONRequestBody ResolveResourceInstallDraftJSONBody
+
 // CreateScheduleJSONRequestBody defines body for CreateSchedule for application/json ContentType.
 type CreateScheduleJSONRequestBody = CreateScheduleRequest
 
@@ -2892,6 +3054,68 @@ type ControlTaskJSONRequestBody = ControlTaskRequest
 
 // SetTeamDefinitionStatusJSONRequestBody defines body for SetTeamDefinitionStatus for application/json ContentType.
 type SetTeamDefinitionStatusJSONRequestBody SetTeamDefinitionStatusJSONBody
+
+// AsMCPDefinitionV1Transport0 returns the union data inside the MCPDefinitionV1_Transport as a MCPDefinitionV1Transport0
+func (t MCPDefinitionV1_Transport) AsMCPDefinitionV1Transport0() (MCPDefinitionV1Transport0, error) {
+	var body MCPDefinitionV1Transport0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromMCPDefinitionV1Transport0 overwrites any union data inside the MCPDefinitionV1_Transport as the provided MCPDefinitionV1Transport0
+func (t *MCPDefinitionV1_Transport) FromMCPDefinitionV1Transport0(v MCPDefinitionV1Transport0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeMCPDefinitionV1Transport0 performs a merge with any union data inside the MCPDefinitionV1_Transport, using the provided MCPDefinitionV1Transport0
+func (t *MCPDefinitionV1_Transport) MergeMCPDefinitionV1Transport0(v MCPDefinitionV1Transport0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsMCPDefinitionV1Transport1 returns the union data inside the MCPDefinitionV1_Transport as a MCPDefinitionV1Transport1
+func (t MCPDefinitionV1_Transport) AsMCPDefinitionV1Transport1() (MCPDefinitionV1Transport1, error) {
+	var body MCPDefinitionV1Transport1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromMCPDefinitionV1Transport1 overwrites any union data inside the MCPDefinitionV1_Transport as the provided MCPDefinitionV1Transport1
+func (t *MCPDefinitionV1_Transport) FromMCPDefinitionV1Transport1(v MCPDefinitionV1Transport1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeMCPDefinitionV1Transport1 performs a merge with any union data inside the MCPDefinitionV1_Transport, using the provided MCPDefinitionV1Transport1
+func (t *MCPDefinitionV1_Transport) MergeMCPDefinitionV1Transport1(v MCPDefinitionV1Transport1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t MCPDefinitionV1_Transport) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *MCPDefinitionV1_Transport) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -3096,6 +3320,9 @@ type ServerInterface interface {
 
 	// (POST /projects/{project_id}/plan-items)
 	CreatePlanItem(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CreatePlanItemParams)
+
+	// (POST /projects/{project_id}/resource-install-drafts:resolve)
+	ResolveResourceInstallDraft(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 
 	// (GET /projects/{project_id}/schedules)
 	ListProjectSchedules(w http.ResponseWriter, r *http.Request, projectId ProjectId)
@@ -3538,6 +3765,11 @@ func (_ Unimplemented) ListProjectPlanItems(w http.ResponseWriter, r *http.Reque
 
 // (POST /projects/{project_id}/plan-items)
 func (_ Unimplemented) CreatePlanItem(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CreatePlanItemParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /projects/{project_id}/resource-install-drafts:resolve)
+func (_ Unimplemented) ResolveResourceInstallDraft(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6043,6 +6275,31 @@ func (siw *ServerInterfaceWrapper) CreatePlanItem(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ResolveResourceInstallDraft operation middleware
+func (siw *ServerInterfaceWrapper) ResolveResourceInstallDraft(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveResourceInstallDraft(w, r, projectId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListProjectSchedules operation middleware
 func (siw *ServerInterfaceWrapper) ListProjectSchedules(w http.ResponseWriter, r *http.Request) {
 
@@ -7458,6 +7715,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/projects/{project_id}/plan-items", wrapper.CreatePlanItem)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/projects/{project_id}/resource-install-drafts:resolve", wrapper.ResolveResourceInstallDraft)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/projects/{project_id}/schedules", wrapper.ListProjectSchedules)
@@ -9618,6 +9878,36 @@ func (response CreatePlanItemdefaultApplicationProblemPlusJSONResponse) VisitCre
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type ResolveResourceInstallDraftRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Body      *ResolveResourceInstallDraftJSONRequestBody
+}
+
+type ResolveResourceInstallDraftResponseObject interface {
+	VisitResolveResourceInstallDraftResponse(w http.ResponseWriter) error
+}
+
+type ResolveResourceInstallDraft200JSONResponse ResourceInstallDraft
+
+func (response ResolveResourceInstallDraft200JSONResponse) VisitResolveResourceInstallDraftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ResolveResourceInstallDraftdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ResolveResourceInstallDraftdefaultApplicationProblemPlusJSONResponse) VisitResolveResourceInstallDraftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type ListProjectSchedulesRequestObject struct {
 	ProjectId ProjectId `json:"project_id"`
 }
@@ -10798,6 +11088,9 @@ type StrictServerInterface interface {
 
 	// (POST /projects/{project_id}/plan-items)
 	CreatePlanItem(ctx context.Context, request CreatePlanItemRequestObject) (CreatePlanItemResponseObject, error)
+
+	// (POST /projects/{project_id}/resource-install-drafts:resolve)
+	ResolveResourceInstallDraft(ctx context.Context, request ResolveResourceInstallDraftRequestObject) (ResolveResourceInstallDraftResponseObject, error)
 
 	// (GET /projects/{project_id}/schedules)
 	ListProjectSchedules(ctx context.Context, request ListProjectSchedulesRequestObject) (ListProjectSchedulesResponseObject, error)
@@ -12885,6 +13178,39 @@ func (sh *strictHandler) CreatePlanItem(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreatePlanItemResponseObject); ok {
 		if err := validResponse.VisitCreatePlanItemResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResolveResourceInstallDraft operation middleware
+func (sh *strictHandler) ResolveResourceInstallDraft(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+	var request ResolveResourceInstallDraftRequestObject
+
+	request.ProjectId = projectId
+
+	var body ResolveResourceInstallDraftJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResolveResourceInstallDraft(ctx, request.(ResolveResourceInstallDraftRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResolveResourceInstallDraft")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResolveResourceInstallDraftResponseObject); ok {
+		if err := validResponse.VisitResolveResourceInstallDraftResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

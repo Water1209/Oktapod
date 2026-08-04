@@ -335,12 +335,13 @@ export interface ConversationQueueItem {
 }
 
 export interface ProjectTurnResult {
-  route: 'chat' | 'task'
+  route: 'chat' | 'task' | 'resource'
   conversation: Conversation
   messages: ConversationMessage[]
   task?: Task
   queued?: boolean
   queue_item?: ConversationQueueItem
+  resource_install_draft?: ResourceInstallDraft
 }
 
 export interface ProjectTurnInput {
@@ -368,7 +369,7 @@ export interface ProjectTurnInput {
 }
 
 export interface StreamProjectTurnHandlers {
-  onRoute?: (route: 'chat' | 'task') => void
+  onRoute?: (route: 'chat' | 'task' | 'resource') => void
   onDelta?: (delta: string) => void
 }
 
@@ -593,6 +594,41 @@ export interface RunPlanItem {
   updated_at: string
 }
 
+export interface MCPDefinitionV1 {
+  schema_version: 'oktapod.mcp/v1'
+  source: { type: 'official' | 'registry' | 'npm' | 'pypi' | 'url' | 'local' | 'manual'; reference?: string; version?: string; publisher?: string }
+  transport: { type: 'stdio'; command: string; args?: string[]; auth_env?: string } | { type: 'streamable_http'; url: string }
+  auth: { type: 'none' | 'environment' | 'bearer' | 'oauth' | 'custom_header'; header?: string }
+  secret_bindings?: Array<{ name: string; target: string; required: boolean }>
+  headers?: Record<string, string>
+  permissions?: string[]
+  description?: string
+}
+
+export interface MCPInstallCandidate {
+  name: string
+  title?: string
+  version: string
+  description?: string
+  repository_url?: string
+  mcp_definition: MCPDefinitionV1
+}
+
+export interface ResourceInstallDraft {
+  id: string
+  kind: 'skill' | 'mcp' | 'agent'
+  source_input: string
+  resolved_name?: string
+  resolved_version?: string
+  mcp_definition?: MCPDefinitionV1
+  candidates?: MCPInstallCandidate[]
+  status: 'draft' | 'needs_secret' | 'validated' | 'rejected' | 'installed'
+  warnings: string[]
+  required_secrets: Array<{ name: string; target: string; required: boolean }>
+  created_at: string
+  updated_at: string
+}
+
 export interface RunPlanRevision {
   id: string
   project_id: string
@@ -775,7 +811,7 @@ async function streamProjectTurn(path: string, input: ProjectTurnInput, handlers
 		}
 		if (data.length === 0) return
 		const payload = JSON.parse(data.join('\n')) as Record<string, unknown>
-		if (event === 'route' && (payload.route === 'chat' || payload.route === 'task')) handlers.onRoute?.(payload.route)
+		if (event === 'route' && (payload.route === 'chat' || payload.route === 'task' || payload.route === 'resource')) handlers.onRoute?.(payload.route)
 		if (event === 'assistant_delta' && typeof payload.delta === 'string') handlers.onDelta?.(payload.delta)
 		if (event === 'error') throw new ApiProblem({ type: 'about:blank', title: '流式响应失败', status: 502, code: typeof payload.code === 'string' ? payload.code : 'TURN_STREAM_ERROR', detail: typeof payload.detail === 'string' ? payload.detail : '模型响应中断', correlation_id: typeof payload.correlation_id === 'string' ? payload.correlation_id : 'unknown' })
 		if (event === 'done') result = payload as unknown as ProjectTurnResult
@@ -857,7 +893,9 @@ export const api = {
   setScheduleStatus: (scheduleId: string, status: ScheduleStatus) =>
     request<Schedule>(`/schedules/${scheduleId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
   capabilities: (projectId: string) => request<{ items: Capability[] }>(`/projects/${projectId}/capabilities`),
-  createCapability: (projectId: string, input: { kind: CapabilityKind; name: string; version?: string; manifest_json: string; scope_type?: CapabilityScope; source_filename?: string; bundle_base64?: string; credential?: string }) =>
+  resolveResourceInstallDraft: (projectId: string, sourceInput: string) =>
+    request<ResourceInstallDraft>(`/projects/${projectId}/resource-install-drafts:resolve`, { method: 'POST', body: JSON.stringify({ source_input: sourceInput }) }),
+  createCapability: (projectId: string, input: { kind: CapabilityKind; name: string; version?: string; manifest_json: string; scope_type?: CapabilityScope; source_filename?: string; bundle_base64?: string; credential?: string; credentials?: Record<string, string> }) =>
     request<Capability>(`/projects/${projectId}/capabilities`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   setCapabilityStatus: (capabilityId: string, status: CapabilityStatus) =>
     request<Capability>(`/capabilities/${capabilityId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),

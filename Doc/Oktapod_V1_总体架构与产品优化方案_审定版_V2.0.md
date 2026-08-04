@@ -1,8 +1,8 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.0（V1.0.0 发布事实修订）
+> **文档版本**：V2.1（V1.0.0 发布事实修订）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
-> **编制日期**：2026-07-30
+> **编制日期**：2026-08-04
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
 > **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），`main@22b29bc` 及 V1.0.0 发布收口改动
@@ -179,7 +179,7 @@ V1 已建立：
 
 **当前边界**：`ExecutionPolicy` 与 `ExecutionAuthorization` 已形成统一执行门禁；Prompt/Context 与 Tool Context 是逻辑边界，仍有部分编排位于 Worker。V1 以行为合同和安全不变量为门禁，后续再继续物理拆分。
 
-交互层以 `conversation_id` 作为上下文硬边界。Auto 路由依赖模型时，Provider 暂时不可用必须先把用户目标持久化为可恢复 Task，不能让首条消息随请求失败而消失；“继续/重试”只允许恢复当前 Thread 中最新的失败或活动 Task，空 Thread 不得读取工作区内容猜测其他会话目标。初始“制定计划”只是在模型返回前的临时占位，同一计划修订内必须由目标特定的语义步骤替换；模型按协议调用 `update_plan` 时采用其完整步骤，模型直接给出执行工具时运行时把占位项原地物化为本次真实目标，不能让占位文案进入执行期。计划结构无效、占位文案、过早完成或与其他工具混用时由模型自动修正，不把任务直接判失败。缺少可授予权限时创建审批；确定性硬拒绝不伪装成用户拒绝，也不直接终止任务，而是保留审计收据、废弃同批次冻结动作并排队模型修正。任务终态会把最新有效计划修订及其真实步骤状态同步到终态，避免成功任务仍显示 `0/N`。
+交互层以 `conversation_id` 作为上下文硬边界。Auto 路由依赖模型时，Provider 暂时不可用必须先把用户目标持久化为可恢复 Task，不能让首条消息随请求失败而消失。暂停、取消、恢复和重试由 Application 层的确定性对话指令解释器处理，不把系统生命周期操作塞进 Agent Loop；只有“取消当前任务”“继续当前任务”等显式表达才触发控制，裸“继续”仍作为普通用户内容。取消终止当前 Run 但不回滚 Workspace，恢复时在同一 Thread 创建继任 Run。运行中普通发送用于 Steering，`Alt+Enter` 进入下一轮队列，排队项可提升为当前引导或撤回。空 Thread 不得读取工作区内容猜测其他会话目标。初始“制定计划”只是在模型返回前的临时占位，同一计划修订内必须由目标特定的语义步骤替换；模型按协议调用 `update_plan` 时采用其完整步骤，模型直接给出执行工具时运行时把占位项原地物化为本次真实目标，不能让占位文案进入执行期。计划结构无效、占位文案、过早完成或与其他工具混用时由模型自动修正，不把任务直接判失败。缺少可授予权限时创建审批；确定性硬拒绝不伪装成用户拒绝，也不直接终止任务，而是保留审计收据、废弃同批次冻结动作并排队模型修正。任务终态会把最新有效计划修订及其真实步骤状态同步到终态，避免成功任务仍显示 `0/N`。
 
 ---
 
@@ -287,9 +287,11 @@ run_command / update_plan
 
 互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。
 
-现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。资源中心与自然语言安装入口复用同一套“解析 → 校验 → 用户确认 → 审核 → 启用 → 连接”流程；`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。来源、固定版本、权限、受控 Header 与 Secret 目标写入定义，外部凭据只通过 SecretStore 引用进入执行快照。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：模型只看到该 MCP 与计划/输入/审批控制工具，不允许静默改用内建搜索或无关工具。Tavily 是可选首选，不进入核心依赖。
+现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。多项 Secret 以一个不透明加密集合写入 SecretStore，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：模型只看到该 MCP 与计划/输入/审批控制工具，不允许静默改用内建搜索或无关工具。Tavily 是可选首选，不进入核心依赖。
 
-用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。
+用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。内置只读 Skill Creator 只在明确的 Skill 创建意图中向模型提供结构约束并生成草稿 ZIP；所有草稿仍进入同一 ZIP 校验、权限差异和人工审批链。
+
+**当前 OAuth 边界**：`auth.type=oauth` 目前表示由用户安全提供 OAuth access token，并按 Bearer Token 使用；完整 Authorization Code、浏览器回调、取消、刷新令牌持久化尚未接入产品生命周期。GitHub/Notion 可完成发现、配置和缺凭据恢复，但不得标记为完整 OAuth 验收通过。该缺口进入 R1B-003 的 `PARTIAL` 状态，后续应直接使用 MCP Go SDK 的 `OAuthHandler`，不能再叠加一套自研协议栈。
 
 ### 5.3 单一 ToolSpec（V1 简化版）
 
@@ -359,7 +361,7 @@ web.search / web.extract / repository.search / repository.read
 | 类型 | 判定 | V1 处理 |
 |---|---|---|
 | Transport Failure | 连接失败/进程退出/超时/5xx | 返回可见失败 Receipt；可在冻结候选中恢复 |
-| Authentication Failure | 401/403/凭据缺失/OAuth 失效 | 移出候选，Inspector 显示配置错误 |
+| Authentication Failure | 401/403/凭据缺失/Token 失效 | 移出候选，Inspector 显示配置错误；交互式 OAuth 未实现时不得伪装成普通凭据已完成 |
 | Rate Limit | 429/额度耗尽 | 允许同能力候选，必须显示 Provider 限流 |
 | Empty Result | 结果为空 | 模型决定：改写查询/放宽条件/换工具/说明无结果 |
 | Invalid Input | 参数校验失败 | 返回模型重新构造，不允许系统跨 Schema 静默转换 |

@@ -1268,6 +1268,13 @@ func projectTurnResponse(result core.ProjectTurnResult) (generated.ProjectTurnRe
 		}
 		response.QueueItem = &item
 	}
+	if result.ResourceInstallDraft != nil {
+		draft, convertErr := resourceInstallDraftResponse(*result.ResourceInstallDraft)
+		if convertErr != nil {
+			return generated.ProjectTurnResponse{}, convertErr
+		}
+		response.ResourceInstallDraft = &draft
+	}
 	return response, nil
 }
 
@@ -1646,7 +1653,11 @@ func (s *Server) CreateCapability(ctx context.Context, request generated.CreateC
 	if request.Body.Credential != nil {
 		credential = *request.Body.Credential
 	}
-	capability, err := s.service.CreateCapability(ctx, request.ProjectId.String(), core.CreateCapabilityInput{Kind: string(request.Body.Kind), Name: request.Body.Name, Version: version, ManifestJSON: request.Body.ManifestJson, ScopeType: scopeType, SourceFilename: sourceFilename, BundleBase64: bundleBase64, Credential: credential}, optionalIdempotencyKey(request.Params.IdempotencyKey))
+	credentials := map[string]string(nil)
+	if request.Body.Credentials != nil {
+		credentials = *request.Body.Credentials
+	}
+	capability, err := s.service.CreateCapability(ctx, request.ProjectId.String(), core.CreateCapabilityInput{Kind: string(request.Body.Kind), Name: request.Body.Name, Version: version, ManifestJSON: request.Body.ManifestJson, ScopeType: scopeType, SourceFilename: sourceFilename, BundleBase64: bundleBase64, Credential: credential, Credentials: credentials}, optionalIdempotencyKey(request.Params.IdempotencyKey))
 	if err != nil {
 		return nil, err
 	}
@@ -1655,6 +1666,21 @@ func (s *Server) CreateCapability(ctx context.Context, request generated.CreateC
 		return nil, err
 	}
 	return generated.CreateCapability201JSONResponse(response), nil
+}
+
+func (s *Server) ResolveResourceInstallDraft(ctx context.Context, request generated.ResolveResourceInstallDraftRequestObject) (generated.ResolveResourceInstallDraftResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	draft, err := s.service.ResolveMCPInstallDraft(ctx, request.ProjectId.String(), request.Body.SourceInput)
+	if err != nil {
+		return nil, err
+	}
+	response, err := resourceInstallDraftResponse(draft)
+	if err != nil {
+		return nil, err
+	}
+	return generated.ResolveResourceInstallDraft200JSONResponse(response), nil
 }
 
 func (s *Server) SetCapabilityStatus(ctx context.Context, request generated.SetCapabilityStatusRequestObject) (generated.SetCapabilityStatusResponseObject, error) {
@@ -2927,6 +2953,132 @@ func capabilityResponse(capability core.Capability) (generated.Capability, error
 		}
 	}
 	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), Availability: generated.ResourceAvailability(availability), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CredentialConfigured: capability.CredentialExists, CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
+}
+
+func resourceInstallDraftResponse(draft core.ResourceInstallDraft) (generated.ResourceInstallDraft, error) {
+	id, err := uuid.Parse(draft.ID)
+	if err != nil {
+		return generated.ResourceInstallDraft{}, err
+	}
+	response := generated.ResourceInstallDraft{
+		Id: id, Kind: generated.ResourceInstallDraftKind(draft.Kind), SourceInput: draft.SourceInput,
+		Status: generated.ResourceInstallDraftStatus(draft.Status), Warnings: append([]string(nil), draft.Warnings...),
+		RequiredSecrets: secretBindingResponses(draft.RequiredSecrets), CreatedAt: draft.CreatedAt, UpdatedAt: draft.UpdatedAt,
+	}
+	if draft.ResolvedName != "" {
+		value := draft.ResolvedName
+		response.ResolvedName = &value
+	}
+	if draft.ResolvedVersion != "" {
+		value := draft.ResolvedVersion
+		response.ResolvedVersion = &value
+	}
+	if draft.MCPDefinition != nil {
+		definition, convertErr := mcpDefinitionResponse(*draft.MCPDefinition)
+		if convertErr != nil {
+			return generated.ResourceInstallDraft{}, convertErr
+		}
+		response.McpDefinition = &definition
+	}
+	if len(draft.Candidates) > 0 {
+		candidates := make([]generated.MCPInstallCandidate, 0, len(draft.Candidates))
+		for _, candidate := range draft.Candidates {
+			definition, convertErr := mcpDefinitionResponse(candidate.Definition)
+			if convertErr != nil {
+				return generated.ResourceInstallDraft{}, convertErr
+			}
+			item := generated.MCPInstallCandidate{Name: candidate.Name, Version: candidate.Version, McpDefinition: definition}
+			if candidate.Title != "" {
+				value := candidate.Title
+				item.Title = &value
+			}
+			if candidate.Description != "" {
+				value := candidate.Description
+				item.Description = &value
+			}
+			if candidate.RepositoryURL != "" {
+				value := candidate.RepositoryURL
+				item.RepositoryUrl = &value
+			}
+			candidates = append(candidates, item)
+		}
+		response.Candidates = &candidates
+	}
+	return response, nil
+}
+
+func mcpDefinitionResponse(definition core.MCPDefinitionV1) (generated.MCPDefinitionV1, error) {
+	response := generated.MCPDefinitionV1{
+		SchemaVersion: generated.MCPDefinitionV1SchemaVersion(definition.SchemaVersion),
+	}
+	response.Source.Type = generated.MCPDefinitionV1SourceType(definition.Source.Type)
+	response.Auth.Type = generated.MCPDefinitionV1AuthType(definition.Auth.Type)
+	if definition.Source.Reference != "" {
+		value := definition.Source.Reference
+		response.Source.Reference = &value
+	}
+	if definition.Source.Version != "" {
+		value := definition.Source.Version
+		response.Source.Version = &value
+	}
+	if definition.Source.Publisher != "" {
+		value := definition.Source.Publisher
+		response.Source.Publisher = &value
+	}
+	if definition.Auth.Header != "" {
+		value := definition.Auth.Header
+		response.Auth.Header = &value
+	}
+	if definition.Description != "" {
+		value := definition.Description
+		response.Description = &value
+	}
+	if len(definition.Headers) > 0 {
+		value := make(map[string]string, len(definition.Headers))
+		for key, item := range definition.Headers {
+			value[key] = item
+		}
+		response.Headers = &value
+	}
+	if len(definition.Permissions) > 0 {
+		value := append([]string(nil), definition.Permissions...)
+		response.Permissions = &value
+	}
+	if len(definition.SecretBindings) > 0 {
+		value := secretBindingResponses(definition.SecretBindings)
+		response.SecretBindings = &value
+	}
+	switch definition.Transport.Type {
+	case "stdio":
+		transport := generated.MCPDefinitionV1Transport0{Type: generated.MCPDefinitionV1Transport0Type("stdio"), Command: definition.Transport.Command}
+		if len(definition.Transport.Args) > 0 {
+			args := append([]string(nil), definition.Transport.Args...)
+			transport.Args = &args
+		}
+		if definition.Transport.AuthEnv != "" {
+			value := definition.Transport.AuthEnv
+			transport.AuthEnv = &value
+		}
+		if err := response.Transport.FromMCPDefinitionV1Transport0(transport); err != nil {
+			return generated.MCPDefinitionV1{}, err
+		}
+	case "streamable_http":
+		transport := generated.MCPDefinitionV1Transport1{Type: generated.MCPDefinitionV1Transport1Type("streamable_http"), Url: definition.Transport.URL}
+		if err := response.Transport.FromMCPDefinitionV1Transport1(transport); err != nil {
+			return generated.MCPDefinitionV1{}, err
+		}
+	default:
+		return generated.MCPDefinitionV1{}, fmt.Errorf("unsupported MCP transport %q", definition.Transport.Type)
+	}
+	return response, nil
+}
+
+func secretBindingResponses(bindings []core.MCPSecretBinding) []generated.SecretBinding {
+	result := make([]generated.SecretBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		result = append(result, generated.SecretBinding{Name: binding.Name, Target: binding.Target, Required: binding.Required})
+	}
+	return result
 }
 
 func mcpHealthResponse(health core.MCPHealth) (generated.MCPHealth, error) {

@@ -43,11 +43,13 @@ type Service struct {
 	chatToolExec     ChatToolExecutor
 	workspaceReader  WorkspaceReader
 	workspaceRoot    string
+	mcpRegistry      MCPRegistry
 }
 
 const (
-	TurnRouteChat = "chat"
-	TurnRouteTask = "task"
+	TurnRouteChat     = "chat"
+	TurnRouteTask     = "task"
+	TurnRouteResource = "resource"
 )
 
 // WithAdvisorModel enables the optional model-backed review path. A nil
@@ -871,62 +873,11 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		}{projectID, input})})
 	}
 
-	recoveryIntent := mode == core.ModeAuto && isTaskRecoveryIntent(content)
-	if recoveryIntent && conversationID == "" {
-		return core.ProjectTurnResult{}, &core.ValidationError{Field: "content", Message: "当前新 Thread 没有可继续的任务，请先发送完整目标"}
+	if directive, matched := resolveConversationDirective(content); matched {
+		return s.executeConversationDirective(ctx, projectID, input, content, conversationID, visibility, directive, correlationID, idempotencyKey, onRoute, onDelta)
 	}
-	if recoveryIntent {
-		tasks, listErr := s.repository.ListTasks(ctx, s.ScopeFor(ctx), projectID, 100)
-		if listErr != nil {
-			return core.ProjectTurnResult{}, listErr
-		}
-		for _, candidate := range tasks {
-			if candidate.ConversationID != conversationID {
-				continue
-			}
-			// Only the newest task in this conversation defines the recovery
-			// context. Never revive an older failure behind a newer task.
-			if candidate.Status != core.StatusFailed && candidate.Status != core.StatusBlocked &&
-				candidate.Status != core.StatusQueued && candidate.Status != core.StatusRunning {
-				break
-			}
-			if onRoute != nil {
-				if routeErr := onRoute(TurnRouteTask); routeErr != nil {
-					return core.ProjectTurnResult{}, routeErr
-				}
-			}
-			updated := candidate
-			if candidate.Status == core.StatusFailed || candidate.Status == core.StatusBlocked {
-				var retryErr error
-				updated, retryErr = s.ControlTask(ctx, candidate.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, correlationID, idempotencyKey)
-				if retryErr != nil {
-					return core.ProjectTurnResult{}, retryErr
-				}
-			}
-			assistant := "正在继续当前任务；原执行计划、Skill 和已完成进度保持不变。"
-			if onDelta != nil {
-				if deltaErr := onDelta(assistant); deltaErr != nil {
-					return core.ProjectTurnResult{}, deltaErr
-				}
-			}
-			idempotencyKey, err = normalizeIdempotencyKey(idempotencyKey)
-			if err != nil {
-				return core.ProjectTurnResult{}, err
-			}
-			turnInput := inputWithTurnDefaults(input, content, conversationID, visibility)
-			turnInput.TaskID = updated.ID
-			result, appendErr := s.repository.AppendChatTurn(ctx, s.ScopeFor(ctx), projectID, turnInput, assistant, nil, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(struct {
-				ProjectID string
-				Input     core.ProjectTurnInput
-			}{projectID, turnInput})})
-			if appendErr != nil {
-				return core.ProjectTurnResult{}, appendErr
-			}
-			result.Route = TurnRouteTask
-			result.Task = &updated
-			return result, nil
-		}
-		return core.ProjectTurnResult{}, &core.ValidationError{Field: "content", Message: "当前 Thread 没有失败或执行中的任务可继续，请描述要完成的目标"}
+	if sourceInput, matched := parseMCPInstallDirective(content); matched {
+		return s.executeMCPInstallDirective(ctx, projectID, input, content, sourceInput, conversationID, visibility, idempotencyKey, onRoute, onDelta)
 	}
 
 	var classification core.ModelResult
@@ -1049,29 +1000,6 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 func inputWithTurnDefaults(input core.ProjectTurnInput, content, conversationID, visibility string) core.ProjectTurnInput {
 	input.Content, input.ConversationID, input.Visibility = content, conversationID, visibility
 	return input
-}
-
-func isTaskRecoveryIntent(content string) bool {
-	if len([]rune(content)) > 64 {
-		return false
-	}
-	normalized := strings.ToLower(strings.TrimSpace(content))
-	replacer := strings.NewReplacer(
-		" ", "", "\t", "", "\r", "", "\n", "",
-		"，", "", ",", "", "。", "", ".", "", "；", "", ";", "",
-		"：", "", ":", "", "！", "", "!", "",
-	)
-	normalized = replacer.Replace(normalized)
-	switch normalized {
-	case "继续", "继续任务", "继续执行", "继续原任务",
-		"重试", "重试任务", "重新执行", "重新执行任务",
-		"重新规划任务继续", "重新规划并继续", "重新规划任务并继续",
-		"重新归属任务继续", "从失败处继续", "从上次停止的位置继续",
-		"resume", "resumetask", "retry", "retrytask", "continue", "continuetask":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Service) completeProjectTurn(ctx context.Context, systemPrompt, userPrompt string, maxOutputTokens int, model, fallback, providerID string) (core.ModelResult, error) {
@@ -1786,6 +1714,17 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 	input.ScopeType = strings.ToLower(strings.TrimSpace(input.ScopeType))
 	input.SourceFilename = strings.TrimSpace(input.SourceFilename)
 	input.Credential = strings.TrimSpace(input.Credential)
+	normalizedCredentials := make(map[string]string, len(input.Credentials))
+	for name, value := range input.Credentials {
+		trimmedName, trimmedValue := strings.TrimSpace(name), strings.TrimSpace(value)
+		if trimmedName != "" && trimmedValue != "" {
+			if _, exists := normalizedCredentials[trimmedName]; exists {
+				return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "contains duplicate names after normalization"}
+			}
+			normalizedCredentials[trimmedName] = trimmedValue
+		}
+	}
+	input.Credentials = normalizedCredentials
 	if input.ScopeType == "" {
 		input.ScopeType = core.CapabilityScopeGlobal
 	}
@@ -1810,6 +1749,7 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		input.ManifestJSON = normalized
 		input.Name = name
 	}
+	var mcpDefinition core.MCPDefinitionV1
 	if input.Kind == core.CapabilityKindMCP {
 		definition, definitionErr := core.ParseMCPDefinition(input.ManifestJSON)
 		if definitionErr != nil {
@@ -1819,12 +1759,30 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		if definitionErr != nil {
 			return core.Capability{}, definitionErr
 		}
+		mcpDefinition = definition
 	}
 	if input.Version == "" {
 		input.Version = "0.1.0"
 	}
-	if input.Credential != "" && input.Kind != core.CapabilityKindMCP {
-		return core.Capability{}, &core.ValidationError{Field: "credential", Message: "is only supported for MCP capabilities"}
+	if (input.Credential != "" || len(input.Credentials) > 0) && input.Kind != core.CapabilityKindMCP {
+		return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "are only supported for MCP capabilities"}
+	}
+	if input.Credential != "" && len(input.Credentials) > 0 {
+		return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "must not be combined with the legacy credential field"}
+	}
+	if input.Kind == core.CapabilityKindMCP {
+		bindings := make(map[string]core.MCPSecretBinding, len(mcpDefinition.SecretBindings))
+		for _, binding := range mcpDefinition.SecretBindings {
+			bindings[binding.Name] = binding
+		}
+		if input.Credential != "" && len(bindings) > 1 {
+			return core.Capability{}, &core.ValidationError{Field: "credential", Message: "cannot satisfy multiple named Secret bindings; use credentials"}
+		}
+		for name := range input.Credentials {
+			if _, ok := bindings[name]; !ok {
+				return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "contains a name not declared by MCPDefinition v1"}
+			}
+		}
 	}
 	if err := core.ValidateCreateCapability(input); err != nil {
 		return core.Capability{}, err
@@ -1877,7 +1835,15 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 	}
 	var oldCredential string
 	var oldCredentialExists bool
-	if input.Credential != "" {
+	secretPayload := input.Credential
+	if len(input.Credentials) > 0 {
+		var payloadErr error
+		secretPayload, payloadErr = encodeMCPSecretSet(input.Credentials)
+		if payloadErr != nil {
+			return core.Capability{}, &core.ValidationError{Field: "credentials", Message: payloadErr.Error()}
+		}
+	}
+	if secretPayload != "" {
 		if s.providerSecrets == nil {
 			return core.Capability{}, fmt.Errorf("MCP secret store is unavailable")
 		}
@@ -1891,10 +1857,11 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		var credentialErr error
 		oldCredential, credentialErr = s.providerSecrets.Get(ctx, input.CredentialRef)
 		oldCredentialExists = credentialErr == nil
-		if credentialErr = s.providerSecrets.Set(ctx, input.CredentialRef, input.Credential); credentialErr != nil {
+		if credentialErr = s.providerSecrets.Set(ctx, input.CredentialRef, secretPayload); credentialErr != nil {
 			return core.Capability{}, fmt.Errorf("store MCP credential: %w", credentialErr)
 		}
 		input.Credential = ""
+		input.Credentials = nil
 	}
 	request := struct {
 		ProjectID      string `json:"project_id"`

@@ -1222,13 +1222,19 @@ func annotateToolCallExecutionMode(calls []core.ToolCall, definitions []ToolDefi
 // instruction text enters the model request and it is bounded per Skill.
 func skillContextForPrompt(snapshot, prompt string) (string, map[string]any) {
 	skills := skillSnapshotsFromConfig(snapshot)
-	if len(skills) == 0 {
+	builtInContext, builtInName := builtInSkillContext(prompt)
+	if len(skills) == 0 && builtInContext == "" {
 		return "", map[string]any{"strategy": "metadata_only", "available": 0, "loaded": 0, "tool_scope_declared": false, "allowed_tools": []string{}, "estimated_tokens_saved": 0}
 	}
 	tokens := contextTokens(prompt)
 	loaded := make([]string, 0, len(skills))
 	loadedIDs := make([]string, 0, len(skills))
 	parts := make([]string, 0, len(skills))
+	if builtInContext != "" {
+		parts = append(parts, builtInContext)
+		loaded = append(loaded, builtInName)
+		loadedIDs = append(loadedIDs, "builtin-skill-creator")
+	}
 	allowedToolSet := make(map[string]struct{})
 	toolScopeDeclared := false
 	const maxSkillBody = 6000
@@ -1267,7 +1273,7 @@ func skillContextForPrompt(snapshot, prompt string) (string, map[string]any) {
 		}
 		parts = append(parts, header+"\n"+body)
 	}
-	before := int64(0)
+	before := int64(len([]rune(builtInContext)) / 4)
 	for _, skill := range skills {
 		before += int64(len([]rune(skill.ManifestJSON)) / 4)
 	}
@@ -1279,7 +1285,7 @@ func skillContextForPrompt(snapshot, prompt string) (string, map[string]any) {
 	sort.Strings(allowedTools)
 	return strings.Join(parts, "\n\n"), map[string]any{
 		"strategy":                "metadata_first_lazy_v1",
-		"available":               len(skills),
+		"available":               len(skills) + boolInt(builtInContext != ""),
 		"loaded":                  len(loaded),
 		"loaded_ids":              loadedIDs,
 		"loaded_names":            loaded,
@@ -1290,6 +1296,13 @@ func skillContextForPrompt(snapshot, prompt string) (string, map[string]any) {
 		"tool_scope_declared":     toolScopeDeclared,
 		"allowed_tools":           allowedTools,
 	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func skillToolScope(plan map[string]any) ([]string, bool) {

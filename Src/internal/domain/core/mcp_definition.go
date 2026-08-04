@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
 const MCPDefinitionSchemaV1 = "oktapod.mcp/v1"
+
+var mcpEnvironmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var mcpHeaderNamePattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 type MCPDefinitionV1 struct {
 	SchemaVersion  string             `json:"schema_version"`
@@ -139,7 +143,7 @@ func ParseMCPDefinition(raw string) (MCPDefinitionV1, error) {
 	if len(definition.SecretBindings) == 0 && definition.Transport.AuthEnv != "" {
 		definition.SecretBindings = []MCPSecretBinding{{Name: "credential", Target: "env:" + definition.Transport.AuthEnv, Required: true}}
 	}
-	if len(definition.SecretBindings) == 0 && (definition.Auth.Type == "bearer" || definition.Auth.Type == "custom_header") {
+	if len(definition.SecretBindings) == 0 && (definition.Auth.Type == "bearer" || definition.Auth.Type == "oauth" || definition.Auth.Type == "custom_header") {
 		target := "header:Authorization"
 		if definition.Auth.Type == "custom_header" {
 			target = "header:" + definition.Auth.Header
@@ -180,9 +184,30 @@ func validateMCPDefinition(definition MCPDefinitionV1) error {
 	default:
 		return fmt.Errorf("auth.type must be none, environment, bearer, oauth, or custom_header")
 	}
+	if len(definition.SecretBindings) > 16 {
+		return fmt.Errorf("secret_bindings must not exceed 16 entries")
+	}
+	bindingNames := make(map[string]bool, len(definition.SecretBindings))
+	bindingTargets := make(map[string]bool, len(definition.SecretBindings))
 	for _, binding := range definition.SecretBindings {
 		if strings.TrimSpace(binding.Name) == "" || (!strings.HasPrefix(binding.Target, "env:") && !strings.HasPrefix(binding.Target, "header:")) {
 			return fmt.Errorf("secret_bindings must declare a name and env: or header: target")
+		}
+		name := strings.TrimSpace(binding.Name)
+		target := strings.TrimSpace(binding.Target)
+		if bindingNames[name] || bindingTargets[strings.ToLower(target)] {
+			return fmt.Errorf("secret_bindings names and targets must be unique")
+		}
+		bindingNames[name] = true
+		bindingTargets[strings.ToLower(target)] = true
+		if envName, ok := strings.CutPrefix(target, "env:"); ok && !mcpEnvironmentNamePattern.MatchString(envName) {
+			return fmt.Errorf("secret binding environment target %q is invalid", envName)
+		}
+		if headerName, ok := strings.CutPrefix(target, "header:"); ok {
+			lower := strings.ToLower(headerName)
+			if !mcpHeaderNamePattern.MatchString(headerName) || lower == "host" || lower == "content-length" || lower == "mcp-session-id" || lower == "origin" {
+				return fmt.Errorf("secret binding header target %q is reserved or invalid", headerName)
+			}
 		}
 	}
 	for key, value := range definition.Headers {

@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.1
-> 更新日期：2026-07-30
+> 版本：v1.2
+> 更新日期：2026-08-04
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`
 
@@ -32,7 +32,7 @@
 | B1 | 内核端口与运行时拆分 | `PASS` | Repository 窄端口、`agentloop`/`harness` 和独立 Inspector 已落地；剩余行数是维护指标，不影响行为闭环 |
 | B2 | 执行安全与工程门禁 | `PARTIAL` | `ExecutionAuthorization`、宿主 Git/Secret 隔离、CI/OpenAPI/迁移门禁已落地；双平台原生构建与产品烟测、Ubuntu race 仍待 CI 证据 |
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
-| B4 | MCP/Skill/搜索 | `PASS` | MCP Schema/配置/健康版本、Run Tool Snapshot、Skill 约束、strict 阻塞与外部不可信 Envelope 已落地；确定性同能力排名转 V1.1 |
+| B4 | MCP/Skill/搜索 | `PARTIAL` | 通用 MCP 来源解析、官方 SDK、本地/远端传输、多 Secret、Skill ZIP 与内置 Skill Creator 已落地；产品级 OAuth 回调/刷新尚未关闭 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、文件/Hunk、接受及受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
 | B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 
@@ -96,13 +96,13 @@
 | R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填；同协议多实例与同名模型隔离；Registry REST；SecretStore 补偿；脱敏测试；stale-while-revalidate；Run ModelRef/Thinking/Catalog 冻结及下一 Turn 生效全绿 |
 | R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行保留；取消终态、SQLite Busy 退避和未知副作用保护通过 |
-| R1A-010 | Codex 式工作台 | `PASS` | 四区 Shell、统一 Thread、桌面右侧 Inspector、Composer、Activity Spine、内联任务/审批及 1440/1280/1024/768/390 响应式 E2E 通过；Thread 操作收敛到“编辑名称/删除”下拉，执行记录的搜索/展开位于卡片顶部，任务流显示实际 Agent；活动任务的发送键会切换为可见停止键，停止后可安全删除 Thread |
+| R1A-010 | Codex 式工作台 | `PASS` | 四区 Shell、统一 Thread、桌面右侧 Inspector、Composer、Activity Spine、内联任务/审批及 1440/1280/1024/768/390 响应式 E2E 通过；Thread 操作收敛到“编辑名称/删除”下拉，执行记录的搜索/展开位于卡片顶部，任务流显示实际 Agent；运行中 Enter 引导当前任务、Alt+Enter 排队下一轮，明确自然语言可暂停/取消/恢复，停止后可安全删除 Thread |
 | R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效 |
 | R1A-012 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；Inspector 文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt 与真实子进程 kill 后 Lease 恢复自动化通过；`TestClaimNextStepRecoversCompletedBatchWithoutRunnableStep` 覆盖全部 Step 已终态但 Task/Run 仍运行的批次续接恢复 |
-| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问、MCP 强制人工和 Composer 邻接 UI 已实现并有 Go/Web 证据 |
+| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问、MCP 强制人工和 Composer 邻接 UI 已实现；暂停/取消/恢复由 Application 层确定性指令处理，裸“继续”不会劫持普通对话，取消后同 Thread 继任 Run 保留 Workspace 改动 |
 
 ## 6. Release 1B 验收矩阵
 
@@ -110,7 +110,7 @@
 |---|---|---|---|
 | R1B-001 | 受控命令执行 | `PASS` | 命令在 Thread 内通过 Policy/审批/Receipt 持久 Task 执行，支持状态、结果、取消和上下文回填；交互式 xterm 已按 V1 范围决策排除 |
 | R1B-002 | Oktapod 导入导出 | `PASS` | 浏览器预览、原始敏感字段 fail-closed、正文模式脱敏、JSON/JSONL/HTML、Oktapod JSONL Thread round-trip、事务化重建/幂等和 E2E 通过；Pi 精确兼容已转 V1.1 |
-| R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、资源中心/自然语言双入口、SecretStore 凭据、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；Tavily 发现 5 个工具并真实搜索，Filesystem 完成受限目录写读与越界拒绝；单 Skill ZIP 严格校验覆盖路径穿越、嵌套 Skill、隐藏载荷和超限语料。GitHub/Notion 的真实账号调用仍按“需要外部 Secret”标记，不影响发现、配置与失败恢复门禁。 |
+| R1B-003 | Extensions/Packages | `PARTIAL` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；Tavily 发现 5 个工具并真实搜索，Filesystem 完成受限目录写读与越界拒绝；单 Skill ZIP 严格校验覆盖路径穿越、Unicode 冲突、符号链接、嵌套 Skill、隐藏载荷和压缩炸弹。GitHub/Notion 可完成发现、配置、凭据请求和失败恢复，但完整 OAuth Authorization Code、浏览器回调、取消与刷新令牌持久化尚未实现。 |
 | R1B-004 | Provider 协议与真实主链路 | `PASS` | 原生 Anthropic/Gemini 增量合同通过；OpenAI 兼容通道已经真实 MiniMax 端到端验证可见流式、工具、文件修改和回读哈希；更多原生真实凭据已按 V1 范围决策排除 |
 | R1B-005 | 高级 Git | `PASS` | `git_conflicts`、按 Hunk 恢复、选择路径提交具备状态 Hash、Policy、审批与 Receipt；Changes UI 通过原 Thread 创建受治理动作。远程 Git 不进入 V1 |
 | R1B-006 | V1 设置 | `PASS` | Context、Retry、安全、Shell、主题、快捷键和数据维护路由/来源展示及 E2E 已完成；主题在首次绘制前恢复，设置入口直达外观，Light/Dark/System 共用语义 token，工作台、Markdown 表格、任务卡、资源、审批、表单和弹窗完成跨页对比度回归；非敏感显示偏好允许浏览器持久化，完整服务端化进入 V1.1 |
@@ -177,7 +177,8 @@
 | 2026-07-28 | 仓库与初始化安全收口 | 构建/文档路径统一为 `Build/` 与 `Doc/`；`sqlc` 输出回归 `Src/internal/`；浏览器自动化、旧生成目录和本机构建产物纳入忽略规则；移除源码与文档中的共享默认登录口令，首次使用改为页面注册 |
 | 2026-07-30 | V1.0.0 RC 发布收口 | 新项目自动建立空 Git 基线；Changes 支持中文未跟踪文件并由原 Thread 审批提交；Abort 保留 Next Turn；`pnpm verify`、Web 20/20、Playwright foundation 1/1 + success 23/23、带版本 Windows 工件与独立临时数据目录产品烟测通过；工件 SHA256 `749c8e705bf0b5829a4ac8bbfff49a90c5e09d16b7168352e08b09eacb322d31` |
 | 2026-07-30 | Thread 状态与失败恢复修复 | 初始计划占位在同一修订内替换为模型语义步骤；模型绕过 `update_plan` 直接执行时占位项原地物化为本次真实目标，无效/占位/过早完成/工具混用计划自动重试；可授予权限进入审批，确定性拒绝及其混合工具批次转模型修正，旧拒绝步骤保留审计但不再污染最终状态；重试优先恢复策略拒绝检查点；成功任务同步全部计划步骤为完成。Auto 分类断线改为先持久化 Task，空 Thread “继续”拒绝无上下文猜测；Thread 名称编辑/删除下拉、任务流 Agent 标识、顶部执行记录搜索/展开已实现。`pnpm verify` 全绿，正式 `127.0.0.1:8787` HTML 创建/验证/打开流程已通过 |
-| 2026-08-03 | Tavily MCP 双入口与安全凭据闭环 | 资源中心 Tavily 固定版本预设和新 Thread 自然语言安装复用幂等校验/审核/连接流程；凭据仅入 SecretStore，Manifest/SQLite/API/导出不含原文；连接发现 `tavily_search`、`tavily_extract`、`tavily_crawl`、`tavily_map`、`tavily_research` 5 个工具。修复工作场景动态 MCP 被白名单过滤、Auto 安装误入只读 Chat、显式 Tavily 被内建搜索/工作区工具绕过及 MCP 无效持久授权按钮；真实浏览器 Run 产生 6 个成功 Tavily 搜索/提取 Receipt 并完成来源综合，定向 Go 与 Web lint/test/build 通过 |
+| 2026-08-03 | Tavily MCP 双入口与安全凭据闭环 | 资源中心与新 Thread 自然语言安装复用同一安装草稿、校验、审核和连接流程；凭据仅入 SecretStore，Manifest/SQLite/API/导出不含原文；连接发现 `tavily_search`、`tavily_extract`、`tavily_crawl`、`tavily_map`、`tavily_research` 5 个工具。修复工作场景动态 MCP 被白名单过滤、Auto 安装误入只读 Chat、显式 Tavily 被内建搜索/工作区工具绕过及 MCP 无效持久授权按钮；真实浏览器 Run 产生 6 个成功 Tavily 搜索/提取 Receipt 并完成来源综合，定向 Go 与 Web lint/test/build 通过 |
 | 2026-08-03 | 通用资源中心与 MCP/Skill 生命周期 | 新增规范化 `MCPDefinition v1` 与固定版官方 MCP Go SDK；本地/远端 MCP 共用 SecretStore、审核、健康与删除流程；资源中心改为已安装优先的两栏布局和真实“安装 → 验证 → 可用”路径，移动端为列表到全屏详情；菜单 Skill 安装收敛为单 ZIP 严格校验，内置只读 Skill Creator 从对话入口生成兼容副本；OpenAPI 新增 ResourceAvailability、SecretBinding、MCPDefinitionV1 和 ResourceInstallDraft 公共结构。 |
 | 2026-08-04 | 全局主题一致性与可读性收口 | 合并旧工作台与 Codex Shell 两套颜色语义，主题在 React 首次绘制前恢复；设置入口改为直达外观，Provider 页新增“主题与外观”入口；修复深色 Markdown 表格近黑正文、链接/成功状态对比度、白底任务胶囊，以及工作台、资源、审批、Composer、弹窗和表单的主题混用。真实浏览器在首页、设置、Provider、资源、审批和历史 Thread 完成深色跨页扫描，无横向溢出且主要文字不再低于 4.5:1。 |
 | 2026-08-04 | 无可执行 Step 的活动任务恢复与停止入口 | 修复工具批次收据已提交但模型 continuation 未入队时 Task/Run 永久保持 `running`、计划停在 `0/N` 且 Thread 无法删除的问题：Worker 空闲领取会原子补建续接 Step 并记录 `tool.batch_recovered`；Composer 在活动任务且输入为空时显示明确“停止任务”键，取消后同步任务与计划查询并移除 Composer 上方的终态任务胶囊，历史仍保留在执行记录和侧栏。真实遗留 Thread 已确认全部 Step 终态而 Task/Run/Plan 仍活跃，作为本次回归样本。 |
+| 2026-08-04 | 通用 MCP 来源与自然语言任务控制 | 删除 Tavily 前端预设和正则，名称发现改用官方 MCP Registry，支持 `server.json`、规范化 JSON、URL、固定版 npm/PyPI 包和本地命令并在歧义时要求选源；自然语言安装草稿由父级工作区持有，路由创建新 Thread 时配置面板不会丢失。新增多 Secret 集合、内置只读 Skill Creator、确定性暂停/取消/恢复指令和 Steering/Next Turn 排队交互。真实浏览器验证 1440×900、1280×800、1024×768、390×844 明暗主题无横向溢出，移动端为列表到全屏详情；产品级 OAuth 仍按 `PARTIAL` 跟踪。 |

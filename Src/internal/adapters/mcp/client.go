@@ -53,25 +53,51 @@ type CallResult struct {
 }
 
 type manifest struct {
-	Transport  string            `json:"transport"`
-	Command    string            `json:"command"`
-	Args       []string          `json:"args"`
-	URL        string            `json:"url"`
-	AuthEnv    string            `json:"auth_env"`
-	Version    string            `json:"version"`
-	AuthType   string            `json:"-"`
-	AuthHeader string            `json:"-"`
-	Headers    map[string]string `json:"-"`
+	Transport      string            `json:"transport"`
+	Command        string            `json:"command"`
+	Args           []string          `json:"args"`
+	URL            string            `json:"url"`
+	AuthEnv        string            `json:"auth_env"`
+	Version        string            `json:"version"`
+	AuthType       string            `json:"-"`
+	AuthHeader     string            `json:"-"`
+	Headers        map[string]string `json:"-"`
+	SecretBindings []secretBinding   `json:"-"`
+}
+
+type secretBinding struct {
+	Name     string
+	Target   string
+	Required bool
 }
 
 var ErrNeedsAuth = errors.New("MCP credential is not configured")
 
 func manifestCredential(spec manifest, supplied string) (string, error) {
 	credential := strings.TrimSpace(supplied)
+	values, isSet, err := decodeCredentialSet(credential)
+	if err != nil {
+		return "", ErrNeedsAuth
+	}
+	if isSet {
+		for _, binding := range spec.SecretBindings {
+			if binding.Required && strings.TrimSpace(values[binding.Name]) == "" {
+				return "", ErrNeedsAuth
+			}
+		}
+		return credential, nil
+	}
 	if credential == "" && strings.TrimSpace(spec.AuthEnv) != "" {
 		credential = strings.TrimSpace(os.Getenv(spec.AuthEnv))
 	}
-	if (strings.TrimSpace(spec.AuthEnv) != "" || spec.AuthType == "bearer" || spec.AuthType == "oauth" || spec.AuthType == "custom_header" || spec.AuthType == "environment") && credential == "" {
+	if len(spec.SecretBindings) > 1 {
+		return "", ErrNeedsAuth
+	}
+	requiresCredential := strings.TrimSpace(spec.AuthEnv) != "" || spec.AuthType == "bearer" || spec.AuthType == "oauth" || spec.AuthType == "custom_header" || spec.AuthType == "environment"
+	if len(spec.SecretBindings) == 1 && spec.SecretBindings[0].Required {
+		requiresCredential = true
+	}
+	if requiresCredential && credential == "" {
 		return "", ErrNeedsAuth
 	}
 	return credential, nil
@@ -225,7 +251,7 @@ func openSDKSession(ctx context.Context, spec manifest, credential string) (*sdk
 		}
 		httpClient := safeHTTPClient(target)
 		if len(spec.Headers) > 0 || credential != "" {
-			httpClient.Transport = headerRoundTripper{base: httpClient.Transport, credential: credential, authType: spec.AuthType, authHeader: spec.AuthHeader, headers: spec.Headers}
+			httpClient.Transport = headerRoundTripper{base: httpClient.Transport, credential: credential, spec: spec}
 		}
 		transport = &sdkmcp.StreamableClientTransport{Endpoint: target.String(), HTTPClient: httpClient, MaxRetries: 1, DisableStandaloneSSE: true}
 	default:
@@ -241,20 +267,25 @@ func openSDKSession(ctx context.Context, spec manifest, credential string) (*sdk
 type headerRoundTripper struct {
 	base       http.RoundTripper
 	credential string
-	authType   string
-	authHeader string
-	headers    map[string]string
+	spec       manifest
 }
 
 func (roundTripper headerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	clone := request.Clone(request.Context())
 	clone.Header = request.Header.Clone()
-	for key, value := range roundTripper.headers {
+	for key, value := range roundTripper.spec.Headers {
 		clone.Header.Set(key, value)
 	}
-	if roundTripper.credential != "" {
-		if roundTripper.authType == "custom_header" {
-			clone.Header.Set(roundTripper.authHeader, roundTripper.credential)
+	values, isSet, _ := decodeCredentialSet(roundTripper.credential)
+	if isSet {
+		for _, binding := range roundTripper.spec.SecretBindings {
+			if name, ok := strings.CutPrefix(binding.Target, "header:"); ok && values[binding.Name] != "" {
+				clone.Header.Set(name, values[binding.Name])
+			}
+		}
+	} else if roundTripper.credential != "" {
+		if roundTripper.spec.AuthType == "custom_header" {
+			clone.Header.Set(roundTripper.spec.AuthHeader, roundTripper.credential)
 		} else {
 			clone.Header.Set("Authorization", "Bearer "+roundTripper.credential)
 		}
@@ -296,6 +327,18 @@ func decodeManifest(raw string) (manifest, error) {
 				return manifest{}, fmt.Errorf("MCP header %q must be a string", key)
 			}
 			spec.Headers[key] = text
+		}
+	}
+	if bindings, ok := document["secret_bindings"].([]any); ok {
+		for _, rawBinding := range bindings {
+			binding, ok := rawBinding.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := binding["name"].(string)
+			target, _ := binding["target"].(string)
+			required, _ := binding["required"].(bool)
+			spec.SecretBindings = append(spec.SecretBindings, secretBinding{Name: name, Target: target, Required: required})
 		}
 	}
 	return spec, nil

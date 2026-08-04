@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,4 +103,44 @@ func TestMCPCommandEnvironmentDoesNotInheritUnlistedSecrets(t *testing.T) {
 	if !strings.Contains(joined, "MCP_TEST_TOKEN=allowed-token") {
 		t.Fatalf("declared auth env missing: %q", joined)
 	}
+}
+
+func TestMCPNamedSecretSetBindsOnlyDeclaredEnvironmentTargets(t *testing.T) {
+	supplied := `{"schema":"oktapod.mcp-secrets/v1","values":{"search":"search-value","extract":"extract-value","unused":"unused-value"}}`
+	spec := manifest{SecretBindings: []secretBinding{
+		{Name: "search", Target: "env:SEARCH_TOKEN", Required: true},
+		{Name: "extract", Target: "header:X-Extract-Token", Required: true},
+	}}
+	if _, err := manifestCredential(spec, supplied); err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Join(mcpCommandEnvironment(spec, supplied), "\n")
+	if !strings.Contains(env, "SEARCH_TOKEN=search-value") || strings.Contains(env, "extract-value") || strings.Contains(env, "unused-value") {
+		t.Fatalf("environment bindings=%q", env)
+	}
+}
+
+func TestMCPNamedSecretSetRejectsMissingRequiredValue(t *testing.T) {
+	spec := manifest{SecretBindings: []secretBinding{{Name: "required", Target: "env:REQUIRED_TOKEN", Required: true}}}
+	if _, err := manifestCredential(spec, `{"schema":"oktapod.mcp-secrets/v1","values":{"other":"value"}}`); !errors.Is(err, ErrNeedsAuth) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestMCPNamedSecretSetBindsOnlyDeclaredHeaderTargets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Search-Token") != "search-value" || r.Header.Get("X-Unused-Token") != "" {
+			t.Fatalf("headers=%#v", r.Header)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	supplied := `{"schema":"oktapod.mcp-secrets/v1","values":{"search":"search-value","unused":"unused-value"}}`
+	spec := manifest{SecretBindings: []secretBinding{{Name: "search", Target: "header:X-Search-Token", Required: true}}}
+	client := &http.Client{Transport: headerRoundTripper{base: http.DefaultTransport, credential: supplied, spec: spec}}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
 }

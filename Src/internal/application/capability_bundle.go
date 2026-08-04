@@ -78,8 +78,8 @@ func normalizeCapabilityBundle(encoded, sourceFilename, fallbackKind, fallbackNa
 			return normalizedCapabilityBundle{}, fmt.Errorf("capability archive links and special files are not allowed: %s", normalizedPath)
 		}
 		folded := strings.ToLower(norm.NFC.String(normalizedPath))
-		if previous, exists := seen[folded]; exists && previous != normalizedPath {
-			return normalizedCapabilityBundle{}, fmt.Errorf("capability archive contains a case or Unicode path collision: %s", normalizedPath)
+		if previous, exists := seen[folded]; exists {
+			return normalizedCapabilityBundle{}, fmt.Errorf("capability archive contains a duplicate, case, or Unicode path collision: %s conflicts with %s", normalizedPath, previous)
 		}
 		seen[folded] = normalizedPath
 		if file.UncompressedSize64 > maxCapabilitySingleFileSize {

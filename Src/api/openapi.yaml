@@ -415,6 +415,32 @@ paths:
         "204":
           description: Capability deleted after active Run reference checks; historical snapshots and redacted audit records are retained
         default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/resource-install-drafts:resolve:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      operationId: resolveResourceInstallDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_input]
+              additionalProperties: false
+              properties:
+                source_input:
+                  type: string
+                  minLength: 1
+                  maxLength: 8192
+                  description: Natural-language MCP name, Registry identifier, server.json, URL, fixed package, or local command. Secret values are rejected.
+      responses:
+        "200":
+          description: Side-effect-free MCP source resolution. Ambiguous Registry searches return candidates and require an explicit user choice.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceInstallDraft" }
+        default: { $ref: "#/components/responses/Problem" }
   /capabilities/{capability_id}/status:
     parameters:
       - name: capability_id
@@ -2517,6 +2543,7 @@ components:
           type: object
           required: [type]
           additionalProperties: false
+          description: Authentication mode. In V1, oauth denotes a user-supplied OAuth access token stored in SecretStore; interactive authorization-code callback and refresh-token lifecycle are not exposed by this API.
           properties:
             type: { type: string, enum: [none, environment, bearer, oauth, custom_header] }
             header: { type: string, maxLength: 128 }
@@ -2544,6 +2571,10 @@ components:
         resolved_name: { type: string, maxLength: 120 }
         resolved_version: { type: string, maxLength: 128 }
         mcp_definition: { $ref: "#/components/schemas/MCPDefinitionV1" }
+        candidates:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/MCPInstallCandidate" }
         status: { type: string, enum: [draft, needs_secret, validated, rejected, installed] }
         warnings:
           type: array
@@ -2555,6 +2586,17 @@ components:
           items: { $ref: "#/components/schemas/SecretBinding" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    MCPInstallCandidate:
+      type: object
+      required: [name, version, mcp_definition]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 300 }
+        title: { type: string, maxLength: 300 }
+        version: { type: string, minLength: 1, maxLength: 128 }
+        description: { type: string, maxLength: 4000 }
+        repository_url: { type: string, format: uri, maxLength: 2048 }
+        mcp_definition: { $ref: "#/components/schemas/MCPDefinitionV1" }
     MCPHealth:
       type: object
       required: [id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, schema_hash, config_version, health_state, last_error, connected_at, updated_at]
@@ -2600,7 +2642,18 @@ components:
           minLength: 1
           maxLength: 8192
           writeOnly: true
-          description: Optional MCP credential. Stored only in SecretStore and never persisted in manifest, database, audit detail, export, or API responses.
+          deprecated: true
+          description: Legacy single MCP credential. Use credentials for definitions with named Secret bindings.
+        credentials:
+          type: object
+          minProperties: 1
+          maxProperties: 16
+          additionalProperties:
+            type: string
+            minLength: 1
+            maxLength: 8192
+          writeOnly: true
+          description: Named MCP Secret values keyed by SecretBinding.name. The encrypted set is stored only in SecretStore and never persisted in manifests, database fields, audit detail, exports, or responses.
     ReviewCapabilityRequest:
       type: object
       required: [decision]
@@ -3046,7 +3099,7 @@ components:
       type: object
       required: [route, conversation, messages]
       properties:
-        route: { type: string, enum: [chat, task] }
+        route: { type: string, enum: [chat, task, resource] }
         conversation:
           $ref: "#/components/schemas/Conversation"
         messages:
@@ -3060,6 +3113,8 @@ components:
           description: whether the turn was queued because an active task exists
         queue_item:
           $ref: "#/components/schemas/ConversationQueueItem"
+        resource_install_draft:
+          $ref: "#/components/schemas/ResourceInstallDraft"
     ConversationQueueItem:
       type: object
       required: [id, conversation_id, active_task_id, content, kind, status, created_at]

@@ -26,8 +26,12 @@ func TestParseMCPDefinitionAcceptsRemoteAuthModes(t *testing.T) {
 			header = `,"header":"X-API-Key"`
 		}
 		raw := `{"schema_version":"oktapod.mcp/v1","source":{"type":"manual"},"transport":{"type":"streamable_http","url":"https://example.com/mcp"},"auth":{"type":"` + auth + `"` + header + `}}`
-		if _, err := ParseMCPDefinition(raw); err != nil {
+		definition, err := ParseMCPDefinition(raw)
+		if err != nil {
 			t.Fatalf("auth=%s err=%v", auth, err)
+		}
+		if auth != "none" && len(definition.SecretBindings) != 1 {
+			t.Fatalf("auth=%s bindings=%#v", auth, definition.SecretBindings)
 		}
 	}
 }
@@ -41,5 +45,19 @@ func TestParseMCPDefinitionRejectsEmbeddedSecrets(t *testing.T) {
 		if _, err := ParseMCPDefinition(raw); err == nil {
 			t.Fatalf("embedded secret accepted: %s", raw)
 		}
+	}
+}
+
+func TestParseMCPDefinitionRejectsUnsafeOrDuplicateSecretTargets(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"reserved-header": `{"transport":{"type":"streamable_http","url":"https://example.com/mcp"},"auth":{"type":"bearer"},"secret_bindings":[{"name":"token","target":"header:Host","required":true}]}`,
+		"invalid-env":     `{"transport":{"type":"stdio","command":"server"},"auth":{"type":"environment"},"secret_bindings":[{"name":"token","target":"env:BAD-NAME","required":true}]}`,
+		"duplicate":       `{"transport":{"type":"stdio","command":"server"},"auth":{"type":"environment"},"secret_bindings":[{"name":"one","target":"env:TOKEN","required":true},{"name":"two","target":"env:TOKEN","required":true}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseMCPDefinition(manifest); err == nil {
+				t.Fatal("unsafe Secret binding was accepted")
+			}
+		})
 	}
 }
