@@ -5,6 +5,11 @@ import { RouterProvider } from '@tanstack/react-router'
 import { router } from './app/router'
 import './styles.css'
 import { RunEventsProvider } from './features/runs/run-events-provider'
+import { applyStoredPresentationPreferences } from './shared/presentation-preferences'
+
+// Apply the saved theme before React paints so the shell never flashes the
+// opposite color scheme while routes and user data are loading.
+applyStoredPresentationPreferences()
 
 const queryClient = new QueryClient({
   defaultOptions: {

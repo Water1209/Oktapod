@@ -43,19 +43,8 @@ func ValidateCreateCapability(input CreateCapabilityInput) error {
 		}
 	}
 	if input.Kind == CapabilityKindMCP {
-		transport, _ := manifest["transport"].(string)
-		urlValue, _ := manifest["url"].(string)
-		command, _ := manifest["command"].(string)
-		if transport != "stdio" && transport != "streamable_http" && transport != "http" && transport != "" {
-			return &ValidationError{Field: "manifest_json.transport", Message: "must be stdio or streamable_http"}
-		}
-		if strings.TrimSpace(urlValue) == "" && strings.TrimSpace(command) == "" {
-			return &ValidationError{Field: "manifest_json", Message: "MCP requires url or command"}
-		}
-		if args, exists := manifest["args"]; exists {
-			if _, ok := args.([]any); !ok {
-				return &ValidationError{Field: "manifest_json.args", Message: "must be an array"}
-			}
+		if _, err := ParseMCPDefinition(input.ManifestJSON); err != nil {
+			return &ValidationError{Field: "manifest_json", Message: err.Error()}
 		}
 	}
 	return nil

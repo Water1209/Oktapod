@@ -108,8 +108,12 @@ func TestMCPToolCallFlowsThroughModelApprovalAndReceipt(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch request.Method {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
 		case "initialize":
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": "2025-11-25"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"tools": []map[string]any{{"name": "search", "description": "Search test data", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}}}}}})
 		case "tools/call":

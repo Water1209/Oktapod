@@ -60,6 +60,7 @@ type Worker struct {
 	pollInterval      time.Duration
 	workspace         WorkspaceExecutor
 	webSearch         WebSearchExecutor
+	mcpSecrets        application.ProviderSecretStore
 	queuedTurnStarter QueuedTurnStarter
 }
 
@@ -70,6 +71,11 @@ func (w *Worker) WithWorkspaceExecutor(executor WorkspaceExecutor) *Worker {
 
 func (w *Worker) WithWebSearchExecutor(executor WebSearchExecutor) *Worker {
 	w.webSearch = executor
+	return w
+}
+
+func (w *Worker) WithMCPSecretStore(secrets application.ProviderSecretStore) *Worker {
+	w.mcpSecrets = secrets
 	return w
 }
 
@@ -433,6 +439,14 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	contextPlan["tool_definitions_before_skill_scope"] = definitionsBeforeSkillScope
 	contextPlan["tool_definitions_after_skill_scope"] = len(toolDefinitions)
 	contextPlan["skills"] = skillPlan
+	preferredMCP, preferredMCPID := explicitMCPProviderFromPrompt(run.ConfigSnapshotJSON, userPrompt)
+	if preferredMCP != "" {
+		// An explicit provider choice is user intent, not a loose suggestion. Do
+		// not leave interchangeable builtin or unrelated MCP tools advertised
+		// because a model may otherwise silently route around the requested MCP.
+		toolDefinitions = filterToolsForExplicitMCP(toolDefinitions, preferredMCPID)
+		contextPlan["preferred_mcp_provider"] = preferredMCP
+	}
 	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
 	requestedModel := modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName)
 	allowedTools, toolScopeDeclared := skillToolScope(skillPlan)
@@ -440,6 +454,9 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		allowedTools = append(allowedTools, core.ToolSkillInvoke)
 	}
 	allowedTools, toolScopeDeclared, scenePolicy := applySceneToolPolicy(run.ConfigSnapshotJSON, allowedTools, toolScopeDeclared)
+	if preferredMCP != "" {
+		allowedTools = filterToolNamesForExplicitMCP(allowedTools, preferredMCPID)
+	}
 	contextPlan["scene_policy"] = scenePolicy
 	conversationMessages := conversationMessagesFromSnapshot(run.ConfigSnapshotJSON)
 	contextPlan["conversation_messages"] = len(conversationMessages)
@@ -828,9 +845,11 @@ func parseMCPToolName(name string) (string, string, bool) {
 }
 
 type mcpSnapshot struct {
-	ID           string        `json:"id"`
-	ManifestJSON string        `json:"manifest_json"`
-	Tools        []mcpToolInfo `json:"tools"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	ManifestJSON  string        `json:"manifest_json"`
+	CredentialRef string        `json:"credential_ref"`
+	Tools         []mcpToolInfo `json:"tools"`
 }
 
 type mcpToolInfo struct {
@@ -1293,6 +1312,14 @@ func applySceneToolPolicy(snapshot string, allowed []string, declared bool) ([]s
 			core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
 			core.ToolWorkspaceWriteFile, core.ToolWorkspaceEditFile,
 		}
+		for _, capability := range mcpSnapshotsFromConfig(snapshot) {
+			for _, tool := range capability.Tools {
+				if strings.TrimSpace(capability.ID) == "" || strings.TrimSpace(tool.Name) == "" {
+					continue
+				}
+				allowed = append(allowed, "mcp__"+capability.ID+"__"+tool.Name)
+			}
+		}
 	} else {
 		filtered := make([]string, 0, len(allowed))
 		for _, name := range allowed {
@@ -1303,6 +1330,42 @@ func applySceneToolPolicy(snapshot string, allowed []string, declared bool) ([]s
 		allowed = filtered
 	}
 	return allowed, true, map[string]any{"workspace_command": false, "filtered_tools": []string{core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell}}
+}
+
+func explicitMCPProviderFromPrompt(snapshot, prompt string) (string, string) {
+	normalizedPrompt := strings.ToLower(prompt)
+	for _, capability := range mcpSnapshotsFromConfig(snapshot) {
+		name := strings.TrimSpace(capability.Name)
+		if len([]rune(name)) < 3 || !strings.Contains(normalizedPrompt, strings.ToLower(name)) {
+			continue
+		}
+		return name, capability.ID
+	}
+	return "", ""
+}
+
+func filterToolNamesForExplicitMCP(names []string, capabilityID string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if explicitMCPControlTool(name) || strings.HasPrefix(name, "mcp__"+capabilityID+"__") {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
+func filterToolsForExplicitMCP(definitions []ToolDefinition, capabilityID string) []ToolDefinition {
+	filtered := make([]ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		if explicitMCPControlTool(definition.Name) || strings.HasPrefix(definition.Name, "mcp__"+capabilityID+"__") {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
+}
+
+func explicitMCPControlTool(name string) bool {
+	return name == core.ToolUpdatePlan || name == core.ToolRequestInput || name == core.ToolRequestPermission
 }
 
 func filterToolDefinitionsBySkill(definitions []ToolDefinition, plan map[string]any) []ToolDefinition {
@@ -1715,6 +1778,7 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_POLICY_DENIED", ResultSummary: "MCP 工具输入未通过冻结策略校验。", Output: map[string]any{"reason": planned.Reason, "retryable": false}}
 	}
 	var manifestJSON string
+	var credentialRef string
 	allowed := false
 	foundCapability := false
 	for _, capability := range mcpSnapshotsFromConfig(run.ConfigSnapshotJSON) {
@@ -1723,6 +1787,7 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 		}
 		foundCapability = true
 		manifestJSON = capability.ManifestJSON
+		credentialRef = capability.CredentialRef
 		for _, tool := range capability.Tools {
 			if tool.Name == toolName {
 				allowed = true
@@ -1742,7 +1807,17 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 	if err != nil {
 		return toolReceiptBeginFailure(err, "MCP 副作用状态未知，已停止自动重试。")
 	}
-	callResult, callErr := mcpadapter.Call(ctx, manifestJSON, toolName, input.Arguments)
+	credential := ""
+	if credentialRef != "" {
+		if w.mcpSecrets == nil {
+			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据存储不可用。", Output: map[string]any{"retryable": true}}
+		}
+		credential, err = w.mcpSecrets.Get(ctx, credentialRef)
+		if err != nil {
+			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据不可用，请重新配置后重试。", Output: map[string]any{"retryable": true}}
+		}
+	}
+	callResult, callErr := mcpadapter.Call(ctx, manifestJSON, credential, toolName, input.Arguments)
 	output := map[string]any{
 		"capability_id": capabilityID,
 		"tool_name":     toolName,

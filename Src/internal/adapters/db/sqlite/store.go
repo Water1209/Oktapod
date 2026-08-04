@@ -3545,6 +3545,80 @@ func (s *Store) resumeCompletedToolBatch(ctx context.Context, tx *sql.Tx, runID,
 	return continuationStepID, batchID, true, nil
 }
 
+// recoverCompletedToolBatchWithoutRunnableStep closes the crash window between
+// committing the final tool receipt in a batch and queuing the model
+// continuation. Older builds could leave the Task and Run marked running while
+// every Step was already terminal, which made the task impossible to claim,
+// stop from the conversation UI, or delete safely.
+func (s *Store) recoverCompletedToolBatchWithoutRunnableStep(ctx context.Context, now time.Time) (bool, error) {
+	var runID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT r.id
+		FROM runs r
+		WHERE r.status IN ('queued', 'running')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM steps active
+		      WHERE active.run_id = r.id
+		        AND active.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')
+		  )
+		  AND EXISTS (
+		      SELECT 1
+		      FROM tool_batches batch
+		      WHERE batch.run_id = r.id
+		        AND batch.continuation_claimed = 0
+		        AND EXISTS (SELECT 1 FROM tool_calls call WHERE call.tool_batch_id = batch.id)
+		        AND NOT EXISTS (
+		            SELECT 1 FROM tool_calls call
+		            WHERE call.tool_batch_id = batch.id AND call.status <> 'succeeded'
+		        )
+		  )
+		ORDER BY r.updated_at, r.id
+		LIMIT 1`).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	correlationID, err := newID()
+	if err != nil {
+		return false, err
+	}
+	nowText := formatTime(now)
+	continuationStepID, batchID, resumed, err := s.resumeCompletedToolBatch(ctx, tx, runID, nowText, correlationID)
+	if err != nil || !resumed {
+		return false, err
+	}
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'running', error_code = '', updated_at = ? WHERE id = ?`, nowText, run.TaskID); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'running', updated_at = ? WHERE id = ?`, nowText, runID); err != nil {
+		return false, err
+	}
+	if err := s.appendEvent(ctx, s.queries.WithTx(tx), eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: runID,
+		EventType: "tool.batch_recovered", ActorType: "system", ActorID: "runtime",
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{"batch_id": batchID, "continuation_step_id": continuationStepID, "reason": "completed_batch_without_runnable_step"},
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // retryPlanControlFailure recovers older task-level plan failures whose model
 // step was persisted as succeeded before the plan update was rejected. Those
 // runs have no failed Step frontier, but the active plan plus continuation
@@ -5059,14 +5133,9 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	}
 	scopeID := projectID
 	if input.ScopeType == core.CapabilityScopeGlobal {
-		var role string
-		if err := tx.QueryRowContext(ctx, `SELECT role FROM memberships WHERE organization_id = ? AND user_id = ? AND status = 'active'`, scope.OrganizationID, scope.UserID).Scan(&role); err != nil {
-			return core.Capability{}, err
-		}
-		if role != core.ProjectRoleOwner {
-			return core.Capability{}, &core.ForbiddenError{Message: "global capability installation requires the instance owner"}
-		}
-		scopeID = scope.OrganizationID
+		// In Personal profile, global means all projects owned by the current
+		// user, never every account that shares the bootstrap organization.
+		scopeID = scope.UserID
 	}
 	var existingID, existingHash string
 	conflictErr := tx.QueryRowContext(ctx, `SELECT id, content_hash FROM capabilities WHERE organization_id = ? AND scope_type = ? AND scope_id = ? AND kind = ? AND name = ? AND version = ? LIMIT 1`, scope.OrganizationID, input.ScopeType, scopeID, input.Kind, input.Name, input.Version).Scan(&existingID, &existingHash)
@@ -5095,7 +5164,7 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	if err != nil {
 		return core.Capability{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = ?, scope_id = ?, source_filename = ?, bundle_storage_key = ?, install_job_id = ? WHERE id = ?`, input.ScopeType, scopeID, input.SourceFilename, bundleStorageKey, installJobID, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = ?, scope_id = ?, source_filename = ?, bundle_storage_key = ?, install_job_id = ?, credential_ref = ? WHERE id = ?`, input.ScopeType, scopeID, input.SourceFilename, bundleStorageKey, installJobID, input.CredentialRef, id); err != nil {
 		return core.Capability{}, err
 	}
 	jobState := "succeeded"
@@ -5114,6 +5183,7 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	capability.SourceFilename = input.SourceFilename
 	capability.BundleHash = contentHash
 	capability.InstallJobID = installJobID
+	capability.CredentialRef = input.CredentialRef
 	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusCreated, capability); err != nil {
 		return core.Capability{}, err
 	}
@@ -5123,6 +5193,10 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	return capability, nil
 }
 
+func (s *Store) GetCapability(ctx context.Context, scope core.Scope, capabilityID string) (core.Capability, error) {
+	return s.getCapabilityByID(ctx, scope, capabilityID)
+}
+
 func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Capability, error) {
 	if _, err := s.queries.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
 		return nil, err
@@ -5130,12 +5204,12 @@ func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectI
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, created_at, updated_at
 		FROM capabilities
 		WHERE organization_id = ?
-		  AND ((scope_type = 'project' AND scope_id = ?) OR (scope_type = 'global' AND scope_id = ?))
+		  AND ((scope_type = 'project' AND scope_id = ?) OR (scope_type = 'global' AND owner_user_id = ?))
 		ORDER BY CASE scope_type WHEN 'project' THEN 0 ELSE 1 END, updated_at DESC, id ASC
-		LIMIT ?`, scope.OrganizationID, projectID, scope.OrganizationID, limit)
+		LIMIT ?`, scope.OrganizationID, projectID, scope.UserID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -5144,7 +5218,7 @@ func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectI
 	for rows.Next() {
 		var item core.Capability
 		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version, &item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID, &item.SourceFilename, &item.InstallJobID, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version, &item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID, &item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		item.BundleHash = item.ContentHash
@@ -5196,6 +5270,45 @@ func (s *Store) SetCapabilityStatus(ctx context.Context, scope core.Scope, capab
 	return capability, nil
 }
 
+func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabilityID, correlationID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var projectID, name, kind string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id, name, kind FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &name, &kind); err != nil {
+		return err
+	}
+	var activeRuns int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM run_tool_snapshots snapshots
+		JOIN runs ON runs.id = snapshots.run_id
+		WHERE snapshots.capability_id = ?
+		  AND runs.status IN ('queued','running','waiting_approval','waiting_input','paused','blocked')`, capabilityID).Scan(&activeRuns); err != nil {
+		return err
+	}
+	if activeRuns > 0 {
+		return &core.StateConflictError{Status: "active_run", Command: "delete capability"}
+	}
+	now := formatTime(time.Now())
+	auditID, err := newID()
+	if err != nil {
+		return err
+	}
+	detail, _ := json.Marshal(map[string]any{"kind": kind, "name": name, "history_retained": true})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'capability.deleted', 'capability', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, capabilityID, string(detail), correlationID, now); err != nil {
+		return err
+	}
+	if result, err := tx.ExecContext(ctx, `DELETE FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID); err != nil {
+		return err
+	} else if affected, _ := result.RowsAffected(); affected != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ReviewCapability(ctx context.Context, scope core.Scope, capabilityID string, input core.ReviewCapabilityInput, correlationID string, idempotency core.Idempotency) (core.Capability, error) {
 	route := "POST /capabilities/" + capabilityID + "/review"
 	if idempotency.Key != "" {
@@ -5236,7 +5349,7 @@ func (s *Store) ReviewCapability(ctx context.Context, scope core.Scope, capabili
 	capability.CreatedAt = mustParseTime(createdAt)
 	capability.UpdatedAt = mustParseTime(updatedAt)
 	capability.PermissionDiff = core.CapabilityPermissionDiff(capability.ManifestJSON)
-	_ = tx.QueryRowContext(ctx, `SELECT scope_type, scope_id, source_filename, install_job_id FROM capabilities WHERE id = ?`, capability.ID).Scan(&capability.ScopeType, &capability.ScopeID, &capability.SourceFilename, &capability.InstallJobID)
+	_ = tx.QueryRowContext(ctx, `SELECT scope_type, scope_id, source_filename, install_job_id, credential_ref FROM capabilities WHERE id = ?`, capability.ID).Scan(&capability.ScopeType, &capability.ScopeID, &capability.SourceFilename, &capability.InstallJobID, &capability.CredentialRef)
 	capability.BundleHash = capability.ContentHash
 	if role != core.ProjectRoleOwner && role != core.ProjectRoleApprover {
 		return core.Capability{}, &core.ForbiddenError{Message: "only project owners or approvers can review capabilities"}
@@ -5285,7 +5398,7 @@ func (s *Store) ReviewCapability(ctx context.Context, scope core.Scope, capabili
 	return capability, nil
 }
 
-func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, correlationID string) (core.MCPHealth, error) {
+func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential, correlationID string) (core.MCPHealth, error) {
 	var projectID, kind, manifest, capabilityStatus string
 	if err := s.db.QueryRowContext(ctx, `SELECT project_id, kind, manifest_json, status FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &kind, &manifest, &capabilityStatus); err != nil {
 		return core.MCPHealth{}, err
@@ -5296,10 +5409,12 @@ func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, 
 	if capabilityStatus != core.CapabilityStatusEnabled {
 		return core.MCPHealth{}, &core.ForbiddenError{Message: "MCP must be explicitly enabled before connecting"}
 	}
-	health, connectErr := mcpadapter.Connect(ctx, manifest)
+	health, connectErr := mcpadapter.Connect(ctx, manifest, credential)
 	status := core.MCPStatusFailed
 	if connectErr == nil {
 		status = core.MCPStatusConnected
+	} else if errors.Is(connectErr, mcpadapter.ErrNeedsAuth) {
+		status = core.MCPStatusNeedsAuth
 	}
 	toolsJSON, _ := json.Marshal(health.Tools)
 	toolsHash := sha256.Sum256(toolsJSON)
@@ -5831,6 +5946,40 @@ func (s *Store) SetAgentDefinitionStatus(ctx context.Context, scope core.Scope, 
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'agent.status_changed', 'agent', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, agent.ProjectID, scope.UserID, agentID, fmt.Sprintf(`{"status":%q}`, status), auditID, formatTime(time.Now()))
 	}
 	return agent, nil
+}
+
+func (s *Store) DeleteAgentDefinition(ctx context.Context, scope core.Scope, agentID, correlationID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var projectID, name string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id, name FROM agent_definitions WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, agentID, scope.OrganizationID, scope.UserID).Scan(&projectID, &name); err != nil {
+		return err
+	}
+	var activeRuns int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE organization_id = ? AND project_id = ? AND status IN ('queued','running','waiting_approval','waiting_input','paused','blocked') AND config_snapshot_json LIKE ?`, scope.OrganizationID, projectID, "%"+agentID+"%").Scan(&activeRuns); err != nil {
+		return err
+	}
+	if activeRuns > 0 {
+		return &core.StateConflictError{Status: "active_run", Command: "delete agent"}
+	}
+	auditID, err := newID()
+	if err != nil {
+		return err
+	}
+	now := formatTime(time.Now())
+	detail, _ := json.Marshal(map[string]any{"name": name, "history_retained": true})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'agent.deleted', 'agent', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, agentID, string(detail), correlationID, now); err != nil {
+		return err
+	}
+	if result, err := tx.ExecContext(ctx, `DELETE FROM agent_definitions WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, agentID, scope.OrganizationID, scope.UserID); err != nil {
+		return err
+	} else if affected, _ := result.RowsAffected(); affected != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateTeamDefinition(ctx context.Context, scope core.Scope, projectID string, input core.CreateTeamDefinitionInput, idempotency core.Idempotency) (core.TeamDefinition, error) {
@@ -6425,6 +6574,9 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 	if err != nil {
 		return core.Approval{}, err
 	}
+	if input.Decision == core.ApprovalApproved && input.Scope != core.ApprovalScopeOnce && strings.HasPrefix(approval.ToolName, "mcp__") {
+		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "MCP tools only support one-time approval"}
+	}
 	var projectRole string
 	if err := tx.QueryRowContext(ctx, `SELECT role FROM project_memberships WHERE project_id = ? AND user_id = ? AND status = 'active'`, approval.ProjectID, scope.UserID).Scan(&projectRole); err != nil {
 		return core.Approval{}, err
@@ -6650,6 +6802,13 @@ func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUn
 	nowText := formatTime(now)
 	var candidateID string
 	if err := s.db.QueryRowContext(ctx, findBatchAwareCandidate, nowText, nowText, nowText).Scan(&candidateID); errors.Is(err, sql.ErrNoRows) {
+		recovered, recoverErr := s.recoverCompletedToolBatchWithoutRunnableStep(ctx, now)
+		if recoverErr != nil {
+			return core.ClaimedStep{}, fmt.Errorf("recover completed tool batch: %w", recoverErr)
+		}
+		if recovered {
+			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
+		}
 		return core.ClaimedStep{}, core.ErrNoWork
 	} else if err != nil {
 		return core.ClaimedStep{}, err
@@ -10809,11 +10968,11 @@ func (s *Store) getCapabilityByIDTx(ctx context.Context, tx *sql.Tx, scope core.
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, created_at, updated_at
 		FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(
 		&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version,
 		&item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID,
-		&item.SourceFilename, &item.InstallJobID, &createdAt, &updatedAt,
+		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt,
 	); err != nil {
 		return core.Capability{}, err
 	}
@@ -10830,11 +10989,11 @@ func (s *Store) getCapabilityByID(ctx context.Context, scope core.Scope, capabil
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, created_at, updated_at
 		FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(
 		&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version,
 		&item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID,
-		&item.SourceFilename, &item.InstallJobID, &createdAt, &updatedAt,
+		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt,
 	); err != nil {
 		return core.Capability{}, err
 	}

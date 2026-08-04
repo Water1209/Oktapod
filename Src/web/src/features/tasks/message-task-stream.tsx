@@ -63,6 +63,7 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
   const runningStep = timeline.find((step) => step.state === 'running')
   const taskActive = active && ['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'].includes(taskQuery.data.status)
   const taskFailed = taskQuery.data.status === 'failed' || taskQuery.data.status === 'blocked'
+  const taskCanceled = taskQuery.data.status === 'canceled'
   const skillNames = Array.from(new Set(liveEvents.flatMap((event) => {
     if (event.event_type !== 'skill.loaded' || !Array.isArray(event.payload.skill_names)) return []
     return event.payload.skill_names.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
@@ -84,8 +85,8 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
     <div className={`message-task-stream${taskActive ? ' active' : ''}`}>
       <div className="message-task-stream-head">
       <span className={`task-stream-status${taskActive ? ' running' : ''}${taskFailed ? ' failed' : ''}`}>
-        {taskActive ? <LoaderCircle className="spin" size={12} /> : taskFailed ? <AlertTriangle size={12} /> : <Check size={12} />}
-        {taskActive ? (runningStep?.label ?? '任务执行中') : failure ? failure.title : '任务已完成'}
+        {taskActive ? <LoaderCircle className="spin" size={12} /> : taskFailed ? <AlertTriangle size={12} /> : taskCanceled ? <X size={12} /> : <Check size={12} />}
+        {taskActive ? (runningStep?.label ?? '任务执行中') : failure ? failure.title : taskCanceled ? '任务已取消' : '任务已完成'}
       </span>
       <span className={`task-skill-summary${skillNames.length ? ' loaded' : ''}`} title={skillNames.length ? `已加载：${skillNames.join('、')}` : '本次 Run 未加载 Skill'}>
         <Puzzle size={11} />{skillNames.length ? skillNames.join('、') : '未加载 Skill'}

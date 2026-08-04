@@ -19,6 +19,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Health struct {
@@ -51,12 +53,28 @@ type CallResult struct {
 }
 
 type manifest struct {
-	Transport string   `json:"transport"`
-	Command   string   `json:"command"`
-	Args      []string `json:"args"`
-	URL       string   `json:"url"`
-	AuthEnv   string   `json:"auth_env"`
-	Version   string   `json:"version"`
+	Transport  string            `json:"transport"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args"`
+	URL        string            `json:"url"`
+	AuthEnv    string            `json:"auth_env"`
+	Version    string            `json:"version"`
+	AuthType   string            `json:"-"`
+	AuthHeader string            `json:"-"`
+	Headers    map[string]string `json:"-"`
+}
+
+var ErrNeedsAuth = errors.New("MCP credential is not configured")
+
+func manifestCredential(spec manifest, supplied string) (string, error) {
+	credential := strings.TrimSpace(supplied)
+	if credential == "" && strings.TrimSpace(spec.AuthEnv) != "" {
+		credential = strings.TrimSpace(os.Getenv(spec.AuthEnv))
+	}
+	if (strings.TrimSpace(spec.AuthEnv) != "" || spec.AuthType == "bearer" || spec.AuthType == "oauth" || spec.AuthType == "custom_header" || spec.AuthType == "environment") && credential == "" {
+		return "", ErrNeedsAuth
+	}
+	return credential, nil
 }
 
 type rpcRequest struct {
@@ -82,9 +100,9 @@ type rpcResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func Connect(ctx context.Context, manifestJSON string) (Health, error) {
-	var spec manifest
-	if err := json.Unmarshal([]byte(manifestJSON), &spec); err != nil {
+func Connect(ctx context.Context, manifestJSON, credential string) (Health, error) {
+	spec, err := decodeManifest(manifestJSON)
+	if err != nil {
 		return Health{LastError: "invalid MCP manifest"}, fmt.Errorf("decode MCP manifest: %w", err)
 	}
 	spec.Transport = strings.ToLower(strings.TrimSpace(spec.Transport))
@@ -95,14 +113,24 @@ func Connect(ctx context.Context, manifestJSON string) (Health, error) {
 			spec.Transport = "stdio"
 		}
 	}
-	switch spec.Transport {
-	case "stdio":
-		return connectStdio(ctx, spec)
-	case "streamable_http", "http":
-		return connectHTTP(ctx, spec)
-	default:
-		return Health{Transport: spec.Transport, LastError: "unsupported MCP transport"}, fmt.Errorf("unsupported MCP transport %q", spec.Transport)
+	credential, err = manifestCredential(spec, credential)
+	if err != nil {
+		return Health{Transport: spec.Transport, LastError: err.Error()}, err
 	}
+	session, closeSession, err := openSDKSession(ctx, spec, credential)
+	if err != nil {
+		return Health{Transport: spec.Transport, LastError: safeMCPError(err)}, err
+	}
+	defer closeSession()
+	tools, err := listSDKTools(ctx, session)
+	if err != nil {
+		return Health{Transport: spec.Transport, LastError: safeMCPError(err)}, err
+	}
+	protocol := ""
+	if initialized := session.InitializeResult(); initialized != nil {
+		protocol = initialized.ProtocolVersion
+	}
+	return Health{Transport: canonicalTransport(spec.Transport), Protocol: protocol, Tools: tools, ConnectedAt: time.Now().UTC()}, nil
 }
 
 // Call performs one explicitly requested MCP tools/call invocation. A fresh
@@ -110,7 +138,7 @@ func Connect(ctx context.Context, manifestJSON string) (Health, error) {
 // compromised server process cannot retain a long-lived broker handle. The
 // caller must enforce approval, capability scope and receipt semantics before
 // invoking this adapter.
-func Call(ctx context.Context, manifestJSON, toolName string, arguments map[string]any) (CallResult, error) {
+func Call(ctx context.Context, manifestJSON, credential, toolName string, arguments map[string]any) (CallResult, error) {
 	if strings.TrimSpace(toolName) == "" || len(toolName) > 200 {
 		return CallResult{}, errors.New("MCP tool name is invalid")
 	}
@@ -118,8 +146,8 @@ func Call(ctx context.Context, manifestJSON, toolName string, arguments map[stri
 	if err != nil || len(encoded) > 1<<20 {
 		return CallResult{}, errors.New("MCP tool arguments exceed the 1 MiB safety limit")
 	}
-	var spec manifest
-	if err := json.Unmarshal([]byte(manifestJSON), &spec); err != nil {
+	spec, err := decodeManifest(manifestJSON)
+	if err != nil {
 		return CallResult{}, fmt.Errorf("decode MCP manifest: %w", err)
 	}
 	spec.Transport = strings.ToLower(strings.TrimSpace(spec.Transport))
@@ -130,18 +158,215 @@ func Call(ctx context.Context, manifestJSON, toolName string, arguments map[stri
 			spec.Transport = "stdio"
 		}
 	}
-	request := rpcRequest{JSONRPC: "2.0", ID: 2, Method: "tools/call", Params: map[string]any{"name": toolName, "arguments": arguments}}
-	switch spec.Transport {
-	case "stdio":
-		return callStdio(ctx, spec, request)
-	case "streamable_http", "http":
-		return callHTTP(ctx, spec, request)
-	default:
-		return CallResult{}, fmt.Errorf("unsupported MCP transport %q", spec.Transport)
+	credential, err = manifestCredential(spec, credential)
+	if err != nil {
+		return CallResult{}, err
 	}
+	session, closeSession, err := openSDKSession(ctx, spec, credential)
+	if err != nil {
+		return CallResult{}, err
+	}
+	defer closeSession()
+	result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: toolName, Arguments: arguments})
+	if err != nil {
+		return CallResult{}, err
+	}
+	if result.NeedsInput() {
+		return CallResult{}, errors.New("MCP tool requires structured user input that this Run has not supplied")
+	}
+	content := make([]json.RawMessage, 0, len(result.Content))
+	total := 0
+	for _, item := range result.Content {
+		encoded, marshalErr := json.Marshal(item)
+		if marshalErr != nil {
+			return CallResult{}, marshalErr
+		}
+		total += len(encoded)
+		if total > 1<<20 {
+			return CallResult{}, errors.New("MCP tool response exceeds the 1 MiB safety limit")
+		}
+		content = append(content, encoded)
+	}
+	var structured json.RawMessage
+	if result.StructuredContent != nil {
+		structured, err = json.Marshal(result.StructuredContent)
+		if err != nil {
+			return CallResult{}, err
+		}
+		if len(structured) > 1<<20 {
+			return CallResult{}, errors.New("MCP structured response exceeds the 1 MiB safety limit")
+		}
+	}
+	return CallResult{Content: content, IsError: result.IsError, StructuredResult: structured}, nil
 }
 
-func callStdio(ctx context.Context, spec manifest, request rpcRequest) (CallResult, error) {
+func openSDKSession(ctx context.Context, spec manifest, credential string) (*sdkmcp.ClientSession, func(), error) {
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "oktapod", Title: "Oktapod", Version: "1.0.0"}, &sdkmcp.ClientOptions{Capabilities: &sdkmcp.ClientCapabilities{}})
+	var transport sdkmcp.Transport
+	switch spec.Transport {
+	case "stdio":
+		if strings.TrimSpace(spec.Command) == "" || strings.ContainsAny(spec.Command, "&|;<>\r\n") {
+			return nil, func() {}, errors.New("stdio command must be a direct executable path")
+		}
+		command := exec.CommandContext(ctx, spec.Command, spec.Args...)
+		configureMCPCommand(command)
+		command.Cancel = func() error { return terminateMCPProcessTree(command) }
+		command.WaitDelay = 2 * time.Second
+		command.Env = mcpCommandEnvironment(spec, credential)
+		command.Stderr = io.Discard
+		transport = &sdkmcp.CommandTransport{Command: command, TerminateDuration: 2 * time.Second}
+	case "streamable_http", "http":
+		target, err := url.Parse(strings.TrimSpace(spec.URL))
+		if err != nil || target.Scheme == "" || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
+			return nil, func() {}, errors.New("MCP URL must be an absolute http(s) URL")
+		}
+		if err := validateHost(ctx, target.Hostname()); err != nil {
+			return nil, func() {}, fmt.Errorf("MCP URL is not allowed by SSRF policy: %w", err)
+		}
+		httpClient := safeHTTPClient(target)
+		if len(spec.Headers) > 0 || credential != "" {
+			httpClient.Transport = headerRoundTripper{base: httpClient.Transport, credential: credential, authType: spec.AuthType, authHeader: spec.AuthHeader, headers: spec.Headers}
+		}
+		transport = &sdkmcp.StreamableClientTransport{Endpoint: target.String(), HTTPClient: httpClient, MaxRetries: 1, DisableStandaloneSSE: true}
+	default:
+		return nil, func() {}, fmt.Errorf("unsupported MCP transport %q", spec.Transport)
+	}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return session, func() { _ = session.Close() }, nil
+}
+
+type headerRoundTripper struct {
+	base       http.RoundTripper
+	credential string
+	authType   string
+	authHeader string
+	headers    map[string]string
+}
+
+func (roundTripper headerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header = request.Header.Clone()
+	for key, value := range roundTripper.headers {
+		clone.Header.Set(key, value)
+	}
+	if roundTripper.credential != "" {
+		if roundTripper.authType == "custom_header" {
+			clone.Header.Set(roundTripper.authHeader, roundTripper.credential)
+		} else {
+			clone.Header.Set("Authorization", "Bearer "+roundTripper.credential)
+		}
+	}
+	return roundTripper.base.RoundTrip(clone)
+}
+
+func decodeManifest(raw string) (manifest, error) {
+	var document map[string]any
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		return manifest{}, err
+	}
+	spec := manifest{}
+	switch transport := document["transport"].(type) {
+	case string:
+		spec.Transport = transport
+		spec.Command, _ = document["command"].(string)
+		spec.URL, _ = document["url"].(string)
+		spec.AuthEnv, _ = document["auth_env"].(string)
+		spec.Args = manifestStringSlice(document["args"])
+	case map[string]any:
+		spec.Transport, _ = transport["type"].(string)
+		spec.Command, _ = transport["command"].(string)
+		spec.URL, _ = transport["url"].(string)
+		spec.AuthEnv, _ = transport["auth_env"].(string)
+		spec.Args = manifestStringSlice(transport["args"])
+	default:
+		return manifest{}, errors.New("MCP transport is missing")
+	}
+	if auth, ok := document["auth"].(map[string]any); ok {
+		spec.AuthType, _ = auth["type"].(string)
+		spec.AuthHeader, _ = auth["header"].(string)
+	}
+	if headers, ok := document["headers"].(map[string]any); ok {
+		spec.Headers = make(map[string]string, len(headers))
+		for key, value := range headers {
+			text, ok := value.(string)
+			if !ok {
+				return manifest{}, fmt.Errorf("MCP header %q must be a string", key)
+			}
+			spec.Headers[key] = text
+		}
+	}
+	return spec, nil
+}
+
+func manifestStringSlice(value any) []string {
+	items, _ := value.([]any)
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
+func listSDKTools(ctx context.Context, session *sdkmcp.ClientSession) ([]Tool, error) {
+	result := make([]Tool, 0, 32)
+	cursor := ""
+	for page := 0; page < 20; page++ {
+		listed, err := session.ListTools(ctx, &sdkmcp.ListToolsParams{Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range listed.Tools {
+			if item == nil || strings.TrimSpace(item.Name) == "" {
+				continue
+			}
+			if len(result) >= 1000 {
+				return nil, errors.New("MCP server exposes more than 1000 tools")
+			}
+			schema := map[string]any{}
+			if item.InputSchema != nil {
+				encoded, marshalErr := json.Marshal(item.InputSchema)
+				if marshalErr != nil || len(encoded) > 1<<20 || json.Unmarshal(encoded, &schema) != nil {
+					return nil, fmt.Errorf("MCP tool %q has an invalid or oversized input schema", item.Name)
+				}
+			}
+			annotations := ToolAnnotations{}
+			if item.Annotations != nil {
+				readOnly, idempotent := item.Annotations.ReadOnlyHint, item.Annotations.IdempotentHint
+				annotations = ToolAnnotations{Title: item.Annotations.Title, ReadOnlyHint: &readOnly, DestructiveHint: item.Annotations.DestructiveHint, IdempotentHint: &idempotent, OpenWorldHint: item.Annotations.OpenWorldHint}
+			}
+			result = append(result, Tool{Name: item.Name, Description: item.Description, InputSchema: schema, Annotations: annotations})
+		}
+		cursor = listed.NextCursor
+		if cursor == "" {
+			return result, nil
+		}
+	}
+	return nil, errors.New("MCP tools/list exceeded pagination limit")
+}
+
+func canonicalTransport(value string) string {
+	if value == "http" {
+		return "streamable_http"
+	}
+	return value
+}
+
+func safeMCPError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "MCP connection timed out"
+	}
+	if errors.Is(err, ErrNeedsAuth) {
+		return ErrNeedsAuth.Error()
+	}
+	return "MCP connection failed"
+}
+
+func callStdio(ctx context.Context, spec manifest, credential string, request rpcRequest) (CallResult, error) {
 	if strings.TrimSpace(spec.Command) == "" || strings.ContainsAny(spec.Command, "&|;<>\r\n") {
 		return CallResult{}, errors.New("stdio command must be a direct executable path")
 	}
@@ -149,7 +374,7 @@ func callStdio(ctx context.Context, spec manifest, request rpcRequest) (CallResu
 	configureMCPCommand(command)
 	command.Cancel = func() error { return terminateMCPProcessTree(command) }
 	command.WaitDelay = 2 * time.Second
-	command.Env = mcpCommandEnvironment(spec)
+	command.Env = mcpCommandEnvironment(spec, credential)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return CallResult{}, err
@@ -189,7 +414,7 @@ func callStdio(ctx context.Context, spec manifest, request rpcRequest) (CallResu
 	return callResult(response)
 }
 
-func callHTTP(ctx context.Context, spec manifest, request rpcRequest) (CallResult, error) {
+func callHTTP(ctx context.Context, spec manifest, credential string, request rpcRequest) (CallResult, error) {
 	target, err := url.Parse(strings.TrimSpace(spec.URL))
 	if err != nil || target.Scheme == "" || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
 		return CallResult{}, errors.New("MCP URL must be an absolute http(s) URL")
@@ -210,10 +435,8 @@ func callHTTP(ctx context.Context, spec manifest, request rpcRequest) (CallResul
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Origin", "http://127.0.0.1")
-		if env := strings.TrimSpace(spec.AuthEnv); env != "" {
-			if value := strings.TrimSpace(os.Getenv(env)); value != "" {
-				req.Header.Set("Authorization", "Bearer "+value)
-			}
+		if credential != "" {
+			req.Header.Set("Authorization", "Bearer "+credential)
 		}
 		response, err := client.Do(req)
 		if err != nil {
@@ -258,7 +481,7 @@ func callResult(response rpcResponse) (CallResult, error) {
 	return CallResult{Content: response.Result.Content, IsError: response.Result.IsError, StructuredResult: response.Result.StructuredResult}, nil
 }
 
-func connectStdio(ctx context.Context, spec manifest) (Health, error) {
+func connectStdio(ctx context.Context, spec manifest, credential string) (Health, error) {
 	health := Health{Transport: "stdio"}
 	if strings.TrimSpace(spec.Command) == "" || strings.ContainsAny(spec.Command, "&|;<>\r\n") {
 		health.LastError = "stdio command must be a direct executable path"
@@ -268,7 +491,7 @@ func connectStdio(ctx context.Context, spec manifest) (Health, error) {
 	configureMCPCommand(command)
 	command.Cancel = func() error { return terminateMCPProcessTree(command) }
 	command.WaitDelay = 2 * time.Second
-	command.Env = mcpCommandEnvironment(spec)
+	command.Env = mcpCommandEnvironment(spec, credential)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return health, err
@@ -326,7 +549,7 @@ func connectStdio(ctx context.Context, spec manifest) (Health, error) {
 	return health, nil
 }
 
-func connectHTTP(ctx context.Context, spec manifest) (Health, error) {
+func connectHTTP(ctx context.Context, spec manifest, credential string) (Health, error) {
 	health := Health{Transport: "streamable_http"}
 	target, err := url.Parse(strings.TrimSpace(spec.URL))
 	if err != nil || target.Scheme == "" || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
@@ -350,10 +573,8 @@ func connectHTTP(ctx context.Context, spec manifest) (Health, error) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Origin", "http://127.0.0.1")
-		if strings.TrimSpace(spec.AuthEnv) != "" {
-			if value := strings.TrimSpace(os.Getenv(spec.AuthEnv)); value != "" {
-				req.Header.Set("Authorization", "Bearer "+value)
-			}
+		if credential != "" {
+			req.Header.Set("Authorization", "Bearer "+credential)
 		}
 		response, doErr := client.Do(req)
 		if doErr != nil {

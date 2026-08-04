@@ -607,7 +607,8 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			}
 			mcpSnapshots = append(mcpSnapshots, map[string]any{
 				"id": capability.ID, "name": capability.Name, "manifest_json": capability.ManifestJSON,
-				"tools": tools, "schema_hash": health.SchemaHash, "config_version": health.ConfigVersion,
+				"credential_ref": capability.CredentialRef,
+				"tools":          tools, "schema_hash": health.SchemaHash, "config_version": health.ConfigVersion,
 				"health_state": health.HealthState,
 			})
 		}
@@ -1784,6 +1785,7 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 	input.ManifestJSON = strings.TrimSpace(input.ManifestJSON)
 	input.ScopeType = strings.ToLower(strings.TrimSpace(input.ScopeType))
 	input.SourceFilename = strings.TrimSpace(input.SourceFilename)
+	input.Credential = strings.TrimSpace(input.Credential)
 	if input.ScopeType == "" {
 		input.ScopeType = core.CapabilityScopeGlobal
 	}
@@ -1808,8 +1810,21 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		input.ManifestJSON = normalized
 		input.Name = name
 	}
+	if input.Kind == core.CapabilityKindMCP {
+		definition, definitionErr := core.ParseMCPDefinition(input.ManifestJSON)
+		if definitionErr != nil {
+			return core.Capability{}, &core.ValidationError{Field: "manifest_json", Message: definitionErr.Error()}
+		}
+		input.ManifestJSON, definitionErr = definition.JSON()
+		if definitionErr != nil {
+			return core.Capability{}, definitionErr
+		}
+	}
 	if input.Version == "" {
 		input.Version = "0.1.0"
+	}
+	if input.Credential != "" && input.Kind != core.CapabilityKindMCP {
+		return core.Capability{}, &core.ValidationError{Field: "credential", Message: "is only supported for MCP capabilities"}
 	}
 	if err := core.ValidateCreateCapability(input); err != nil {
 		return core.Capability{}, err
@@ -1860,6 +1875,27 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 	if err != nil {
 		return core.Capability{}, err
 	}
+	var oldCredential string
+	var oldCredentialExists bool
+	if input.Credential != "" {
+		if s.providerSecrets == nil {
+			return core.Capability{}, fmt.Errorf("MCP secret store is unavailable")
+		}
+		scopeID := projectID
+		if input.ScopeType == core.CapabilityScopeGlobal {
+			scopeID = s.ScopeFor(ctx).UserID
+		}
+		refSeed := strings.Join([]string{input.ScopeType, scopeID, input.Name, input.Version}, "\x00")
+		refHash := sha256.Sum256([]byte(refSeed))
+		input.CredentialRef = "mcp-capability/" + s.ScopeFor(ctx).OrganizationID + "/" + hex.EncodeToString(refHash[:16])
+		var credentialErr error
+		oldCredential, credentialErr = s.providerSecrets.Get(ctx, input.CredentialRef)
+		oldCredentialExists = credentialErr == nil
+		if credentialErr = s.providerSecrets.Set(ctx, input.CredentialRef, input.Credential); credentialErr != nil {
+			return core.Capability{}, fmt.Errorf("store MCP credential: %w", credentialErr)
+		}
+		input.Credential = ""
+	}
 	request := struct {
 		ProjectID      string `json:"project_id"`
 		Kind           string `json:"kind"`
@@ -1870,11 +1906,58 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		SourceFilename string `json:"source_filename"`
 		BundleHash     string `json:"bundle_hash"`
 	}{ProjectID: projectID, Kind: input.Kind, Name: input.Name, Version: input.Version, ManifestJSON: input.ManifestJSON, ScopeType: input.ScopeType, SourceFilename: input.SourceFilename, BundleHash: input.BundleHash}
-	return s.repository.CreateCapability(ctx, s.ScopeFor(ctx), projectID, input, contentHash, status, riskLevel, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	capability, createErr := s.repository.CreateCapability(ctx, s.ScopeFor(ctx), projectID, input, contentHash, status, riskLevel, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	if createErr != nil && input.CredentialRef != "" {
+		if oldCredentialExists {
+			_ = s.providerSecrets.Set(ctx, input.CredentialRef, oldCredential)
+		} else {
+			_ = s.providerSecrets.Delete(ctx, input.CredentialRef)
+		}
+	}
+	if createErr != nil {
+		return core.Capability{}, createErr
+	}
+	capability = s.decorateCapabilityCredential(ctx, capability)
+	capability = s.decorateCapabilityAvailability(ctx, capability)
+	return capability, nil
 }
 
 func (s *Service) ListCapabilities(ctx context.Context, projectID string) ([]core.Capability, error) {
-	return s.repository.ListCapabilities(ctx, s.ScopeFor(ctx), projectID, 100)
+	items, err := s.repository.ListCapabilities(ctx, s.ScopeFor(ctx), projectID, 100)
+	if err != nil {
+		return nil, err
+	}
+	for index := range items {
+		items[index] = s.decorateCapabilityCredential(ctx, items[index])
+		items[index] = s.decorateCapabilityAvailability(ctx, items[index])
+	}
+	return items, nil
+}
+
+func (s *Service) decorateCapabilityAvailability(ctx context.Context, capability core.Capability) core.Capability {
+	switch capability.Status {
+	case core.CapabilityStatusDisabled:
+		capability.Availability = core.ResourceAvailabilityDisabled
+	case core.CapabilityStatusQuarantined:
+		capability.Availability = core.ResourceAvailabilityQuarantined
+	default:
+		capability.Availability = core.ResourceAvailabilityAvailable
+		if capability.Kind == core.CapabilityKindMCP {
+			health, err := s.repository.GetMCPHealth(ctx, s.ScopeFor(ctx), capability.ID)
+			if err != nil || health.Status != core.MCPStatusConnected {
+				capability.Availability = core.ResourceAvailabilityDegraded
+			}
+		}
+	}
+	return capability
+}
+
+func (s *Service) decorateCapabilityCredential(ctx context.Context, capability core.Capability) core.Capability {
+	if capability.CredentialRef != "" && s.providerSecrets != nil {
+		_, err := s.providerSecrets.Get(ctx, capability.CredentialRef)
+		capability.CredentialExists = err == nil
+	}
+	return capability
 }
 
 func (s *Service) SetCapabilityStatus(ctx context.Context, capabilityID, status, idempotencyKey string) (core.Capability, error) {
@@ -1890,7 +1973,24 @@ func (s *Service) SetCapabilityStatus(ctx context.Context, capabilityID, status,
 		CapabilityID string `json:"capability_id"`
 		Status       string `json:"status"`
 	}{CapabilityID: capabilityID, Status: status}
-	return s.repository.SetCapabilityStatus(ctx, s.ScopeFor(ctx), capabilityID, status, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	capability, setErr := s.repository.SetCapabilityStatus(ctx, s.ScopeFor(ctx), capabilityID, status, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	capability = s.decorateCapabilityCredential(ctx, capability)
+	capability = s.decorateCapabilityAvailability(ctx, capability)
+	return capability, setErr
+}
+
+func (s *Service) DeleteCapability(ctx context.Context, capabilityID, correlationID string) error {
+	capability, err := s.repository.GetCapability(ctx, s.ScopeFor(ctx), capabilityID)
+	if err != nil {
+		return err
+	}
+	if err := s.repository.DeleteCapability(ctx, s.ScopeFor(ctx), capabilityID, correlationID); err != nil {
+		return err
+	}
+	if capability.CredentialRef != "" && s.providerSecrets != nil {
+		_ = s.providerSecrets.Delete(ctx, capability.CredentialRef)
+	}
+	return nil
 }
 
 // ReviewCapability is the only path that can move a quarantined capability
@@ -1910,11 +2010,22 @@ func (s *Service) ReviewCapability(ctx context.Context, capabilityID string, inp
 		CapabilityID string                     `json:"capability_id"`
 		Input        core.ReviewCapabilityInput `json:"input"`
 	}{CapabilityID: capabilityID, Input: input}
-	return s.repository.ReviewCapability(ctx, s.ScopeFor(ctx), capabilityID, input, correlationID, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	capability, reviewErr := s.repository.ReviewCapability(ctx, s.ScopeFor(ctx), capabilityID, input, correlationID, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	capability = s.decorateCapabilityCredential(ctx, capability)
+	capability = s.decorateCapabilityAvailability(ctx, capability)
+	return capability, reviewErr
 }
 
 func (s *Service) ConnectMCP(ctx context.Context, capabilityID, correlationID string) (core.MCPHealth, error) {
-	return s.repository.ConnectMCP(ctx, s.ScopeFor(ctx), capabilityID, correlationID)
+	capability, err := s.repository.GetCapability(ctx, s.ScopeFor(ctx), capabilityID)
+	if err != nil {
+		return core.MCPHealth{}, err
+	}
+	credential := ""
+	if capability.CredentialRef != "" && s.providerSecrets != nil {
+		credential, _ = s.providerSecrets.Get(ctx, capability.CredentialRef)
+	}
+	return s.repository.ConnectMCP(ctx, s.ScopeFor(ctx), capabilityID, credential, correlationID)
 }
 
 func (s *Service) DisconnectMCP(ctx context.Context, capabilityID, correlationID string) (core.MCPHealth, error) {
@@ -2235,6 +2346,10 @@ func (s *Service) SetAgentDefinitionStatus(ctx context.Context, agentID, status,
 		Status  string `json:"status"`
 	}{AgentID: agentID, Status: status}
 	return s.repository.SetAgentDefinitionStatus(ctx, s.ScopeFor(ctx), agentID, status, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+}
+
+func (s *Service) DeleteAgentDefinition(ctx context.Context, agentID, correlationID string) error {
+	return s.repository.DeleteAgentDefinition(ctx, s.ScopeFor(ctx), agentID, correlationID)
 }
 
 func (s *Service) CreateTeamDefinition(ctx context.Context, projectID string, input core.CreateTeamDefinitionInput, idempotencyKey string) (core.TeamDefinition, error) {

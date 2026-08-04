@@ -3,6 +3,7 @@ package application
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -39,13 +40,25 @@ func normalizeSkillManifest(raw, fallbackName string) (manifestJSON, name string
 	if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
 		return "", fallbackName, fmt.Errorf("invalid SKILL.md frontmatter: %w", err)
 	}
+	allowed := map[string]bool{"name": true, "description": true, "license": true, "allowed-tools": true, "metadata": true}
+	for key := range metadata {
+		if !allowed[key] {
+			return "", fallbackName, fmt.Errorf("SKILL.md frontmatter field %q is not supported", key)
+		}
+	}
 	name = firstMetadataString(metadata, "name")
 	if name == "" {
 		name = strings.TrimSpace(fallbackName)
 	}
+	if len(name) > 64 || !regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`).MatchString(name) {
+		return "", fallbackName, fmt.Errorf("SKILL.md name must use lowercase letters, digits, and single hyphens (max 64 characters)")
+	}
 	description := firstMetadataString(metadata, "description")
 	if description == "" {
-		description = firstInstructionLine(body)
+		return "", fallbackName, fmt.Errorf("SKILL.md description is required")
+	}
+	if len(description) > 1024 || strings.ContainsAny(description, "<>") {
+		return "", fallbackName, fmt.Errorf("SKILL.md description must be at most 1024 characters and cannot contain angle brackets")
 	}
 	manifest := map[string]any{
 		"format":       "skill.md/v1",
@@ -58,17 +71,11 @@ func normalizeSkillManifest(raw, fallbackName string) (manifestJSON, name string
 	if tools := metadataStringList(metadata, "allowed-tools", "allowed_tools"); len(tools) > 0 {
 		manifest["allowed_tools"] = tools
 	}
-	for _, key := range []string{"model-invocable", "model_invocable"} {
-		value, exists := metadata[key]
-		if !exists {
-			continue
-		}
-		invocable, ok := value.(bool)
-		if !ok {
-			return "", fallbackName, fmt.Errorf("SKILL.md %s must be a boolean", key)
-		}
-		manifest["model_invocable"] = invocable
-		break
+	if license := firstMetadataString(metadata, "license"); license != "" {
+		manifest["license"] = license
+	}
+	if extra, ok := metadata["metadata"].(map[string]any); ok && len(extra) > 0 {
+		manifest["metadata"] = extra
 	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {

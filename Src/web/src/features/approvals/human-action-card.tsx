@@ -32,6 +32,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
   const impact = String(action.request.impact_scope ?? action.request.scope ?? '仅当前计划项')
   const toolName = String(action.request.tool_name ?? '')
   const approval = action.kind === 'tool_approval'
+	const persistentApprovalSupported = approval && !toolName.startsWith('mcp__')
   const input = action.kind === 'input_request'
   const permission = action.kind === 'permission_escalation'
   const budget = action.kind === 'budget_request'
@@ -46,6 +47,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       <em>{statusLabel(action.status)}</em>
     </header>
     <p>{action.reason}</p>
+	{waiting && approval && !persistentApprovalSupported ? <small className="human-action-error">外部 MCP 的参数与返回边界由服务端决定，为避免静默扩大权限，仅支持逐次批准。</small> : null}
     {!input ? <div className="human-action-frozen"><LockKeyhole size={14} /><span><small>{approval ? '冻结参数' : '请求内容'}</small><code>{formatRequest(toolName, frozen)}</code></span></div> : null}
     <dl><div><dt>影响范围</dt><dd>{impact}</dd></div><div><dt>请求哈希</dt><dd><code>{action.request_hash.slice(0, 16)}</code></dd></div></dl>
 
@@ -58,8 +60,8 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
     {waiting && (approval || permission || budget) ? <div className="human-action-actions">
       <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
       <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />{budget ? '批准扩展并继续' : '批准一次'}</button>
-      {approval ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
-      {approval ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
+	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
+	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
     </div> : null}
 
     {waiting && sideEffect ? <div className="human-action-actions">

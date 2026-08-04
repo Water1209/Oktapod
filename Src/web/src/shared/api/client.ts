@@ -12,6 +12,7 @@ export type MemoryStatus = 'active' | 'inactive'
 export type CapabilityKind = 'skill' | 'plugin' | 'mcp' | 'agent'
 export type CapabilityStatus = 'enabled' | 'disabled' | 'quarantined'
 export type CapabilityScope = 'global' | 'project'
+export type ResourceAvailability = 'available' | 'degraded' | 'disabled' | 'quarantined'
 export type TaskStatus =
   | 'queued'
   | 'running'
@@ -197,6 +198,7 @@ export interface Capability {
   manifest_json: string
   content_hash: string
   status: CapabilityStatus
+  availability: ResourceAvailability
   risk_level: string
   permission_diff: string[]
   scope_type: CapabilityScope
@@ -204,6 +206,7 @@ export interface Capability {
   source_filename: string
   bundle_hash: string
   install_job_id: string
+  credential_configured: boolean
   created_at: string
   updated_at: string
 }
@@ -854,10 +857,11 @@ export const api = {
   setScheduleStatus: (scheduleId: string, status: ScheduleStatus) =>
     request<Schedule>(`/schedules/${scheduleId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
   capabilities: (projectId: string) => request<{ items: Capability[] }>(`/projects/${projectId}/capabilities`),
-  createCapability: (projectId: string, input: { kind: CapabilityKind; name: string; version?: string; manifest_json: string; scope_type?: CapabilityScope; source_filename?: string; bundle_base64?: string }) =>
+  createCapability: (projectId: string, input: { kind: CapabilityKind; name: string; version?: string; manifest_json: string; scope_type?: CapabilityScope; source_filename?: string; bundle_base64?: string; credential?: string }) =>
     request<Capability>(`/projects/${projectId}/capabilities`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   setCapabilityStatus: (capabilityId: string, status: CapabilityStatus) =>
     request<Capability>(`/capabilities/${capabilityId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
+  deleteCapability: (capabilityId: string) => request<void>(`/capabilities/${capabilityId}`, { method: 'DELETE' }),
   reviewCapability: (capabilityId: string, decision: 'approved' | 'rejected', note = '') =>
     request<Capability>(`/capabilities/${capabilityId}/review`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ decision, note }) }),
   connectMCP: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/connect`, { method: 'POST' }),
@@ -878,6 +882,7 @@ export const api = {
   createAgent: (projectId: string, input: { name: string; version: string; instructions: string; model?: string; fallback_model?: string; config_json?: string }) =>
     request<AgentDefinition>(`/projects/${projectId}/agents`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   setAgentStatus: (agentId: string, status: CapabilityStatus) => request<AgentDefinition>(`/agents/${agentId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
+  deleteAgent: (agentId: string) => request<void>(`/agents/${agentId}`, { method: 'DELETE' }),
   teams: (projectId: string) => request<{ items: TeamDefinition[] }>(`/projects/${projectId}/teams`),
   createTeam: (projectId: string, input: { name: string; version: string; roles: { role: string; name: string }[]; config_json?: string }) =>
     request<TeamDefinition>(`/projects/${projectId}/teams`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),

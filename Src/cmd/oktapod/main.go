@@ -193,6 +193,7 @@ func run() error {
 		worker := okruntime.NewWorker(workerID, store, model, logger).
 			WithWorkspaceExecutor(workspaceExecutor).
 			WithWebSearchExecutor(webSearchExecutor).
+			WithMCPSecretStore(credentials).
 			WithQueuedTurnStarter(queuedTurnStarter)
 		workerGroup.Add(1)
 		go func() {

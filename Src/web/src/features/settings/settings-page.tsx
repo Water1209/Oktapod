@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Braces, Database, Keyboard, Palette, RefreshCcw, Shield, SlidersHorizontal, SquareTerminal } from 'lucide-react'
+import { applyPresentationPreferences, defaultPresentationPreferences, presentationPreferenceStorageKey, readPresentationPreferences, type DensityPreference, type ThemePreference } from '../../shared/presentation-preferences'
 
 type Preferences = {
-  theme: 'system' | 'light' | 'dark'
-  density: 'comfortable' | 'compact'
+  theme: ThemePreference
+  density: DensityPreference
   autoContinue: boolean
   retryLimit: number
   shell: string
@@ -12,8 +13,7 @@ type Preferences = {
 }
 
 const defaults: Preferences = {
-  theme: 'system',
-  density: 'compact',
+  ...defaultPresentationPreferences,
   autoContinue: false,
   retryLimit: 2,
   shell: 'system',
@@ -35,15 +35,14 @@ export function SettingsPage() {
   const section = pathname.split('/').at(-1) || 'appearance'
   const [preferences, setPreferences] = useState<Preferences>(() => {
     try {
-      return { ...defaults, ...JSON.parse(window.localStorage.getItem('oktapod.preferences.v1') || '{}') }
+      return { ...defaults, ...JSON.parse(window.localStorage.getItem(presentationPreferenceStorageKey) || '{}'), ...readPresentationPreferences() }
     } catch {
       return defaults
     }
   })
   useEffect(() => {
-    window.localStorage.setItem('oktapod.preferences.v1', JSON.stringify(preferences))
-    document.documentElement.dataset.theme = preferences.theme
-    document.documentElement.dataset.density = preferences.density
+    window.localStorage.setItem(presentationPreferenceStorageKey, JSON.stringify(preferences))
+    applyPresentationPreferences(preferences)
   }, [preferences])
   const update = <K extends keyof Preferences>(key: K, value: Preferences[K]) => setPreferences((current) => ({ ...current, [key]: value }))
 
@@ -55,8 +54,8 @@ export function SettingsPage() {
         {sections.map(([value, label, Icon]) => <Link key={value} className={section === value ? 'active' : ''} to="/settings/$section" params={{ section: value }}><Icon size={15}/>{label}</Link>)}
       </nav>
       <section className="settings-detail">
-        {section === 'appearance' ? <SettingsGroup title="外观" description="立即作用于当前浏览器。">
-          <SettingRow label="主题" source="浏览器本地"><select value={preferences.theme} onChange={(event) => update('theme', event.target.value as Preferences['theme'])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow>
+        {section === 'appearance' ? <SettingsGroup title="外观" description="切换后立即作用于整个工作区，并在刷新后保留。">
+          <SettingRow label="主题" source="浏览器本地"><select aria-label="主题" value={preferences.theme} onChange={(event) => update('theme', event.target.value as Preferences['theme'])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow>
           <SettingRow label="信息密度" source="浏览器本地"><select value={preferences.density} onChange={(event) => update('density', event.target.value as Preferences['density'])}><option value="compact">紧凑</option><option value="comfortable">舒适</option></select></SettingRow>
         </SettingsGroup> : null}
         {section === 'context' ? <SettingsGroup title="上下文" description="控制 Composer 默认行为；Run 启动后仍以冻结快照为准。">

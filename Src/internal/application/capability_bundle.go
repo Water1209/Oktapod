@@ -63,6 +63,7 @@ func normalizeCapabilityBundle(encoded, sourceFilename, fallbackKind, fallbackNa
 	files := make([]capabilityBundleFile, 0, len(reader.File))
 	var expanded uint64
 	var skillFile *zip.File
+	var skillPath string
 	var packageFile *zip.File
 	hasExecutable := false
 	for _, file := range reader.File {
@@ -97,6 +98,7 @@ func normalizeCapabilityBundle(encoded, sourceFilename, fallbackKind, fallbackNa
 				return normalizedCapabilityBundle{}, fmt.Errorf("capability archive must contain exactly one SKILL.md")
 			}
 			skillFile = file
+			skillPath = normalizedPath
 		}
 		if lowerBase == "capability.yaml" || lowerBase == "capability.yml" {
 			if packageFile != nil {
@@ -113,6 +115,17 @@ func normalizeCapabilityBundle(encoded, sourceFilename, fallbackKind, fallbackNa
 		return normalizedCapabilityBundle{}, fmt.Errorf("capability archive contains no regular files")
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	if strings.EqualFold(strings.TrimSpace(fallbackKind), "skill") || skillFile != nil {
+		if skillFile == nil {
+			return normalizedCapabilityBundle{}, fmt.Errorf("Skill ZIP must contain exactly one SKILL.md")
+		}
+		if packageFile != nil {
+			return normalizedCapabilityBundle{}, fmt.Errorf("Skill ZIP cannot contain capability.yaml")
+		}
+		if layoutErr := validateSkillBundleLayout(files, skillPath); layoutErr != nil {
+			return normalizedCapabilityBundle{}, layoutErr
+		}
+	}
 
 	kind := strings.TrimSpace(fallbackKind)
 	name := strings.TrimSpace(fallbackName)
@@ -179,6 +192,51 @@ func normalizeCapabilityBundle(encoded, sourceFilename, fallbackKind, fallbackNa
 		return normalizedCapabilityBundle{}, err
 	}
 	return normalizedCapabilityBundle{Kind: kind, Name: name, Version: version, ManifestJSON: string(encodedManifest), Data: data, Hash: hash}, nil
+}
+
+func validateSkillBundleLayout(files []capabilityBundleFile, skillPath string) error {
+	root := strings.TrimSuffix(skillPath, "/SKILL.md")
+	if root == skillPath {
+		root = ""
+	}
+	if root != "" && strings.Contains(root, "/") {
+		return fmt.Errorf("Skill ZIP must place SKILL.md at the archive root or inside one top-level folder")
+	}
+	for _, file := range files {
+		relative := file.Path
+		if root != "" {
+			prefix := root + "/"
+			if !strings.HasPrefix(relative, prefix) {
+				return fmt.Errorf("Skill ZIP files must share the same top-level folder: %s", relative)
+			}
+			relative = strings.TrimPrefix(relative, prefix)
+		}
+		lower := strings.ToLower(relative)
+		segments := strings.Split(relative, "/")
+		for _, segment := range segments {
+			if strings.HasPrefix(segment, ".") {
+				return fmt.Errorf("Skill ZIP hidden files and folders are not allowed: %s", relative)
+			}
+		}
+		if strings.Contains("/"+lower+"/", "/node_modules/") || strings.Contains("/"+lower+"/", "/__pycache__/") {
+			return fmt.Errorf("Skill ZIP must not vendor dependencies or caches: %s", relative)
+		}
+		if !strings.Contains(relative, "/") {
+			if relative == "SKILL.md" || lower == "license" || strings.HasPrefix(lower, "license.") {
+				continue
+			}
+			return fmt.Errorf("Skill ZIP contains an unsupported root file: %s", relative)
+		}
+		switch strings.ToLower(segments[0]) {
+		case "agents", "scripts", "references", "assets":
+		default:
+			return fmt.Errorf("Skill ZIP contains an unsupported top-level folder: %s", segments[0])
+		}
+		if strings.EqualFold(path.Base(relative), "SKILL.md") {
+			return fmt.Errorf("Skill ZIP cannot contain nested Skills: %s", relative)
+		}
+	}
+	return nil
 }
 
 func safeCapabilityArchivePath(raw string) (string, error) {

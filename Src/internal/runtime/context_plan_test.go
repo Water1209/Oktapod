@@ -127,8 +127,9 @@ func TestScenePolicyDeniesWorkspaceCommandsOutsideCode(t *testing.T) {
 }
 
 func TestScenePolicyFiltersWorkspaceCommandBeforeModelPlanning(t *testing.T) {
-	allowed, declared, plan := applySceneToolPolicy(`{"scene":"work","scene_policy":{"workspace_command":false}}`, nil, false)
-	if !declared || len(allowed) != 10 || allowed[0] != core.ToolUpdatePlan || allowed[1] != core.ToolRequestInput || allowed[2] != core.ToolRequestPermission || allowed[9] != core.ToolWorkspaceEditFile {
+	snapshot := `{"scene":"work","scene_policy":{"workspace_command":false},"mcp_capabilities":[{"id":"cap-1","name":"Tavily","tools":[{"name":"tavily_search"},{"name":"tavily_extract"}]}]}`
+	allowed, declared, plan := applySceneToolPolicy(snapshot, nil, false)
+	if !declared || len(allowed) != 12 || allowed[0] != core.ToolUpdatePlan || allowed[1] != core.ToolRequestInput || allowed[2] != core.ToolRequestPermission || allowed[9] != core.ToolWorkspaceEditFile || allowed[10] != "mcp__cap-1__tavily_search" || allowed[11] != "mcp__cap-1__tavily_extract" {
 		t.Fatalf("work scene scope declared=%v allowed=%#v", declared, allowed)
 	}
 	if plan["workspace_command"] != false {
@@ -143,6 +144,24 @@ func TestScenePolicyFiltersWorkspaceCommandBeforeModelPlanning(t *testing.T) {
 	allowed, declared, _ = applySceneToolPolicy(`{"scene":"code","scene_policy":{"workspace_command":true}}`, nil, false)
 	if declared || allowed != nil {
 		t.Fatalf("code scene unexpectedly restricted tools: declared=%v allowed=%#v", declared, allowed)
+	}
+}
+
+func TestExplicitMCPProviderChoiceOverridesBuiltinSearch(t *testing.T) {
+	snapshot := `{"mcp_capabilities":[{"id":"cap-1","name":"Tavily","tools":[{"name":"tavily_search"}]}]}`
+	if got, id := explicitMCPProviderFromPrompt(snapshot, "请只使用 Tavily MCP 搜索"); got != "Tavily" || id != "cap-1" {
+		t.Fatalf("preferred provider=%q id=%q", got, id)
+	}
+	if got, id := explicitMCPProviderFromPrompt(snapshot, "搜索最新资讯"); got != "" || id != "" {
+		t.Fatalf("unexpected preferred provider=%q id=%q", got, id)
+	}
+	filtered := filterToolNamesForExplicitMCP([]string{core.ToolUpdatePlan, core.ToolWebSearch, core.ToolWorkspaceWriteFile, "mcp__cap-1__tavily_search", "mcp__cap-2__other"}, "cap-1")
+	if len(filtered) != 2 || filtered[0] != core.ToolUpdatePlan || filtered[1] != "mcp__cap-1__tavily_search" {
+		t.Fatalf("filtered=%#v", filtered)
+	}
+	definitions := filterToolsForExplicitMCP([]ToolDefinition{{Name: core.ToolRequestInput}, {Name: core.ToolWebSearch}, {Name: core.ToolWorkspaceWriteFile}, {Name: "mcp__cap-1__tavily_search"}}, "cap-1")
+	if len(definitions) != 2 || definitions[0].Name != core.ToolRequestInput || definitions[1].Name != "mcp__cap-1__tavily_search" {
+		t.Fatalf("definitions=%#v", definitions)
 	}
 }
 

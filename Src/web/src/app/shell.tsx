@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, GitCompareArrows, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, type Bootstrap } from '../shared/api/client'
 import { assistantExcerpt } from '../shared/assistant-segments'
 import { BootstrapContext } from '../shared/bootstrap-context'
+import { applyStoredPresentationPreferences } from '../shared/presentation-preferences'
 
 export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -45,6 +46,9 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
       await queryClient.invalidateQueries({ queryKey: ['conversations', currentProject?.id] })
     },
   })
+  useEffect(() => {
+    applyStoredPresentationPreferences()
+  }, [])
   const closeMobile = () => setMobileOpen(false)
   const toggleSidebar = () => setSidebarCollapsed((value) => {
     const next = !value
@@ -60,7 +64,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
         <RailLink to={currentProject ? '/projects/$projectId' : '/'} params={currentProject ? { projectId: currentProject.id } : undefined} label="项目" active={location.pathname.startsWith('/projects/')} icon={<Folder />} />
         <RailLink to="/resources" label="资源" active={location.pathname === '/resources'} icon={<PackageOpen />} />
         <RailLink to="/approvals" label="审批" active={location.pathname === '/approvals'} icon={<ShieldCheck />} badge={approvals.data?.items.length} />
-        <RailLink to="/settings/providers" label="设置" active={location.pathname.startsWith('/settings')} icon={<Settings />} />
+        <RailLink to="/settings/$section" params={{ section: 'appearance' }} label="设置" active={location.pathname.startsWith('/settings')} icon={<Settings />} />
         {sidebarCollapsed ? <button className="rail-item" type="button" title="展开项目栏" aria-label="展开项目栏" onClick={toggleSidebar}><PanelLeftOpen /></button> : null}
       </div>
       <div className="rail-bottom">

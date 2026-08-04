@@ -1020,26 +1020,36 @@ type ScheduleFire struct {
 }
 
 type Capability struct {
-	ID             string
-	OrganizationID string
-	ProjectID      string
-	OwnerUserID    string
-	Kind           string
-	Name           string
-	Version        string
-	ManifestJSON   string
-	ContentHash    string
-	Status         string
-	RiskLevel      string
-	PermissionDiff []string
-	ScopeType      string
-	ScopeID        string
-	SourceFilename string
-	BundleHash     string
-	InstallJobID   string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID               string
+	OrganizationID   string
+	ProjectID        string
+	OwnerUserID      string
+	Kind             string
+	Name             string
+	Version          string
+	ManifestJSON     string
+	ContentHash      string
+	Status           string
+	RiskLevel        string
+	PermissionDiff   []string
+	ScopeType        string
+	ScopeID          string
+	SourceFilename   string
+	BundleHash       string
+	InstallJobID     string
+	CredentialRef    string
+	CredentialExists bool
+	Availability     string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
+
+const (
+	ResourceAvailabilityAvailable   = "available"
+	ResourceAvailabilityDegraded    = "degraded"
+	ResourceAvailabilityDisabled    = "disabled"
+	ResourceAvailabilityQuarantined = "quarantined"
+)
 
 // ReviewCapabilityInput is the explicit human gate for a quarantined
 // capability. A generic status update must not be able to bypass this gate.
@@ -1087,6 +1097,8 @@ type CreateCapabilityInput struct {
 	BundleBase64   string
 	BundleData     []byte
 	BundleHash     string
+	Credential     string
+	CredentialRef  string
 }
 
 type Memory struct {

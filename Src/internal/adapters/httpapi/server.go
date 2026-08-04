@@ -341,7 +341,7 @@ func (s *Server) Health(ctx context.Context, _ generated.HealthRequestObject) (g
 		return nil, err
 	}
 	return generated.Health200JSONResponse{
-		Status:   generated.Ok,
+		Status:   generated.HealthStatusOk,
 		Profile:  generated.HealthProfile(bootstrap.Profile),
 		Database: s.service.Database(),
 	}, nil
@@ -1642,7 +1642,11 @@ func (s *Server) CreateCapability(ctx context.Context, request generated.CreateC
 	if request.Body.BundleBase64 != nil {
 		bundleBase64 = *request.Body.BundleBase64
 	}
-	capability, err := s.service.CreateCapability(ctx, request.ProjectId.String(), core.CreateCapabilityInput{Kind: string(request.Body.Kind), Name: request.Body.Name, Version: version, ManifestJSON: request.Body.ManifestJson, ScopeType: scopeType, SourceFilename: sourceFilename, BundleBase64: bundleBase64}, optionalIdempotencyKey(request.Params.IdempotencyKey))
+	credential := ""
+	if request.Body.Credential != nil {
+		credential = *request.Body.Credential
+	}
+	capability, err := s.service.CreateCapability(ctx, request.ProjectId.String(), core.CreateCapabilityInput{Kind: string(request.Body.Kind), Name: request.Body.Name, Version: version, ManifestJSON: request.Body.ManifestJson, ScopeType: scopeType, SourceFilename: sourceFilename, BundleBase64: bundleBase64, Credential: credential}, optionalIdempotencyKey(request.Params.IdempotencyKey))
 	if err != nil {
 		return nil, err
 	}
@@ -1666,6 +1670,13 @@ func (s *Server) SetCapabilityStatus(ctx context.Context, request generated.SetC
 		return nil, err
 	}
 	return generated.SetCapabilityStatus200JSONResponse(response), nil
+}
+
+func (s *Server) DeleteCapability(ctx context.Context, request generated.DeleteCapabilityRequestObject) (generated.DeleteCapabilityResponseObject, error) {
+	if err := s.service.DeleteCapability(ctx, request.CapabilityId.String(), correlationID(ctx)); err != nil {
+		return nil, err
+	}
+	return generated.DeleteCapability204Response{}, nil
 }
 
 func (s *Server) ReviewCapability(ctx context.Context, request generated.ReviewCapabilityRequestObject) (generated.ReviewCapabilityResponseObject, error) {
@@ -1881,6 +1892,13 @@ func (s *Server) SetAgentDefinitionStatus(ctx context.Context, request generated
 		return nil, err
 	}
 	return generated.SetAgentDefinitionStatus200JSONResponse(response), nil
+}
+
+func (s *Server) DeleteAgentDefinition(ctx context.Context, request generated.DeleteAgentDefinitionRequestObject) (generated.DeleteAgentDefinitionResponseObject, error) {
+	if err := s.service.DeleteAgentDefinition(ctx, request.AgentId.String(), correlationID(ctx)); err != nil {
+		return nil, err
+	}
+	return generated.DeleteAgentDefinition204Response{}, nil
 }
 
 func (s *Server) ListProjectTeamDefinitions(ctx context.Context, request generated.ListProjectTeamDefinitionsRequestObject) (generated.ListProjectTeamDefinitionsResponseObject, error) {
@@ -2897,7 +2915,18 @@ func capabilityResponse(capability core.Capability) (generated.Capability, error
 	if bundleHash == "" {
 		bundleHash = capability.ContentHash
 	}
-	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
+	availability := capability.Availability
+	if availability == "" {
+		availability = core.ResourceAvailabilityDisabled
+		if capability.Status == core.CapabilityStatusQuarantined {
+			availability = core.ResourceAvailabilityQuarantined
+		} else if capability.Status == core.CapabilityStatusEnabled && capability.Kind != core.CapabilityKindMCP {
+			availability = core.ResourceAvailabilityAvailable
+		} else if capability.Status == core.CapabilityStatusEnabled {
+			availability = core.ResourceAvailabilityDegraded
+		}
+	}
+	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), Availability: generated.ResourceAvailability(availability), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CredentialConfigured: capability.CredentialExists, CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
 }
 
 func mcpHealthResponse(health core.MCPHealth) (generated.MCPHealth, error) {

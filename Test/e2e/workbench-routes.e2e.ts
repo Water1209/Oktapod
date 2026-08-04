@@ -95,8 +95,36 @@ test('设置显示生效来源并能切换显式主题', async ({ page }) => {
   await page.goto('/settings/appearance')
   await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible()
   await expect(page.getByText('来源：浏览器本地').first()).toBeVisible()
-  await page.getByRole('combobox').first().selectOption('dark')
+  await page.getByRole('combobox', { name: '主题' }).selectOption('dark')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).color)).toBe('rgb(238, 241, 246)')
+  await page.locator('.settings-detail').evaluate((element) => element.insertAdjacentHTML('beforeend', '<div data-theme-fixture class="message-body"><div class="assistant-markdown"><table><thead><tr><th>文件路径</th></tr></thead><tbody><tr><td><a href="#fixture">.research/report.md</a></td></tr></tbody></table></div><div class="task-capsule"><button class="task-capsule-head"><span class="task-capsule-current">已完成</span></button></div></div>'))
+  const darkFixture = await page.locator('[data-theme-fixture]').evaluate((fixture) => {
+    const style = (selector: string) => {
+      const computed = getComputedStyle(fixture.querySelector(selector)!)
+      return { color: computed.color, background: computed.backgroundColor }
+    }
+    return { cell: style('td'), link: style('a'), task: style('.task-capsule-head') }
+  })
+  expect(darkFixture.cell.color).toBe('rgb(238, 241, 246)')
+  expect(darkFixture.link.color).toBe('rgb(138, 167, 255)')
+  expect(darkFixture.task.background).toBe('rgb(23, 26, 34)')
+  await page.goto('/settings/providers')
+  await expect(page.getByRole('link', { name: '主题与外观' })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  const providerTheme = await page.evaluate(() => ({
+    body: getComputedStyle(document.body).backgroundColor,
+    sidebar: getComputedStyle(document.querySelector('.project-sidebar')!).backgroundColor,
+    list: getComputedStyle(document.querySelector('.master-list')!).backgroundColor,
+    action: getComputedStyle(document.querySelector('.primary-button')!).backgroundColor,
+  }))
+  expect(providerTheme.body).toBe('rgb(17, 19, 26)')
+  expect(providerTheme.sidebar).not.toBe('rgb(240, 242, 245)')
+  expect(providerTheme.list).not.toBe('rgb(247, 248, 250)')
+  expect(providerTheme.action).toBe('rgb(36, 85, 230)')
+  await page.getByRole('link', { name: '主题与外观' }).click()
+  await page.getByRole('combobox', { name: '主题' }).selectOption('light')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.getByRole('link', { name: '数据维护' }).click()
   await expect(page.getByRole('link', { name: '导入与导出' })).toBeVisible()
 })

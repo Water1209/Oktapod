@@ -68,6 +68,14 @@ Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以�
 
 > **判断依据**：V1 是"个人开发者/小团队本地优先 Coding Agent"。网络零信任、企业级 SBOM、多 Agent 协作不是首版付费/留存理由。先让"读-改-验-恢复"在本地跑稳，再谈企业能力。
 
+### 1.4 V1 界面主题合同
+
+- 全局只存在一套语义色来源，工作台、设置、资源、审批、表单、弹窗、Markdown 与原生控件不得各自硬编码浅色/深色背景。
+- “设置 → 外观”提供跟随系统、浅色、深色三个选择；设置入口默认打开外观页，Provider 页保留“主题与外观”返回入口。
+- 已保存主题在 React 首次绘制前应用，避免刷新时先出现相反主题；选择只保存在当前浏览器，不伪装为项目或服务端策略。
+- Light、Dark、System 均要求正文与状态文字可读，主要文本目标对比度不低于 WCAG AA 4.5:1；主题不能只改变容器背景而保留另一主题的文字、表格或表单颜色。
+- 全局导航保留 `#071454` 品牌深蓝，不视为内容区主题混用；其交互与文字仍需满足可读性和焦点要求。
+
 ---
 
 ## 2. 架构原则修正（三条新增，两条强化）
@@ -279,7 +287,9 @@ run_command / update_plan
 
 互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。
 
-现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。Tavily 是可选首选，不进入核心依赖。
+现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。资源中心与自然语言安装入口复用同一套“解析 → 校验 → 用户确认 → 审核 → 启用 → 连接”流程；`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。来源、固定版本、权限、受控 Header 与 Secret 目标写入定义，外部凭据只通过 SecretStore 引用进入执行快照。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：模型只看到该 MCP 与计划/输入/审批控制工具，不允许静默改用内建搜索或无关工具。Tavily 是可选首选，不进入核心依赖。
+
+用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。
 
 ### 5.3 单一 ToolSpec（V1 简化版）
 

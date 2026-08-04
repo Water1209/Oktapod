@@ -17,8 +17,12 @@ func TestConnectStreamableHTTPDiscoversTools(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch request.Method {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
 		case "initialize":
-			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": "2025-11-25"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "fixture", "version": "1.0.0"}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"tools": []map[string]string{{"name": "search", "description": "Search documents"}}}})
 		default:
@@ -26,7 +30,7 @@ func TestConnectStreamableHTTPDiscoversTools(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	health, err := Connect(context.Background(), `{"transport":"streamable_http","url":"`+server.URL+`"}`)
+	health, err := Connect(context.Background(), `{"transport":"streamable_http","url":"`+server.URL+`"}`, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +40,7 @@ func TestConnectStreamableHTTPDiscoversTools(t *testing.T) {
 }
 
 func TestConnectRejectsPrivateNonLoopbackHTTP(t *testing.T) {
-	if _, err := Connect(context.Background(), `{"transport":"streamable_http","url":"http://10.0.0.1/mcp"}`); err == nil {
+	if _, err := Connect(context.Background(), `{"transport":"streamable_http","url":"http://10.0.0.1/mcp"}`, ""); err == nil {
 		t.Fatal("expected SSRF policy rejection")
 	}
 }
@@ -49,8 +53,12 @@ func TestCallStreamableHTTPReturnsStructuredContent(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch request.Method {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
 		case "initialize":
-			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": "2025-11-25"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "fixture", "version": "1.0.0"}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
 		case "tools/call":
 			params := request.Params.(map[string]any)
 			if params["name"] != "search" {
@@ -62,7 +70,7 @@ func TestCallStreamableHTTPReturnsStructuredContent(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	result, err := Call(context.Background(), `{"transport":"streamable_http","url":"`+server.URL+`"}`, "search", map[string]any{"query": "ok"})
+	result, err := Call(context.Background(), `{"transport":"streamable_http","url":"`+server.URL+`"}`, "", "search", map[string]any{"query": "ok"})
 	if err != nil || result.IsError || len(result.Content) != 1 || len(result.StructuredResult) == 0 {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -77,7 +85,7 @@ func TestCallStreamableHTTPRejectsRedirect(t *testing.T) {
 		http.Redirect(w, r, target.URL, http.StatusFound)
 	}))
 	defer redirector.Close()
-	_, err := Call(context.Background(), `{"transport":"streamable_http","url":"`+redirector.URL+`"}`, "search", map[string]any{"query": "ok"})
+	_, err := Call(context.Background(), `{"transport":"streamable_http","url":"`+redirector.URL+`"}`, "", "search", map[string]any{"query": "ok"})
 	if err == nil || !strings.Contains(err.Error(), "redirect") {
 		t.Fatalf("expected redirect rejection, got %v", err)
 	}
@@ -86,7 +94,7 @@ func TestCallStreamableHTTPRejectsRedirect(t *testing.T) {
 func TestMCPCommandEnvironmentDoesNotInheritUnlistedSecrets(t *testing.T) {
 	t.Setenv("OKTAPOD_MODEL_API_KEY", "must-not-leak")
 	t.Setenv("MCP_TEST_TOKEN", "allowed-token")
-	env := mcpCommandEnvironment(manifest{AuthEnv: "MCP_TEST_TOKEN"})
+	env := mcpCommandEnvironment(manifest{AuthEnv: "MCP_TEST_TOKEN"}, "allowed-token")
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "must-not-leak") {
 		t.Fatalf("model key leaked into MCP environment: %q", joined)

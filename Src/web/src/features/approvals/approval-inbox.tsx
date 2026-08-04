@@ -107,6 +107,7 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
     },
   })
   const params = formatFrozenParams(approval)
+	const persistentApprovalSupported = !approval.tool_name.startsWith('mcp__')
   return <article className={`approval-card ${compact ? 'compact' : ''}`}>
     <div className="approval-card-head">
       {selectable ? <input type="checkbox" aria-label={`选择审批 ${approval.tool_name}`} checked={selected} onChange={onSelect} /> : null}
@@ -115,6 +116,7 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
       <span className={`approval-state ${approval.status}`}>{statusLabel(approval.status)}</span>
     </div>
     <p className="approval-reason">{approval.reason}</p>
+	{approval.status === 'pending' && !persistentApprovalSupported ? <small className="approval-error">外部 MCP 仅支持逐次批准，避免把一次确认扩展为后续未知参数。</small> : null}
     <div className="frozen-params"><LockKeyhole size={15} /><span><small>冻结参数</small><code>{params}</code></span></div>
     <div className="approval-hash"><span>INPUT HASH</span><code>{approval.input_hash}</code></div>
     <div className="approval-actions">
@@ -122,8 +124,8 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
       {approval.status === 'pending' ? <>
         <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
         <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />批准一次</button>
-        <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话允许同类动作</button>
-        <button className="approve approve-project" disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button>
+		{persistentApprovalSupported ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话允许同类动作</button> : null}
+		{persistentApprovalSupported ? <button className="approve approve-project" disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
       </> : null}
     </div>
     {decision.error ? <small className="approval-error">{decision.error.message}</small> : null}

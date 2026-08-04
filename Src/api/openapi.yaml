@@ -403,6 +403,18 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Capability" }
         default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: deleteCapability
+      responses:
+        "204":
+          description: Capability deleted after active Run reference checks; historical snapshots and redacted audit records are retained
+        default: { $ref: "#/components/responses/Problem" }
   /capabilities/{capability_id}/status:
     parameters:
       - name: capability_id
@@ -651,6 +663,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AgentDefinition" }
+        default: { $ref: "#/components/responses/Problem" }
+  /agents/{agent_id}:
+    parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: deleteAgentDefinition
+      responses:
+        "204":
+          description: Agent deleted after active Run reference checks; historical snapshots and redacted audit records are retained
         default: { $ref: "#/components/responses/Problem" }
   /agents/{agent_id}/status:
     parameters:
@@ -2412,7 +2436,7 @@ components:
         updated_at: { type: string, format: date-time }
     Capability:
       type: object
-      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, created_at, updated_at]
+      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, availability, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, credential_configured, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         organization_id: { type: string, format: uuid }
@@ -2424,6 +2448,7 @@ components:
         manifest_json: { type: string }
         content_hash: { type: string }
         status: { type: string, enum: [enabled, disabled, quarantined] }
+        availability: { $ref: "#/components/schemas/ResourceAvailability" }
         risk_level: { type: string }
         permission_diff:
           type: array
@@ -2434,6 +2459,100 @@ components:
         source_filename: { type: string }
         bundle_hash: { type: string }
         install_job_id: { type: string, format: uuid }
+        credential_configured:
+          type: boolean
+          description: Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ResourceAvailability:
+      type: string
+      enum: [available, degraded, disabled, quarantined]
+      description: Stable user-facing availability. MCP is available only after a successful health check.
+    SecretBinding:
+      type: object
+      required: [name, target, required]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        target:
+          type: string
+          pattern: "^(env|header):[^\\r\\n]+$"
+          description: Destination only. Secret values are written through SecretStore and never appear in this object.
+        required: { type: boolean }
+    MCPDefinitionV1:
+      type: object
+      required: [schema_version, source, transport, auth]
+      additionalProperties: false
+      properties:
+        schema_version: { type: string, enum: [oktapod.mcp/v1] }
+        source:
+          type: object
+          required: [type]
+          additionalProperties: false
+          properties:
+            type: { type: string, enum: [official, registry, npm, pypi, url, local, manual] }
+            reference: { type: string, maxLength: 2048 }
+            version: { type: string, maxLength: 128 }
+            publisher: { type: string, maxLength: 200 }
+        transport:
+          oneOf:
+            - type: object
+              required: [type, command]
+              additionalProperties: false
+              properties:
+                type: { type: string, enum: [stdio] }
+                command: { type: string, minLength: 1, maxLength: 2048 }
+                args:
+                  type: array
+                  maxItems: 128
+                  items: { type: string, maxLength: 4096 }
+                auth_env: { type: string, maxLength: 128 }
+            - type: object
+              required: [type, url]
+              additionalProperties: false
+              properties:
+                type: { type: string, enum: [streamable_http] }
+                url: { type: string, format: uri, maxLength: 2048 }
+        auth:
+          type: object
+          required: [type]
+          additionalProperties: false
+          properties:
+            type: { type: string, enum: [none, environment, bearer, oauth, custom_header] }
+            header: { type: string, maxLength: 128 }
+        secret_bindings:
+          type: array
+          maxItems: 16
+          items: { $ref: "#/components/schemas/SecretBinding" }
+        headers:
+          type: object
+          maxProperties: 32
+          additionalProperties: { type: string, maxLength: 4096 }
+        permissions:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 4000 }
+    ResourceInstallDraft:
+      type: object
+      required: [id, kind, source_input, status, warnings, required_secrets, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [skill, mcp, agent] }
+        source_input: { type: string, maxLength: 8192 }
+        resolved_name: { type: string, maxLength: 120 }
+        resolved_version: { type: string, maxLength: 128 }
+        mcp_definition: { $ref: "#/components/schemas/MCPDefinitionV1" }
+        status: { type: string, enum: [draft, needs_secret, validated, rejected, installed] }
+        warnings:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 1000 }
+        required_secrets:
+          type: array
+          maxItems: 16
+          items: { $ref: "#/components/schemas/SecretBinding" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     MCPHealth:
@@ -2476,6 +2595,12 @@ components:
           minLength: 2
           maxLength: 262144
           description: JSON manifest; Skill imports may alternatively provide SKILL.md with YAML frontmatter and a Markdown instruction body, which the server normalizes to JSON before persistence.
+        credential:
+          type: string
+          minLength: 1
+          maxLength: 8192
+          writeOnly: true
+          description: Optional MCP credential. Stored only in SecretStore and never persisted in manifest, database, audit detail, export, or API responses.
     ReviewCapabilityRequest:
       type: object
       required: [decision]

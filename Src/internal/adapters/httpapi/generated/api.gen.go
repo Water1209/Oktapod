@@ -375,8 +375,8 @@ const (
 
 // Defines values for HealthStatus.
 const (
-	Degraded HealthStatus = "degraded"
-	Ok       HealthStatus = "ok"
+	HealthStatusDegraded HealthStatus = "degraded"
+	HealthStatusOk       HealthStatus = "ok"
 )
 
 // Defines values for HumanActionKind.
@@ -663,6 +663,14 @@ const (
 	Abandon           ResolveSideEffectRequestDecision = "abandon"
 	ConfirmApplied    ResolveSideEffectRequestDecision = "confirm_applied"
 	ConfirmNotApplied ResolveSideEffectRequestDecision = "confirm_not_applied"
+)
+
+// Defines values for ResourceAvailability.
+const (
+	ResourceAvailabilityAvailable   ResourceAvailability = "available"
+	ResourceAvailabilityDegraded    ResourceAvailability = "degraded"
+	ResourceAvailabilityDisabled    ResourceAvailability = "disabled"
+	ResourceAvailabilityQuarantined ResourceAvailability = "quarantined"
 )
 
 // Defines values for ReviewCapabilityRequestDecision.
@@ -1225,25 +1233,30 @@ type BranchSummaryRequest struct {
 
 // Capability defines model for Capability.
 type Capability struct {
-	BundleHash     string              `json:"bundle_hash"`
-	ContentHash    string              `json:"content_hash"`
-	CreatedAt      time.Time           `json:"created_at"`
-	Id             openapi_types.UUID  `json:"id"`
-	InstallJobId   openapi_types.UUID  `json:"install_job_id"`
-	Kind           CapabilityKind      `json:"kind"`
-	ManifestJson   string              `json:"manifest_json"`
-	Name           string              `json:"name"`
-	OrganizationId openapi_types.UUID  `json:"organization_id"`
-	OwnerUserId    openapi_types.UUID  `json:"owner_user_id"`
-	PermissionDiff []string            `json:"permission_diff"`
-	ProjectId      openapi_types.UUID  `json:"project_id"`
-	RiskLevel      string              `json:"risk_level"`
-	ScopeId        openapi_types.UUID  `json:"scope_id"`
-	ScopeType      CapabilityScopeType `json:"scope_type"`
-	SourceFilename string              `json:"source_filename"`
-	Status         CapabilityStatus    `json:"status"`
-	UpdatedAt      time.Time           `json:"updated_at"`
-	Version        string              `json:"version"`
+	// Availability Stable user-facing availability. MCP is available only after a successful health check.
+	Availability ResourceAvailability `json:"availability"`
+	BundleHash   string               `json:"bundle_hash"`
+	ContentHash  string               `json:"content_hash"`
+	CreatedAt    time.Time            `json:"created_at"`
+
+	// CredentialConfigured Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
+	CredentialConfigured bool                `json:"credential_configured"`
+	Id                   openapi_types.UUID  `json:"id"`
+	InstallJobId         openapi_types.UUID  `json:"install_job_id"`
+	Kind                 CapabilityKind      `json:"kind"`
+	ManifestJson         string              `json:"manifest_json"`
+	Name                 string              `json:"name"`
+	OrganizationId       openapi_types.UUID  `json:"organization_id"`
+	OwnerUserId          openapi_types.UUID  `json:"owner_user_id"`
+	PermissionDiff       []string            `json:"permission_diff"`
+	ProjectId            openapi_types.UUID  `json:"project_id"`
+	RiskLevel            string              `json:"risk_level"`
+	ScopeId              openapi_types.UUID  `json:"scope_id"`
+	ScopeType            CapabilityScopeType `json:"scope_type"`
+	SourceFilename       string              `json:"source_filename"`
+	Status               CapabilityStatus    `json:"status"`
+	UpdatedAt            time.Time           `json:"updated_at"`
+	Version              string              `json:"version"`
 }
 
 // CapabilityKind defines model for Capability.Kind.
@@ -1338,8 +1351,11 @@ type CreateAuthSessionRequest struct {
 // CreateCapabilityRequest defines model for CreateCapabilityRequest.
 type CreateCapabilityRequest struct {
 	// BundleBase64 Optional ZIP capability package encoded as base64. The server safely inspects it without executing bundled code.
-	BundleBase64 *string                     `json:"bundle_base64,omitempty"`
-	Kind         CreateCapabilityRequestKind `json:"kind"`
+	BundleBase64 *string `json:"bundle_base64,omitempty"`
+
+	// Credential Optional MCP credential. Stored only in SecretStore and never persisted in manifest, database, audit detail, export, or API responses.
+	Credential *string                     `json:"credential,omitempty"`
+	Kind       CreateCapabilityRequestKind `json:"kind"`
 
 	// ManifestJson JSON manifest; Skill imports may alternatively provide SKILL.md with YAML frontmatter and a Markdown instruction body, which the server normalizes to JSON before persistence.
 	ManifestJson string `json:"manifest_json"`
@@ -2082,6 +2098,9 @@ type ResolveSideEffectRequest struct {
 
 // ResolveSideEffectRequestDecision defines model for ResolveSideEffectRequest.Decision.
 type ResolveSideEffectRequestDecision string
+
+// ResourceAvailability Stable user-facing availability. MCP is available only after a successful health check.
+type ResourceAvailability string
 
 // ReviewCapabilityRequest defines model for ReviewCapabilityRequest.
 type ReviewCapabilityRequest struct {
@@ -2877,6 +2896,9 @@ type SetTeamDefinitionStatusJSONRequestBody SetTeamDefinitionStatusJSONBody
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 
+	// (DELETE /agents/{agent_id})
+	DeleteAgentDefinition(w http.ResponseWriter, r *http.Request, agentId openapi_types.UUID)
+
 	// (POST /agents/{agent_id}/status)
 	SetAgentDefinitionStatus(w http.ResponseWriter, r *http.Request, agentId openapi_types.UUID, params SetAgentDefinitionStatusParams)
 
@@ -2903,6 +2925,9 @@ type ServerInterface interface {
 
 	// (GET /bootstrap)
 	GetBootstrap(w http.ResponseWriter, r *http.Request)
+
+	// (DELETE /capabilities/{capability_id})
+	DeleteCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
 
 	// (POST /capabilities/{capability_id}/mcp/connect)
 	ConnectMCP(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
@@ -3176,6 +3201,11 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
+// (DELETE /agents/{agent_id})
+func (_ Unimplemented) DeleteAgentDefinition(w http.ResponseWriter, r *http.Request, agentId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (POST /agents/{agent_id}/status)
 func (_ Unimplemented) SetAgentDefinitionStatus(w http.ResponseWriter, r *http.Request, agentId openapi_types.UUID, params SetAgentDefinitionStatusParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -3218,6 +3248,11 @@ func (_ Unimplemented) RevokeAuthSession(w http.ResponseWriter, r *http.Request,
 
 // (GET /bootstrap)
 func (_ Unimplemented) GetBootstrap(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (DELETE /capabilities/{capability_id})
+func (_ Unimplemented) DeleteCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3682,6 +3717,31 @@ type ServerInterfaceWrapper struct {
 
 type MiddlewareFunc func(http.Handler) http.Handler
 
+// DeleteAgentDefinition operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAgentDefinition(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "agent_id" -------------
+	var agentId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agent_id", chi.URLParam(r, "agent_id"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteAgentDefinition(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SetAgentDefinitionStatus operation middleware
 func (siw *ServerInterfaceWrapper) SetAgentDefinitionStatus(w http.ResponseWriter, r *http.Request) {
 
@@ -3950,6 +4010,31 @@ func (siw *ServerInterfaceWrapper) GetBootstrap(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetBootstrap(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteCapability operation middleware
+func (siw *ServerInterfaceWrapper) DeleteCapability(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteCapability(w, r, capabilityId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7174,6 +7259,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	}
 
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/agents/{agent_id}", wrapper.DeleteAgentDefinition)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/agents/{agent_id}/status", wrapper.SetAgentDefinitionStatus)
 	})
 	r.Group(func(r chi.Router) {
@@ -7199,6 +7287,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/bootstrap", wrapper.GetBootstrap)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/capabilities/{capability_id}", wrapper.DeleteCapability)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/mcp/connect", wrapper.ConnectMCP)
@@ -7472,6 +7563,34 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 }
 
 type ProblemApplicationProblemPlusJSONResponse Problem
+
+type DeleteAgentDefinitionRequestObject struct {
+	AgentId openapi_types.UUID `json:"agent_id"`
+}
+
+type DeleteAgentDefinitionResponseObject interface {
+	VisitDeleteAgentDefinitionResponse(w http.ResponseWriter) error
+}
+
+type DeleteAgentDefinition204Response struct {
+}
+
+func (response DeleteAgentDefinition204Response) VisitDeleteAgentDefinitionResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteAgentDefinitiondefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteAgentDefinitiondefaultApplicationProblemPlusJSONResponse) VisitDeleteAgentDefinitionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
 
 type SetAgentDefinitionStatusRequestObject struct {
 	AgentId openapi_types.UUID `json:"agent_id"`
@@ -7766,6 +7885,34 @@ func (response GetBootstrap200JSONResponse) VisitGetBootstrapResponse(w http.Res
 	w.WriteHeader(200)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type DeleteCapabilityRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+}
+
+type DeleteCapabilityResponseObject interface {
+	VisitDeleteCapabilityResponse(w http.ResponseWriter) error
+}
+
+type DeleteCapability204Response struct {
+}
+
+func (response DeleteCapability204Response) VisitDeleteCapabilityResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteCapabilitydefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteCapabilitydefaultApplicationProblemPlusJSONResponse) VisitDeleteCapabilityResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type ConnectMCPRequestObject struct {
@@ -10451,6 +10598,9 @@ func (response SetTeamDefinitionStatusdefaultApplicationProblemPlusJSONResponse)
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 
+	// (DELETE /agents/{agent_id})
+	DeleteAgentDefinition(ctx context.Context, request DeleteAgentDefinitionRequestObject) (DeleteAgentDefinitionResponseObject, error)
+
 	// (POST /agents/{agent_id}/status)
 	SetAgentDefinitionStatus(ctx context.Context, request SetAgentDefinitionStatusRequestObject) (SetAgentDefinitionStatusResponseObject, error)
 
@@ -10477,6 +10627,9 @@ type StrictServerInterface interface {
 
 	// (GET /bootstrap)
 	GetBootstrap(ctx context.Context, request GetBootstrapRequestObject) (GetBootstrapResponseObject, error)
+
+	// (DELETE /capabilities/{capability_id})
+	DeleteCapability(ctx context.Context, request DeleteCapabilityRequestObject) (DeleteCapabilityResponseObject, error)
 
 	// (POST /capabilities/{capability_id}/mcp/connect)
 	ConnectMCP(ctx context.Context, request ConnectMCPRequestObject) (ConnectMCPResponseObject, error)
@@ -10775,6 +10928,32 @@ type strictHandler struct {
 	options     StrictHTTPServerOptions
 }
 
+// DeleteAgentDefinition operation middleware
+func (sh *strictHandler) DeleteAgentDefinition(w http.ResponseWriter, r *http.Request, agentId openapi_types.UUID) {
+	var request DeleteAgentDefinitionRequestObject
+
+	request.AgentId = agentId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteAgentDefinition(ctx, request.(DeleteAgentDefinitionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteAgentDefinition")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteAgentDefinitionResponseObject); ok {
+		if err := validResponse.VisitDeleteAgentDefinitionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // SetAgentDefinitionStatus operation middleware
 func (sh *strictHandler) SetAgentDefinitionStatus(w http.ResponseWriter, r *http.Request, agentId openapi_types.UUID, params SetAgentDefinitionStatusParams) {
 	var request SetAgentDefinitionStatusRequestObject
@@ -11029,6 +11208,32 @@ func (sh *strictHandler) GetBootstrap(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetBootstrapResponseObject); ok {
 		if err := validResponse.VisitGetBootstrapResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteCapability operation middleware
+func (sh *strictHandler) DeleteCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	var request DeleteCapabilityRequestObject
+
+	request.CapabilityId = capabilityId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteCapability(ctx, request.(DeleteCapabilityRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteCapability")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteCapabilityResponseObject); ok {
+		if err := validResponse.VisitDeleteCapabilityResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

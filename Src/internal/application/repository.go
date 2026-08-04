@@ -122,10 +122,12 @@ type ResourceRepository interface {
 	OpenArtifactContent(ctx context.Context, scope core.Scope, artifactID string) (core.Artifact, io.ReadCloser, error)
 	PublishArtifact(ctx context.Context, scope core.Scope, artifactID string, input core.PublishArtifactInput, quotaBytes int64, idempotency core.Idempotency) (core.Asset, error)
 	CreateCapability(ctx context.Context, scope core.Scope, projectID string, input core.CreateCapabilityInput, contentHash, status, riskLevel string, idempotency core.Idempotency) (core.Capability, error)
+	GetCapability(ctx context.Context, scope core.Scope, capabilityID string) (core.Capability, error)
 	ListCapabilities(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Capability, error)
 	SetCapabilityStatus(ctx context.Context, scope core.Scope, capabilityID, status string, idempotency core.Idempotency) (core.Capability, error)
+	DeleteCapability(ctx context.Context, scope core.Scope, capabilityID, correlationID string) error
 	ReviewCapability(ctx context.Context, scope core.Scope, capabilityID string, input core.ReviewCapabilityInput, correlationID string, idempotency core.Idempotency) (core.Capability, error)
-	ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, correlationID string) (core.MCPHealth, error)
+	ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential, correlationID string) (core.MCPHealth, error)
 	DisconnectMCP(ctx context.Context, scope core.Scope, capabilityID, correlationID string) (core.MCPHealth, error)
 	GetMCPHealth(ctx context.Context, scope core.Scope, capabilityID string) (core.MCPHealth, error)
 	CreateMemory(ctx context.Context, scope core.Scope, projectID string, input core.CreateMemoryInput, sourceHash string, idempotency core.Idempotency) (core.Memory, error)
@@ -137,6 +139,7 @@ type ResourceRepository interface {
 	CreateAgentDefinition(ctx context.Context, scope core.Scope, projectID string, input core.CreateAgentInput, status string, idempotency core.Idempotency) (core.AgentDefinition, error)
 	ListAgentDefinitions(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.AgentDefinition, error)
 	SetAgentDefinitionStatus(ctx context.Context, scope core.Scope, agentID, status string, idempotency core.Idempotency) (core.AgentDefinition, error)
+	DeleteAgentDefinition(ctx context.Context, scope core.Scope, agentID, correlationID string) error
 	CreateTeamDefinition(ctx context.Context, scope core.Scope, projectID string, input core.CreateTeamDefinitionInput, idempotency core.Idempotency) (core.TeamDefinition, error)
 	ListTeamDefinitions(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.TeamDefinition, error)
 	SetTeamDefinitionStatus(ctx context.Context, scope core.Scope, teamID, status string, idempotency core.Idempotency) (core.TeamDefinition, error)

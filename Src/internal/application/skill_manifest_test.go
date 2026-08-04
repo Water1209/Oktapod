@@ -9,11 +9,9 @@ func TestNormalizeSkillManifestImportsPortableMarkdown(t *testing.T) {
 	raw := `---
 name: release-check
 description: Verify a release with evidence
-triggers:
-  - 发布检查
-  - release check
 allowed-tools: web_search, workspace_run_command
-model-invocable: false
+metadata:
+  category: release
 ---
 # Release check
 
@@ -29,16 +27,13 @@ Verify tests and cite current release notes.`
 	if name != "release-check" || manifest["format"] != "skill.md/v1" || manifest["instructions"] == "" {
 		t.Fatalf("name=%q manifest=%#v", name, manifest)
 	}
-	if triggers, ok := manifest["triggers"].([]any); !ok || len(triggers) != 2 {
-		t.Fatalf("triggers=%#v", manifest["triggers"])
-	}
-	if manifest["model_invocable"] != false {
-		t.Fatalf("model_invocable=%#v", manifest["model_invocable"])
+	if metadata, ok := manifest["metadata"].(map[string]any); !ok || metadata["category"] != "release" {
+		t.Fatalf("metadata=%#v", manifest["metadata"])
 	}
 }
 
-func TestNormalizeSkillManifestRejectsNonBooleanModelInvocable(t *testing.T) {
-	raw := "---\nname: release-check\nmodel-invocable: no\n---\n\nVerify the release."
+func TestNormalizeSkillManifestRejectsUnknownFrontmatter(t *testing.T) {
+	raw := "---\nname: release-check\ndescription: Verify releases.\nmodel-invocable: no\n---\n\nVerify the release."
 	if _, _, err := normalizeSkillManifest(raw, "skill"); err == nil {
 		t.Fatal("non-boolean model-invocable was accepted")
 	}

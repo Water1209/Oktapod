@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, CircleAlert, KeyRound, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { CheckCircle2, CircleAlert, KeyRound, Palette, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { api, type ProviderInstance } from '../../shared/api/client'
 
 type ProviderDraft = {
@@ -42,7 +43,7 @@ export function ProviderSettingsPage() {
   return <main className="management-page">
     <header className="management-heading">
       <div><span className="eyebrow">Settings / Providers</span><h1>模型服务</h1><p>Provider 是可独立配置的实例；协议族只决定适配方式。</p></div>
-      <button className="primary-button compact" type="button" onClick={() => { setCreating(true); setSelectedId(undefined) }}><Plus size={15} />添加实例</button>
+      <div className="management-heading-actions"><Link className="secondary-button compact" to="/settings/$section" params={{ section: 'appearance' }}><Palette size={14} />主题与外观</Link><button className="primary-button compact" type="button" onClick={() => { setCreating(true); setSelectedId(undefined) }}><Plus size={15} />添加实例</button></div>
     </header>
     <div className="master-detail">
       <aside className="master-list" aria-label="Provider 实例">

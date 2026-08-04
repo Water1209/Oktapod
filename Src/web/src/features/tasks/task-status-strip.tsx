@@ -20,7 +20,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
   const plan = useQuery({
     queryKey: ['run-plan', task?.run_id],
     queryFn: () => api.runPlan(task!.run_id),
-    enabled: Boolean(task?.run_id),
+    enabled: Boolean(task?.run_id && task.status !== 'canceled'),
   })
   const refetchPlan = plan.refetch
   const actions = useQuery({
@@ -86,7 +86,10 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
     return () => window.cancelAnimationFrame(frame)
   }, [pendingActions.length])
 
-  if (!task) return null
+  // The Composer-adjacent capsule represents current actionable work. Once a
+  // task is canceled, its durable history remains in the message execution
+  // record and sidebar, but the stale 0/N capsule must leave the input area.
+  if (!task || task.status === 'canceled') return null
 
   const planItems = plan.data?.items ?? []
   const completed = planItems.filter((item) => item.status === 'completed').length

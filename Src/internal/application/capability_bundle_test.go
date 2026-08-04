@@ -39,6 +39,22 @@ func TestNormalizeCapabilityBundleRejectsUnsafePathsAndBombRatios(t *testing.T) 
 	}
 }
 
+func TestNormalizeCapabilityBundleRejectsInvalidSkillLayouts(t *testing.T) {
+	validSkill := "---\nname: portable-skill\ndescription: Use for portable tests.\n---\n\nFollow the workflow.\n"
+	for name, files := range map[string]map[string]string{
+		"readme":       {"portable/SKILL.md": validSkill, "portable/README.md": "extra"},
+		"nested-skill": {"portable/SKILL.md": validSkill, "portable/references/child/SKILL.md": validSkill},
+		"dependencies": {"portable/SKILL.md": validSkill, "portable/scripts/node_modules/pkg/index.js": "x"},
+		"mixed-roots":  {"portable/SKILL.md": validSkill, "other/references/guide.md": "x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalizeCapabilityBundle(testCapabilityZip(t, files), name+".zip", "skill", "portable-skill", "0.1.0"); err == nil {
+				t.Fatal("invalid Skill ZIP was accepted")
+			}
+		})
+	}
+}
+
 func testCapabilityZip(t *testing.T, files map[string]string) string {
 	t.Helper()
 	var buffer bytes.Buffer
