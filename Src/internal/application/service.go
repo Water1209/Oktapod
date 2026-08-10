@@ -44,6 +44,7 @@ type Service struct {
 	workspaceReader  WorkspaceReader
 	workspaceRoot    string
 	mcpRegistry      MCPRegistry
+	mcpOAuth         MCPOAuthCoordinator
 }
 
 const (
@@ -1843,7 +1844,7 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 			return core.Capability{}, &core.ValidationError{Field: "credentials", Message: payloadErr.Error()}
 		}
 	}
-	if secretPayload != "" {
+	if secretPayload != "" || (input.Kind == core.CapabilityKindMCP && mcpDefinition.Auth.Type == "oauth") {
 		if s.providerSecrets == nil {
 			return core.Capability{}, fmt.Errorf("MCP secret store is unavailable")
 		}
@@ -1851,14 +1852,14 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		if input.ScopeType == core.CapabilityScopeGlobal {
 			scopeID = s.ScopeFor(ctx).UserID
 		}
-		refSeed := strings.Join([]string{input.ScopeType, scopeID, input.Name, input.Version}, "\x00")
-		refHash := sha256.Sum256([]byte(refSeed))
-		input.CredentialRef = "mcp-capability/" + s.ScopeFor(ctx).OrganizationID + "/" + hex.EncodeToString(refHash[:16])
-		var credentialErr error
-		oldCredential, credentialErr = s.providerSecrets.Get(ctx, input.CredentialRef)
-		oldCredentialExists = credentialErr == nil
-		if credentialErr = s.providerSecrets.Set(ctx, input.CredentialRef, secretPayload); credentialErr != nil {
-			return core.Capability{}, fmt.Errorf("store MCP credential: %w", credentialErr)
+		input.CredentialRef = mcpCapabilityCredentialRef(s.ScopeFor(ctx).OrganizationID, input.ScopeType, scopeID, input.Name, input.Version)
+		if secretPayload != "" {
+			var credentialErr error
+			oldCredential, credentialErr = s.providerSecrets.Get(ctx, input.CredentialRef)
+			oldCredentialExists = credentialErr == nil
+			if credentialErr = s.providerSecrets.Set(ctx, input.CredentialRef, secretPayload); credentialErr != nil {
+				return core.Capability{}, fmt.Errorf("store MCP credential: %w", credentialErr)
+			}
 		}
 		input.Credential = ""
 		input.Credentials = nil
@@ -1874,7 +1875,7 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		BundleHash     string `json:"bundle_hash"`
 	}{ProjectID: projectID, Kind: input.Kind, Name: input.Name, Version: input.Version, ManifestJSON: input.ManifestJSON, ScopeType: input.ScopeType, SourceFilename: input.SourceFilename, BundleHash: input.BundleHash}
 	capability, createErr := s.repository.CreateCapability(ctx, s.ScopeFor(ctx), projectID, input, contentHash, status, riskLevel, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
-	if createErr != nil && input.CredentialRef != "" {
+	if createErr != nil && secretPayload != "" && input.CredentialRef != "" {
 		if oldCredentialExists {
 			_ = s.providerSecrets.Set(ctx, input.CredentialRef, oldCredential)
 		} else {
@@ -1992,7 +1993,13 @@ func (s *Service) ConnectMCP(ctx context.Context, capabilityID, correlationID st
 	if capability.CredentialRef != "" && s.providerSecrets != nil {
 		credential, _ = s.providerSecrets.Get(ctx, capability.CredentialRef)
 	}
-	return s.repository.ConnectMCP(ctx, s.ScopeFor(ctx), capabilityID, credential, correlationID)
+	var updater func(context.Context, string) error
+	if capability.CredentialRef != "" && s.providerSecrets != nil {
+		updater = func(saveContext context.Context, payload string) error {
+			return s.providerSecrets.Set(saveContext, capability.CredentialRef, payload)
+		}
+	}
+	return s.repository.ConnectMCP(ctx, s.ScopeFor(ctx), capabilityID, credential, updater, correlationID)
 }
 
 func (s *Service) DisconnectMCP(ctx context.Context, capabilityID, correlationID string) (core.MCPHealth, error) {

@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -33,15 +36,37 @@ func decodeCredentialSet(supplied string) (map[string]string, bool, error) {
 func mcpCommandEnvironment(spec manifest, credential string) []string {
 	allowed := map[string]bool{
 		"PATH": true, "PATHEXT": true, "SYSTEMROOT": true, "WINDIR": true,
-		"TEMP": true, "TMP": true, "LANG": true, "LC_ALL": true,
+		"TEMP": true, "TMP": true, "LANG": true, "LC_ALL": true, "COMSPEC": true,
 	}
-	result := make([]string, 0, len(allowed)+1)
+	result := make([]string, 0, len(allowed)+10)
 	for _, item := range os.Environ() {
 		name, _, found := strings.Cut(item, "=")
 		if found && allowed[strings.ToUpper(name)] {
 			result = append(result, item)
 		}
 	}
+	isolationRoot := mcpCommandIsolationRoot(spec)
+	for _, directory := range []string{
+		isolationRoot,
+		filepath.Join(isolationRoot, "home"),
+		filepath.Join(isolationRoot, "appdata", "roaming"),
+		filepath.Join(isolationRoot, "appdata", "local"),
+		filepath.Join(isolationRoot, "npm-cache"),
+		filepath.Join(isolationRoot, "uv-cache"),
+	} {
+		_ = os.MkdirAll(directory, 0o700)
+	}
+	result = append(result,
+		"HOME="+filepath.Join(isolationRoot, "home"),
+		"USERPROFILE="+filepath.Join(isolationRoot, "home"),
+		"HOMEDRIVE=",
+		"HOMEPATH=",
+		"APPDATA="+filepath.Join(isolationRoot, "appdata", "roaming"),
+		"LOCALAPPDATA="+filepath.Join(isolationRoot, "appdata", "local"),
+		"XDG_CACHE_HOME="+filepath.Join(isolationRoot, "cache"),
+		"NPM_CONFIG_CACHE="+filepath.Join(isolationRoot, "npm-cache"),
+		"UV_CACHE_DIR="+filepath.Join(isolationRoot, "uv-cache"),
+	)
 	values, isSet, _ := decodeCredentialSet(credential)
 	if isSet {
 		for _, binding := range spec.SecretBindings {
@@ -57,4 +82,17 @@ func mcpCommandEnvironment(spec manifest, credential string) []string {
 		}
 	}
 	return result
+}
+
+func mcpCommandIsolationRoot(spec manifest) string {
+	parts := []string{strings.ToLower(strings.TrimSpace(spec.Command))}
+	for _, arg := range spec.Args {
+		value := strings.TrimSpace(arg)
+		if filepath.IsAbs(value) {
+			value = "<absolute-path>"
+		}
+		parts = append(parts, value)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return filepath.Join(os.TempDir(), "oktapod-mcp-runtime", hex.EncodeToString(sum[:8]))
 }

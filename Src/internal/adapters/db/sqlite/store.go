@@ -5398,7 +5398,28 @@ func (s *Store) ReviewCapability(ctx context.Context, scope core.Scope, capabili
 	return capability, nil
 }
 
-func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential, correlationID string) (core.MCPHealth, error) {
+func (s *Store) SetCapabilityCredentialRef(ctx context.Context, scope core.Scope, capabilityID, credentialRef string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE capabilities SET credential_ref = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND kind = 'mcp' AND credential_ref = ''`, credentialRef, formatTime(time.Now()), capabilityID, scope.OrganizationID, scope.UserID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		var existing string
+		if err := s.db.QueryRowContext(ctx, `SELECT credential_ref FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND kind = 'mcp'`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&existing); err != nil {
+			return err
+		}
+		if existing != credentialRef {
+			return errors.New("MCP credential reference is already assigned")
+		}
+	}
+	return nil
+}
+
+func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential string, credentialUpdater func(context.Context, string) error, correlationID string) (core.MCPHealth, error) {
 	var projectID, kind, manifest, capabilityStatus string
 	if err := s.db.QueryRowContext(ctx, `SELECT project_id, kind, manifest_json, status FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &kind, &manifest, &capabilityStatus); err != nil {
 		return core.MCPHealth{}, err
@@ -5409,7 +5430,7 @@ func (s *Store) ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, 
 	if capabilityStatus != core.CapabilityStatusEnabled {
 		return core.MCPHealth{}, &core.ForbiddenError{Message: "MCP must be explicitly enabled before connecting"}
 	}
-	health, connectErr := mcpadapter.Connect(ctx, manifest, credential)
+	health, connectErr := mcpadapter.ConnectWithOptions(ctx, manifest, credential, mcpadapter.SessionOptions{CredentialUpdater: credentialUpdater})
 	status := core.MCPStatusFailed
 	if connectErr == nil {
 		status = core.MCPStatusConnected

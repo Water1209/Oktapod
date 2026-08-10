@@ -1088,6 +1088,26 @@ type MCPHealth struct {
 	UpdatedAt     time.Time
 }
 
+const (
+	MCPOAuthStatusPreparing = "preparing"
+	MCPOAuthStatusWaiting   = "waiting"
+	MCPOAuthStatusConnected = "connected"
+	MCPOAuthStatusCanceled  = "canceled"
+	MCPOAuthStatusFailed    = "failed"
+)
+
+// MCPOAuthSession is short-lived authorization UI state. Tokens, client
+// secrets, authorization codes, and OAuth state are deliberately excluded.
+type MCPOAuthSession struct {
+	ID               string    `json:"id"`
+	CapabilityID     string    `json:"capability_id"`
+	AuthorizationURL string    `json:"authorization_url,omitempty"`
+	Status           string    `json:"status"`
+	LastError        string    `json:"last_error,omitempty"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 type CreateCapabilityInput struct {
 	Kind           string
 	Name           string

@@ -505,6 +505,86 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MCPHealth" }
         default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/mcp/oauth/start:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: startMCPOAuth
+      responses:
+        "200":
+          description: OAuth browser authorization session prepared; no token or protocol state is returned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MCPOAuthSession" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/mcp/oauth/{session_id}:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getMCPOAuthStatus
+      responses:
+        "200":
+          description: Short-lived OAuth authorization status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MCPOAuthSession" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/mcp/oauth/{session_id}/cancel:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: cancelMCPOAuth
+      responses:
+        "200":
+          description: OAuth authorization canceled without deleting the MCP definition or workspace changes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MCPOAuthSession" }
+        default: { $ref: "#/components/responses/Problem" }
+  /mcp/oauth/callback:
+    get:
+      operationId: completeMCPOAuth
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 1024 }
+        - name: code
+          in: query
+          schema: { type: string, maxLength: 8192 }
+        - name: iss
+          in: query
+          schema: { type: string, maxLength: 2048 }
+        - name: error
+          in: query
+          schema: { type: string, maxLength: 256 }
+        - name: error_description
+          in: query
+          schema: { type: string, maxLength: 2048 }
+      responses:
+        "200":
+          description: Minimal browser callback page; the opener polls the status endpoint and closes this window
+          content:
+            text/html:
+              schema: { type: string }
+        default: { $ref: "#/components/responses/Problem" }
   /capabilities/{capability_id}/mcp/disconnect:
     parameters:
       - name: capability_id
@@ -2543,7 +2623,7 @@ components:
           type: object
           required: [type]
           additionalProperties: false
-          description: Authentication mode. In V1, oauth denotes a user-supplied OAuth access token stored in SecretStore; interactive authorization-code callback and refresh-token lifecycle are not exposed by this API.
+          description: Authentication mode. oauth uses the MCP Go SDK authorization-code flow with a loopback browser callback and encrypted refresh-token persistence; manually supplied access tokens use bearer.
           properties:
             type: { type: string, enum: [none, environment, bearer, oauth, custom_header] }
             header: { type: string, maxLength: 128 }
@@ -2788,6 +2868,21 @@ components:
         parent_session_id: { type: string }
         forked_from_entry_id: { type: string }
         created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MCPOAuthSession:
+      type: object
+      additionalProperties: false
+      required: [id, capability_id, status, expires_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        capability_id: { type: string, format: uuid }
+        authorization_url:
+          type: string
+          format: uri
+          description: Present only while user authorization is required. OAuth state and authorization codes are never returned separately.
+        status: { type: string, enum: [preparing, waiting, connected, canceled, failed] }
+        last_error: { type: string, maxLength: 2000 }
+        expires_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     SessionEntry:
       type: object

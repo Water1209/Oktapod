@@ -60,7 +60,9 @@ Web/API 支持多个 Provider 实例，协议族为 `openai_compatible`、`anthr
 
 Skill 菜单安装只接受单 Skill ZIP，不接受裸 `SKILL.md`、JSON 或 YAML；ZIP 在写入前校验唯一 `SKILL.md`、frontmatter、允许目录、文件数/体积、路径穿越、Unicode 冲突、符号链接、嵌套 Skill、依赖目录和隐藏载荷。MCP 不使用 ZIP：输入名称、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包或本地命令，解析后只显示该传输所需字段，高级区可复核规范化 `MCPDefinition v1`。名称发现访问官方 Registry `https://registry.modelcontextprotocol.io`，生产环境需要允许对该域名的出站 HTTPS；Registry 只用于发现，歧义候选必须人工选择且安装前固定实际版本。模型不能静默安装或启用能力；在新 Thread 中用自然语言要求安装 MCP 时，Composer 会打开相同配置与确认面板。一个 MCP 的多项凭据以不透明加密集合写入系统 SecretStore，运行时仅注入定义声明的环境变量或受控 Header。
 
-`auth.type=oauth` 在当前 V1 仅表示用户安全提供的 OAuth access token，连接时按 Bearer Token 使用；尚不支持浏览器 Authorization Code 回调、取消或刷新令牌持久化。GitHub、Notion 等服务可先完成发现和配置，但在该流程落地前不得宣称完整 OAuth 可用。
+`auth.type=oauth` 使用官方 MCP Go SDK 的 Authorization Code + PKCE 流程。资源审核启用后点击“连接账号”，授权页在新窗口打开；回调地址按当前监听端口生成，例如默认 `http://127.0.0.1:8787/api/v1/mcp/oauth/callback`。Personal V1 要求浏览器与服务运行在同一台电脑；授权窗口被拦截时资源详情仍提供显式链接。取消只终止短期授权会话，不删除资源或项目文件。SDK 发现/注册得到的客户端配置、access token 和 refresh token 以 `oktapod.mcp-oauth/v1` 不透明信封进入 SecretStore，刷新后原位更新；HTTP 日志只记录 callback 路径，不记录含授权码的 query。手工 PAT/API token 使用 `bearer`，不要写入 Manifest 或自然语言消息。
+
+Windows 上的 npm stdio MCP 会把 `npx.cmd`/`npx.ps1` 解析为 `node.exe` 直接启动 `npx-cli.js`，不经过命令行 shell。MCP 子进程的 HOME、APPDATA、npm 和 uv 缓存使用 `%TEMP%\oktapod-mcp-runtime`，防止社区服务器意外读取宿主配置；该目录是可重建运行缓存，服务停止后可由系统临时文件策略清理。
 
 当用户在任务中明确点名 Tavily 等已连接 MCP 时，Run 只向模型暴露该 MCP 和计划/输入/审批控制工具，不静默改走内建搜索或工作区工具。MCP 服务未提供完整风险 annotations 时按 L3 逐次审批；界面不会提供实际无效的会话级或项目级授权。Tavily 是可选首选，不是 V1 核心依赖。
 

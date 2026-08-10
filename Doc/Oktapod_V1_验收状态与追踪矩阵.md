@@ -32,7 +32,7 @@
 | B1 | 内核端口与运行时拆分 | `PASS` | Repository 窄端口、`agentloop`/`harness` 和独立 Inspector 已落地；剩余行数是维护指标，不影响行为闭环 |
 | B2 | 执行安全与工程门禁 | `PARTIAL` | `ExecutionAuthorization`、宿主 Git/Secret 隔离、CI/OpenAPI/迁移门禁已落地；双平台原生构建与产品烟测、Ubuntu race 仍待 CI 证据 |
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
-| B4 | MCP/Skill/搜索 | `PARTIAL` | 通用 MCP 来源解析、官方 SDK、本地/远端传输、多 Secret、Skill ZIP 与内置 Skill Creator 已落地；产品级 OAuth 回调/刷新尚未关闭 |
+| B4 | MCP/Skill/搜索 | `PASS` | 通用 MCP 来源解析、官方 SDK、本地/远端传输、多 Secret、产品级 OAuth 回调/取消/刷新、Skill ZIP 与内置 Skill Creator 已落地并有确定性测试 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、文件/Hunk、接受及受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
 | B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 
@@ -110,7 +110,7 @@
 |---|---|---|---|
 | R1B-001 | 受控命令执行 | `PASS` | 命令在 Thread 内通过 Policy/审批/Receipt 持久 Task 执行，支持状态、结果、取消和上下文回填；交互式 xterm 已按 V1 范围决策排除 |
 | R1B-002 | Oktapod 导入导出 | `PASS` | 浏览器预览、原始敏感字段 fail-closed、正文模式脱敏、JSON/JSONL/HTML、Oktapod JSONL Thread round-trip、事务化重建/幂等和 E2E 通过；Pi 精确兼容已转 V1.1 |
-| R1B-003 | Extensions/Packages | `PARTIAL` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；Tavily 发现 5 个工具并真实搜索，Filesystem 完成受限目录写读与越界拒绝；单 Skill ZIP 严格校验覆盖路径穿越、Unicode 冲突、符号链接、嵌套 Skill、隐藏载荷和压缩炸弹。GitHub/Notion 可完成发现、配置、凭据请求和失败恢复，但完整 OAuth Authorization Code、浏览器回调、取消与刷新令牌持久化尚未实现。 |
+| R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；标准远端默认按 OAuth challenge 自动发现，Registry 声明的 Secret Header 则生成安全绑定。Authorization Code/PKCE、浏览器回调、取消、动态客户端注册与刷新令牌 SecretStore 回写均有确定性测试。Tavily 发现 5 个工具并真实搜索，Filesystem 完成受限目录写读与越界拒绝；OAuth fixture 覆盖首次授权、取消和过期令牌刷新，故障 fixture 覆盖超时、非法 Schema、超量输出、进程缺失、SSRF/重定向与活动 Run 删除阻止。GitHub/Notion 无外部账号时仍完整验证发现、配置、审批和失败恢复，真实数据调用标记为可选外部烟测。单 Skill ZIP 严格校验覆盖路径穿越、Unicode 冲突、符号链接、嵌套 Skill、隐藏载荷和压缩炸弹。 |
 | R1B-004 | Provider 协议与真实主链路 | `PASS` | 原生 Anthropic/Gemini 增量合同通过；OpenAI 兼容通道已经真实 MiniMax 端到端验证可见流式、工具、文件修改和回读哈希；更多原生真实凭据已按 V1 范围决策排除 |
 | R1B-005 | 高级 Git | `PASS` | `git_conflicts`、按 Hunk 恢复、选择路径提交具备状态 Hash、Policy、审批与 Receipt；Changes UI 通过原 Thread 创建受治理动作。远程 Git 不进入 V1 |
 | R1B-006 | V1 设置 | `PASS` | Context、Retry、安全、Shell、主题、快捷键和数据维护路由/来源展示及 E2E 已完成；主题在首次绘制前恢复，设置入口直达外观，Light/Dark/System 共用语义 token，工作台、Markdown 表格、任务卡、资源、审批、表单和弹窗完成跨页对比度回归；非敏感显示偏好允许浏览器持久化，完整服务端化进入 V1.1 |
@@ -182,3 +182,4 @@
 | 2026-08-04 | 全局主题一致性与可读性收口 | 合并旧工作台与 Codex Shell 两套颜色语义，主题在 React 首次绘制前恢复；设置入口改为直达外观，Provider 页新增“主题与外观”入口；修复深色 Markdown 表格近黑正文、链接/成功状态对比度、白底任务胶囊，以及工作台、资源、审批、Composer、弹窗和表单的主题混用。真实浏览器在首页、设置、Provider、资源、审批和历史 Thread 完成深色跨页扫描，无横向溢出且主要文字不再低于 4.5:1。 |
 | 2026-08-04 | 无可执行 Step 的活动任务恢复与停止入口 | 修复工具批次收据已提交但模型 continuation 未入队时 Task/Run 永久保持 `running`、计划停在 `0/N` 且 Thread 无法删除的问题：Worker 空闲领取会原子补建续接 Step 并记录 `tool.batch_recovered`；Composer 在活动任务且输入为空时显示明确“停止任务”键，取消后同步任务与计划查询并移除 Composer 上方的终态任务胶囊，历史仍保留在执行记录和侧栏。真实遗留 Thread 已确认全部 Step 终态而 Task/Run/Plan 仍活跃，作为本次回归样本。 |
 | 2026-08-04 | 通用 MCP 来源与自然语言任务控制 | 删除 Tavily 前端预设和正则，名称发现改用官方 MCP Registry，支持 `server.json`、规范化 JSON、URL、固定版 npm/PyPI 包和本地命令并在歧义时要求选源；自然语言安装草稿由父级工作区持有，路由创建新 Thread 时配置面板不会丢失。新增多 Secret 集合、内置只读 Skill Creator、确定性暂停/取消/恢复指令和 Steering/Next Turn 排队交互。真实浏览器验证 1440×900、1280×800、1024×768、390×844 明暗主题无横向溢出，移动端为列表到全屏详情；产品级 OAuth 仍按 `PARTIAL` 跟踪。 |
+| 2026-08-10 | MCP OAuth 与故障矩阵关闭 | 远端 Registry/URL 在无 Secret Header 声明时使用标准 OAuth challenge 自动发现，声明 Header 时生成 Bearer/Custom Header 绑定；官方 Go SDK 完成 DCR、PKCE、浏览器回调、取消与刷新令牌 SecretStore 回写。资源中心使用单一“连接账号”动作和自动状态轮询，Skill ZIP 明确区分客户端预检与服务端完整校验，失败可转 Skill Creator 对话修复副本。Windows 直接以 `node.exe` 启动 npx CLI 并隔离运行缓存；官方 Filesystem MCP 真实写读与越界拒绝通过。OAuth、超时、非法工具 Schema、超量输出、stdio 进程缺失和活动 Run 删除阻止均有确定性测试；真实浏览器在 1440×900、1280×800、1024×768、390×844 明暗主题完成资源列表、连接修复、移动详情和 ZIP 错误回归，Success E2E 23/23 通过。 |

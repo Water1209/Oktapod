@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -81,6 +80,9 @@ func manifestCredential(spec manifest, supplied string) (string, error) {
 	}
 	if isSet {
 		for _, binding := range spec.SecretBindings {
+			if spec.AuthType == "oauth" && strings.EqualFold(binding.Target, "header:Authorization") {
+				continue
+			}
 			if binding.Required && strings.TrimSpace(values[binding.Name]) == "" {
 				return "", ErrNeedsAuth
 			}
@@ -93,9 +95,9 @@ func manifestCredential(spec manifest, supplied string) (string, error) {
 	if len(spec.SecretBindings) > 1 {
 		return "", ErrNeedsAuth
 	}
-	requiresCredential := strings.TrimSpace(spec.AuthEnv) != "" || spec.AuthType == "bearer" || spec.AuthType == "oauth" || spec.AuthType == "custom_header" || spec.AuthType == "environment"
+	requiresCredential := strings.TrimSpace(spec.AuthEnv) != "" || spec.AuthType == "bearer" || spec.AuthType == "custom_header" || spec.AuthType == "environment"
 	if len(spec.SecretBindings) == 1 && spec.SecretBindings[0].Required {
-		requiresCredential = true
+		requiresCredential = spec.AuthType != "oauth" || !strings.EqualFold(spec.SecretBindings[0].Target, "header:Authorization")
 	}
 	if requiresCredential && credential == "" {
 		return "", ErrNeedsAuth
@@ -127,6 +129,12 @@ type rpcResponse struct {
 }
 
 func Connect(ctx context.Context, manifestJSON, credential string) (Health, error) {
+	return ConnectWithOptions(ctx, manifestJSON, credential, SessionOptions{})
+}
+
+// ConnectWithOptions enables the interactive OAuth boundary while keeping the
+// ordinary health check API backward compatible.
+func ConnectWithOptions(ctx context.Context, manifestJSON, credential string, options SessionOptions) (Health, error) {
 	spec, err := decodeManifest(manifestJSON)
 	if err != nil {
 		return Health{LastError: "invalid MCP manifest"}, fmt.Errorf("decode MCP manifest: %w", err)
@@ -143,7 +151,7 @@ func Connect(ctx context.Context, manifestJSON, credential string) (Health, erro
 	if err != nil {
 		return Health{Transport: spec.Transport, LastError: err.Error()}, err
 	}
-	session, closeSession, err := openSDKSession(ctx, spec, credential)
+	session, closeSession, err := openSDKSession(ctx, spec, credential, options)
 	if err != nil {
 		return Health{Transport: spec.Transport, LastError: safeMCPError(err)}, err
 	}
@@ -165,6 +173,12 @@ func Connect(ctx context.Context, manifestJSON, credential string) (Health, erro
 // caller must enforce approval, capability scope and receipt semantics before
 // invoking this adapter.
 func Call(ctx context.Context, manifestJSON, credential, toolName string, arguments map[string]any) (CallResult, error) {
+	return CallWithCredentialUpdater(ctx, manifestJSON, credential, toolName, arguments, nil)
+}
+
+// CallWithCredentialUpdater lets a restored OAuth refresh token be rotated in
+// SecretStore without exposing the new token to the Worker or Run records.
+func CallWithCredentialUpdater(ctx context.Context, manifestJSON, credential, toolName string, arguments map[string]any, updater CredentialUpdater) (CallResult, error) {
 	if strings.TrimSpace(toolName) == "" || len(toolName) > 200 {
 		return CallResult{}, errors.New("MCP tool name is invalid")
 	}
@@ -188,7 +202,7 @@ func Call(ctx context.Context, manifestJSON, credential, toolName string, argume
 	if err != nil {
 		return CallResult{}, err
 	}
-	session, closeSession, err := openSDKSession(ctx, spec, credential)
+	session, closeSession, err := openSDKSession(ctx, spec, credential, SessionOptions{CredentialUpdater: updater})
 	if err != nil {
 		return CallResult{}, err
 	}
@@ -226,7 +240,7 @@ func Call(ctx context.Context, manifestJSON, credential, toolName string, argume
 	return CallResult{Content: content, IsError: result.IsError, StructuredResult: structured}, nil
 }
 
-func openSDKSession(ctx context.Context, spec manifest, credential string) (*sdkmcp.ClientSession, func(), error) {
+func openSDKSession(ctx context.Context, spec manifest, credential string, options SessionOptions) (*sdkmcp.ClientSession, func(), error) {
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "oktapod", Title: "Oktapod", Version: "1.0.0"}, &sdkmcp.ClientOptions{Capabilities: &sdkmcp.ClientCapabilities{}})
 	var transport sdkmcp.Transport
 	switch spec.Transport {
@@ -234,7 +248,10 @@ func openSDKSession(ctx context.Context, spec manifest, credential string) (*sdk
 		if strings.TrimSpace(spec.Command) == "" || strings.ContainsAny(spec.Command, "&|;<>\r\n") {
 			return nil, func() {}, errors.New("stdio command must be a direct executable path")
 		}
-		command := exec.CommandContext(ctx, spec.Command, spec.Args...)
+		command, err := newMCPCommand(ctx, spec.Command, spec.Args)
+		if err != nil {
+			return nil, func() {}, err
+		}
 		configureMCPCommand(command)
 		command.Cancel = func() error { return terminateMCPProcessTree(command) }
 		command.WaitDelay = 2 * time.Second
@@ -250,10 +267,18 @@ func openSDKSession(ctx context.Context, spec manifest, credential string) (*sdk
 			return nil, func() {}, fmt.Errorf("MCP URL is not allowed by SSRF policy: %w", err)
 		}
 		httpClient := safeHTTPClient(target)
-		if len(spec.Headers) > 0 || credential != "" {
+		if len(spec.Headers) > 0 || (credential != "" && spec.AuthType != "oauth") {
 			httpClient.Transport = headerRoundTripper{base: httpClient.Transport, credential: credential, spec: spec}
 		}
-		transport = &sdkmcp.StreamableClientTransport{Endpoint: target.String(), HTTPClient: httpClient, MaxRetries: 1, DisableStandaloneSSE: true}
+		streamable := &sdkmcp.StreamableClientTransport{Endpoint: target.String(), HTTPClient: httpClient, MaxRetries: 1, DisableStandaloneSSE: true}
+		if spec.AuthType == "oauth" {
+			handler, oauthErr := newOAuthHandler(httpClient, options.RedirectURL, credential, options)
+			if oauthErr != nil {
+				return nil, func() {}, oauthErr
+			}
+			streamable.OAuthHandler = handler
+		}
+		transport = streamable
 	default:
 		return nil, func() {}, fmt.Errorf("unsupported MCP transport %q", spec.Transport)
 	}
@@ -376,6 +401,9 @@ func listSDKTools(ctx context.Context, session *sdkmcp.ClientSession) ([]Tool, e
 				if marshalErr != nil || len(encoded) > 1<<20 || json.Unmarshal(encoded, &schema) != nil {
 					return nil, fmt.Errorf("MCP tool %q has an invalid or oversized input schema", item.Name)
 				}
+				if !validToolInputSchema(schema) {
+					return nil, fmt.Errorf("MCP tool %q input schema must describe an object", item.Name)
+				}
 			}
 			annotations := ToolAnnotations{}
 			if item.Annotations != nil {
@@ -390,6 +418,24 @@ func listSDKTools(ctx context.Context, session *sdkmcp.ClientSession) ([]Tool, e
 		}
 	}
 	return nil, errors.New("MCP tools/list exceeded pagination limit")
+}
+
+func validToolInputSchema(schema map[string]any) bool {
+	typeValue, exists := schema["type"]
+	if !exists {
+		return true
+	}
+	switch value := typeValue.(type) {
+	case string:
+		return value == "object"
+	case []any:
+		for _, item := range value {
+			if item == "object" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func canonicalTransport(value string) string {
@@ -413,7 +459,10 @@ func callStdio(ctx context.Context, spec manifest, credential string, request rp
 	if strings.TrimSpace(spec.Command) == "" || strings.ContainsAny(spec.Command, "&|;<>\r\n") {
 		return CallResult{}, errors.New("stdio command must be a direct executable path")
 	}
-	command := exec.CommandContext(ctx, spec.Command, spec.Args...)
+	command, err := newMCPCommand(ctx, spec.Command, spec.Args)
+	if err != nil {
+		return CallResult{}, err
+	}
 	configureMCPCommand(command)
 	command.Cancel = func() error { return terminateMCPProcessTree(command) }
 	command.WaitDelay = 2 * time.Second
@@ -530,7 +579,11 @@ func connectStdio(ctx context.Context, spec manifest, credential string) (Health
 		health.LastError = "stdio command must be a direct executable path"
 		return health, errors.New(health.LastError)
 	}
-	command := exec.CommandContext(ctx, spec.Command, spec.Args...)
+	command, err := newMCPCommand(ctx, spec.Command, spec.Args)
+	if err != nil {
+		health.LastError = "MCP stdio launcher is unavailable"
+		return health, err
+	}
 	configureMCPCommand(command)
 	command.Cancel = func() error { return terminateMCPProcessTree(command) }
 	command.WaitDelay = 2 * time.Second

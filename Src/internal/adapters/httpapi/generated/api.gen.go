@@ -484,6 +484,15 @@ const (
 	MCPHealthTransportStreamableHttp MCPHealthTransport = "streamable_http"
 )
 
+// Defines values for MCPOAuthSessionStatus.
+const (
+	MCPOAuthSessionStatusCanceled  MCPOAuthSessionStatus = "canceled"
+	MCPOAuthSessionStatusConnected MCPOAuthSessionStatus = "connected"
+	MCPOAuthSessionStatusFailed    MCPOAuthSessionStatus = "failed"
+	MCPOAuthSessionStatusPreparing MCPOAuthSessionStatus = "preparing"
+	MCPOAuthSessionStatusWaiting   MCPOAuthSessionStatus = "waiting"
+)
+
 // Defines values for MemoryStatus.
 const (
 	MemoryStatusActive   MemoryStatus = "active"
@@ -939,14 +948,14 @@ const (
 
 // Defines values for ListHumanActionsParamsStatus.
 const (
-	ListHumanActionsParamsStatusAll         ListHumanActionsParamsStatus = "all"
-	ListHumanActionsParamsStatusAnswered    ListHumanActionsParamsStatus = "answered"
-	ListHumanActionsParamsStatusApproved    ListHumanActionsParamsStatus = "approved"
-	ListHumanActionsParamsStatusExpired     ListHumanActionsParamsStatus = "expired"
-	ListHumanActionsParamsStatusRejected    ListHumanActionsParamsStatus = "rejected"
-	ListHumanActionsParamsStatusReviewing   ListHumanActionsParamsStatus = "reviewing"
-	ListHumanActionsParamsStatusSuperseded  ListHumanActionsParamsStatus = "superseded"
-	ListHumanActionsParamsStatusWaitingUser ListHumanActionsParamsStatus = "waiting_user"
+	All         ListHumanActionsParamsStatus = "all"
+	Answered    ListHumanActionsParamsStatus = "answered"
+	Approved    ListHumanActionsParamsStatus = "approved"
+	Expired     ListHumanActionsParamsStatus = "expired"
+	Rejected    ListHumanActionsParamsStatus = "rejected"
+	Reviewing   ListHumanActionsParamsStatus = "reviewing"
+	Superseded  ListHumanActionsParamsStatus = "superseded"
+	WaitingUser ListHumanActionsParamsStatus = "waiting_user"
 )
 
 // Defines values for ListProjectAssetsParamsKind.
@@ -1742,7 +1751,7 @@ type LabelSessionEntryRequest struct {
 
 // MCPDefinitionV1 defines model for MCPDefinitionV1.
 type MCPDefinitionV1 struct {
-	// Auth Authentication mode. In V1, oauth denotes a user-supplied OAuth access token stored in SecretStore; interactive authorization-code callback and refresh-token lifecycle are not exposed by this API.
+	// Auth Authentication mode. oauth uses the MCP Go SDK authorization-code flow with a loopback browser callback and encrypted refresh-token persistence; manually supplied access tokens use bearer.
 	Auth struct {
 		Header *string                 `json:"header,omitempty"`
 		Type   MCPDefinitionV1AuthType `json:"type"`
@@ -1831,6 +1840,21 @@ type MCPInstallCandidate struct {
 	Title         *string         `json:"title,omitempty"`
 	Version       string          `json:"version"`
 }
+
+// MCPOAuthSession defines model for MCPOAuthSession.
+type MCPOAuthSession struct {
+	// AuthorizationUrl Present only while user authorization is required. OAuth state and authorization codes are never returned separately.
+	AuthorizationUrl *string               `json:"authorization_url,omitempty"`
+	CapabilityId     openapi_types.UUID    `json:"capability_id"`
+	ExpiresAt        time.Time             `json:"expires_at"`
+	Id               openapi_types.UUID    `json:"id"`
+	LastError        *string               `json:"last_error,omitempty"`
+	Status           MCPOAuthSessionStatus `json:"status"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+}
+
+// MCPOAuthSessionStatus defines model for MCPOAuthSession.Status.
+type MCPOAuthSessionStatus string
 
 // MaintenanceDiagnostics defines model for MaintenanceDiagnostics.
 type MaintenanceDiagnostics struct {
@@ -2717,6 +2741,15 @@ type RevokeProjectInvitationParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// CompleteMCPOAuthParams defines parameters for CompleteMCPOAuth.
+type CompleteMCPOAuthParams struct {
+	State            string  `form:"state" json:"state"`
+	Code             *string `form:"code,omitempty" json:"code,omitempty"`
+	Iss              *string `form:"iss,omitempty" json:"iss,omitempty"`
+	Error            *string `form:"error,omitempty" json:"error,omitempty"`
+	ErrorDescription *string `form:"error_description,omitempty" json:"error_description,omitempty"`
+}
+
 // DeleteMemoryParams defines parameters for DeleteMemory.
 type DeleteMemoryParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -3162,6 +3195,15 @@ type ServerInterface interface {
 	// (GET /capabilities/{capability_id}/mcp/health)
 	GetMCPHealth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
 
+	// (POST /capabilities/{capability_id}/mcp/oauth/start)
+	StartMCPOAuth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
+
+	// (GET /capabilities/{capability_id}/mcp/oauth/{session_id})
+	GetMCPOAuthStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, sessionId openapi_types.UUID)
+
+	// (POST /capabilities/{capability_id}/mcp/oauth/{session_id}/cancel)
+	CancelMCPOAuth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, sessionId openapi_types.UUID)
+
 	// (POST /capabilities/{capability_id}/review)
 	ReviewCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params ReviewCapabilityParams)
 
@@ -3227,6 +3269,9 @@ type ServerInterface interface {
 
 	// (POST /invitations/{invitation_id}/revoke)
 	RevokeProjectInvitation(w http.ResponseWriter, r *http.Request, invitationId openapi_types.UUID, params RevokeProjectInvitationParams)
+
+	// (GET /mcp/oauth/callback)
+	CompleteMCPOAuth(w http.ResponseWriter, r *http.Request, params CompleteMCPOAuthParams)
 
 	// (DELETE /memories/{memory_id})
 	DeleteMemory(w http.ResponseWriter, r *http.Request, memoryId openapi_types.UUID, params DeleteMemoryParams)
@@ -3498,6 +3543,21 @@ func (_ Unimplemented) GetMCPHealth(w http.ResponseWriter, r *http.Request, capa
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (POST /capabilities/{capability_id}/mcp/oauth/start)
+func (_ Unimplemented) StartMCPOAuth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /capabilities/{capability_id}/mcp/oauth/{session_id})
+func (_ Unimplemented) GetMCPOAuthStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, sessionId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /capabilities/{capability_id}/mcp/oauth/{session_id}/cancel)
+func (_ Unimplemented) CancelMCPOAuth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, sessionId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (POST /capabilities/{capability_id}/review)
 func (_ Unimplemented) ReviewCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params ReviewCapabilityParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -3610,6 +3670,11 @@ func (_ Unimplemented) AcceptProjectInvitation(w http.ResponseWriter, r *http.Re
 
 // (POST /invitations/{invitation_id}/revoke)
 func (_ Unimplemented) RevokeProjectInvitation(w http.ResponseWriter, r *http.Request, invitationId openapi_types.UUID, params RevokeProjectInvitationParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /mcp/oauth/callback)
+func (_ Unimplemented) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request, params CompleteMCPOAuthParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4351,6 +4416,99 @@ func (siw *ServerInterfaceWrapper) GetMCPHealth(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// StartMCPOAuth operation middleware
+func (siw *ServerInterfaceWrapper) StartMCPOAuth(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartMCPOAuth(w, r, capabilityId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMCPOAuthStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetMCPOAuthStatus(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "session_id" -------------
+	var sessionId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "session_id", chi.URLParam(r, "session_id"), &sessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "session_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMCPOAuthStatus(w, r, capabilityId, sessionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CancelMCPOAuth operation middleware
+func (siw *ServerInterfaceWrapper) CancelMCPOAuth(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "session_id" -------------
+	var sessionId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "session_id", chi.URLParam(r, "session_id"), &sessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "session_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CancelMCPOAuth(w, r, capabilityId, sessionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ReviewCapability operation middleware
 func (siw *ServerInterfaceWrapper) ReviewCapability(w http.ResponseWriter, r *http.Request) {
 
@@ -5071,6 +5229,72 @@ func (siw *ServerInterfaceWrapper) RevokeProjectInvitation(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RevokeProjectInvitation(w, r, invitationId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteMCPOAuth operation middleware
+func (siw *ServerInterfaceWrapper) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CompleteMCPOAuthParams
+
+	// ------------- Required query parameter "state" -------------
+
+	if paramValue := r.URL.Query().Get("state"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "state"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "state", r.URL.Query(), &params.State)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "state", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "code" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "code", r.URL.Query(), &params.Code)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "iss" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "iss", r.URL.Query(), &params.Iss)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "iss", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "error" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "error", r.URL.Query(), &params.Error)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "error", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "error_description" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "error_description", r.URL.Query(), &params.ErrorDescription)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "error_description", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteMCPOAuth(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7558,6 +7782,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/capabilities/{capability_id}/mcp/health", wrapper.GetMCPHealth)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/capabilities/{capability_id}/mcp/oauth/start", wrapper.StartMCPOAuth)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/capabilities/{capability_id}/mcp/oauth/{session_id}", wrapper.GetMCPOAuthStatus)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/capabilities/{capability_id}/mcp/oauth/{session_id}/cancel", wrapper.CancelMCPOAuth)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/review", wrapper.ReviewCapability)
 	})
 	r.Group(func(r chi.Router) {
@@ -7622,6 +7855,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/invitations/{invitation_id}/revoke", wrapper.RevokeProjectInvitation)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/mcp/oauth/callback", wrapper.CompleteMCPOAuth)
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/memories/{memory_id}", wrapper.DeleteMemory)
@@ -8256,6 +8492,95 @@ type GetMCPHealthdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetMCPHealthdefaultApplicationProblemPlusJSONResponse) VisitGetMCPHealthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type StartMCPOAuthRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+}
+
+type StartMCPOAuthResponseObject interface {
+	VisitStartMCPOAuthResponse(w http.ResponseWriter) error
+}
+
+type StartMCPOAuth200JSONResponse MCPOAuthSession
+
+func (response StartMCPOAuth200JSONResponse) VisitStartMCPOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type StartMCPOAuthdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response StartMCPOAuthdefaultApplicationProblemPlusJSONResponse) VisitStartMCPOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetMCPOAuthStatusRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+	SessionId    openapi_types.UUID `json:"session_id"`
+}
+
+type GetMCPOAuthStatusResponseObject interface {
+	VisitGetMCPOAuthStatusResponse(w http.ResponseWriter) error
+}
+
+type GetMCPOAuthStatus200JSONResponse MCPOAuthSession
+
+func (response GetMCPOAuthStatus200JSONResponse) VisitGetMCPOAuthStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetMCPOAuthStatusdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetMCPOAuthStatusdefaultApplicationProblemPlusJSONResponse) VisitGetMCPOAuthStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CancelMCPOAuthRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+	SessionId    openapi_types.UUID `json:"session_id"`
+}
+
+type CancelMCPOAuthResponseObject interface {
+	VisitCancelMCPOAuthResponse(w http.ResponseWriter) error
+}
+
+type CancelMCPOAuth200JSONResponse MCPOAuthSession
+
+func (response CancelMCPOAuth200JSONResponse) VisitCancelMCPOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CancelMCPOAuthdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CancelMCPOAuthdefaultApplicationProblemPlusJSONResponse) VisitCancelMCPOAuthResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -8933,6 +9258,45 @@ type RevokeProjectInvitationdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response RevokeProjectInvitationdefaultApplicationProblemPlusJSONResponse) VisitRevokeProjectInvitationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CompleteMCPOAuthRequestObject struct {
+	Params CompleteMCPOAuthParams
+}
+
+type CompleteMCPOAuthResponseObject interface {
+	VisitCompleteMCPOAuthResponse(w http.ResponseWriter) error
+}
+
+type CompleteMCPOAuth200TexthtmlResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response CompleteMCPOAuth200TexthtmlResponse) VisitCompleteMCPOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/html")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type CompleteMCPOAuthdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CompleteMCPOAuthdefaultApplicationProblemPlusJSONResponse) VisitCompleteMCPOAuthResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -10930,6 +11294,15 @@ type StrictServerInterface interface {
 	// (GET /capabilities/{capability_id}/mcp/health)
 	GetMCPHealth(ctx context.Context, request GetMCPHealthRequestObject) (GetMCPHealthResponseObject, error)
 
+	// (POST /capabilities/{capability_id}/mcp/oauth/start)
+	StartMCPOAuth(ctx context.Context, request StartMCPOAuthRequestObject) (StartMCPOAuthResponseObject, error)
+
+	// (GET /capabilities/{capability_id}/mcp/oauth/{session_id})
+	GetMCPOAuthStatus(ctx context.Context, request GetMCPOAuthStatusRequestObject) (GetMCPOAuthStatusResponseObject, error)
+
+	// (POST /capabilities/{capability_id}/mcp/oauth/{session_id}/cancel)
+	CancelMCPOAuth(ctx context.Context, request CancelMCPOAuthRequestObject) (CancelMCPOAuthResponseObject, error)
+
 	// (POST /capabilities/{capability_id}/review)
 	ReviewCapability(ctx context.Context, request ReviewCapabilityRequestObject) (ReviewCapabilityResponseObject, error)
 
@@ -10995,6 +11368,9 @@ type StrictServerInterface interface {
 
 	// (POST /invitations/{invitation_id}/revoke)
 	RevokeProjectInvitation(ctx context.Context, request RevokeProjectInvitationRequestObject) (RevokeProjectInvitationResponseObject, error)
+
+	// (GET /mcp/oauth/callback)
+	CompleteMCPOAuth(ctx context.Context, request CompleteMCPOAuthRequestObject) (CompleteMCPOAuthResponseObject, error)
 
 	// (DELETE /memories/{memory_id})
 	DeleteMemory(ctx context.Context, request DeleteMemoryRequestObject) (DeleteMemoryResponseObject, error)
@@ -11605,6 +11981,86 @@ func (sh *strictHandler) GetMCPHealth(w http.ResponseWriter, r *http.Request, ca
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetMCPHealthResponseObject); ok {
 		if err := validResponse.VisitGetMCPHealthResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartMCPOAuth operation middleware
+func (sh *strictHandler) StartMCPOAuth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	var request StartMCPOAuthRequestObject
+
+	request.CapabilityId = capabilityId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartMCPOAuth(ctx, request.(StartMCPOAuthRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartMCPOAuth")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartMCPOAuthResponseObject); ok {
+		if err := validResponse.VisitStartMCPOAuthResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMCPOAuthStatus operation middleware
+func (sh *strictHandler) GetMCPOAuthStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, sessionId openapi_types.UUID) {
+	var request GetMCPOAuthStatusRequestObject
+
+	request.CapabilityId = capabilityId
+	request.SessionId = sessionId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMCPOAuthStatus(ctx, request.(GetMCPOAuthStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMCPOAuthStatus")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMCPOAuthStatusResponseObject); ok {
+		if err := validResponse.VisitGetMCPOAuthStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CancelMCPOAuth operation middleware
+func (sh *strictHandler) CancelMCPOAuth(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, sessionId openapi_types.UUID) {
+	var request CancelMCPOAuthRequestObject
+
+	request.CapabilityId = capabilityId
+	request.SessionId = sessionId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CancelMCPOAuth(ctx, request.(CancelMCPOAuthRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CancelMCPOAuth")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CancelMCPOAuthResponseObject); ok {
+		if err := validResponse.VisitCancelMCPOAuthResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -12265,6 +12721,32 @@ func (sh *strictHandler) RevokeProjectInvitation(w http.ResponseWriter, r *http.
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RevokeProjectInvitationResponseObject); ok {
 		if err := validResponse.VisitRevokeProjectInvitationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CompleteMCPOAuth operation middleware
+func (sh *strictHandler) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request, params CompleteMCPOAuthParams) {
+	var request CompleteMCPOAuthRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CompleteMCPOAuth(ctx, request.(CompleteMCPOAuthRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CompleteMCPOAuth")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CompleteMCPOAuthResponseObject); ok {
+		if err := validResponse.VisitCompleteMCPOAuthResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

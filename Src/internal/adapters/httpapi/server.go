@@ -36,6 +36,16 @@ type Server struct {
 	activeSSE atomic.Int64
 }
 
+type mcpOAuthHTMLResponse string
+
+func (response mcpOAuthHTMLResponse) VisitCompleteMCPOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+	w.WriteHeader(http.StatusOK)
+	_, err := io.WriteString(w, string(response))
+	return err
+}
+
 func int64Ptr(value int64) *int64 { return &value }
 func boolPtr(value bool) *bool    { return &value }
 
@@ -1736,6 +1746,75 @@ func (s *Server) ConnectMCP(ctx context.Context, request generated.ConnectMCPReq
 	return generated.ConnectMCP200JSONResponse(response), nil
 }
 
+func (s *Server) StartMCPOAuth(ctx context.Context, request generated.StartMCPOAuthRequestObject) (generated.StartMCPOAuthResponseObject, error) {
+	session, err := s.service.StartMCPOAuth(ctx, request.CapabilityId.String())
+	if err != nil {
+		return nil, err
+	}
+	response, err := mcpOAuthSessionResponse(session)
+	if err != nil {
+		return nil, err
+	}
+	return generated.StartMCPOAuth200JSONResponse(response), nil
+}
+
+func (s *Server) GetMCPOAuthStatus(ctx context.Context, request generated.GetMCPOAuthStatusRequestObject) (generated.GetMCPOAuthStatusResponseObject, error) {
+	session, err := s.service.GetMCPOAuthStatus(ctx, request.CapabilityId.String(), request.SessionId.String())
+	if err != nil {
+		return nil, err
+	}
+	response, err := mcpOAuthSessionResponse(session)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetMCPOAuthStatus200JSONResponse(response), nil
+}
+
+func (s *Server) CancelMCPOAuth(ctx context.Context, request generated.CancelMCPOAuthRequestObject) (generated.CancelMCPOAuthResponseObject, error) {
+	session, err := s.service.CancelMCPOAuth(ctx, request.CapabilityId.String(), request.SessionId.String())
+	if err != nil {
+		return nil, err
+	}
+	response, err := mcpOAuthSessionResponse(session)
+	if err != nil {
+		return nil, err
+	}
+	return generated.CancelMCPOAuth200JSONResponse(response), nil
+}
+
+func (s *Server) CompleteMCPOAuth(ctx context.Context, request generated.CompleteMCPOAuthRequestObject) (generated.CompleteMCPOAuthResponseObject, error) {
+	status := core.MCPOAuthStatusCanceled
+	if request.Params.Error != nil {
+		session, err := s.service.CancelMCPOAuthByState(ctx, request.Params.State)
+		if err != nil {
+			return nil, err
+		}
+		status = session.Status
+	} else {
+		code := ""
+		issuer := ""
+		if request.Params.Code != nil {
+			code = *request.Params.Code
+		}
+		if request.Params.Iss != nil {
+			issuer = *request.Params.Iss
+		}
+		session, err := s.service.CompleteMCPOAuth(ctx, request.Params.State, code, issuer)
+		if err != nil {
+			return nil, err
+		}
+		status = session.Status
+	}
+	message := "授权已取消。你可以关闭此窗口，MCP 配置和项目文件没有被删除。"
+	if status == core.MCPOAuthStatusConnected {
+		message = "账号连接成功。你可以关闭此窗口并返回 Oktapod。"
+	} else if status == core.MCPOAuthStatusFailed {
+		message = "账号授权已返回，但 MCP 验证失败。请关闭此窗口并在资源中心查看修复提示。"
+	}
+	body := "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Oktapod MCP 授权</title><style>:root{font-family:Inter,\"Segoe UI\",sans-serif;color:#172033;background:#f5f7fb}body{display:grid;min-height:100vh;margin:0;place-items:center}main{max-width:430px;margin:24px;padding:28px;border:1px solid #d8deea;border-top:4px solid #2455e6;border-radius:10px;background:#fff;box-shadow:0 18px 50px #07145418}h1{margin:0 0 12px;font-size:21px}p{margin:0;color:#5d6677;font-size:14px;line-height:1.7}@media(prefers-color-scheme:dark){:root{color:#edf2ff;background:#111722}main{border-color:#313b4c;background:#171e2a;box-shadow:none}p{color:#b7c1d4}}</style><body><main><h1>Oktapod MCP 授权</h1><p>" + message + "</p></main></body></html>"
+	return mcpOAuthHTMLResponse(body), nil
+}
+
 func (s *Server) DisconnectMCP(ctx context.Context, request generated.DisconnectMCPRequestObject) (generated.DisconnectMCPResponseObject, error) {
 	health, err := s.service.DisconnectMCP(ctx, request.CapabilityId.String(), correlationID(ctx))
 	if err != nil {
@@ -1758,6 +1837,28 @@ func (s *Server) GetMCPHealth(ctx context.Context, request generated.GetMCPHealt
 		return nil, err
 	}
 	return generated.GetMCPHealth200JSONResponse(response), nil
+}
+
+func mcpOAuthSessionResponse(session core.MCPOAuthSession) (generated.MCPOAuthSession, error) {
+	id, err := uuid.Parse(session.ID)
+	if err != nil {
+		return generated.MCPOAuthSession{}, err
+	}
+	capabilityID, err := uuid.Parse(session.CapabilityID)
+	if err != nil {
+		return generated.MCPOAuthSession{}, err
+	}
+	response := generated.MCPOAuthSession{
+		Id: id, CapabilityId: capabilityID, Status: generated.MCPOAuthSessionStatus(session.Status),
+		ExpiresAt: session.ExpiresAt, UpdatedAt: session.UpdatedAt,
+	}
+	if session.AuthorizationURL != "" {
+		response.AuthorizationUrl = &session.AuthorizationURL
+	}
+	if session.LastError != "" {
+		response.LastError = &session.LastError
+	}
+	return response, nil
 }
 
 func (s *Server) ListProjectMemories(ctx context.Context, request generated.ListProjectMemoriesRequestObject) (generated.ListProjectMemoriesResponseObject, error) {

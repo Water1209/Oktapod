@@ -30,7 +30,11 @@ func TestParseMCPDefinitionAcceptsRemoteAuthModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("auth=%s err=%v", auth, err)
 		}
-		if auth != "none" && len(definition.SecretBindings) != 1 {
+		expectedBindings := 0
+		if auth == "bearer" || auth == "custom_header" {
+			expectedBindings = 1
+		}
+		if len(definition.SecretBindings) != expectedBindings {
 			t.Fatalf("auth=%s bindings=%#v", auth, definition.SecretBindings)
 		}
 	}

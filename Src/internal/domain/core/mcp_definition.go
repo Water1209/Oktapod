@@ -143,7 +143,11 @@ func ParseMCPDefinition(raw string) (MCPDefinitionV1, error) {
 	if len(definition.SecretBindings) == 0 && definition.Transport.AuthEnv != "" {
 		definition.SecretBindings = []MCPSecretBinding{{Name: "credential", Target: "env:" + definition.Transport.AuthEnv, Required: true}}
 	}
-	if len(definition.SecretBindings) == 0 && (definition.Auth.Type == "bearer" || definition.Auth.Type == "oauth" || definition.Auth.Type == "custom_header") {
+	// OAuth credentials are created by the authorization-code flow and stored
+	// as one opaque SecretStore envelope. They are not user-entered header
+	// bindings. Bearer and custom-header authentication still use explicit
+	// write-only bindings.
+	if len(definition.SecretBindings) == 0 && (definition.Auth.Type == "bearer" || definition.Auth.Type == "custom_header") {
 		target := "header:Authorization"
 		if definition.Auth.Type == "custom_header" {
 			target = "header:" + definition.Auth.Header

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	postgresdb "github.com/oktapod/oktapod/Src/internal/adapters/db/postgres"
 	"github.com/oktapod/oktapod/Src/internal/adapters/db/sqlite"
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
+	mcpadapter "github.com/oktapod/oktapod/Src/internal/adapters/mcp"
 	"github.com/oktapod/oktapod/Src/internal/adapters/mcpregistry"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/databaseconfigured"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/native"
@@ -159,6 +161,11 @@ func run() error {
 		}
 		return openaicompat.New(provider.Endpoint, provider.DefaultModelID, func() string { return credential })
 	})
+	oauthCoordinator, err := mcpadapter.NewOAuthCoordinator(ctx, credentials, mcpOAuthRedirectURL(config.ListenAddress))
+	if err != nil {
+		return err
+	}
+	service.WithMCPOAuthCoordinator(oauthCoordinator)
 	workspaceExecutor, err := workspace.NewLocal(config.WorkspaceRoot)
 	if err != nil {
 		return err
@@ -257,6 +264,14 @@ func run() error {
 		logger.Warn("worker shutdown timed out; durable leases will recover unfinished work")
 	}
 	return shutdownErr
+}
+
+func mcpOAuthRedirectURL(listenAddress string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(listenAddress))
+	if err != nil || strings.TrimSpace(port) == "" {
+		port = "8787"
+	}
+	return "http://127.0.0.1:" + port + "/api/v1/mcp/oauth/callback"
 }
 
 func runPreflight(args []string) error {

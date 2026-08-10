@@ -52,9 +52,17 @@ type MCPRegistryEnvironmentVariable struct {
 }
 
 type MCPRegistryRemote struct {
-	Type          string `json:"type"`
-	TransportType string `json:"transportType"`
-	URL           string `json:"url"`
+	Type          string                    `json:"type"`
+	TransportType string                    `json:"transportType"`
+	URL           string                    `json:"url"`
+	Headers       []MCPRegistryRemoteHeader `json:"headers"`
+}
+
+type MCPRegistryRemoteHeader struct {
+	Name        string `json:"name"`
+	Required    bool   `json:"isRequired"`
+	Secret      bool   `json:"isSecret"`
+	Description string `json:"description"`
 }
 
 var resourceDraftSecretPattern = regexp.MustCompile(`(?i)(?:\b(?:tvly-|sk-|ghp_|github_pat_|ntn_)[a-z0-9_-]{12,}|(?:api[_-]?key|authorization|bearer|password|secret)\s*[:=]\s*\S{8,})`)
@@ -97,7 +105,10 @@ func (s *Service) ResolveMCPInstallDraft(ctx context.Context, projectID, sourceI
 			SchemaVersion: core.MCPDefinitionSchemaV1,
 			Source:        core.MCPSource{Type: "url", Reference: resolvedInput},
 			Transport:     core.MCPTransport{Type: "streamable_http", URL: resolvedInput},
-			Auth:          core.MCPAuth{Type: "none"}, Permissions: []string{"network"},
+			// Standard remote MCP authorization is discovered from a 401 by
+			// the official SDK. Public endpoints still connect without opening
+			// a browser because the handler is only invoked when challenged.
+			Auth: core.MCPAuth{Type: "oauth"}, Permissions: []string{"network"},
 		}
 		encoded, err := definition.JSON()
 		if err != nil {
@@ -107,7 +118,7 @@ func (s *Service) ResolveMCPInstallDraft(ctx context.Context, projectID, sourceI
 			return core.ResourceInstallDraft{}, &core.ValidationError{Field: "source_input", Message: err.Error()}
 		}
 		name := remoteMCPName(resolvedInput)
-		return finalizeMCPDraft(draft, name, "remote", definition, []string{"远端 URL 未经过 Registry 身份验证；安装前请核对域名、认证方式和数据权限。"}), nil
+		return finalizeMCPDraft(draft, name, "remote", definition, []string{"远端 URL 未经过 Registry 身份验证；安装前请核对域名和数据权限。若服务使用 API Key，请在高级配置中将认证方式改为 bearer 或 custom_header。"}), nil
 	}
 	if definition, name, version, matched, err := resolveDirectMCPSource(resolvedInput); matched {
 		if err != nil {
@@ -311,6 +322,20 @@ func registryInstallCandidate(server MCPRegistryServer) (core.MCPInstallCandidat
 		if (transport == "streamable-http" || transport == "streamable_http") && strings.TrimSpace(remote.URL) != "" {
 			definition.Transport = core.MCPTransport{Type: "streamable_http", URL: remote.URL}
 			definition.Permissions = []string{"network"}
+			definition.Auth.Type = "oauth"
+			for _, header := range remote.Headers {
+				if !header.Secret || strings.TrimSpace(header.Name) == "" {
+					continue
+				}
+				name := strings.TrimSpace(header.Name)
+				bindingName := strings.ToLower(strings.ReplaceAll(name, "-", "_"))
+				definition.SecretBindings = append(definition.SecretBindings, core.MCPSecretBinding{Name: bindingName, Target: "header:" + name, Required: header.Required})
+				if strings.EqualFold(name, "Authorization") {
+					definition.Auth.Type = "bearer"
+				} else if definition.Auth.Type == "oauth" {
+					definition.Auth = core.MCPAuth{Type: "custom_header", Header: name}
+				}
+			}
 			break
 		}
 	}

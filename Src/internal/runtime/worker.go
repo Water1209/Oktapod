@@ -1830,7 +1830,13 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据不可用，请重新配置后重试。", Output: map[string]any{"retryable": true}}
 		}
 	}
-	callResult, callErr := mcpadapter.Call(ctx, manifestJSON, credential, toolName, input.Arguments)
+	var credentialUpdater mcpadapter.CredentialUpdater
+	if credentialRef != "" && w.mcpSecrets != nil {
+		credentialUpdater = func(saveContext context.Context, payload string) error {
+			return w.mcpSecrets.Set(saveContext, credentialRef, payload)
+		}
+	}
+	callResult, callErr := mcpadapter.CallWithCredentialUpdater(ctx, manifestJSON, credential, toolName, input.Arguments, credentialUpdater)
 	output := map[string]any{
 		"capability_id": capabilityID,
 		"tool_name":     toolName,

@@ -3,9 +3,14 @@
 package mcp
 
 import (
+	"context"
 	"os/exec"
 	"syscall"
 )
+
+func newMCPCommand(ctx context.Context, command string, args []string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, command, args...), nil
+}
 
 func configureMCPCommand(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

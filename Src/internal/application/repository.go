@@ -126,8 +126,9 @@ type ResourceRepository interface {
 	ListCapabilities(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Capability, error)
 	SetCapabilityStatus(ctx context.Context, scope core.Scope, capabilityID, status string, idempotency core.Idempotency) (core.Capability, error)
 	DeleteCapability(ctx context.Context, scope core.Scope, capabilityID, correlationID string) error
+	SetCapabilityCredentialRef(ctx context.Context, scope core.Scope, capabilityID, credentialRef string) error
 	ReviewCapability(ctx context.Context, scope core.Scope, capabilityID string, input core.ReviewCapabilityInput, correlationID string, idempotency core.Idempotency) (core.Capability, error)
-	ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential, correlationID string) (core.MCPHealth, error)
+	ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential string, credentialUpdater func(context.Context, string) error, correlationID string) (core.MCPHealth, error)
 	DisconnectMCP(ctx context.Context, scope core.Scope, capabilityID, correlationID string) (core.MCPHealth, error)
 	GetMCPHealth(ctx context.Context, scope core.Scope, capabilityID string) (core.MCPHealth, error)
 	CreateMemory(ctx context.Context, scope core.Scope, projectID string, input core.CreateMemoryInput, sourceHash string, idempotency core.Idempotency) (core.Memory, error)

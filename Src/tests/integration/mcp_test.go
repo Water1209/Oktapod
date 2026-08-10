@@ -63,9 +63,22 @@ func TestMCPLifecycleRequiresEnableAndPersistsHealth(t *testing.T) {
 	if health.Status != core.MCPStatusConnected || health.ToolCount != 1 {
 		t.Fatalf("health=%#v", health)
 	}
+	activeTask, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Keep MCP snapshot active", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "mcp-active-task", "mcp-active-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteCapability(context.Background(), capability.ID, "mcp-delete-active"); err == nil {
+		t.Fatal("active Run did not block MCP deletion")
+	}
+	if _, err := service.ControlTask(context.Background(), activeTask.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "mcp-cancel-active", "mcp-cancel-active"); err != nil {
+		t.Fatal(err)
+	}
 	health, err = service.DisconnectMCP(context.Background(), capability.ID, "mcp-disconnect")
 	if err != nil || health.Status != core.MCPStatusDisabled {
 		t.Fatalf("disconnect health=%#v err=%v", health, err)
+	}
+	if err := service.DeleteCapability(context.Background(), capability.ID, "mcp-delete-idle"); err != nil {
+		t.Fatalf("delete idle MCP: %v", err)
 	}
 
 	// Project-shared MCP health is readable by an active member, but connection

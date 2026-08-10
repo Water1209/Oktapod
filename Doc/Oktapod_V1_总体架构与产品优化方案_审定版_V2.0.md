@@ -289,9 +289,9 @@ run_command / update_plan
 
 现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。多项 Secret 以一个不透明加密集合写入 SecretStore，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：模型只看到该 MCP 与计划/输入/审批控制工具，不允许静默改用内建搜索或无关工具。Tavily 是可选首选，不进入核心依赖。
 
-用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。内置只读 Skill Creator 只在明确的 Skill 创建意图中向模型提供结构约束并生成草稿 ZIP；所有草稿仍进入同一 ZIP 校验、权限差异和人工审批链。
+用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。前端只能声明“客户端预检通过”，必须等服务端完整扫描通过后才能进入审批；失败时展示结构化原因，并可将修复上下文带入新对话交给内置只读 Skill Creator 生成兼容副本。所有草稿仍进入同一 ZIP 校验、权限差异和人工审批链。
 
-**当前 OAuth 边界**：`auth.type=oauth` 目前表示由用户安全提供 OAuth access token，并按 Bearer Token 使用；完整 Authorization Code、浏览器回调、取消、刷新令牌持久化尚未接入产品生命周期。GitHub/Notion 可完成发现、配置和缺凭据恢复，但不得标记为完整 OAuth 验收通过。该缺口进入 R1B-003 的 `PARTIAL` 状态，后续应直接使用 MCP Go SDK 的 `OAuthHandler`，不能再叠加一套自研协议栈。
+**当前 OAuth 合同**：`auth.type=oauth` 直接使用固定版本 MCP Go SDK 的 `OAuthHandler` 完成受保护资源/授权服务器发现、动态客户端注册、PKCE、Authorization Code、loopback 浏览器回调和刷新。短期授权会话只在内存中保存并绑定 Capability 与当前登录 Scope；state 仅作为短期授权 URL/回调的协议参数，不成为独立 API 字段或业务记录；授权码、access token、refresh token 和客户端密钥不进入业务数据库、消息、事件、日志、导出或截图。SDK 产生的 OAuth Config 与 Token 组成 `oktapod.mcp-oauth/v1` 不透明信封写入 SecretStore，Worker 仅得到 TokenSource，刷新后立即原位回写。取消授权只终止会话，不删除 MCP 定义或工作区改动。用户手工提供 PAT/API token 时使用 `bearer`，不伪装成 OAuth。
 
 ### 5.3 单一 ToolSpec（V1 简化版）
 
@@ -361,7 +361,7 @@ web.search / web.extract / repository.search / repository.read
 | 类型 | 判定 | V1 处理 |
 |---|---|---|
 | Transport Failure | 连接失败/进程退出/超时/5xx | 返回可见失败 Receipt；可在冻结候选中恢复 |
-| Authentication Failure | 401/403/凭据缺失/Token 失效 | 移出候选，Inspector 显示配置错误；交互式 OAuth 未实现时不得伪装成普通凭据已完成 |
+| Authentication Failure | 401/403/凭据缺失/Token 失效 | 移出候选并显示“连接账号/修复”；标准远端可启动 OAuth，刷新失败回到可恢复授权态，Bearer 服务继续使用安全凭据输入 |
 | Rate Limit | 429/额度耗尽 | 允许同能力候选，必须显示 Provider 限流 |
 | Empty Result | 结果为空 | 模型决定：改写查询/放宽条件/换工具/说明无结果 |
 | Invalid Input | 参数校验失败 | 返回模型重新构造，不允许系统跨 Schema 静默转换 |

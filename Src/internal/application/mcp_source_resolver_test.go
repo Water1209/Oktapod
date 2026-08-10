@@ -68,6 +68,24 @@ func TestRegistryInstallCandidatePinsVersionAndSecrets(t *testing.T) {
 	}
 }
 
+func TestRegistryRemoteUsesOAuthDiscoveryOrDeclaredSecretHeaders(t *testing.T) {
+	t.Parallel()
+	oauthCandidate, err := registryInstallCandidate(MCPRegistryServer{
+		Name: "com.example/oauth", Version: "1.0.0",
+		Remotes: []MCPRegistryRemote{{Type: "streamable-http", URL: "https://mcp.example.com/mcp"}},
+	})
+	if err != nil || oauthCandidate.Definition.Auth.Type != "oauth" || len(oauthCandidate.Definition.SecretBindings) != 0 {
+		t.Fatalf("OAuth remote=%#v err=%v", oauthCandidate.Definition, err)
+	}
+	headerCandidate, err := registryInstallCandidate(MCPRegistryServer{
+		Name: "com.example/header", Version: "1.0.0",
+		Remotes: []MCPRegistryRemote{{Type: "streamable-http", URL: "https://mcp.example.com/mcp", Headers: []MCPRegistryRemoteHeader{{Name: "X-API-Key", Required: true, Secret: true}}}},
+	})
+	if err != nil || headerCandidate.Definition.Auth.Type != "custom_header" || len(headerCandidate.Definition.SecretBindings) != 1 || headerCandidate.Definition.SecretBindings[0].Target != "header:X-API-Key" {
+		t.Fatalf("header remote=%#v err=%v", headerCandidate.Definition, err)
+	}
+}
+
 func TestTrimMCPInstallLanguageKeepsSourceOnly(t *testing.T) {
 	t.Parallel()
 	if got := trimMCPInstallLanguage("请帮我安装 Tavily MCP"); got != "Tavily" {

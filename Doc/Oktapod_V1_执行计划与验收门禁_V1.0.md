@@ -45,7 +45,7 @@ V1 唯一交付目标：
 | B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与 Inspector 组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
 | B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、版本注入、CI/OpenAPI/迁移门禁已落地 | 等待 Ubuntu/Windows 原生 CI 关闭 tag 门禁 |
 | B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
-| B4 | `PARTIAL` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 产品级 OAuth Authorization Code/回调/刷新仍未关闭；确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
+| B4 | `PASS` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、OAuth Authorization Code/回调/取消/刷新、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
 | B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
 
@@ -129,6 +129,7 @@ pnpm verify
 - 名称发现走官方 MCP Registry；安装前固定实际版本并展示来源，歧义候选必须人工选择。`server.json`、URL、固定版 npm/PyPI 包和本地命令进入同一草稿用例。
 - 多 Secret 只写入 SecretStore 的不透明加密集合，运行时按定义注入声明的环境变量或受控 Header；不得进入消息、事件、日志、数据库字段、导出和截图。
 - 内置 Skill Creator 只负责通过对话生成单 Skill ZIP 草稿，不直接写资源记录、不绕过 ZIP 校验和审批。
+- Skill ZIP 的浏览器检查只称“客户端预检”；服务端完整扫描失败时不安装，显示可行动的格式原因，并提供“用 Skill Creator 修复副本”对话入口。
 - 内建搜索进入统一 ToolSpec，作为无需外部凭据的可用能力；Tavily MCP 是可选首选，不是核心依赖。
 - MCP、搜索、网页和仓库指令统一包裹为 `external_untrusted` Envelope。
 
@@ -136,7 +137,9 @@ pnpm verify
 
 - STDIO 与 Streamable HTTP 合同通过。
 - Schema 变化触发重审；安装幂等、同版本冲突、鉴权失败和限流可见。
-- Bearer、多 Secret 和缺凭据恢复通过；`auth.type=oauth` 在完整 Authorization Code、回调取消和刷新令牌持久化完成前只代表用户提供的 access token，不能计为产品级 OAuth 通过。
+- Bearer、多 Secret 和缺凭据恢复通过；`auth.type=oauth` 使用官方 SDK 的标准授权发现、动态客户端注册、PKCE、浏览器回调、取消和加密刷新令牌持久化。手工 access token 明确使用 `bearer`，不会与 OAuth 生命周期混用。
+- OAuth 回调只保留短期内存会话并绑定当前 Capability/登录 Scope；API 不单独返回 state、授权码或 Token。Personal V1 使用同机 loopback 回调，外部账号真实数据调用在缺少用户 Secret 时标记为可选烟测，但发现、配置、审批、凭据请求和失败恢复不得跳过。
+- Windows stdio 通过 `node.exe` 直接启动 `npx-cli.js`，不依赖 shell 包装脚本；HOME、APPDATA 与 npm/uv 缓存收敛到系统临时运行目录。真实 Filesystem MCP 必须完成授权目录写读和越界拒绝。
 - 外部内容不能改变权限、系统提示或安全策略。
 
 ### B5：Codex 式用户闭环

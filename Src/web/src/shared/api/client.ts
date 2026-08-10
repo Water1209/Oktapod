@@ -284,6 +284,16 @@ export interface Conversation {
   forked_from_entry_id?: string
 }
 
+export interface MCPOAuthSession {
+  id: string
+  capability_id: string
+  authorization_url?: string
+  status: 'preparing' | 'waiting' | 'connected' | 'canceled' | 'failed'
+  last_error?: string
+  expires_at: string
+  updated_at: string
+}
+
 export interface SessionEntry {
   id: string
   project_id: string
@@ -903,6 +913,9 @@ export const api = {
   reviewCapability: (capabilityId: string, decision: 'approved' | 'rejected', note = '') =>
     request<Capability>(`/capabilities/${capabilityId}/review`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ decision, note }) }),
   connectMCP: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/connect`, { method: 'POST' }),
+  startMCPOAuth: (capabilityId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/start`, { method: 'POST' }),
+  mcpOAuthStatus: (capabilityId: string, sessionId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/${sessionId}`),
+  cancelMCPOAuth: (capabilityId: string, sessionId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/${sessionId}/cancel`, { method: 'POST' }),
   disconnectMCP: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/disconnect`, { method: 'POST' }),
   mcpHealth: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/health`),
   memories: (projectId: string, query = '') => request<{ items: Memory[] }>(`/projects/${projectId}/memories${query ? `?q=${encodeURIComponent(query)}` : ''}`),
