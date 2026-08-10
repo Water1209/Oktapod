@@ -63,6 +63,21 @@ func TestMCPLifecycleRequiresEnableAndPersistsHealth(t *testing.T) {
 	if health.Status != core.MCPStatusConnected || health.ToolCount != 1 {
 		t.Fatalf("health=%#v", health)
 	}
+	disabled, err := service.SetCapabilityStatus(context.Background(), capability.ID, core.CapabilityStatusDisabled, "mcp-disable")
+	if err != nil || disabled.Status != core.CapabilityStatusDisabled || disabled.Availability != core.ResourceAvailabilityDisabled {
+		t.Fatalf("disable MCP=%#v err=%v", disabled, err)
+	}
+	if _, err := service.ConnectMCP(context.Background(), capability.ID, "mcp-connect-disabled"); err == nil {
+		t.Fatal("disabled MCP connected")
+	}
+	enabled, err := service.SetCapabilityStatus(context.Background(), capability.ID, core.CapabilityStatusEnabled, "mcp-reenable")
+	if err != nil || enabled.Status != core.CapabilityStatusEnabled {
+		t.Fatalf("re-enable MCP=%#v err=%v", enabled, err)
+	}
+	health, err = service.ConnectMCP(context.Background(), capability.ID, "mcp-reconnect")
+	if err != nil || health.Status != core.MCPStatusConnected || health.ToolCount != 1 {
+		t.Fatalf("reconnect MCP health=%#v err=%v", health, err)
+	}
 	activeTask, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Keep MCP snapshot active", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "mcp-active-task", "mcp-active-task")
 	if err != nil {
 		t.Fatal(err)
