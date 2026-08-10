@@ -81,7 +81,7 @@ func TestMalformedToolArgumentsQueueAuditedModelRetry(t *testing.T) {
 	if err != nil || completed.Status != core.StatusSucceeded || modelCalls != 4 {
 		t.Fatalf("task=%#v model_calls=%d err=%v", completed, modelCalls, err)
 	}
-	if got, want := outputLimits, []int{4096, 8192, 16384, 16384}; !slices.Equal(got, want) {
+	if got, want := outputLimits, []int{8192, 16384, 32768, 32768}; !slices.Equal(got, want) {
 		t.Fatalf("output limits=%v, want %v", got, want)
 	}
 	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)

@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.3
-> 更新日期：2026-08-04
+> 版本：V1.4
+> 更新日期：2026-08-10
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -31,7 +31,7 @@ V1 唯一交付目标：
 - `session_entries.entry_seq` 与 `messages.server_seq` 独立。
 - 现有工具名、Run 快照、Receipt 和 SSE cursor 保持可恢复兼容。
 - Steering 在已提交 Checkpoint 后生效；Retry 选择最新失败/阻塞前沿。
-- 完全访问（内部值 `full_access`）直接开放工作区命令并移除重复 `request_permission`，仍受硬拒绝、Scope 和 MCP 人工确认约束。
+- 完全访问（内部值 `full_access`）自动执行冻结策略评估为 L0-L2 的动作；L3、硬拒绝和 Scope 约束不变。已启用的只读语义检索 MCP 缺少可选 Annotation 时按 L2 留存 Receipt，不再误弹高风险审批。
 - 内建搜索在可替代能力完成真实验收前不得删除。
 - 不恢复独立非交互 Terminal 导航；命令在 Thread 内受 Policy、审批和 Receipt 治理。
 
@@ -71,8 +71,8 @@ V1 唯一交付目标：
 - 提取 `agentloop`：模型调用、ToolCall 解析、ToolBatch 提议、ToolResult 观察和终止判断。
 - 提取 `harness`：Run、Lease、Checkpoint、审批、Receipt、预算、Steering、Follow-up 和恢复。
 - Worker 逐步收敛为队列调度和装配；复杂度、职责数量和变更耦合是主指标，约 800 行仅作拆分参考。
-- 任务成功终态由 Domain 推导的完成要求与 Harness 持久证据共同决定；模型无 ToolCall 仅结束当前 Turn。显式 Skill 的 ID、参数和完整交付门禁跨计划、工具、截断与完成修复续轮继承；带新约束的自然语言续作还冻结来源 Run 证据链。
-- Thinking 选择必须真实传到 Provider；交错思考的 `reasoning_content` 与 ToolCall 一起续接。推理/参数截断进入有界动作恢复；搜索次数上限和“禁止再搜索”跨继任 Run 继承，预算耗尽后搜索语义族不再暴露，漏网提案仍由 Harness 拒绝。
+- 任务成功终态由 Domain 推导的完成要求与 Harness 持久证据共同决定；模型无 ToolCall 仅结束当前 Turn。单一完整报告按一个主 Artifact 核验真实字符数、URL 与占位符，不允许用版本或分片合计冒充；不可变 Artifact 历史仍保留审计，UI 仅显示每个交付路径的最新版本。显式 Skill 的 ID、名称或 `name@version`、参数和完整交付门禁跨计划、工具、截断与完成修复续轮继承；带新约束的自然语言续作还冻结来源 Run 证据链。
+- Thinking 选择必须真实传到 Provider；交错思考的 `reasoning_content` 与 ToolCall 一起续接。推理/参数截断进入 8192→16384→32768 Token 的有界动作恢复；搜索次数上限和“禁止再搜索”跨继任 Run 继承，预算耗尽后搜索语义族不再暴露，漏网提案仍由 Harness 拒绝。新项目默认任务保险丝为 80 次模型调用与 1,000,000 Token，项目可显式改为不限额。
 - 将 `project-page.tsx` 中的 Inspector、Changes 等稳定业务块提取为组件；约 300 行仅作维护参考，不作为用户闭环发布门禁。
 
 门禁：
@@ -136,6 +136,7 @@ pnpm verify
 - Skill ZIP 的浏览器检查只称“客户端预检”；服务端完整扫描失败时不安装，显示可行动的格式原因，并提供“用 Skill Creator 修复副本”对话入口。
 - 内建搜索进入统一 ToolSpec，作为无需外部凭据的可用能力；Tavily MCP 是可选首选，不是核心依赖。
 - MCP、搜索、网页和仓库指令统一包裹为 `external_untrusted` Envelope。
+- MCP Annotation 是风险证据而不是可用性前置条件：显式非只读、破坏性或非幂等始终 L3；已审核、启用且冻结到 Run 的语义检索在 Annotation 不完整时为只读幂等 L2，仅在完全访问下免逐次确认。
 
 门禁：
 

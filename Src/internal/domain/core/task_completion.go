@@ -10,12 +10,15 @@ import (
 // user's goal and explicit acceptance criteria. It deliberately describes
 // required evidence, not how an adapter or agent must produce that evidence.
 type TaskCompletionRequirements struct {
-	RequiresWebEvidence       bool
-	RequiresWorkspaceMutation bool
-	RequiresVerification      bool
-	RequiresDeliverable       bool
-	DeliverableFormat         string
-	MinimumCharacters         int64
+	RequiresWebEvidence         bool
+	RequiresWorkspaceMutation   bool
+	RequiresVerification        bool
+	RequiresDeliverable         bool
+	RequiresSingleDeliverable   bool
+	RequiresCompleteDeliverable bool
+	RequiresCitations           bool
+	DeliverableFormat           string
+	MinimumCharacters           int64
 }
 
 var minimumCharacterPattern = regexp.MustCompile(`(?i)(?:不少于|至少|最低|最少|>=|≥|at\s+least|minimum(?:\s+of)?|min(?:imum)?[\s:：]+)\s*([0-9][0-9,，]*)\s*(万)?\s*(?:字|字符|汉字|characters?)`)
@@ -77,6 +80,14 @@ func InferTaskCompletionRequirements(goal, acceptance string) TaskCompletionRequ
 				requirements.MinimumCharacters = parsed
 			}
 		}
+	}
+	if requirements.RequiresDeliverable {
+		requirements.RequiresSingleDeliverable = containsAny(compact,
+			"一份报告", "一份完整", "一个完整", "单一报告", "单个报告", "合并为一份", "汇总为一份", "完整分析报告",
+			"singlereport", "onereport", "singlefile", "onedocument") ||
+			(requirements.MinimumCharacters > 0 && containsAny(text, "报告", "report"))
+		requirements.RequiresCompleteDeliverable = containsAny(text, "完整", "complete", "comprehensive")
+		requirements.RequiresCitations = containsAny(text, "来源", "链接", "引用", "参考资料", "source", "citation", "reference", "link")
 	}
 	return requirements
 }

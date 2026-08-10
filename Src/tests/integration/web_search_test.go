@@ -70,7 +70,7 @@ func TestWebSearchToolExecutesAndSynthesizesCitedAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Research current Oktapod information", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 2, MaxTokens: 8192}, "web-search-task", "")
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Research current Oktapod information", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 2, MaxTokens: 32768}, "web-search-task", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +206,8 @@ func TestWorkspaceCompletionRequiresDeclaredPostconditionEvidence(t *testing.T) 
 	}{
 		{name: "verification after mutation", goal: "创建 config.txt 文件并运行测试验证", path: "config.txt", content: "enabled=true\n", reason: "VERIFICATION_MISSING"},
 		{name: "minimum report length", goal: "创建 Markdown 报告并保存到 short.md", acceptance: "报告不少于100字", path: "short.md", content: "# 短报告\n\n内容不足。\n", reason: "DELIVERABLE_TOO_SHORT"},
+		{name: "report citations", goal: "创建一份完整 Markdown 报告并保留可点击来源链接", acceptance: "报告不少于100字", path: "uncited.md", content: "# 完整报告\n\n" + strings.Repeat("这是没有来源链接的分析内容。", 20), reason: "DELIVERABLE_CITATIONS_MISSING"},
+		{name: "incomplete report marker", goal: "创建一份完整 Markdown 报告", acceptance: "报告不少于100字", path: "unfinished.md", content: "# 未完成报告\n\n" + strings.Repeat("这是仍在写作中的分析内容。", 20) + "\n\n<!-- OKTAPOD_CONTINUE -->\n", reason: "DELIVERABLE_INCOMPLETE"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -258,6 +260,58 @@ func TestWorkspaceCompletionRequiresDeclaredPostconditionEvidence(t *testing.T) 
 			assertCompletionValidationFailure(t, service, task, tt.reason)
 		})
 	}
+}
+
+func TestSingleReportLengthCannotBeSatisfiedByFragmentSum(t *testing.T) {
+	t.Parallel()
+	fragmentOne, fragmentTwo := "# 分片一\n\n"+strings.Repeat("甲", 70), "# 分片二\n\n"+strings.Repeat("乙", 70)
+	firstArguments, _ := json.Marshal(map[string]any{"path": "part-1.md", "content": fragmentOne})
+	secondArguments, _ := json.Marshal(map[string]any{"path": "part-2.md", "content": fragmentTwo})
+	modelCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "single-report-model", "tool_calling": true}}})
+			return
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		modelCalls++
+		message := map[string]any{"role": "assistant", "content": "两个分片合计已经超过要求。"}
+		if modelCalls == 1 {
+			message = map[string]any{"role": "assistant", "content": "写入两个分片。", "tool_calls": []map[string]any{
+				{"id": "write-fragment-one", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(firstArguments)}},
+				{"id": "write-fragment-two", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(secondArguments)}},
+			}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": fmt.Sprintf("single-report-%d", modelCalls), "choices": []map[string]any{{"message": message}}, "usage": map[string]any{"prompt_tokens": 20, "completion_tokens": 8}})
+	}))
+	defer provider.Close()
+
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Single Report User"}, core.Organization{ID: testOrgID, Name: "Single Report Org"}, func() string { return "fake-single-report-key" })
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Single report project", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "创建一份完整 Markdown 分析报告", Acceptance: "报告不少于100字", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 6, MaxTokens: 65536}, "single-report-fragment-gate", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := workspace.NewLocal(filepath.Join(filepath.Dir(databasePath), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("single-report-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-single-report-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil))).WithWorkspaceExecutor(executor)
+	for attempt := 0; attempt < 4; attempt++ {
+		if worked, runErr := worker.RunOnce(t.Context()); runErr != nil || !worked {
+			t.Fatalf("worker attempt %d worked=%v err=%v", attempt, worked, runErr)
+		}
+	}
+	assertCompletionValidationFailure(t, service, task, "DELIVERABLE_TOO_SHORT")
 }
 
 func TestEditedDeliverableUsesVerifiedLatestContent(t *testing.T) {

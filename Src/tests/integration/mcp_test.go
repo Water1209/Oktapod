@@ -226,7 +226,7 @@ func TestMCPToolCallFlowsThroughModelApprovalAndReceipt(t *testing.T) {
 	if _, err := service.ConnectMCP(context.Background(), capability.ID, "mcp-task-connect"); err != nil {
 		t.Fatal(err)
 	}
-	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Use MCP", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 2, MaxTokens: 8192}, "mcp-task-create", "mcp-task-idempotency")
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Use MCP", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 2, MaxTokens: 32768}, "mcp-task-create", "mcp-task-idempotency")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,10 +14,13 @@ func TestInferTaskCompletionRequirements(t *testing.T) {
 		deliverable  bool
 		format       string
 		minimum      int64
+		single       bool
+		complete     bool
+		citations    bool
 	}{
 		{name: "original physical ai request", goal: "使用tavily工具帮我检索物理AI的产品调研报告，形成md文件", web: true, mutation: true, deliverable: true, format: "markdown"},
-		{name: "explicit chinese length", goal: "深度调研物理 AI，保存 Markdown 报告", acceptance: "分析报告不少于30000字", web: true, mutation: true, deliverable: true, format: "markdown", minimum: 30000},
-		{name: "ten-thousand shorthand", goal: "检索并写入工作区文档，至少3万字", web: true, mutation: true, deliverable: true, minimum: 30000},
+		{name: "explicit chinese length", goal: "深度调研物理 AI，保存 Markdown 报告", acceptance: "一份完整分析报告不少于30000字，保留来源链接", web: true, mutation: true, deliverable: true, format: "markdown", minimum: 30000, single: true, complete: true, citations: true},
+		{name: "ten-thousand shorthand", goal: "检索并写入工作区报告，至少3万字", web: true, mutation: true, deliverable: true, minimum: 30000, single: true},
 		{name: "code change and test", goal: "修复登录错误并运行测试验证", mutation: true, verification: true},
 		{name: "deliverable review", goal: "生成报告并核对文件", mutation: true, verification: true, deliverable: true},
 		{name: "diagnosis only", goal: "只分析登录错误，先不改动代码", mutation: false},
@@ -29,7 +32,7 @@ func TestInferTaskCompletionRequirements(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requirements := InferTaskCompletionRequirements(tt.goal, tt.acceptance)
-			if requirements.RequiresWebEvidence != tt.web || requirements.RequiresWorkspaceMutation != tt.mutation || requirements.RequiresVerification != tt.verification || requirements.RequiresDeliverable != tt.deliverable || requirements.DeliverableFormat != tt.format || requirements.MinimumCharacters != tt.minimum {
+			if requirements.RequiresWebEvidence != tt.web || requirements.RequiresWorkspaceMutation != tt.mutation || requirements.RequiresVerification != tt.verification || requirements.RequiresDeliverable != tt.deliverable || requirements.RequiresSingleDeliverable != tt.single || requirements.RequiresCompleteDeliverable != tt.complete || requirements.RequiresCitations != tt.citations || requirements.DeliverableFormat != tt.format || requirements.MinimumCharacters != tt.minimum {
 				t.Fatalf("requirements=%#v", requirements)
 			}
 		})

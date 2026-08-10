@@ -88,7 +88,7 @@ func TestModelSkillInvokeQueuesResumeAndAppliesToolScope(t *testing.T) {
 	}
 	model := &scriptedSkillModel{results: []core.ModelResult{
 		semanticPlanResult("00000000-0000-7000-0000-000000000410"),
-		{CallID: "00000000-0000-7000-0000-000000000411", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{{Name: core.ToolSkillInvoke, Arguments: map[string]any{"skill": "release-check", "args": "production"}}}, Usage: core.ModelUsage{InputTokens: 10, OutputTokens: 3}},
+		{CallID: "00000000-0000-7000-0000-000000000411", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{{Name: core.ToolSkillInvoke, Arguments: map[string]any{"skill": skill.Name + "@" + skill.Version, "args": "production"}}}, Usage: core.ModelUsage{InputTokens: 10, OutputTokens: 3}},
 		{CallID: "00000000-0000-7000-0000-000000000412", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "latest production release"}}}, Usage: core.ModelUsage{InputTokens: 12, OutputTokens: 6}},
 		{CallID: "00000000-0000-7000-0000-000000000413", Provider: "test", Model: "test-model", Content: "Release check completed from the loaded Skill and verified search evidence.", Usage: core.ModelUsage{InputTokens: 15, OutputTokens: 8}},
 	}}

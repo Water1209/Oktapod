@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -17,6 +18,8 @@ type schedulerFakeRepository struct {
 	claimed        int
 	advanced       int
 	advancedStatus string
+	createAttempts int
+	createFailures int
 }
 
 func (f *schedulerFakeRepository) GetDueSchedule(context.Context, time.Time) (core.Schedule, error) {
@@ -28,6 +31,10 @@ func (f *schedulerFakeRepository) ClaimScheduleFire(_ context.Context, schedule 
 	return f.fire, nil
 }
 func (f *schedulerFakeRepository) CreateScheduledTask(_ context.Context, schedule core.Schedule, fire core.ScheduleFire, _ string) (core.Task, error) {
+	f.createAttempts++
+	if f.createAttempts <= f.createFailures {
+		return core.Task{}, errors.New("temporary repository contention")
+	}
 	f.task = core.Task{ID: "task-1", ProjectID: schedule.ProjectID, Goal: schedule.Goal}
 	return f.task, nil
 }
@@ -47,6 +54,23 @@ func TestSchedulerRunOnceCreatesStandardTaskAndAdvancesFire(t *testing.T) {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	if fake.claimed != 1 || fake.advanced != 1 || fake.task.ID != "task-1" {
+		t.Fatalf("fake=%#v", fake)
+	}
+}
+
+func TestSchedulerRetriesIdempotentTaskCreationAfterTransientContention(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	fake := &schedulerFakeRepository{
+		schedule:       core.Schedule{ID: "schedule-1", ProjectID: "project-1", Name: "Digest", CronExpression: "0 * * * *", Timezone: "UTC", Goal: "Summarize", NextRunAt: now.Add(-time.Hour), Status: core.ScheduleStatusEnabled},
+		createFailures: 2,
+	}
+	scheduler := NewScheduler(fake, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	scheduler.now = func() time.Time { return now }
+	worked, err := scheduler.RunOnce(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if fake.createAttempts != 3 || fake.advancedStatus != core.ScheduleFireCreated || fake.task.ID != "task-1" {
 		t.Fatalf("fake=%#v", fake)
 	}
 }

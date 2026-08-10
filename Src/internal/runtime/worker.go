@@ -380,7 +380,7 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		continuationInstruction = "用户已经批准本次任务所需的能力范围。基于生效后的工具范围重新规划原目标；保留已完成结果，不要把权限批准误解为拒绝或新的用户需求。"
 	}
 	if len(continuation) > 0 || steering != "" {
-		continuationInstruction += "\n\n长文交付必须主动分段：单个 workspace_write_file 的 content 不得超过 3000 个字符；超出时按章节写入多个名称明确的文件，并在最终总结中列出全部文件。不要等待参数截断后再拆分。"
+		continuationInstruction += "\n\n长文交付必须主动分段：单次 workspace_write_file / workspace_edit_file 的新增正文建议不超过 3000 个字符。用户要求一份或一个完整报告时，必须维护一个可独立阅读的主文件：先创建带稳定尾部锚点的主文件，再读取最新 preimage_hash，用 workspace_edit_file 替换该锚点为下一段正文加同一锚点；完成时移除锚点。过程章节可以保留，但不能用多个分片的合计字数冒充主报告字数。不要等待参数截断后再拆分。"
 	}
 	if retryHint := modelCompatibilityRetryHint(step.InputJSON); retryHint != "" {
 		continuationInstruction += "\n\n" + retryHint
@@ -397,6 +397,10 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
 	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
 	systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input；当前场景缺少工作区命令能力但目标确实需要时，只能单独调用 request_permission。不得在普通助手文本中伪装阻塞式提问或声称工具不存在。"
+	completionRequirements := core.InferTaskCompletionRequirements(run.Goal, run.Acceptance)
+	if completionRequirements.RequiresSingleDeliverable {
+		systemPrompt += "\n\n单一主交付物规则：用户要求的是一份可独立阅读的完整报告，显式最低字数必须由同一个主文件满足，多个章节分片的合计不算完成。长文应分轮追加到同一个主文件：先用 workspace_write_file 创建包含 `<!-- OKTAPOD_CONTINUE -->` 尾部锚点的主文件；后续读取最新 preimage_hash，用 workspace_edit_file 把该锚点替换为下一段正文加同一锚点；全部写完后移除锚点，再读取主文件验证。过程材料可以另存，但最终总结必须首先给出主报告路径。"
+	}
 	if modelStage(step.InputJSON) == "plan" {
 		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，提交完整、具体、面向用户结果的语义子任务清单。初次计划中尚无执行证据：不得把任何项目标记 completed，且必须恰好把第一个项目标记 in_progress，其余均为 pending。标题必须体现本次目标的真实工作（例如检索哪些主题、比较哪些维度、产出什么交付物），禁止使用“理解目标”“完成目标”“生成下一步计划”“验证并交付”等通用占位步骤，也禁止把 read_file、web_search 等工具调用写成计划项。计划发布后系统会恢复同一 Run 执行。"
 	} else if modelStage(step.InputJSON) == "steering_replan" {
@@ -908,7 +912,11 @@ func completionRecoveryHint(inputJSON string) string {
 	case "DELIVERABLE_MISSING":
 		return "确定性完成检查未通过：用户要求 Markdown/文档交付物，但当前 Run 与可追溯的续跑来源链中都没有最新交付 Artifact。请用 workspace_write_file 创建或 workspace_edit_file 更新真实内容，并验证文件存在，再给最终总结。"
 	case "DELIVERABLE_TOO_SHORT":
-		return fmt.Sprintf("确定性完成检查未通过：当前续跑证据链中的 Markdown 交付物合计 %d 字，用户要求不少于 %d 字。继续按章节交叉验证和写作；每轮用不超过 3000 字符的 workspace_write_file 或 workspace_edit_file 分段更新，达到要求并用 workspace_read_file 或 workspace_list_files 验证后才能总结。", input.ActualCharacters, input.RequiredCharacters)
+		return fmt.Sprintf("确定性完成检查未通过：当前符合要求的单一主交付物为 %d 字，用户要求一份不少于 %d 字的完整报告。继续分段更新同一个主文件：保留稳定尾部锚点，读取最新 preimage_hash 后用 workspace_edit_file 将下一段正文插入锚点之前；过程分片的合计字数不计入主报告。达到要求、移除锚点并读取验证后才能总结。", input.ActualCharacters, input.RequiredCharacters)
+	case "DELIVERABLE_CITATIONS_MISSING":
+		return "确定性完成检查未通过：用户要求来源、引用或可点击链接，但单一主交付物中没有 http/https 来源链接。请把已验证证据的来源链接写入主报告并读取核对后再总结。"
+	case "DELIVERABLE_INCOMPLETE":
+		return "确定性完成检查未通过：用户要求完整交付物，但单一主文件仍包含续写锚点或明确的 TODO/TBD/待补充占位。请继续写完并移除占位后读取核对，不得把过程稿宣布为完成。"
 	case "WORKSPACE_MUTATION_MISSING":
 		return "确定性完成检查未通过：用户要求创建、修改、修复或提交工作区内容，但当前 Run 没有成功的工作区写入/编辑或受控 Git 变更收据。请使用与目标匹配的 workspace_write_file、workspace_edit_file 或 Git 变更工具执行真实动作并检查结果，不得只描述准备怎么做。"
 	case "VERIFICATION_MISSING":
@@ -1888,7 +1896,7 @@ func (w *Worker) executeSkillInvoke(ctx context.Context, step core.ClaimedStep, 
 	args, _ := input.Arguments["args"].(string)
 	matches := make([]skillSnapshot, 0, 1)
 	for _, skill := range skillSnapshotsFromConfig(run.ConfigSnapshotJSON) {
-		if skill.ID == requested || strings.EqualFold(skill.Name, requested) {
+		if skillReferenceMatches(skill, requested) {
 			matches = append(matches, skill)
 		}
 	}
@@ -1921,6 +1929,12 @@ func (w *Worker) executeSkillInvoke(ctx context.Context, step core.ClaimedStep, 
 	}
 	execution := core.ToolExecution{ToolCallID: input.ToolCallID, InvocationID: invocationID, Status: core.StatusSucceeded, ExitCode: 0, InputHash: input.InputHash, Idempotent: true, Output: output}
 	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: "Skill 已从 Run 快照加载，准备恢复 Agent Loop。", Output: output, ToolExecution: &execution}
+}
+
+func skillReferenceMatches(skill skillSnapshot, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	return skill.ID == requested || strings.EqualFold(skill.Name, requested) ||
+		strings.EqualFold(skill.Name+"@"+skill.Version, requested)
 }
 
 func (w *Worker) executeWebSearchTool(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
@@ -2012,7 +2026,7 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_TOOL_NOT_ALLOWED", ResultSummary: "MCP 工具不在创建 Run 时的冻结工具清单中，拒绝执行。", Output: map[string]any{"retryable": false, "capability_id": capabilityID, "tool_name": toolName}}
 	}
 	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
-	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, false)
+	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, input.Idempotent)
 	if err != nil {
 		return toolReceiptBeginFailure(err, "MCP 副作用状态未知，已停止自动重试。")
 	}
@@ -2063,7 +2077,7 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 			output["structured_content"] = structured
 		}
 	}
-	execution := core.ToolExecution{ToolCallID: input.ToolCallID, InvocationID: invocationID, Status: core.StatusSucceeded, ExitCode: 0, InputHash: input.InputHash, Idempotent: false, Output: output}
+	execution := core.ToolExecution{ToolCallID: input.ToolCallID, InvocationID: invocationID, Status: core.StatusSucceeded, ExitCode: 0, InputHash: input.InputHash, Idempotent: input.Idempotent, Output: output}
 	if callErr != nil {
 		execution.Status = core.StatusFailed
 		execution.ErrorCode = "MCP_CALL_FAILED"

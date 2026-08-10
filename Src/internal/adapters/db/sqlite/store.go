@@ -7781,21 +7781,27 @@ func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run 
 		return completionInvariantResult{Reason: "WEB_EVIDENCE_MISSING"}, nil
 	}
 	if requirements.RequiresDeliverable {
-		deliverables, err := countLatestRunDeliverables(ctx, tx, evidenceRunIDs, requirements.DeliverableFormat)
+		metrics, err := s.inspectLatestRunDeliverables(ctx, tx, evidenceRunIDs, requirements.DeliverableFormat)
 		if err != nil {
 			return completionInvariantResult{}, err
 		}
-		if deliverables == 0 {
+		if metrics.Count == 0 {
 			return completionInvariantResult{Reason: "DELIVERABLE_MISSING"}, nil
 		}
 		if requirements.MinimumCharacters > 0 {
-			characters, err := s.countRunDeliverableCharacters(ctx, tx, evidenceRunIDs, requirements.DeliverableFormat)
-			if err != nil {
-				return completionInvariantResult{}, err
+			characters := metrics.TotalCharacters
+			if requirements.RequiresSingleDeliverable {
+				characters = metrics.LargestCharacters
 			}
 			if characters < requirements.MinimumCharacters {
 				return completionInvariantResult{Reason: "DELIVERABLE_TOO_SHORT", RequiredCharacters: requirements.MinimumCharacters, ActualCharacters: characters}, nil
 			}
+		}
+		if requirements.RequiresCitations && !metrics.LargestHasCitations {
+			return completionInvariantResult{Reason: "DELIVERABLE_CITATIONS_MISSING"}, nil
+		}
+		if requirements.RequiresCompleteDeliverable && metrics.LargestIncomplete {
+			return completionInvariantResult{Reason: "DELIVERABLE_INCOMPLETE"}, nil
 		}
 	}
 	lastMutationPosition, currentMutationCount, mutationCount, err := successfulWorkspaceMutationEvidence(ctx, tx, run.RunID, evidenceRunIDs)
@@ -7881,7 +7887,15 @@ func successfulWorkspaceMutationEvidence(ctx context.Context, tx *sql.Tx, runID 
 	return lastPosition, currentCount, totalCount, err
 }
 
-func countLatestRunDeliverables(ctx context.Context, tx *sql.Tx, runIDs []string, format string) (int64, error) {
+type deliverableMetrics struct {
+	Count               int64
+	TotalCharacters     int64
+	LargestCharacters   int64
+	LargestHasCitations bool
+	LargestIncomplete   bool
+}
+
+func (s *Store) inspectLatestRunDeliverables(ctx context.Context, tx *sql.Tx, runIDs []string, format string) (deliverableMetrics, error) {
 	mediaFilter := "%"
 	if format == "markdown" {
 		mediaFilter = "text/markdown%"
@@ -7896,16 +7910,55 @@ func countLatestRunDeliverables(ctx context.Context, tx *sql.Tx, runIDs []string
 		args = append(args, id)
 	}
 	query := `
-		SELECT COUNT(*) FROM artifacts a
+		SELECT a.size_bytes, b.storage_key FROM artifacts a
+		JOIN blobs b ON b.content_hash = a.content_hash
 		WHERE a.run_id IN (` + runFilter + `) AND a.kind = 'deliverable' AND a.media_type LIKE ?
 		  AND a.id = (
 			SELECT latest.id FROM artifacts latest
 			WHERE latest.run_id IN (` + runFilter + `) AND latest.name = a.name AND latest.kind = 'deliverable'
 			ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
 		  )`
-	var count int64
-	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
-	return count, err
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return deliverableMetrics{}, err
+	}
+	defer rows.Close()
+	var metrics deliverableMetrics
+	for rows.Next() {
+		var size int64
+		var storageKey string
+		if err := rows.Scan(&size, &storageKey); err != nil {
+			return deliverableMetrics{}, err
+		}
+		content, err := s.blobStore.Open(ctx, storageKey, size)
+		if err != nil {
+			return deliverableMetrics{}, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(content, size+1))
+		closeErr := content.Close()
+		if readErr != nil {
+			return deliverableMetrics{}, readErr
+		}
+		if closeErr != nil {
+			return deliverableMetrics{}, closeErr
+		}
+		if int64(len(body)) != size || !utf8.Valid(body) {
+			return deliverableMetrics{}, fmt.Errorf("DELIVERABLE_CONTENT_INVALID: verified text artifact cannot be read")
+		}
+		metrics.Count++
+		characters := int64(utf8.RuneCount(body))
+		metrics.TotalCharacters += characters
+		if characters >= metrics.LargestCharacters {
+			text := strings.ToLower(string(body))
+			metrics.LargestCharacters = characters
+			metrics.LargestHasCitations = strings.Contains(text, "https://") || strings.Contains(text, "http://")
+			metrics.LargestIncomplete = strings.Contains(text, "<!-- oktapod_continue -->") ||
+				strings.Contains(text, "todo:") || strings.Contains(text, "tbd:") ||
+				strings.Contains(text, "[todo]") || strings.Contains(text, "[tbd]") ||
+				strings.Contains(text, "待补充") || strings.Contains(text, "（占位）")
+		}
+	}
+	return metrics, rows.Err()
 }
 
 func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID string, afterPosition int64) (int64, error) {
@@ -7928,62 +7981,6 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog,
 	).Scan(&count)
 	return count, err
-}
-
-func (s *Store) countRunDeliverableCharacters(ctx context.Context, tx *sql.Tx, runIDs []string, format string) (int64, error) {
-	mediaFilter := "%"
-	if format == "markdown" {
-		mediaFilter = "text/markdown%"
-	}
-	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
-	args := make([]any, 0, len(runIDs)*2+1)
-	for _, id := range runIDs {
-		args = append(args, id)
-	}
-	args = append(args, mediaFilter)
-	for _, id := range runIDs {
-		args = append(args, id)
-	}
-	query := `
-		SELECT a.size_bytes, b.storage_key
-		FROM artifacts a
-		JOIN blobs b ON b.content_hash = a.content_hash
-		WHERE a.run_id IN (` + runFilter + `) AND a.kind = 'deliverable' AND a.media_type LIKE ?
-		  AND a.id = (
-			SELECT latest.id FROM artifacts latest
-			WHERE latest.run_id IN (` + runFilter + `) AND latest.name = a.name AND latest.kind = 'deliverable'
-			ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
-		  )`
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	var total int64
-	for rows.Next() {
-		var size int64
-		var storageKey string
-		if err := rows.Scan(&size, &storageKey); err != nil {
-			return 0, err
-		}
-		content, err := s.blobStore.Open(ctx, storageKey, size)
-		if err != nil {
-			return 0, err
-		}
-		body, readErr := io.ReadAll(io.LimitReader(content, size+1))
-		closeErr := content.Close()
-		if readErr != nil {
-			return 0, readErr
-		}
-		if closeErr != nil {
-			return 0, closeErr
-		}
-		if int64(len(body)) != size || !utf8.Valid(body) {
-			return 0, fmt.Errorf("DELIVERABLE_CONTENT_INVALID: verified text artifact cannot be read")
-		}
-		total += int64(utf8.RuneCount(body))
-	}
-	return total, rows.Err()
 }
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
@@ -8692,11 +8689,12 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 	autoReview := permissionModeFromSnapshot(run.ConfigSnapshotJSON) == core.PermissionModeAutoReview
 	planRevisionID, executionPlanItemID := activeExecutionPlanBinding(ctx, tx, run.RunID)
 	for index, plan := range plans {
-		// A full-access Run still goes through PlanTool's deterministic hard
-		// denies, but the explicit Run setting suppresses workspace command
-		// approval creation. Applying this at planning time is essential: a
+		// A full-access Run still goes through deterministic hard denies and
+		// never suppresses L3 approval. It does suppress ordinary L0-L2 prompts
+		// for tools whose bounded risk was established from the immutable Run
+		// snapshot. Applying this at planning time is essential: a
 		// waiting-approval step is not claimable by the Worker.
-		if plan.Decision == core.PolicyAsk && fullAccess && (plan.Call.Name == core.ToolWorkspaceRunCommand || plan.Call.Name == core.ToolWorkspaceShell) {
+		if fullAccessAutoAllows(fullAccess, plan) {
 			plan.Decision = core.PolicyAllow
 		} else if plan.Decision == core.PolicyAsk {
 			matched, err := approvalRuleMatches(ctx, tx, run, plan.Call, plan.RiskLevel, now)
@@ -9497,6 +9495,10 @@ func permissionModeFromSnapshot(snapshot string) string {
 	return mode
 }
 
+func fullAccessAutoAllows(fullAccess bool, plan core.PlannedTool) bool {
+	return fullAccess && plan.Decision == core.PolicyAsk && plan.RiskLevel != "L3"
+}
+
 func mcpPolicyFromSnapshot(snapshot, fullToolName string) (string, bool, string) {
 	var config struct {
 		Capabilities []struct {
@@ -9522,13 +9524,28 @@ func mcpPolicyFromSnapshot(snapshot, fullToolName string) (string, bool, string)
 			}
 			annotations := tool.Annotations
 			idempotent := annotations.IdempotentHint != nil && *annotations.IdempotentHint
+			if annotations.ReadOnlyHint != nil && !*annotations.ReadOnlyHint {
+				return "L3", idempotent, "MCP tool declares non-read-only behavior; one-time manual approval is required"
+			}
+			if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
+				return "L3", idempotent, "Destructive MCP execution always requires one-time manual approval"
+			}
+			if annotations.IdempotentHint != nil && !*annotations.IdempotentHint {
+				return "L3", false, "Non-idempotent MCP execution always requires one-time manual approval"
+			}
 			if annotations.ReadOnlyHint == nil || annotations.DestructiveHint == nil || annotations.IdempotentHint == nil || annotations.OpenWorldHint == nil {
+				if core.IsSearchEvidenceTool(fullToolName) {
+					return "L2", true, "Enabled frozen MCP search is treated as read-only and idempotent despite incomplete optional annotations"
+				}
 				return "L3", false, "MCP annotations are incomplete; high-risk manual approval is required"
 			}
-			if *annotations.DestructiveHint || *annotations.OpenWorldHint {
-				return "L3", idempotent, "Destructive or open-world MCP execution always requires one-time manual approval"
+			if !*annotations.ReadOnlyHint || *annotations.DestructiveHint || !*annotations.IdempotentHint {
+				return "L3", idempotent, "MCP tool is not safely read-only and idempotent; one-time manual approval is required"
 			}
-			return "L2", idempotent, "Bounded MCP execution requires one-time approval and a durable side-effect receipt"
+			if *annotations.OpenWorldHint {
+				return "L2", true, "Read-only idempotent MCP access to external data uses a durable receipt"
+			}
+			return "L2", true, "Bounded read-only MCP execution uses a durable receipt"
 		}
 	}
 	return "L3", false, "MCP tool is absent from the frozen capability snapshot; high-risk manual approval is required"

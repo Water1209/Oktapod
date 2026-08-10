@@ -98,10 +98,10 @@ func TestModelCompatibilityRetryRaisesOutputLimit(t *testing.T) {
 		input string
 		want  int
 	}{
-		{input: `{}`, want: 4096},
-		{input: `{"model_compat_retry_count":1}`, want: 8192},
-		{input: `{"model_compat_retry_count":2}`, want: 16384},
-		{input: `{"model_compat_retry_count":99}`, want: 16384},
+		{input: `{}`, want: 8192},
+		{input: `{"model_compat_retry_count":1}`, want: 16384},
+		{input: `{"model_compat_retry_count":2}`, want: 32768},
+		{input: `{"model_compat_retry_count":99}`, want: 32768},
 	}
 	for _, test := range tests {
 		if got := modelMaxOutputTokens(test.input); got != test.want {

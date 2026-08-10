@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.2
-> 更新日期：2026-08-04
+> 版本：v1.3
+> 更新日期：2026-08-10
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`
 
@@ -104,7 +104,7 @@
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；Inspector 文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt 与真实子进程 kill 后 Lease 恢复自动化通过；`TestClaimNextStepRecoversCompletedBatchWithoutRunnableStep` 覆盖全部 Step 已终态但 Task/Run 仍运行的批次续接恢复 |
-| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问、MCP 强制人工和 Composer 邻接 UI 已实现；暂停/取消/恢复由 Application 层确定性指令处理，裸“继续”不会劫持普通对话，取消后同 Thread 继任 Run 保留 Workspace 改动 |
+| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问和 Composer 邻接 UI 已实现；完全访问自动放行冻结风险 L0-L2，MCP L3 仍强制人工；暂停/取消/恢复由 Application 层确定性指令处理，裸“继续”不会劫持普通对话，取消后同 Thread 继任 Run 保留 Workspace 改动 |
 
 ## 6. Release 1B 验收矩阵
 
@@ -172,7 +172,7 @@
 | 2026-07-28 | 前端美化第一批 | Assistant 正文接 Markdown（GFM）渲染、`<think>` 折叠为可展开“推理过程”、Thread 列表摘要剥离 think/markdown 噪声、执行计划折叠卡片化、用量数字层次化、Composer 聚焦高亮及 dark 适配；`pnpm verify` 与 success E2E 22/22 零回归 |
 | 2026-07-28 | 阻塞状态与跨 Run 上下文修复 | 000053 对齐 Task/Run 终态，活动任务判断改用 Run 真源；新 Run 冻结同 Thread 压缩感知消息；移除消息内重复计划/详情，Composer 与 Thread 侧栏显示阻塞状态；定向 Go、Web lint/test/build 通过 |
 | 2026-07-29 | Codex 式状态真源与 WebAccess 修复 | 初次计划禁止提前完成；联网/文档交付增加收据完成门禁；Thread 状态改为尾部图标、执行流显示 Skill、Human Action 邻接 Composer、支持受控删除 Thread；DuckDuckGo 失败自动回退 Bing RSS。真实浏览器以 `/researchpilot` 完成 Palantir 官方资料检索：初始计划为 0/3、3 次 `web_search` 均成功、最终返回 3 个官方链接；风险命令已出现 Composer 邻接审批卡并可批准/拒绝；验证用阻塞 Thread 在窄屏菜单中删除成功。适配器、定向集成、Web lint/test/build 与浏览器控制台检查均通过 |
-| 2026-07-29 | 完全访问与计划自恢复修正 | Composer 权限文案为“请我审批 / 自动审查 / 完全访问”；完全访问不再自动过期，由用户手动切换且仍受硬拒绝和 MCP 人工确认约束；运行中 `update_plan` 回退已完成项时保留真实计划并自动要求模型修复，连续达到模型重试上限后才阻塞交给用户；旧版任务级计划异常即使没有失败 Step，也能从持久计划与对话历史重建恢复检查点 |
+| 2026-07-29 | 完全访问与计划自恢复修正 | Composer 权限文案为“请我审批 / 自动审查 / 完全访问”；完全访问不再自动过期，由用户手动切换，静态硬拒绝和当时的 MCP 人工确认边界保留（2026-08-10 后细化为 L0-L2 自动执行、L3 确认）；运行中 `update_plan` 回退已完成项时保留真实计划并自动要求模型修复，连续达到模型重试上限后才阻塞交给用户；旧版任务级计划异常即使没有失败 Step，也能从持久计划与对话历史重建恢复检查点 |
 | 2026-07-29 | Web Search 并发稳定性 | Agent 仍可并行规划工具，但共享的公共搜索适配器按请求串行访问 DuckDuckGo/Bing，避免同一批并发请求触发挑战页并被误判为“无可用结果”；并发契约测试和真实外网查询连续验证通过 |
 | 2026-07-29 | 原 Thread 恢复、计划续版与紧凑消息流 | 浏览器在原 `调研token云平台形成md文档` Thread 内发送“重新规划任务，继续”：Auto Composer 原地恢复同一 Task/Run 与 `researchpilot`，确认消息不再走聊天模型；重试选择最新可执行前沿，冻结 ToolCall/Receipt 与批次续写状态一致。修复无活动计划时 Revision 从 1 重建导致的唯一键冲突，并保持 Step 心跳到完成事务提交。真实 Run 获得成功 Web Search 收据、计划完成 4/4、写入 3 个含 10 条 URL 且无占位符的 Markdown 文件，Task 最终 `succeeded`；Assistant 源空白和 comfortable density 间距已压缩，浏览器控制台无错误。定向 Go 测试与 Web build 通过 |
 | 2026-07-28 | Skill/Harness 全流程复验 | 浏览器真实导入 `researchpilot`：同版本同 Hash 幂等返回原 Skill；`/researchpilot` 产生 `skill.invoked/skill.loaded`，目标特定 5 项计划实时刷新，搜索失败进入 `tool.recovery_queued` 后继续并最终完成 5/5；对话流式输出 Physical AI 中文简报和 16 个 Markdown 来源链接。同步修复计划空转、运行中结构改写、无进度自恢复、空域名参数归一化和成功搜索收敛门禁 |
@@ -185,4 +185,6 @@
 | 2026-08-04 | 无可执行 Step 的活动任务恢复与停止入口 | 修复工具批次收据已提交但模型 continuation 未入队时 Task/Run 永久保持 `running`、计划停在 `0/N` 且 Thread 无法删除的问题：Worker 空闲领取会原子补建续接 Step 并记录 `tool.batch_recovered`；Composer 在活动任务且输入为空时显示明确“停止任务”键，取消后同步任务与计划查询并移除 Composer 上方的终态任务胶囊，历史仍保留在执行记录和侧栏。真实遗留 Thread 已确认全部 Step 终态而 Task/Run/Plan 仍活跃，作为本次回归样本。 |
 | 2026-08-04 | 通用 MCP 来源与自然语言任务控制 | 删除 Tavily 前端预设和正则，名称发现改用官方 MCP Registry，支持 `server.json`、规范化 JSON、URL、固定版 npm/PyPI 包和本地命令并在歧义时要求选源；自然语言安装草稿由父级工作区持有，路由创建新 Thread 时配置面板不会丢失。新增多 Secret 集合、内置只读 Skill Creator、确定性暂停/取消/恢复指令和 Steering/Next Turn 排队交互。真实浏览器验证 1440×900、1280×800、1024×768、390×844 明暗主题无横向溢出，移动端为列表到全屏详情；产品级 OAuth 仍按 `PARTIAL` 跟踪。 |
 | 2026-08-10 | MCP OAuth 与故障矩阵关闭 | 远端 Registry/URL 在无 Secret Header 声明时使用标准 OAuth challenge 自动发现，声明 Header 时生成 Bearer/Custom Header 绑定；官方 Go SDK 完成 DCR、PKCE、浏览器回调、取消与刷新令牌 SecretStore 回写。资源中心使用单一“连接账号”动作和自动状态轮询，Skill ZIP 明确区分客户端预检与服务端完整校验，失败可转 Skill Creator 对话修复副本。Windows 直接以 `node.exe` 启动 npx CLI 并隔离运行缓存；官方 Filesystem MCP 真实写读与越界拒绝通过，微软 Playwright MCP `0.0.78` 以显式 Edge 路径打开本地产品并返回可访问性内容，Git MCP `2026.7.10` 对临时仓库完成 status/log。Git 包未给 Python MCP SDK 声明主版本上限，裸解析会与 v2 失配；验收以可审查的 `mcp<2` 命令约束固定，产品不静默猜测第三方依赖。OAuth、超时、非法工具 Schema、超量输出、stdio 进程缺失、完整停用→重启用→重连和活动 Run 删除阻止均有确定性测试；真实浏览器在 1440×900、1280×800、1024×768、390×844 明暗主题完成资源列表、连接修复、移动详情和 ZIP 错误回归，Success E2E 23/23 通过。 |
-| 2026-08-10 | 证据驱动完成协议与 Skill 续轮 | 复盘真实 Physical AI 任务确认：MCP 研究成功后 Provider 工具参数截断，重试只说“开始写文件”，旧运行时即误判成功；同时显式 `researchpilot` 只在首轮加载且 6000 字正文裁掉末尾 QA/交付门禁。完成协议现统一要求联网/MCP Receipt、真实工作区变更、变更后验证、最新 Artifact 与显式字数，失败进入受控修复；显式长 Skill 跨计划、工具、截断与完成修复续轮继承。真实重跑进一步修复显式 MCP 误删工作区工具、完全访问仍重复申请命令能力、Thinking 只展示不下传、GLM 交错推理未续接、推理到上限空转、搜索次数/禁用约束不跨 Run 且可用 `map` 绕过、MCP 长调用无截止，以及终态“继续当前任务，并……”丢失原目标/Skill/证据的问题；预算耗尽会同时收缩 Tool Schema 与执行门禁，默认模型输出 4096，恢复 8192/16384，MCP 截止 10 分钟。相关反例、适配器、续作与完成门禁测试通过。 |
+| 2026-08-10 | 证据驱动完成协议与 Skill 续轮 | 复盘真实 Physical AI 任务确认：MCP 研究成功后 Provider 工具参数截断，重试只说“开始写文件”，旧运行时即误判成功；同时显式 `researchpilot` 只在首轮加载且 6000 字正文裁掉末尾 QA/交付门禁。完成协议现统一要求联网/MCP Receipt、真实工作区变更、变更后验证、最新 Artifact 与显式字数，失败进入受控修复；显式长 Skill 跨计划、工具、截断与完成修复续轮继承。真实重跑进一步修复显式 MCP 误删工作区工具、完全访问仍重复申请命令能力、Thinking 只展示不下传、GLM 交错推理未续接、推理到上限空转、搜索次数/禁用约束不跨 Run 且可用 `map` 绕过、MCP 长调用无截止，以及终态“继续当前任务，并……”丢失原目标/Skill/证据的问题；预算耗尽会同时收缩 Tool Schema 与执行门禁，默认模型输出已在同日极限回归后校准为 8192，恢复 16384/32768，MCP 截止 10 分钟。相关反例、适配器、续作与完成门禁测试通过。 |
+| 2026-08-10 | 单一完整报告与预算实跑校准 | 从网页新建独立 Thread，以自然语言调用 `researchpilot@0.1.0` 和已连接 Tavily MCP；3 次互补搜索均为 L2/allow、无审批并产生成功 Receipt。Run 最终完成 11/11，单一 `physical_ai_complete_report_2026.md` 独立核验 30,021 个汉字、77 个 URL、15/15 必需章节、无 TODO/TBD/待补充/续写锚点；总用量 67 次模型调用、778,648 输入 + 61,272 输出 Token，证明旧 32/200k 和候选 64 次上限不足，默认最终校准为 80 次/1,000,000 Token，单次输出 8192→16384→32768。完成门禁改为单一主 Artifact 而非分片求和，Skill `name@version` 可解析，完全访问仅自动放行 L0-L2，50 个不可变文件版本在 UI 收敛为 1 个最新交付文件。 |
+| 2026-08-10 | 并发调度短暂锁恢复 | 完整门禁复现两个 SQLite 调度实例同时领取同一 Schedule 时，胜出实例可能在创建任务阶段遭遇短暂 `SQLITE_BUSY`，造成 Fire 已记录但任务未创建。Scheduler 现基于既有 `schedule-fire-{id}` 幂等键执行有界退避重试；单元反例与双实例并发用例连续 50 轮通过，不扩大租约或绕过失败审计。 |

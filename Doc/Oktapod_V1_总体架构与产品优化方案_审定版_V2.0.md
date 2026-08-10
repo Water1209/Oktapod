@@ -1,8 +1,8 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.1（V1.0.0 发布事实修订）
+> **文档版本**：V2.2（V1.0.0 发布事实修订）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
-> **编制日期**：2026-08-04
+> **编制日期**：2026-08-10
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
 > **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），`main@22b29bc` 及 V1.0.0 发布收口改动
@@ -224,9 +224,9 @@ TurnCompleted / TurnFailed / ContextLimitReached
 
 #### 4.2.1 任务完成协议
 
-模型停止调用工具只表示当前 Turn 结束，不等于用户目标已经完成。Domain 根据 `goal + acceptance` 推导最小 `TaskCompletionRequirements`，Durable Harness 在进入成功终态前核对持久证据：联网调研必须有成功的内建或 MCP 搜索/研究 Receipt；创建、修改或修复必须有工作区写入/编辑 Receipt，提交、建分支或撤销必须有对应的受控 Git 变更 Receipt；明确测试或验证时必须有最后一次变更之后的命令、文件、Git、浏览器或同类 MCP 验证 Receipt；文件交付必须有最新 `deliverable` Artifact，显式字数要求按最新 UTF-8 Artifact 的真实字符数合计。自然语言继任 Run 可复用受限来源链的搜索、变更与最新 Artifact，若本 Run 又产生新变更，验证仍必须发生在该变更之后。任何一项缺失都进入一次 `completion_recovery`，再次缺失才以可行动错误阻塞，不允许用自然语言完成声明覆盖事实。
+模型停止调用工具只表示当前 Turn 结束，不等于用户目标已经完成。Domain 根据 `goal + acceptance` 推导最小 `TaskCompletionRequirements`，Durable Harness 在进入成功终态前核对持久证据：联网调研必须有成功的内建或 MCP 搜索/研究 Receipt；创建、修改或修复必须有工作区写入/编辑 Receipt，提交、建分支或撤销必须有对应的受控 Git 变更 Receipt；明确测试或验证时必须有最后一次变更之后的命令、文件、Git、浏览器或同类 MCP 验证 Receipt；文件交付必须有最新 `deliverable` Artifact。用户要求“一份/单一/完整报告”时，显式字数按最大的单一最新 UTF-8 Artifact 核验，不能用多个分片求和；显式来源要求检查主文件中的可点击 URL，完整性要求拒绝续写锚点、TODO、TBD 和“待补充”。自然语言继任 Run 可复用受限来源链的搜索、变更与最新 Artifact，若本 Run 又产生新变更，验证仍必须发生在该变更之后。任何一项缺失都进入一次 `completion_recovery`，再次缺失才以可行动错误阻塞，不允许用自然语言完成声明覆盖事实。
 
-用户显式声明“最多 N 次搜索”或“禁止再搜索”时，Domain 将其冻结为可区分“未限制/零次”的工具预算；继任 Run 汇总来源证据链中的成功调用数。预算耗尽后，Harness 同时从 Tool Schema 与允许列表移除 `search/research/crawl/extract/map/browse/discover` 语义族，漏网提案仍在落库执行前拒绝，避免模型换同义工具或反复触发审批；禁止新增搜索也会关闭“必须产生新联网收据”的完成要求，复用来源 Run 证据。完全访问直接开放 `workspace_run_command/workspace_shell` 并移除 `request_permission`，但静态硬拒绝与开放世界 MCP 确认不变。模型的 `Thinking` 级别随 Run 冻结，OpenAI-compatible 适配器按 Provider 能力映射 `thinking` / `reasoning_effort`；模型返回的 `reasoning_content` 与 ToolCall 同消息持久续接，避免 GLM 等交错思考模型在工具轮后丢失推理状态。只有推理且因长度终止、工具参数截断和空响应均进入有界恢复，默认输出预算为 4096，恢复为 8192/16384；MCP 单次调用有 10 分钟硬截止。
+用户显式声明“最多 N 次搜索”或“禁止再搜索”时，Domain 将其冻结为可区分“未限制/零次”的工具预算；继任 Run 汇总来源证据链中的成功调用数。预算耗尽后，Harness 同时从 Tool Schema 与允许列表移除 `search/research/crawl/extract/map/browse/discover` 语义族，漏网提案仍在落库执行前拒绝，避免模型换同义工具或反复触发审批；禁止新增搜索也会关闭“必须产生新联网收据”的完成要求，复用来源 Run 证据。完全访问自动放行经冻结快照确定为 L0-L2 的动作；已启用的语义搜索 MCP 即使缺少可选 Annotation，也按只读幂等 L2 留存收据，非只读、破坏性、非幂等或快照外工具仍为 L3 并要求逐次确认。模型的 `Thinking` 级别随 Run 冻结，OpenAI-compatible 适配器按 Provider 能力映射 `thinking` / `reasoning_effort`；模型返回的 `reasoning_content` 与 ToolCall 同消息持久续接，避免 GLM 等交错思考模型在工具轮后丢失推理状态。只有推理且因长度终止、工具参数截断和空响应均进入有界恢复，默认输出预算为 8192，恢复为 16384/32768；新项目任务级默认保险丝为 80 次模型调用与 1,000,000 Token，用户显式不限额仍保留；MCP 单次调用有 10 分钟硬截止。
 
 Skill 属于 Run 冻结的执行状态，不是首轮 Prompt 装饰。显式选择或 `skill_invoke` 后，`invoked_skill_ids`、参数与完整工作流正文必须继承到计划续轮、工具续轮、长度截断恢复和完成修复；自动匹配仍使用较小上下文预算。`workspace_edit_file` 的验证后内容会以私有适配器交接字段生成新 Artifact，该字段在 Receipt、事件和模型上下文持久化前删除，确保长度与交付校验读取的是编辑后的文件。
 

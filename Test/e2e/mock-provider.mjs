@@ -20,6 +20,9 @@ const server = createServer(async (request, response) => {
     const body = await readJSON(request)
     const userContent = Array.isArray(body.messages) ? body.messages.findLast((message) => message.role === 'user')?.content ?? '' : ''
     const hasToolResults = Array.isArray(body.messages) && body.messages.some((message) => message.role === 'tool')
+    const calledToolNames = Array.isArray(body.messages)
+      ? body.messages.flatMap((message) => Array.isArray(message.tool_calls) ? message.tool_calls.map((call) => call.function?.name).filter(Boolean) : [])
+      : []
     if (process.env.OKTAPOD_E2E_DEBUG === '1') process.stderr.write(`[mock-provider] chat request ${JSON.stringify({ stream: body.stream, userContent: userContent.slice(0, 80) })}\n`)
     const systemContent = Array.isArray(body.messages) ? body.messages.find((message) => message.role === 'system')?.content ?? '' : ''
     if (systemContent.includes("route a user's project message")) {
@@ -54,12 +57,26 @@ const server = createServer(async (request, response) => {
       }))
       return
     }
-    if (userContent.includes('提交以下已选文件')) {
-      if (hasToolResults) {
+    if (userContent.includes('提交以下已选文件') || calledToolNames.includes('git_commit_paths') || calledToolNames.includes('git_status')) {
+      if (calledToolNames.includes('git_status')) {
         response.end(JSON.stringify({
           id: 'provider-e2e-changes-commit-finished',
           choices: [{ message: { role: 'assistant', content: '已按所选路径完成提交并复核工作区状态。' } }],
           usage: { prompt_tokens: 24, completion_tokens: 8 },
+        }))
+        return
+      }
+      if (calledToolNames.includes('git_commit_paths') && hasToolResults) {
+        response.end(JSON.stringify({
+          id: 'provider-e2e-changes-post-commit-status',
+          choices: [{ message: {
+            role: 'assistant',
+            content: '提交已完成；现在读取提交后的工作区状态作为验证证据。',
+            tool_calls: [
+              { id: 'provider-e2e-git-status', type: 'function', function: { name: 'git_status', arguments: '{}' } },
+            ],
+          } }],
+          usage: { prompt_tokens: 26, completion_tokens: 9 },
         }))
         return
       }

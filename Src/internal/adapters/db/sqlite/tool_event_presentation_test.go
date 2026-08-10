@@ -56,15 +56,35 @@ func TestConversationApprovalRuleKeyScope(t *testing.T) {
 
 func TestMCPPolicyRequiresCompleteSafeAnnotations(t *testing.T) {
 	missing := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":true}}]}]}`
-	if risk, idempotent, _ := mcpPolicyFromSnapshot(missing, "mcp__cap-1__search"); risk != "L3" || idempotent {
+	if risk, idempotent, _ := mcpPolicyFromSnapshot(missing, "mcp__cap-1__search"); risk != "L2" || !idempotent {
 		t.Fatalf("missing annotations risk=%s idempotent=%v", risk, idempotent)
+	}
+	missingMutation := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"confirm","annotations":{}}]}]}`
+	if risk, idempotent, _ := mcpPolicyFromSnapshot(missingMutation, "mcp__cap-1__confirm"); risk != "L3" || idempotent {
+		t.Fatalf("missing mutation annotations risk=%s idempotent=%v", risk, idempotent)
 	}
 	safe := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}]}]}`
 	if risk, idempotent, _ := mcpPolicyFromSnapshot(safe, "mcp__cap-1__search"); risk != "L2" || !idempotent {
 		t.Fatalf("safe annotations risk=%s idempotent=%v", risk, idempotent)
 	}
 	openWorld := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}]}]}`
-	if risk, _, _ := mcpPolicyFromSnapshot(openWorld, "mcp__cap-1__search"); risk != "L3" {
+	if risk, idempotent, _ := mcpPolicyFromSnapshot(openWorld, "mcp__cap-1__search"); risk != "L2" || !idempotent {
 		t.Fatalf("open-world annotation risk=%s", risk)
+	}
+	destructive := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}]}]}`
+	if risk, idempotent, _ := mcpPolicyFromSnapshot(destructive, "mcp__cap-1__search"); risk != "L3" || idempotent {
+		t.Fatalf("destructive annotation risk=%s idempotent=%v", risk, idempotent)
+	}
+}
+
+func TestFullAccessAutoAllowsOnlyNonL3Asks(t *testing.T) {
+	if !fullAccessAutoAllows(true, core.PlannedTool{Decision: core.PolicyAsk, RiskLevel: "L2"}) {
+		t.Fatal("full access should auto-allow an ordinary L2 request")
+	}
+	if fullAccessAutoAllows(true, core.PlannedTool{Decision: core.PolicyAsk, RiskLevel: "L3"}) {
+		t.Fatal("full access must retain L3 approval")
+	}
+	if fullAccessAutoAllows(false, core.PlannedTool{Decision: core.PolicyAsk, RiskLevel: "L2"}) {
+		t.Fatal("ask mode must retain L2 approval")
 	}
 }

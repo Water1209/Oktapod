@@ -12,6 +12,7 @@ import { V1_VISIBILITY, visibleInspectorTab } from '../../shared/v1-visibility'
 import { FileReviewProvider } from '../tasks/multi-file-review'
 import { useFileReview } from '../tasks/file-review-context'
 import { MessageTaskStream } from '../tasks/message-task-stream'
+import { latestDeliverableArtifacts } from '../tasks/artifact-versions'
 import { TaskStatusStrip } from '../tasks/task-status-strip'
 import { useRunEvents } from '../runs/use-run-events'
 import { isCompactCommand, parseSkillInvocation, skillCommandName } from './skill-command'
@@ -87,6 +88,7 @@ function ProjectWorkspace() {
   const inspectedRunEvents = useRunEvents(inspectedTask?.run_id, Boolean(inspectedTask && managementOpen))
   const inspectedUsage = useQuery({ queryKey: ['run-usage', inspectedTask?.run_id], queryFn: () => api.runUsage(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'usage'].includes(managementTab)) })
   const inspectedArtifacts = useQuery({ queryKey: ['run-artifacts', inspectedTask?.run_id], queryFn: () => api.runArtifacts(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'changes'].includes(managementTab)) })
+  const inspectedArtifactVersions = latestDeliverableArtifacts(inspectedArtifacts.data?.items ?? [])
   const inspectedApprovals = useQuery({ queryKey: ['approvals', 'all'], queryFn: () => api.approvals('all'), enabled: Boolean(inspectedTask && managementOpen && managementTab === 'security') })
   const inspectedAgentTeam = useQuery({ queryKey: ['agent-team-room', inspectedTask?.run_id], queryFn: () => api.agentTeamRoom(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && inspectedTask?.mode === 'agent_team' && managementOpen && managementTab === 'run') })
   const activeConversationKey = activeConversationId ?? 'new'
@@ -205,11 +207,11 @@ function ProjectWorkspace() {
           {([['tools', 'Tools'], ['security', 'Security'], ['overview', '项目'], ['tasks', '任务'], ['assets', '文件'], ['activity', '动态'], ['plan', '计划'], ['agents', '智能体'], ['project_usage', '项目用量']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => { selectInspectorTab(value); setManagementMoreOpen(false) }}>{label}</button>)}
         </div> : null}
         <div className="panel-content">
-          {managementTab === 'run' ? <InspectorRun task={inspectedTask} events={inspectedRunEvents.data.items} usage={inspectedUsage.data} artifacts={inspectedArtifacts.data?.items ?? []} agentTeam={inspectedAgentTeam.data} /> : null}
+          {managementTab === 'run' ? <InspectorRun task={inspectedTask} events={inspectedRunEvents.data.items} usage={inspectedUsage.data} artifacts={inspectedArtifactVersions} agentTeam={inspectedAgentTeam.data} /> : null}
           {managementTab === 'context' ? <InspectorContext projectModel={project.data.default_model} events={inspectedRunEvents.data.items} /> : null}
           {managementTab === 'tools' ? <InspectorEvents events={inspectedRunEvents.data.items.filter((item) => item.event_type.includes('tool'))} empty="当前 Run 尚无工具事件。" /> : null}
           {managementTab === 'security' ? <InspectorSecurity projectId={projectId} taskId={inspectedTask?.id} approvals={inspectedApprovals.data?.items ?? []} /> : null}
-          {managementTab === 'changes' ? <InspectorChanges task={inspectedTask} artifacts={inspectedArtifacts.data?.items ?? []} /> : null}
+          {managementTab === 'changes' ? <InspectorChanges task={inspectedTask} artifacts={inspectedArtifactVersions} /> : null}
           {managementTab === 'trace' ? <InspectorEvents events={inspectedRunEvents.data.items} empty="当前 Run 尚无事件。" /> : null}
           {managementTab === 'usage' ? <InspectorUsage usage={inspectedUsage.data} /> : null}
           {managementTab === 'overview' ? <div className="project-overview-list"><button type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /><span><strong>项目设置</strong><small>{project.data.description || '补充项目目标与模型策略'}</small></span><ChevronRight size={15} /></button><div><Bot size={16} /><span><strong>默认智能体</strong><small>Oktapod Generalist</small></span></div><div><Sparkles size={16} /><span><strong>模型策略</strong><small>{project.data.default_model || '由 Provider 自动选择'}</small></span></div><div><LockKeyhole size={16} /><span><strong>可见范围</strong><small>仅当前用户</small></span></div></div> : null}
@@ -358,7 +360,20 @@ function PlanView({ projectId, planItems }: { projectId: string; planItems: Plan
   })
   const move = useMutation({
     mutationFn: ({ id, status }: { id: string; status: PlanStatus }) => api.movePlanItem(id, status),
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['plan-items', projectId] }),
+    onMutate: async ({ id, status }) => {
+      const queryKey = ['plan-items', projectId] as const
+      await queryClient.cancelQueries({ queryKey })
+      const previous = queryClient.getQueryData<{ items: PlanItem[] }>(queryKey)
+      queryClient.setQueryData<{ items: PlanItem[] }>(queryKey, (current) => current ? {
+        ...current,
+        items: current.items.map((item) => item.id === id ? { ...item, status } : item),
+      } : current)
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(['plan-items', projectId], context.previous)
+    },
+    onSettled: async () => queryClient.invalidateQueries({ queryKey: ['plan-items', projectId] }),
   })
   const columns = [
     ['待开始', 'todo', planItems.filter((item) => item.status === 'todo')],

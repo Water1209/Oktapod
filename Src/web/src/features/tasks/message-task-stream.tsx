@@ -5,6 +5,7 @@ import type { Artifact, Task } from '../../shared/api/client'
 import { api } from '../../shared/api/client'
 import { buildTaskTimeline, taskFailureInfo, type TaskTimelineItem } from '../tasks/task-progress-model'
 import { useRunEvents } from '../runs/use-run-events'
+import { latestDeliverableArtifacts } from './artifact-versions'
 
 // StepLine 是消息流内的可折叠单行步骤，关闭时仅显示一行标题。
 function StepLine({ step }: { step: TaskTimelineItem }) {
@@ -59,7 +60,7 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
   const liveEvents = eventsQuery.data.items
   const timeline = buildTaskTimeline(taskQuery.data, liveEvents)
   const failure = taskFailureInfo(taskQuery.data)
-  const artifacts = artifactsQuery.data?.items ?? []
+  const artifacts = latestDeliverableArtifacts(artifactsQuery.data?.items ?? [])
   const runningStep = timeline.find((step) => step.state === 'running')
   const taskActive = active && ['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'].includes(taskQuery.data.status)
   const taskFailed = taskQuery.data.status === 'failed' || taskQuery.data.status === 'blocked'

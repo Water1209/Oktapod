@@ -27,6 +27,11 @@ type Scheduler struct {
 	now          func() time.Time
 }
 
+const (
+	scheduledTaskCreateAttempts = 4
+	scheduledTaskRetryDelay     = 25 * time.Millisecond
+)
+
 func NewScheduler(repository ScheduleRepository, logger *slog.Logger) *Scheduler {
 	return &Scheduler{repository: repository, logger: logger, pollInterval: 2 * time.Second, now: func() time.Time { return time.Now().UTC() }}
 }
@@ -113,7 +118,23 @@ func (s *Scheduler) RunOnce(ctx context.Context) (bool, error) {
 	if fire.Status != core.ScheduleFirePending {
 		return true, nil
 	}
-	task, err := s.repository.CreateScheduledTask(ctx, schedule, fire, fmt.Sprintf("schedule:%s:%s", schedule.ID, fire.ID))
+	correlationID := fmt.Sprintf("schedule:%s:%s", schedule.ID, fire.ID)
+	var task core.Task
+	for attempt := 0; attempt < scheduledTaskCreateAttempts; attempt++ {
+		task, err = s.repository.CreateScheduledTask(ctx, schedule, fire, correlationID)
+		if err == nil {
+			break
+		}
+		if attempt == scheduledTaskCreateAttempts-1 {
+			break
+		}
+		delay := scheduledTaskRetryDelay * time.Duration(1<<attempt)
+		select {
+		case <-ctx.Done():
+			return true, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
 	if err != nil {
 		if updateErr := s.repository.AdvanceScheduleAfterFire(ctx, schedule.ID, schedule.NextRunAt, nextRunAt, core.ScheduleFireSkipped, ""); updateErr != nil {
 			return true, fmt.Errorf("create scheduled task: %v; mark fire skipped: %w", err, updateErr)

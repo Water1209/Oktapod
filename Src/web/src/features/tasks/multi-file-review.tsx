@@ -98,10 +98,11 @@ export function FileReviewPanel({
                 type="button"
                 className={artifact.id === selected.id ? 'active' : ''}
                 key={artifact.id}
+                title={artifact.name}
                 onClick={() => setSelectedId(artifact.id)}
               >
                 <FileText size={13} />
-                <span>{artifact.name}<small>{formatBytes(artifact.size_bytes)}</small></span>
+                <span><span className="file-review-file-name">{artifact.name}</span><small>{formatBytes(artifact.size_bytes)}</small></span>
               </button>
             ))}
           </div>

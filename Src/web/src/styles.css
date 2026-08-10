@@ -2519,7 +2519,9 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .file-review-panel {
   position: fixed;
   top: 0; right: 0; bottom: 0;
-  width: min(420px, 38vw);
+  width: clamp(420px, 46vw, 620px);
+  max-width: 100vw;
+  min-width: 0;
   background: var(--color-bg, #fcfcfb);
   border-left: 1px solid var(--color-border, #deded8);
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08);
@@ -2555,6 +2557,7 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
   display: grid;
   grid-template-columns: 140px minmax(0, 1fr);
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 .file-review-panel-sidebar {
@@ -2563,6 +2566,7 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 .file-review-panel-sidebar-title {
   display: flex;
@@ -2578,6 +2582,7 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .file-review-panel-file-list {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -2594,17 +2599,21 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
   text-align: left;
   cursor: pointer;
   color: var(--color-text, #2a2a26);
+  width: 100%;
+  min-width: 0;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .file-review-panel-file-list button:hover { background: var(--color-bg-subtle, #f0f0eb); }
 .file-review-panel-file-list button.active { border-color: var(--color-accent-muted, #b7dcc7); background: var(--color-bg, #fff); }
 .file-review-panel-file-list button svg { width: 13px; height: 13px; color: #7b7b75; margin-top: 1px; flex-shrink: 0; }
-.file-review-panel-file-list button span { min-width: 0; line-height: 1.4; font-size: 11px; }
+.file-review-panel-file-list button > span { min-width: 0; overflow: hidden; line-height: 1.4; font-size: 11px; }
+.file-review-file-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-review-panel-file-list button small { display: block; margin-top: 2px; color: #8b8b84; font-weight: 400; font-size: 9px; }
 .file-review-panel-content {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 .file-review-panel-content-header {
@@ -2643,12 +2652,15 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .file-review-panel-document {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 14px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--color-text, #2a2a26);
 }
 .file-review-panel-document img { max-width: 100%; border-radius: 4px; }
+.file-review-panel-document :where(h1, h2, h3, h4, p, li, blockquote, a, code) { max-width: 100%; overflow-wrap: anywhere; }
+.file-review-panel-document :where(pre, table) { display: block; max-width: 100%; overflow-x: auto; }
 .file-review-panel-footer {
   flex-shrink: 0;
   display: flex;

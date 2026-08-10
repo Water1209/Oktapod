@@ -215,10 +215,10 @@ func TestConcurrentSchedulerStoresProduceOneFire(t *testing.T) {
 	}
 	group.Wait()
 	close(results)
-	var errorsSeen int
+	var runErrors []error
 	for runErr := range results {
 		if runErr != nil {
-			errorsSeen++
+			runErrors = append(runErrors, runErr)
 		}
 	}
 	check, err := sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath)+"?")
@@ -233,7 +233,7 @@ func TestConcurrentSchedulerStoresProduceOneFire(t *testing.T) {
 	if err := check.QueryRow(`SELECT COUNT(*) FROM tasks WHERE project_id = ? AND title = ?`, project.ID, schedule.Name).Scan(&taskCount); err != nil {
 		t.Fatal(err)
 	}
-	if fireCount != 1 || taskCount != 1 || errorsSeen > 1 {
-		t.Fatalf("concurrent schedulers duplicated work or both failed: fires=%d tasks=%d errors=%d", fireCount, taskCount, errorsSeen)
+	if fireCount != 1 || taskCount != 1 || len(runErrors) > 1 {
+		t.Fatalf("concurrent schedulers duplicated work or both failed: fires=%d tasks=%d errors=%v", fireCount, taskCount, runErrors)
 	}
 }

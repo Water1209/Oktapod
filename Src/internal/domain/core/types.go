@@ -117,14 +117,16 @@ const (
 	// automatic execution.
 	DefaultApprovalTTL = 24 * time.Hour
 
-	// Task runtime defaults follow mature coding-agent budgets: bounded UI
-	// quotas, three recoverable retries, and conservative output ramps. API
-	// callers may still explicitly choose unlimited values where supported.
-	DefaultTaskMaxModelCalls = 32
-	DefaultTaskMaxTokens     = 200_000
+	// Task runtime defaults leave enough headroom for one long research or
+	// implementation Run while retaining a visible, bounded safety ceiling.
+	// Explicit user length requirements remain the only deliverable word/character
+	// limits; the runtime does not invent one. API callers may still choose
+	// unlimited values where supported.
+	DefaultTaskMaxModelCalls = 80
+	DefaultTaskMaxTokens     = 1_000_000
 	DefaultModelRetryLimit   = 3
 	DefaultToolRetryLimit    = 5
-	DefaultModelOutputTokens = 4_096
+	DefaultModelOutputTokens = 8_192
 
 	SideEffectReceiptStarted   = "started"
 	SideEffectReceiptSucceeded = "succeeded"

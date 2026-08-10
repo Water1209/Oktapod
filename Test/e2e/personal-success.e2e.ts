@@ -45,9 +45,15 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
   await page.getByRole('button', { name: '建立工作空间' }).click()
   await openProjectManagement(page, '计划')
   await page.getByRole('textbox', { name: '待办标题' }).fill('独立项目计划')
-  await page.getByRole('button', { name: '新建待办' }).click()
+  await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/v1\/projects\/[^/]+\/plan-items$/.test(new URL(response.url()).pathname) && response.ok()),
+    page.getByRole('button', { name: '新建待办' }).click(),
+  ])
   await expect(page.getByText('独立项目计划')).toBeVisible()
-  await page.getByRole('combobox', { name: '移动 独立项目计划' }).selectOption('in_progress')
+  await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/v1\/plan-items\/[^/]+\/status$/.test(new URL(response.url()).pathname) && response.ok()),
+    page.getByRole('combobox', { name: '移动 独立项目计划' }).selectOption('in_progress'),
+  ])
   await expect(page.locator('.plan-column').nth(1).getByText('独立项目计划')).toBeVisible()
 
   const goal = '返回 E2E 模型执行结果'
@@ -70,7 +76,10 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
 
   const resultArtifact = page.locator('.artifact-publish-row').filter({ hasText: '执行结果.md' })
   await resultArtifact.getByRole('combobox', { name: '执行结果.md 发布可见性' }).selectOption('project')
-  await resultArtifact.getByRole('button', { name: '发布到资产' }).click()
+  await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/v1\/artifacts\/[^/]+\/publish$/.test(new URL(response.url()).pathname) && response.ok()),
+    resultArtifact.getByRole('button', { name: '发布到资产' }).click(),
+  ])
   await expect(resultArtifact.getByRole('button', { name: '已发布' })).toBeVisible()
   await openProjectManagement(page, '文件')
   const markdownLink = page.locator('.asset-row .asset-name').getByRole('link', { name: '执行结果.md' })
@@ -157,6 +166,7 @@ test('任务执行流默认收敛并支持多 Markdown 文件审阅', async ({ p
   await expect(review.getByRole('heading', { name: '执行摘要' })).toBeVisible()
   await expect(review.getByRole('table')).toContainText('浏览器验收')
   await expect(review.getByRole('table')).toContainText('通过')
+  expect(await review.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   expect(consoleProblems).toEqual([])
 })
