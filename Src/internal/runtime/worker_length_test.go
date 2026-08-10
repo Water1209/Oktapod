@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,17 @@ type countingSearch struct {
 	calls   int
 	queries []string
 	payload string
+}
+
+func TestMCPCallsHaveABoundedExecutionDeadline(t *testing.T) {
+	worker := NewWorker("mcp-timeout-worker", nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if worker.mcpCallTimeout != 10*time.Minute {
+		t.Fatalf("default MCP timeout = %s, want 10m", worker.mcpCallTimeout)
+	}
+	worker.WithMCPCallTimeout(25 * time.Millisecond)
+	if worker.mcpCallTimeout != 25*time.Millisecond {
+		t.Fatalf("configured MCP timeout = %s, want 25ms", worker.mcpCallTimeout)
+	}
 }
 
 func (s *countingSearch) Execute(_ context.Context, call core.ToolCall) core.ToolExecution {
@@ -109,7 +121,7 @@ func TestLengthTruncatedToolCallsAreSkippedAndRecovered(t *testing.T) {
 	}
 }
 
-func TestLengthTruncatedResponseWithoutParsedToolCallRetriesInsteadOfCompleting(t *testing.T) {
+func TestLengthTruncatedResponseWithoutParsedToolCallRetriesAndRequiresArtifact(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused","allowed_tools":["workspace_write_file"]}`)
 	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{
@@ -143,9 +155,9 @@ func TestLengthTruncatedResponseWithoutParsedToolCallRetriesInsteadOfCompleting(
 			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
 		}
 	}
-	completed, err := service.GetTask(ctx, task.ID)
-	if err != nil || completed.Status != core.StatusSucceeded {
-		t.Fatalf("task=%#v err=%v", completed, err)
+	current, err := service.GetTask(ctx, task.ID)
+	if err != nil || current.Status != core.StatusRunning {
+		t.Fatalf("artifact task falsely completed after model retry: task=%#v err=%v", current, err)
 	}
 	if len(model.requests) != 2 {
 		t.Fatalf("model requests=%d", len(model.requests))
@@ -155,6 +167,15 @@ func TestLengthTruncatedResponseWithoutParsedToolCallRetriesInsteadOfCompleting(
 	}
 	if !strings.Contains(model.requests[1].UserPrompt, "参数过长时拆成更小的工具调用") {
 		t.Fatalf("retry instruction=%q", model.requests[1].UserPrompt)
+	}
+	events, err := service.ListRunEvents(ctx, task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(events, func(event core.RunEvent) bool {
+		return event.EventType == "completion.validation_failed" && event.Payload["reason"] == "DELIVERABLE_MISSING"
+	}) {
+		t.Fatalf("artifact completion validation was not queued: %#v", events)
 	}
 }
 

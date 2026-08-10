@@ -176,22 +176,7 @@ func run() error {
 		return err
 	}
 	queuedTurnStarter := func(ctx context.Context, scope core.Scope, item core.ConversationQueueItem) (core.Task, error) {
-		hasActive, _, activeErr := store.HasActiveTask(ctx, scope, item.ConversationID)
-		if activeErr != nil {
-			return core.Task{}, activeErr
-		}
-		if hasActive {
-			return core.Task{}, errors.New("conversation already has an active task")
-		}
-		var turnInput core.ProjectTurnInput
-		if decodeErr := json.Unmarshal([]byte(item.InputJSON), &turnInput); decodeErr != nil {
-			return core.Task{}, fmt.Errorf("decode queued conversation turn: %w", decodeErr)
-		}
-		taskInput := core.CreateTaskInput{ConversationID: item.ConversationID, Goal: item.Content, Acceptance: turnInput.Acceptance, Mode: turnInput.Mode, Visibility: turnInput.Visibility, PermissionMode: turnInput.PermissionMode, SceneOverride: turnInput.SceneOverride, Model: turnInput.Model, FallbackModel: turnInput.FallbackModel, ProviderID: turnInput.ProviderID, Thinking: turnInput.Thinking, MaxModelCalls: turnInput.MaxModelCalls, MaxTokens: turnInput.MaxTokens, AgentID: turnInput.AgentID, TeamDefinitionID: turnInput.TeamDefinitionID, TeamRoles: turnInput.TeamRoles, ContextAssetIDs: turnInput.ContextAssetIDs, ContextMemoryIDs: turnInput.ContextMemoryIDs, SkillID: turnInput.SkillID, SkillArgs: turnInput.SkillArgs}
-		if taskInput.Mode == core.ModeAuto {
-			taskInput.Mode = core.ModeSingleAgent
-		}
-		return service.CreateTask(ctx, item.ProjectID, taskInput, "queue-"+item.ID, "queue-"+item.ID)
+		return service.StartQueuedConversationTurn(ctx, item)
 	}
 	workerCtx := application.WithScope(ctx, service.Scope())
 	hostname, _ := os.Hostname()

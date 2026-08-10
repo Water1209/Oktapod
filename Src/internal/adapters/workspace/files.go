@@ -228,6 +228,10 @@ func (l *Local) editFile(root string, call core.ToolCall, planned core.PlannedTo
 	return workspaceSuccess(result, map[string]any{
 		"path": relativeSlash(root, target), "preimage_hash": expected,
 		"content_hash": hashBytes(updated), "size_bytes": len(updated),
+		// The repository adapter removes this private handoff before persisting
+		// the tool receipt or emitting events. It is used only to snapshot the
+		// verified post-edit deliverable, matching workspace_write_file.
+		"artifact_content": string(updated),
 	})
 }
 

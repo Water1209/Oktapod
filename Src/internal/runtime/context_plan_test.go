@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
@@ -24,6 +25,17 @@ func TestMCPToolContextPlanPrunesIrrelevantSchemasAndReportsSavings(t *testing.T
 	}
 	if saved, ok := plan["estimated_tokens_saved"].(int64); !ok || saved <= 0 {
 		t.Fatalf("expected positive token savings, plan=%#v", plan)
+	}
+}
+
+func TestGrantedWorkspaceCommandRemovesDuplicatePermissionTool(t *testing.T) {
+	definitions := excludeToolDefinition([]ToolDefinition{{Name: core.ToolRequestPermission}, {Name: core.ToolWorkspaceRunCommand}}, core.ToolRequestPermission)
+	if len(definitions) != 1 || definitions[0].Name != core.ToolWorkspaceRunCommand {
+		t.Fatalf("definitions=%#v", definitions)
+	}
+	allowed := excludeToolName([]string{core.ToolRequestPermission, core.ToolWorkspaceRunCommand}, core.ToolRequestPermission)
+	if len(allowed) != 1 || allowed[0] != core.ToolWorkspaceRunCommand {
+		t.Fatalf("allowed=%#v", allowed)
 	}
 }
 
@@ -88,6 +100,23 @@ func TestStrictSkillCapabilityConstraintUsesFrozenRunTools(t *testing.T) {
 	}
 }
 
+func TestExplicitSkillInvocationPreservesLongWorkflowDeliveryGates(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("阶段说明。", 2500) + "最终 QA 与交付门禁"
+	manifest, err := json.Marshal(map[string]any{"description": "deep research", "instructions": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := json.Marshal(map[string]any{"skill_capabilities": []map[string]any{{"id": "skill-research", "name": "researchpilot", "version": "1.0.0", "content_hash": "sha256:x", "manifest_json": string(manifest)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	context, plan := skillContextForIDs(string(snapshot), []string{"skill-research"}, "物理 AI")
+	if !strings.Contains(context, "最终 QA 与交付门禁") || plan["loaded"] != 1 {
+		t.Fatalf("explicit skill body was truncated before delivery gates: plan=%#v context_length=%d", plan, len(context))
+	}
+}
+
 func TestPlanExecuteTurnCannotRepublishPlanBeforeProducingEvidence(t *testing.T) {
 	definitions := []ToolDefinition{
 		{Name: core.ToolUpdatePlan},
@@ -141,6 +170,9 @@ func TestScenePolicyDeniesWorkspaceCommandsOutsideCode(t *testing.T) {
 	if !sceneAllowsWorkspaceCommand(`{"mode":"single_agent"}`) {
 		t.Fatal("snapshots without scene policy must remain compatible")
 	}
+	if !sceneAllowsWorkspaceCommand(`{"scene":"work","permission_mode":"full_access","scene_policy":{"workspace_command":false}}`) {
+		t.Fatal("full access must expose workspace commands independently of the scene hint")
+	}
 }
 
 func TestScenePolicyFiltersWorkspaceCommandBeforeModelPlanning(t *testing.T) {
@@ -162,6 +194,11 @@ func TestScenePolicyFiltersWorkspaceCommandBeforeModelPlanning(t *testing.T) {
 	if declared || allowed != nil {
 		t.Fatalf("code scene unexpectedly restricted tools: declared=%v allowed=%#v", declared, allowed)
 	}
+
+	allowed, declared, plan = applySceneToolPolicy(`{"scene":"work","permission_mode":"full_access","scene_policy":{"workspace_command":false}}`, nil, false)
+	if declared || allowed != nil || plan["workspace_command"] != true {
+		t.Fatalf("full access unexpectedly restricted tools: declared=%v allowed=%#v plan=%#v", declared, allowed, plan)
+	}
 }
 
 func TestExplicitMCPProviderChoiceOverridesBuiltinSearch(t *testing.T) {
@@ -172,12 +209,12 @@ func TestExplicitMCPProviderChoiceOverridesBuiltinSearch(t *testing.T) {
 	if got, id := explicitMCPProviderFromPrompt(snapshot, "搜索最新资讯"); got != "" || id != "" {
 		t.Fatalf("unexpected preferred provider=%q id=%q", got, id)
 	}
-	filtered := filterToolNamesForExplicitMCP([]string{core.ToolUpdatePlan, core.ToolWebSearch, core.ToolWorkspaceWriteFile, "mcp__cap-1__tavily_search", "mcp__cap-2__other"}, "cap-1")
-	if len(filtered) != 2 || filtered[0] != core.ToolUpdatePlan || filtered[1] != "mcp__cap-1__tavily_search" {
+	filtered := filterToolNamesForExplicitMCP([]string{core.ToolUpdatePlan, core.ToolWebSearch, core.ToolWorkspaceWriteFile, core.ToolWorkspaceReadFile, core.ToolGitDiff, "mcp__cap-1__tavily_search", "mcp__cap-2__other"}, "cap-1")
+	if len(filtered) != 5 || filtered[0] != core.ToolUpdatePlan || filtered[1] != core.ToolWorkspaceWriteFile || filtered[2] != core.ToolWorkspaceReadFile || filtered[3] != core.ToolGitDiff || filtered[4] != "mcp__cap-1__tavily_search" {
 		t.Fatalf("filtered=%#v", filtered)
 	}
-	definitions := filterToolsForExplicitMCP([]ToolDefinition{{Name: core.ToolRequestInput}, {Name: core.ToolWebSearch}, {Name: core.ToolWorkspaceWriteFile}, {Name: "mcp__cap-1__tavily_search"}}, "cap-1")
-	if len(definitions) != 2 || definitions[0].Name != core.ToolRequestInput || definitions[1].Name != "mcp__cap-1__tavily_search" {
+	definitions := filterToolsForExplicitMCP([]ToolDefinition{{Name: core.ToolRequestInput}, {Name: core.ToolWebSearch}, {Name: core.ToolWorkspaceWriteFile}, {Name: core.ToolWorkspaceListFiles}, {Name: "mcp__cap-1__tavily_search"}, {Name: "mcp__cap-2__other"}}, "cap-1")
+	if len(definitions) != 4 || definitions[0].Name != core.ToolRequestInput || definitions[1].Name != core.ToolWorkspaceWriteFile || definitions[2].Name != core.ToolWorkspaceListFiles || definitions[3].Name != "mcp__cap-1__tavily_search" {
 		t.Fatalf("definitions=%#v", definitions)
 	}
 }

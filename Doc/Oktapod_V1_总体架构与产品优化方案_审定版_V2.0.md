@@ -179,7 +179,7 @@ V1 已建立：
 
 **当前边界**：`ExecutionPolicy` 与 `ExecutionAuthorization` 已形成统一执行门禁；Prompt/Context 与 Tool Context 是逻辑边界，仍有部分编排位于 Worker。V1 以行为合同和安全不变量为门禁，后续再继续物理拆分。
 
-交互层以 `conversation_id` 作为上下文硬边界。Auto 路由依赖模型时，Provider 暂时不可用必须先把用户目标持久化为可恢复 Task，不能让首条消息随请求失败而消失。暂停、取消、恢复和重试由 Application 层的确定性对话指令解释器处理，不把系统生命周期操作塞进 Agent Loop；只有“取消当前任务”“继续当前任务”等显式表达才触发控制，裸“继续”仍作为普通用户内容。取消终止当前 Run 但不回滚 Workspace，恢复时在同一 Thread 创建继任 Run。运行中普通发送用于 Steering，`Alt+Enter` 进入下一轮队列，排队项可提升为当前引导或撤回。空 Thread 不得读取工作区内容猜测其他会话目标。初始“制定计划”只是在模型返回前的临时占位，同一计划修订内必须由目标特定的语义步骤替换；模型按协议调用 `update_plan` 时采用其完整步骤，模型直接给出执行工具时运行时把占位项原地物化为本次真实目标，不能让占位文案进入执行期。计划结构无效、占位文案、过早完成或与其他工具混用时由模型自动修正，不把任务直接判失败。缺少可授予权限时创建审批；确定性硬拒绝不伪装成用户拒绝，也不直接终止任务，而是保留审计收据、废弃同批次冻结动作并排队模型修正。任务终态会把最新有效计划修订及其真实步骤状态同步到终态，避免成功任务仍显示 `0/N`。
+交互层以 `conversation_id` 作为上下文硬边界。Auto 路由依赖模型时，Provider 暂时不可用必须先把用户目标持久化为可恢复 Task，不能让首条消息随请求失败而消失。暂停、取消、恢复和重试由 Application 层的确定性对话指令解释器处理，不把系统生命周期操作塞进 Agent Loop；只有“取消当前任务”“继续当前任务”等显式表达才触发控制，裸“继续”仍作为普通用户内容。“继续当前任务，并……”属于带约束续作：运行中进入 Steering，终态后创建继任 Run，并继承原目标、验收、显式 Skill 与最多 8 个已校验来源 Run 的收据/交付物链；普通后续需求仍是独立 Task。取消终止当前 Run 但不回滚 Workspace。运行中普通发送用于 Steering，`Alt+Enter` 进入下一轮队列，排队项可提升为当前引导或撤回。空 Thread 不得读取工作区内容猜测其他会话目标。初始“制定计划”只是在模型返回前的临时占位，同一计划修订内必须由目标特定的语义步骤替换；模型按协议调用 `update_plan` 时采用其完整步骤，模型直接给出执行工具时运行时把占位项原地物化为本次真实目标，不能让占位文案进入执行期。计划结构无效、占位文案、过早完成或与其他工具混用时由模型自动修正，不把任务直接判失败。缺少可授予权限时创建审批；确定性硬拒绝不伪装成用户拒绝，也不直接终止任务，而是保留审计收据、废弃同批次冻结动作并排队模型修正。任务终态会把最新有效计划修订及其真实步骤状态同步到终态，避免成功任务仍显示 `0/N`。
 
 ---
 
@@ -221,6 +221,16 @@ TurnCompleted / TurnFailed / ContextLimitReached
 **关键约束**：Pure Agent Loop 只产生事件，Harness 决定如何持久化。Loop 不知道 SQLite 存在。
 
 当前 `Src/internal/harness` 已承载授权和检查点契约，持久 Lease、队列与恢复实现仍由 runtime + Repository Ports 组合。迁移继续遵循“每次移动真实行为并锁定语义”，不建设空壳目录。
+
+#### 4.2.1 任务完成协议
+
+模型停止调用工具只表示当前 Turn 结束，不等于用户目标已经完成。Domain 根据 `goal + acceptance` 推导最小 `TaskCompletionRequirements`，Durable Harness 在进入成功终态前核对持久证据：联网调研必须有成功的内建或 MCP 搜索/研究 Receipt；创建、修改或修复必须有工作区写入/编辑 Receipt，提交、建分支或撤销必须有对应的受控 Git 变更 Receipt；明确测试或验证时必须有最后一次变更之后的命令、文件、Git、浏览器或同类 MCP 验证 Receipt；文件交付必须有最新 `deliverable` Artifact，显式字数要求按最新 UTF-8 Artifact 的真实字符数合计。自然语言继任 Run 可复用受限来源链的搜索、变更与最新 Artifact，若本 Run 又产生新变更，验证仍必须发生在该变更之后。任何一项缺失都进入一次 `completion_recovery`，再次缺失才以可行动错误阻塞，不允许用自然语言完成声明覆盖事实。
+
+用户显式声明“最多 N 次搜索”或“禁止再搜索”时，Domain 将其冻结为可区分“未限制/零次”的工具预算；继任 Run 汇总来源证据链中的成功调用数。预算耗尽后，Harness 同时从 Tool Schema 与允许列表移除 `search/research/crawl/extract/map/browse/discover` 语义族，漏网提案仍在落库执行前拒绝，避免模型换同义工具或反复触发审批；禁止新增搜索也会关闭“必须产生新联网收据”的完成要求，复用来源 Run 证据。完全访问直接开放 `workspace_run_command/workspace_shell` 并移除 `request_permission`，但静态硬拒绝与开放世界 MCP 确认不变。模型的 `Thinking` 级别随 Run 冻结，OpenAI-compatible 适配器按 Provider 能力映射 `thinking` / `reasoning_effort`；模型返回的 `reasoning_content` 与 ToolCall 同消息持久续接，避免 GLM 等交错思考模型在工具轮后丢失推理状态。只有推理且因长度终止、工具参数截断和空响应均进入有界恢复，默认输出预算为 4096，恢复为 8192/16384；MCP 单次调用有 10 分钟硬截止。
+
+Skill 属于 Run 冻结的执行状态，不是首轮 Prompt 装饰。显式选择或 `skill_invoke` 后，`invoked_skill_ids`、参数与完整工作流正文必须继承到计划续轮、工具续轮、长度截断恢复和完成修复；自动匹配仍使用较小上下文预算。`workspace_edit_file` 的验证后内容会以私有适配器交接字段生成新 Artifact，该字段在 Receipt、事件和模型上下文持久化前删除，确保长度与交付校验读取的是编辑后的文件。
+
+本设计参考 Claude Code 的持久 `while` 循环、Tool Use/Result 历史续接、截断恢复和 Skill 复挂机制，但不照搬“无 ToolCall 即完成”的 Harness 语义。Oktapod 对外提供 Task、计划、Artifact 和验收状态，因此由 Domain/Harness 承担确定性完成判定，Agent Loop 继续只处理模型与工具事件，业务规则不进入 Provider 或前端正则。
 
 ### 4.3 ExecutionPolicy 端口（V1 新增，替代散点审批）
 
@@ -287,7 +297,7 @@ run_command / update_plan
 
 互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。
 
-现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。多项 Secret 以一个不透明加密集合写入 SecretStore，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：模型只看到该 MCP 与计划/输入/审批控制工具，不允许静默改用内建搜索或无关工具。Tavily 是可选首选，不进入核心依赖。
+现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。多项 Secret 以一个不透明加密集合写入 SecretStore，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：过滤内建搜索和其他 MCP，防止静默改用其他外部数据源；工作区、Git、计划、输入和审批等本地交付能力继续可用，使 Agent 能把指定 MCP 的证据写成文件并验证。Tavily 是可选首选，不进入核心依赖。
 
 用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。前端只能声明“客户端预检通过”，必须等服务端完整扫描通过后才能进入审批；失败时展示结构化原因，并可将修复上下文带入新对话交给内置只读 Skill Creator 生成兼容副本。所有草稿仍进入同一 ZIP 校验、权限差异和人工审批链。
 

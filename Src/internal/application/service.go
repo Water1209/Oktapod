@@ -541,7 +541,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		"permission_mode":       input.PermissionMode,
 		"scene_policy": map[string]any{
 			"workspace_write":   true,
-			"workspace_command": scene == core.SceneCode,
+			"workspace_command": scene == core.SceneCode || input.PermissionMode == core.PermissionModeFullAccess,
 			"network":           false,
 		},
 	}
@@ -716,6 +716,14 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	if len(input.ContextMemoryIDs) > 0 {
 		snapshot["context_memory_ids"] = input.ContextMemoryIDs
 	}
+	if len(input.ContinuationRunIDs) > 0 {
+		snapshot["continuation_run_ids"] = input.ContinuationRunIDs
+		usedSearchCalls, searchErr := s.countSucceededSearchCalls(ctx, input.ContinuationRunIDs)
+		if searchErr != nil {
+			return core.Task{}, searchErr
+		}
+		snapshot["continuation_search_calls_used"] = usedSearchCalls
+	}
 	if input.ConversationID != "" {
 		conversationMessages, contextErr := s.conversationTranscriptForPrompt(ctx, input.ConversationID, "", input.Model, input.FallbackModel)
 		if contextErr != nil {
@@ -737,6 +745,115 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	return retryTransientSQLiteValue(ctx, func() (core.Task, error) {
 		return s.repository.CreateTask(ctx, s.ScopeFor(ctx), projectID, input, snapshot, correlationID, idempotency)
 	})
+}
+
+// StartQueuedConversationTurn promotes one claimed Composer message into a
+// new Task after the prior Task reached a terminal boundary. Ordinary
+// follow-ups keep their own goal. A steering message that narrowly missed the
+// prior Run's atomic checkpoint remains an update to that goal and inherits an
+// explicitly invoked Skill, so recovery does not silently discard the user's
+// execution method.
+func (s *Service) countSucceededSearchCalls(ctx context.Context, runIDs []string) (int, error) {
+	seenRuns := make(map[string]struct{}, len(runIDs))
+	used := 0
+	for _, runID := range runIDs {
+		runID = strings.TrimSpace(runID)
+		if runID == "" {
+			continue
+		}
+		if _, duplicate := seenRuns[runID]; duplicate {
+			continue
+		}
+		seenRuns[runID] = struct{}{}
+		after := int64(0)
+		for pages := 0; pages < 20; pages++ {
+			events, err := s.repository.ListRunEvents(ctx, s.ScopeFor(ctx), runID, after, 500)
+			if err != nil {
+				return 0, err
+			}
+			for _, event := range events {
+				after = event.StreamSeq
+				if event.EventType != "tool.completed" {
+					continue
+				}
+				status, _ := event.Payload["status"].(string)
+				toolName, _ := event.Payload["tool_name"].(string)
+				if status == core.StatusSucceeded && core.IsSearchEvidenceTool(toolName) {
+					used++
+				}
+			}
+			if len(events) < 500 {
+				break
+			}
+		}
+	}
+	return used, nil
+}
+
+func (s *Service) StartQueuedConversationTurn(ctx context.Context, item core.ConversationQueueItem) (core.Task, error) {
+	scope := s.ScopeFor(ctx)
+	hasActive, _, err := s.repository.HasActiveTask(ctx, scope, item.ConversationID)
+	if err != nil {
+		return core.Task{}, err
+	}
+	if hasActive {
+		return core.Task{}, errors.New("conversation already has an active task")
+	}
+	var turnInput core.ProjectTurnInput
+	if err := json.Unmarshal([]byte(item.InputJSON), &turnInput); err != nil {
+		return core.Task{}, fmt.Errorf("decode queued conversation turn: %w", err)
+	}
+	taskInput := core.CreateTaskInput{
+		ConversationID: item.ConversationID, Goal: item.Content, Acceptance: turnInput.Acceptance,
+		Mode: turnInput.Mode, Visibility: turnInput.Visibility, PermissionMode: turnInput.PermissionMode,
+		SceneOverride: turnInput.SceneOverride, Model: turnInput.Model, FallbackModel: turnInput.FallbackModel,
+		ProviderID: turnInput.ProviderID, Thinking: turnInput.Thinking, MaxModelCalls: turnInput.MaxModelCalls,
+		MaxTokens: turnInput.MaxTokens, AgentID: turnInput.AgentID, TeamDefinitionID: turnInput.TeamDefinitionID,
+		TeamRoles: turnInput.TeamRoles, ContextAssetIDs: turnInput.ContextAssetIDs,
+		ContextMemoryIDs: turnInput.ContextMemoryIDs, SkillID: turnInput.SkillID, SkillArgs: turnInput.SkillArgs,
+	}
+	if item.Kind == "steering" && strings.TrimSpace(item.ActiveTaskID) != "" {
+		source, sourceErr := s.repository.GetTask(ctx, scope, item.ActiveTaskID)
+		if sourceErr != nil {
+			return core.Task{}, sourceErr
+		}
+		if source.ProjectID != item.ProjectID || source.ConversationID != item.ConversationID {
+			return core.Task{}, &core.ForbiddenError{Message: "queued steering source does not belong to this conversation"}
+		}
+		taskInput.Title = source.Title
+		taskInput.Goal = source.Goal + "\n\n用户后续要求：" + item.Content
+		if source.Acceptance != "" {
+			if taskInput.Acceptance == "" {
+				taskInput.Acceptance = source.Acceptance
+			} else {
+				taskInput.Acceptance = source.Acceptance + "\n" + taskInput.Acceptance
+			}
+		}
+		if taskInput.Mode == "" || taskInput.Mode == core.ModeAuto {
+			taskInput.Mode = source.Mode
+		}
+		if source.RunID != "" {
+			run, runErr := s.repository.GetRunContext(ctx, source.RunID)
+			if runErr != nil {
+				return core.Task{}, runErr
+			}
+			var snapshot struct {
+				ExplicitSkillInvocation struct {
+					SkillID   string `json:"skill_id"`
+					SkillArgs string `json:"skill_args"`
+				} `json:"explicit_skill_invocation"`
+			}
+			if taskInput.SkillID == "" && json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot) == nil {
+				taskInput.SkillID = strings.TrimSpace(snapshot.ExplicitSkillInvocation.SkillID)
+				taskInput.SkillArgs = strings.TrimSpace(snapshot.ExplicitSkillInvocation.SkillArgs)
+			}
+			taskInput.ContinuationRunIDs = continuationRunIDs(run)
+		}
+	}
+	if taskInput.Mode == core.ModeAuto || taskInput.Mode == "" {
+		taskInput.Mode = core.ModeSingleAgent
+	}
+	return s.CreateTask(ctx, item.ProjectID, taskInput, "queue-"+item.ID, "queue-"+item.ID)
 }
 
 func gitStatusHasChanges(status string) bool {

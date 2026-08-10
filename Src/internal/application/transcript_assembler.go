@@ -41,6 +41,23 @@ func (TranscriptAssembler) Run(initialUserPrompt string, history []map[string]an
 // checkpoint-scoped to that Run.
 func (TranscriptAssembler) RunWithConversation(conversation []core.ModelMessage, initialUserPrompt string, history []map[string]any, continuationInstruction string) []core.ModelMessage {
 	result := make([]core.ModelMessage, 0, len(conversation)+len(history)*2+2)
+	assistantByStep := make(map[string]map[string]any)
+	toolResultsByGroup := make(map[string][]map[string]any)
+	for _, item := range history {
+		kind, _ := item["kind"].(string)
+		if kind == "assistant" {
+			if stepID, _ := item["step_id"].(string); stepID != "" {
+				assistantByStep[stepID] = item
+			}
+			continue
+		}
+		if kind == "tool_result" {
+			if groupID, _ := item["group_id"].(string); groupID != "" {
+				toolResultsByGroup[groupID] = append(toolResultsByGroup[groupID], item)
+			}
+		}
+	}
+	emittedToolGroups := make(map[string]bool)
 	for _, message := range conversation {
 		if message.Role != core.MessageRoleUser && message.Role != core.MessageRoleAssistant && message.Role != core.MessageRoleTool {
 			continue
@@ -52,40 +69,90 @@ func (TranscriptAssembler) RunWithConversation(conversation []core.ModelMessage,
 		kind, _ := item["kind"].(string)
 		switch kind {
 		case "assistant":
-			content, _ := item["content"].(string)
-			if strings.TrimSpace(content) != "" {
-				result = append(result, textModelMessage(core.MessageRoleAssistant, content))
-			}
-		case "tool_result":
-			callID, _ := item["tool_call_id"].(string)
-			toolName, _ := item["tool_name"].(string)
-			arguments, _ := item["arguments"].(map[string]any)
-			if callID == "" || toolName == "" {
+			stepID, _ := item["step_id"].(string)
+			if len(toolResultsByGroup[stepID]) > 0 {
 				continue
 			}
-			result = append(result, core.ModelMessage{Role: core.MessageRoleAssistant, Content: []core.ContentBlock{{
-				Type: core.ContentBlockToolCall,
-				ToolCall: &core.ToolCallBlock{
-					ID:        callID,
-					Name:      toolName,
-					Arguments: arguments,
-				},
-			}}})
-			result = append(result, core.ModelMessage{Role: core.MessageRoleTool, ToolCallID: callID, ToolName: toolName, Content: []core.ContentBlock{{
-				Type: core.ContentBlockToolResult,
-				ToolResult: &core.ToolResultBlock{
-					ToolCallID: callID,
-					ToolName:   toolName,
-					Content:    renderToolResult(item),
-					IsError:    toolResultFailed(item),
-				},
-			}}})
+			content, _ := item["content"].(string)
+			reasoningContent, _ := item["reasoning_content"].(string)
+			blocks := assistantHistoryBlocks(content, reasoningContent)
+			if len(blocks) > 0 {
+				result = append(result, core.ModelMessage{Role: core.MessageRoleAssistant, Content: blocks})
+			}
+		case "tool_result":
+			groupID, _ := item["group_id"].(string)
+			if groupID != "" && len(toolResultsByGroup[groupID]) > 0 {
+				if emittedToolGroups[groupID] {
+					continue
+				}
+				emittedToolGroups[groupID] = true
+				group := toolResultsByGroup[groupID]
+				blocks := make([]core.ContentBlock, 0, len(group)+2)
+				if assistant := assistantByStep[groupID]; assistant != nil {
+					content, _ := assistant["content"].(string)
+					reasoningContent, _ := assistant["reasoning_content"].(string)
+					blocks = append(blocks, assistantHistoryBlocks(content, reasoningContent)...)
+				}
+				for _, groupedItem := range group {
+					if callBlock, ok := toolCallBlockFromHistory(groupedItem); ok {
+						blocks = append(blocks, callBlock)
+					}
+				}
+				if len(blocks) > 0 {
+					result = append(result, core.ModelMessage{Role: core.MessageRoleAssistant, Content: blocks})
+				}
+				for _, groupedItem := range group {
+					if toolMessage, ok := toolResultMessageFromHistory(groupedItem); ok {
+						result = append(result, toolMessage)
+					}
+				}
+				continue
+			}
+			if callBlock, ok := toolCallBlockFromHistory(item); ok {
+				result = append(result, core.ModelMessage{Role: core.MessageRoleAssistant, Content: []core.ContentBlock{callBlock}})
+			}
+			if toolMessage, ok := toolResultMessageFromHistory(item); ok {
+				result = append(result, toolMessage)
+			}
 		}
 	}
 	if strings.TrimSpace(continuationInstruction) != "" {
 		result = append(result, textModelMessage(core.MessageRoleUser, continuationInstruction))
 	}
 	return result
+}
+
+func assistantHistoryBlocks(content, reasoningContent string) []core.ContentBlock {
+	blocks := make([]core.ContentBlock, 0, 2)
+	if strings.TrimSpace(reasoningContent) != "" {
+		blocks = append(blocks, core.ContentBlock{Type: core.ContentBlockThinking, Thinking: &core.ThinkingBlock{Text: reasoningContent}})
+	}
+	if strings.TrimSpace(content) != "" {
+		blocks = append(blocks, core.ContentBlock{Type: core.ContentBlockText, Text: content})
+	}
+	return blocks
+}
+
+func toolCallBlockFromHistory(item map[string]any) (core.ContentBlock, bool) {
+	callID, _ := item["tool_call_id"].(string)
+	toolName, _ := item["tool_name"].(string)
+	arguments, _ := item["arguments"].(map[string]any)
+	if callID == "" || toolName == "" {
+		return core.ContentBlock{}, false
+	}
+	return core.ContentBlock{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: callID, Name: toolName, Arguments: arguments}}, true
+}
+
+func toolResultMessageFromHistory(item map[string]any) (core.ModelMessage, bool) {
+	callID, _ := item["tool_call_id"].(string)
+	toolName, _ := item["tool_name"].(string)
+	if callID == "" || toolName == "" {
+		return core.ModelMessage{}, false
+	}
+	return core.ModelMessage{Role: core.MessageRoleTool, ToolCallID: callID, ToolName: toolName, Content: []core.ContentBlock{{
+		Type:       core.ContentBlockToolResult,
+		ToolResult: &core.ToolResultBlock{ToolCallID: callID, ToolName: toolName, Content: renderToolResult(item), IsError: toolResultFailed(item)},
+	}}}, true
 }
 
 func textModelMessage(role core.MessageRole, content string) core.ModelMessage {

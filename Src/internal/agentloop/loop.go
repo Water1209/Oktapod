@@ -14,6 +14,7 @@ type ModelRequest struct {
 	UserPrompt        string
 	Messages          []core.ModelMessage
 	RequestedModel    core.ModelRef
+	ThinkingLevel     string
 	MaxOutputTokens   int
 	EnableTools       bool
 	Model             string

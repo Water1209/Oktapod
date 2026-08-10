@@ -140,6 +140,7 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 		Model: model, MaxTokens: request.MaxOutputTokens, Stream: true,
 		Messages: chatMessagesFromRequest(request),
 	}
+	applyThinkingControl(&payload, c.endpoint, model, request.ThinkingLevel)
 	if request.EnableTools {
 		payload.Tools = []chatTool{}
 		for _, definition := range request.ToolDefinitions {
@@ -346,6 +347,7 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 		Messages:  chatMessagesFromRequest(request),
 		Stream:    false,
 	}
+	applyThinkingControl(&payload, c.endpoint, model, request.ThinkingLevel)
 	if request.EnableTools {
 		payload.Tools = []chatTool{}
 		for _, definition := range request.ToolDefinitions {
@@ -422,7 +424,7 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 
 func isFallbackEligible(code string) bool {
 	switch code {
-	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT", "PROVIDER_REJECTED", "PROVIDER_MODEL_NOT_FOUND", "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "MODEL_CAPABILITY_MISMATCH":
+	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT", "PROVIDER_REJECTED", "PROVIDER_MODEL_NOT_FOUND", "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_REASONING_TRUNCATED", "MODEL_CAPABILITY_MISMATCH":
 		return true
 	default:
 		return false
@@ -567,11 +569,12 @@ func (c *Client) validateToolCalling(ctx context.Context, key, model string) *Ga
 }
 
 type chatMessage struct {
-	Role       string                `json:"role"`
-	Content    any                   `json:"content,omitempty"`
-	ToolCallID string                `json:"tool_call_id,omitempty"`
-	Name       string                `json:"name,omitempty"`
-	ToolCalls  []chatMessageToolCall `json:"tool_calls,omitempty"`
+	Role             string                `json:"role"`
+	Content          any                   `json:"content,omitempty"`
+	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	ToolCallID       string                `json:"tool_call_id,omitempty"`
+	Name             string                `json:"name,omitempty"`
+	ToolCalls        []chatMessageToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatContentPart struct {
@@ -596,12 +599,43 @@ type chatMessageToolFunction struct {
 }
 
 type chatRequest struct {
-	Model      string        `json:"model"`
-	Messages   []chatMessage `json:"messages"`
-	MaxTokens  int           `json:"max_tokens,omitempty"`
-	Stream     bool          `json:"stream"`
-	Tools      []chatTool    `json:"tools,omitempty"`
-	ToolChoice string        `json:"tool_choice,omitempty"`
+	Model           string        `json:"model"`
+	Messages        []chatMessage `json:"messages"`
+	MaxTokens       int           `json:"max_tokens,omitempty"`
+	Stream          bool          `json:"stream"`
+	Tools           []chatTool    `json:"tools,omitempty"`
+	ToolChoice      string        `json:"tool_choice,omitempty"`
+	Thinking        *chatThinking `json:"thinking,omitempty"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
+}
+
+type chatThinking struct {
+	Type string `json:"type"`
+}
+
+func applyThinkingControl(payload *chatRequest, endpoint, model, rawLevel string) {
+	level := strings.ToLower(strings.TrimSpace(rawLevel))
+	if level == "" || level == "auto" {
+		return
+	}
+	providerUsesThinkingObject := strings.Contains(strings.ToLower(endpoint), "volces.com") ||
+		strings.Contains(strings.ToLower(endpoint), "volcengine.com") ||
+		strings.Contains(strings.ToLower(endpoint), "bigmodel.cn") ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm-") ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "doubao-")
+	switch level {
+	case "off":
+		if providerUsesThinkingObject {
+			payload.Thinking = &chatThinking{Type: "disabled"}
+		} else {
+			payload.ReasoningEffort = "none"
+		}
+	case "low", "medium", "high":
+		if providerUsesThinkingObject {
+			payload.Thinking = &chatThinking{Type: "enabled"}
+		}
+		payload.ReasoningEffort = level
+	}
 }
 
 type chatUsage struct {
@@ -685,8 +719,7 @@ func chatMessagesFromRequest(request okruntime.ModelRequest) []chatMessage {
 				parts = append(parts, chatContentPart{Type: "text", Text: block.Text})
 			case core.ContentBlockThinking:
 				if block.Thinking != nil {
-					text.WriteString(block.Thinking.Text)
-					parts = append(parts, chatContentPart{Type: "text", Text: block.Thinking.Text})
+					mapped.ReasoningContent += block.Thinking.Text
 				}
 			case core.ContentBlockImage:
 				if block.Image == nil {
@@ -844,6 +877,10 @@ func applyResponseMessage(result *core.ModelResult, message responseChatMessage,
 	result.StopReason = mapStopReason(finishReason, len(result.ToolCalls) > 0)
 	hasTextOrTool := result.Content != "" || len(result.ToolCalls) > 0
 	if !hasTextOrTool {
+		if result.StopReason == core.StopReasonLength && strings.TrimSpace(message.ReasoningContent) != "" {
+			result.ErrorCode = "PROVIDER_REASONING_TRUNCATED"
+			return &GatewayError{Code: result.ErrorCode, Message: "provider exhausted its output budget in reasoning before producing content or a tool call"}
+		}
 		result.ErrorCode = "PROVIDER_EMPTY_RESPONSE"
 		result.StopReason = core.StopReasonError
 		return &GatewayError{Code: result.ErrorCode, Message: "provider returned no assistant content or tool calls"}

@@ -14,6 +14,7 @@ func TestResolveConversationDirectiveUsesExplicitUtterancesOnly(t *testing.T) {
 		{content: "请帮我暂停当前任务一下", action: conversationDirectivePause, matched: true},
 		{content: "取消并清空队列", action: conversationDirectiveCancel, clearQueue: true, matched: true},
 		{content: "继续当前任务", action: conversationDirectiveContinue, matched: true},
+		{content: "继续当前任务。不要再检索，补足现有报告并核对总字数", action: conversationDirectiveContinue, matched: true},
 		{content: "继续", matched: false},
 		{content: "Retry current task", action: conversationDirectiveRetry, matched: true},
 		{content: "不要取消当前任务", matched: false},
@@ -35,5 +36,12 @@ func TestResolveConversationDirectiveUsesExplicitUtterancesOnly(t *testing.T) {
 				t.Fatalf("directive=%#v", directive)
 			}
 		})
+	}
+}
+
+func TestContinuationUpdateKeepsTheRequirementSeparateFromTheControlPrefix(t *testing.T) {
+	directive, matched := resolveConversationDirective("继续当前任务。不要再检索，补足现有报告并核对总字数")
+	if !matched || directive.Action != conversationDirectiveContinue || directive.Update != "不要再检索，补足现有报告并核对总字数" {
+		t.Fatalf("directive=%#v matched=%v", directive, matched)
 	}
 }

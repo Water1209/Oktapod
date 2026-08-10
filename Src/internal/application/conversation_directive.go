@@ -21,6 +21,7 @@ const (
 type conversationDirective struct {
 	Action     conversationDirectiveAction
 	ClearQueue bool
+	Update     string
 }
 
 // resolveConversationDirective recognizes only short, explicit control
@@ -28,6 +29,9 @@ type conversationDirective struct {
 // "继续" inside a longer sentence remain ordinary turns and can never mutate a
 // Run through fuzzy matching.
 func resolveConversationDirective(content string) (conversationDirective, bool) {
+	if update, matched := resolveContinuationUpdate(content); matched {
+		return conversationDirective{Action: conversationDirectiveContinue, Update: update}, true
+	}
 	if len([]rune(content)) > 64 {
 		return conversationDirective{}, false
 	}
@@ -56,6 +60,25 @@ func resolveConversationDirective(content string) (conversationDirective, bool) 
 	default:
 		return conversationDirective{}, false
 	}
+}
+
+func resolveContinuationUpdate(content string) (string, bool) {
+	trimmed := strings.TrimSpace(content)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{
+		"继续当前任务", "恢复当前任务", "继续原任务", "继续执行当前任务", "从上次停止的位置继续当前任务",
+		"continue current task", "continue the current task", "resume current task", "resume the current task",
+	} {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		remainder := strings.TrimLeft(strings.TrimSpace(trimmed[len(prefix):]), "，,。.;；：:！!？? \t\r\n")
+		if strings.TrimSpace(remainder) == "" {
+			return "", false
+		}
+		return strings.TrimSpace(remainder), true
+	}
+	return "", false
 }
 
 func normalizeConversationDirective(content string) string {
@@ -105,6 +128,9 @@ func (s *Service) executeConversationDirective(
 			return core.ProjectTurnResult{}, err
 		}
 	}
+	if directive.Update != "" {
+		return s.continueTaskWithUpdate(ctx, projectID, input, *current, directive.Update, correlationID, idempotencyKey, onDelta)
+	}
 
 	command, assistant, successor, err := taskDirectiveTransition(*current, directive)
 	if err != nil {
@@ -147,6 +173,67 @@ func (s *Service) executeConversationDirective(
 	result.Route = TurnRouteTask
 	result.Task = &updated
 	return result, nil
+}
+
+func (s *Service) continueTaskWithUpdate(
+	ctx context.Context,
+	projectID string,
+	turnInput core.ProjectTurnInput,
+	previous core.Task,
+	update string,
+	correlationID, idempotencyKey string,
+	onDelta func(string) error,
+) (core.ProjectTurnResult, error) {
+	if previous.Status == core.StatusQueued || previous.Status == core.StatusRunning || previous.Status == core.StatusPaused || previous.Status == core.StatusWaitingApproval || previous.Status == core.StatusWaitingInput {
+		queuedInput := inputWithTurnDefaults(turnInput, update, previous.ConversationID, previous.Visibility)
+		queuedInput.Mode = previous.Mode
+		inputJSON, err := json.Marshal(queuedInput)
+		if err != nil {
+			return core.ProjectTurnResult{}, fmt.Errorf("encode continuation update: %w", err)
+		}
+		item, err := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, previous.ConversationID, previous.ID, update, string(inputJSON), "steering")
+		if err != nil {
+			return core.ProjectTurnResult{}, err
+		}
+		conversation, err := s.repository.GetConversation(ctx, s.ScopeFor(ctx), previous.ConversationID)
+		if err != nil {
+			return core.ProjectTurnResult{}, err
+		}
+		messages, err := s.repository.ListMessages(ctx, s.ScopeFor(ctx), previous.ConversationID, 0, 200)
+		if err != nil {
+			return core.ProjectTurnResult{}, err
+		}
+		return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &previous, Queued: true, QueueItem: &item}, nil
+	}
+	run, err := s.repository.GetRunContext(ctx, previous.RunID)
+	if err != nil {
+		return core.ProjectTurnResult{}, err
+	}
+	continuation := continuationTaskInput(previous, run)
+	continuation.Goal = previous.Goal + "\n\n用户后续要求：" + strings.TrimSpace(update)
+	if strings.TrimSpace(turnInput.Acceptance) != "" {
+		continuation.Acceptance = strings.TrimSpace(strings.TrimSpace(continuation.Acceptance) + "\n" + strings.TrimSpace(turnInput.Acceptance))
+	}
+	continuation.Title = previous.Title
+	task, err := s.CreateTask(ctx, projectID, continuation, correlationID, idempotencyKey)
+	if err != nil {
+		return core.ProjectTurnResult{}, err
+	}
+	assistant := "已基于原目标、原 Skill 和现有工作区创建后继任务；新要求已并入验收，不会重放已确认成功的副作用。"
+	if onDelta != nil {
+		if err := onDelta(assistant); err != nil {
+			return core.ProjectTurnResult{}, err
+		}
+	}
+	conversation, err := s.repository.GetConversation(ctx, s.ScopeFor(ctx), task.ConversationID)
+	if err != nil {
+		return core.ProjectTurnResult{}, err
+	}
+	messages, err := s.repository.ListMessages(ctx, s.ScopeFor(ctx), task.ConversationID, 0, 200)
+	if err != nil {
+		return core.ProjectTurnResult{}, err
+	}
+	return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &task}, nil
 }
 
 func taskDirectiveTransition(task core.Task, directive conversationDirective) (command, assistant string, successor bool, err error) {
@@ -245,15 +332,16 @@ func (s *Service) continueCanceledTask(
 
 func continuationTaskInput(previous core.Task, run core.RunContext) core.CreateTaskInput {
 	input := core.CreateTaskInput{
-		ConversationID: previous.ConversationID,
-		Title:          previous.Title,
-		Goal:           previous.Goal,
-		Acceptance:     previous.Acceptance,
-		Mode:           previous.Mode,
-		Visibility:     previous.Visibility,
-		Model:          run.RequestedModel.ModelID,
-		ProviderID:     run.RequestedModel.ProviderID,
-		Thinking:       run.Thinking,
+		ConversationID:     previous.ConversationID,
+		Title:              previous.Title,
+		Goal:               previous.Goal,
+		Acceptance:         previous.Acceptance,
+		Mode:               previous.Mode,
+		Visibility:         previous.Visibility,
+		Model:              run.RequestedModel.ModelID,
+		ProviderID:         run.RequestedModel.ProviderID,
+		Thinking:           run.Thinking,
+		ContinuationRunIDs: continuationRunIDs(run),
 	}
 	var snapshot map[string]any
 	if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot) != nil {
@@ -273,6 +361,27 @@ func continuationTaskInput(previous core.Task, run core.RunContext) core.CreateT
 		input.SkillArgs, _ = explicit["skill_args"].(string)
 	}
 	return input
+}
+
+func continuationRunIDs(run core.RunContext) []string {
+	var snapshot map[string]any
+	_ = json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot)
+	ids := snapshotStrings(snapshot["continuation_run_ids"])
+	ids = append(ids, run.RunID)
+	result := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+		if len(result) == 8 {
+			break
+		}
+	}
+	return result
 }
 
 func snapshotInt64(value any) int64 {

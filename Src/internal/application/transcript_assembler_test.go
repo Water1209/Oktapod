@@ -42,6 +42,23 @@ func TestTranscriptAssemblerKeepsToolCallResultPaired(t *testing.T) {
 	}
 }
 
+func TestTranscriptAssemblerPreservesReasoningOnTheAssistantToolCall(t *testing.T) {
+	messages := (TranscriptAssembler{}).Run("goal", []map[string]any{
+		{"kind": "assistant", "step_id": "step-1", "group_id": "step-1", "content": "", "reasoning_content": "inspect before acting"},
+		{"kind": "tool_result", "group_id": "step-1", "tool_call_id": "call-1", "tool_name": "read_file", "arguments": map[string]any{"path": "README.md"}, "status": core.StatusSucceeded, "output": map[string]any{"content": "body"}},
+	}, "")
+	if len(messages) != 3 {
+		t.Fatalf("messages=%#v", messages)
+	}
+	assistant := messages[1]
+	if assistant.Role != core.MessageRoleAssistant || len(assistant.Content) != 2 || assistant.Content[0].Thinking == nil || assistant.Content[0].Thinking.Text != "inspect before acting" || assistant.Content[1].ToolCall == nil {
+		t.Fatalf("reasoning/tool call not preserved together: %#v", assistant)
+	}
+	if messages[2].Role != core.MessageRoleTool || messages[2].ToolCallID != "call-1" {
+		t.Fatalf("tool result=%#v", messages[2])
+	}
+}
+
 func TestTranscriptAssemblerDropsOrphanToolResult(t *testing.T) {
 	messages := (TranscriptAssembler{}).Run("goal", []map[string]any{{"kind": "tool_result", "tool_name": "read_file"}}, "")
 	if len(messages) != 1 {

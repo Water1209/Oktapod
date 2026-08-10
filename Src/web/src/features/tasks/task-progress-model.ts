@@ -36,14 +36,20 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   if (code === 'PROVIDER_RATE_LIMIT') return { title: '模型服务请求过多', detail: 'Provider 暂时拒绝了本次请求，现有步骤不会丢失。', action: '系统会自动重试，连续 3 次失败后才停止。', retryable: true }
   if (code === 'PROVIDER_MODEL_NOT_FOUND') return { title: '所选模型不可用', detail: 'Provider 不支持当前任务冻结的模型。', action: '修改项目模型后重新创建任务。', retryable: false }
   if (code === 'PROVIDER_PROTOCOL_ERROR' || code === 'PROVIDER_EMPTY_RESPONSE') return { title: '模型返回内容不完整', detail: '响应无法解析或没有可用内容，现有步骤不会丢失。', action: '系统会自动修复并重试，连续 3 次失败后才停止。', retryable: true }
+  if (code === 'PROVIDER_REASONING_TRUNCATED') return { title: '模型推理达到输出上限', detail: '模型只产生了内部推理，还没有形成回答或工具动作；系统没有把它误判为完成。', action: '系统会要求模型跳过重复分析，改为一次执行一个较小动作并自动续接。', retryable: true }
+  if (code === 'TOOL_BUDGET_EXCEEDED') return { title: '搜索调用已达到任务上限', detail: '模型提出了超过用户明确次数上限的搜索动作；该动作没有执行。', action: '系统会保留已有证据，要求模型直接完成剩余写作和核验。', retryable: true }
   if (code === 'PROVIDER_TOOL_ARGUMENTS_INVALID') return { title: '模型工具参数格式异常', detail: '模型生成的工具参数不是完整 JSON，系统没有执行这次工具调用。', action: '系统会自动修复并重试，连续 3 次失败后才停止。', retryable: true }
   if (code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED') return { title: '模型工具参数被截断', detail: '模型没有完整输出工具参数，系统已拒绝执行不完整动作。', action: '系统会拆分长参数并重试，连续 3 次失败后才停止。', retryable: true }
   if (code === 'SCENE_POLICY_DENIED') return { title: '当前场景不允许该操作', detail: '任务规划了当前场景禁止的命令，相关动作没有执行，已完成步骤仍会保留。', action: '从当前检查点重试，系统会改用本场景允许的工具重新规划。', retryable: true }
   if (code === 'TOOL_POLICY_DENIED') return { title: '工具动作被安全策略拒绝', detail: '冻结的工具或参数不在允许范围内，相关动作没有执行。', action: '修订目标或参数后重新创建任务。', retryable: false }
   if (code === 'SIDE_EFFECT_STATUS_UNKNOWN') return { title: '外部操作结果未知', detail: '系统无法确认上一次非幂等操作是否完成，因此停止自动重试。', action: '先核查外部状态，再在任务详情中确认处理方式。', retryable: false }
+  if (code === 'MCP_CALL_TIMEOUT') return { title: 'MCP 工具执行超时', detail: '外部 MCP 在执行截止时间内没有返回结果，系统已结束本次调用并保留此前进度。', action: '系统会让模型改用更小的查询或其他可用工具恢复；自动恢复用尽后再由你决定是否继续。', retryable: true }
   if (code === 'COMMAND_EXIT_NONZERO') return { title: '命令执行失败', detail: '命令已经运行，但退出码不是 0。', action: '查看工具事件和输出，修订命令后重试。', retryable: true }
   if (code === 'WEB_EVIDENCE_MISSING') return { title: '检索证据不足', detail: '任务要求使用最新互联网资料，但当前 Run 没有任何成功的检索收据，因此未标记为完成。', action: '检查网络后从阻塞点继续，或明确选择基于已有资料交付。', retryable: true }
   if (code === 'DELIVERABLE_MISSING') return { title: '交付文件尚未生成', detail: '任务要求生成 Markdown 或文档，但当前 Run 没有成功写入工作区文件，因此未标记为完成。', action: '从阻塞点继续，系统会补写并验证交付文件。', retryable: true }
+  if (code === 'DELIVERABLE_TOO_SHORT') return { title: '报告未达到字数要求', detail: summary || '已生成报告，但实际字数低于用户明确要求，因此未标记为完成。', action: '从阻塞点继续，系统会补充研究、写作并重新校验真实文件字数。', retryable: true }
+  if (code === 'WORKSPACE_MUTATION_MISSING') return { title: '工作区修改尚未发生', detail: '任务要求创建、修改或修复内容，但当前 Run 没有成功的文件写入或编辑收据。', action: '从阻塞点继续，系统会执行真实修改而不是只说明计划。', retryable: true }
+  if (code === 'VERIFICATION_MISSING') return { title: '结果尚未验证', detail: '任务明确要求测试或验证，但当前 Run 没有变更后的验证收据。', action: '从阻塞点继续，系统会运行适用测试或检查并读取真实结果。', retryable: true }
   if (code === 'RUN_PLAN_PREMATURE_COMPLETION') return { title: '执行计划状态无效', detail: '初次计划把尚未执行的工作提前标记为完成，系统已拒绝该状态。', action: '从当前检查点重试，重新生成从第一项开始的计划。', retryable: true }
   if (code === 'RUN_PLAN_STATUS_REGRESSION') return { title: '计划更新受阻', detail: '模型尝试把已经完成的计划项改回未完成状态；系统保留了真实进度并拒绝这次更新。', action: '当前版本会先自动修复，连续 3 次失败才停止；此任务也可从阻塞点继续。', retryable: true }
   if (code === 'APPROVAL_REJECTED' || code === 'APPROVAL_EXPIRED') return { title: code === 'APPROVAL_EXPIRED' ? '审批已过期' : '审批未通过', detail: '风险动作没有执行，任务已停止。', action: '修订动作后重新发起任务。', retryable: false }

@@ -226,7 +226,7 @@ func TestMCPToolCallFlowsThroughModelApprovalAndReceipt(t *testing.T) {
 	if _, err := service.ConnectMCP(context.Background(), capability.ID, "mcp-task-connect"); err != nil {
 		t.Fatal(err)
 	}
-	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Use MCP", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 2, MaxTokens: 4096}, "mcp-task-create", "mcp-task-idempotency")
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Use MCP", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 2, MaxTokens: 8192}, "mcp-task-create", "mcp-task-idempotency")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestMCPToolCallFlowsThroughModelApprovalAndReceipt(t *testing.T) {
 		t.Fatalf("MCP tool.completed event missing: %#v", events)
 	}
 
-	unknownTask, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Reject unknown MCP tool", Mode: core.ModeSingleAgent, Visibility: core.VisibilityProject, MaxModelCalls: 2, MaxTokens: 4096}, "mcp-unknown-create", "mcp-unknown-idempotency")
+	unknownTask, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Reject unknown MCP tool", Mode: core.ModeSingleAgent, Visibility: core.VisibilityProject, MaxModelCalls: 2, MaxTokens: 8192}, "mcp-unknown-create", "mcp-unknown-idempotency")
 	if err != nil {
 		t.Fatal(err)
 	}

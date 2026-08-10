@@ -292,7 +292,7 @@ test('SSE 首次断线后按游标重连且终态事件不丢', async ({ page })
   await page.getByRole('textbox', { name: '项目名称' }).fill(`SSE 断线验收 ${suffix}`)
   await page.getByRole('textbox', { name: '目标说明' }).fill('验证事件流断线重连')
   await page.getByRole('button', { name: '建立工作空间' }).click()
-  const goal = '验证 SSE 断线后仍能看到完整终态'
+  const goal = 'SSE 断线重连后显示完整终态事件'
   await sendTaskMessage(page, goal)
   await openLinkedTask(page)
 

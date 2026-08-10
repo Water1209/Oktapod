@@ -56,15 +56,52 @@ func TestProjectModelRemainsDefaultWhenNoTaskOrAgentOverride(t *testing.T) {
 	}
 }
 
+func TestThinkingLevelComesFromImmutableRunSnapshot(t *testing.T) {
+	if got := thinkingLevelFromSnapshot(`{"thinking_level":"high"}`); got != "high" {
+		t.Fatalf("thinking level=%q", got)
+	}
+	if got := thinkingLevelFromSnapshot(`{"thinking_level":"unexpected"}`); got != "auto" {
+		t.Fatalf("invalid thinking level=%q", got)
+	}
+}
+
+func TestExplicitSearchBudgetCountsSucceededHistoryAndProposedCalls(t *testing.T) {
+	history := []map[string]any{
+		{"kind": "tool_result", "status": core.StatusSucceeded, "tool_name": "mcp__tavily__tavily_search"},
+		{"kind": "tool_result", "status": core.StatusSucceeded, "tool_name": "mcp__tavily__tavily_research"},
+		{"kind": "tool_result", "status": core.StatusSucceeded, "tool_name": core.ToolWebSearch},
+	}
+	if !searchCallBudgetExceeded(history, []core.ToolCall{{Name: "mcp__tavily__tavily_search"}}, 3) {
+		t.Fatal("fourth search was not rejected")
+	}
+	if searchCallBudgetExceeded(history, []core.ToolCall{{Name: core.ToolWorkspaceWriteFile}}, 3) {
+		t.Fatal("non-search action consumed the search budget")
+	}
+	if !searchCallBudgetExceededWithPrior(nil, []core.ToolCall{{Name: "mcp__tavily__tavily_search"}}, 3, 3) {
+		t.Fatal("successor run did not inherit the predecessor search budget")
+	}
+	if !searchCallBudgetExceededWithPrior(nil, []core.ToolCall{{Name: core.ToolWebSearch}}, 0, 0) {
+		t.Fatal("explicit zero budget did not block a new search")
+	}
+	definitions := excludeSearchToolDefinitions([]ToolDefinition{{Name: core.ToolWorkspaceReadFile}, {Name: core.ToolWebSearch}, {Name: "mcp__tavily__tavily_research"}})
+	if len(definitions) != 1 || definitions[0].Name != core.ToolWorkspaceReadFile {
+		t.Fatalf("exhausted search tools remained advertised: %#v", definitions)
+	}
+	names := excludeSearchToolNames([]string{core.ToolWorkspaceGrep, "mcp__tavily__tavily_extract"})
+	if len(names) != 1 || names[0] != core.ToolWorkspaceGrep {
+		t.Fatalf("exhausted search names remained allowed: %#v", names)
+	}
+}
+
 func TestModelCompatibilityRetryRaisesOutputLimit(t *testing.T) {
 	tests := []struct {
 		input string
 		want  int
 	}{
-		{input: `{}`, want: 2048},
-		{input: `{"model_compat_retry_count":1}`, want: 4096},
-		{input: `{"model_compat_retry_count":2}`, want: 8192},
-		{input: `{"model_compat_retry_count":99}`, want: 8192},
+		{input: `{}`, want: 4096},
+		{input: `{"model_compat_retry_count":1}`, want: 8192},
+		{input: `{"model_compat_retry_count":2}`, want: 16384},
+		{input: `{"model_compat_retry_count":99}`, want: 16384},
 	}
 	for _, test := range tests {
 		if got := modelMaxOutputTokens(test.input); got != test.want {
@@ -84,6 +121,20 @@ func TestPlanRegressionRetryPreservesCompletedItems(t *testing.T) {
 	hint := modelCompatibilityRetryHint(`{"model_retry_count":1,"model_retry_reason":"RUN_PLAN_STATUS_REGRESSION"}`)
 	if hint == "" || !containsAll(hint, "已完成项", "completed", "同一完整清单") {
 		t.Fatalf("unexpected plan regression hint: %q", hint)
+	}
+}
+
+func TestReasoningTruncationRetryCanFinishFromExistingEvidence(t *testing.T) {
+	hint := modelCompatibilityRetryHint(`{"model_retry_count":1,"model_retry_reason":"PROVIDER_REASONING_TRUNCATED"}`)
+	if hint == "" || !containsAll(hint, "交付物与验证", "禁止为了总结重复读写", "不超过 800 字") {
+		t.Fatalf("unexpected reasoning truncation hint: %q", hint)
+	}
+}
+
+func TestDeliverableRecoveryAcceptsEditArtifactsAndContinuationEvidence(t *testing.T) {
+	hint := completionRecoveryHint(`{"completion_recovery_reason":"DELIVERABLE_MISSING"}`)
+	if hint == "" || !containsAll(hint, "续跑来源链", "workspace_edit_file", "交付 Artifact") {
+		t.Fatalf("unexpected deliverable recovery hint: %q", hint)
 	}
 }
 

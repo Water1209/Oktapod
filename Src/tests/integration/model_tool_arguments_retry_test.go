@@ -81,7 +81,7 @@ func TestMalformedToolArgumentsQueueAuditedModelRetry(t *testing.T) {
 	if err != nil || completed.Status != core.StatusSucceeded || modelCalls != 4 {
 		t.Fatalf("task=%#v model_calls=%d err=%v", completed, modelCalls, err)
 	}
-	if got, want := outputLimits, []int{2048, 4096, 8192, 8192}; !slices.Equal(got, want) {
+	if got, want := outputLimits, []int{4096, 8192, 16384, 16384}; !slices.Equal(got, want) {
 		t.Fatalf("output limits=%v, want %v", got, want)
 	}
 	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
@@ -100,5 +100,55 @@ func TestMalformedToolArgumentsQueueAuditedModelRetry(t *testing.T) {
 	}
 	if failedIndex < 0 || retryIndex <= failedIndex || retryEvents != 3 {
 		t.Fatalf("retry was not auditable after the failed step: %#v", events)
+	}
+}
+
+func TestReasoningOnlyTruncationQueuesActionFocusedRetry(t *testing.T) {
+	t.Parallel()
+	modelCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "reasoning-model", "tool_calling": true}}})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		modelCalls++
+		if modelCalls == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"finish_reason": "length", "message": map[string]any{"role": "assistant", "content": nil, "reasoning_content": "analysis without an action"}}},
+				"usage":   map[string]any{"prompt_tokens": 20, "completion_tokens": 4096},
+			})
+			return
+		}
+		if !strings.Contains(string(body), "只产生了内部推理") || !strings.Contains(string(body), "一个最小且完整的工具调用") {
+			t.Fatalf("retry request missing action-focused guidance: %s", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": "已恢复完成。"}}},
+			"usage":   map[string]any{"prompt_tokens": 22, "completion_tokens": 6},
+		})
+	}))
+	defer provider.Close()
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Reasoning User"}, core.Organization{ID: testOrgID, Name: "Reasoning Org"}, func() string { return "fake-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Reasoning recovery", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "给出简短结论", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "reasoning-retry", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("reasoning-retry-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	for attempt := 0; attempt < 2; attempt++ {
+		if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+			t.Fatalf("worker attempt %d worked=%v err=%v", attempt, worked, runErr)
+		}
+	}
+	completed, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || completed.Status != core.StatusSucceeded || modelCalls != 2 {
+		t.Fatalf("task=%#v calls=%d err=%v", completed, modelCalls, err)
 	}
 }

@@ -40,6 +40,34 @@ describe('task progress presentation', () => {
     expect(failure?.action).toContain('重新规划')
   })
 
+  it('explains a report length completion failure', () => {
+    expect(taskFailureInfo({ error_code: 'DELIVERABLE_TOO_SHORT', result_summary: '报告实际为 12000 字，未达到不少于 30000 字的验收要求。' })).toMatchObject({
+      title: '报告未达到字数要求',
+      retryable: true,
+    })
+  })
+
+  it('explains an MCP execution deadline as recoverable', () => {
+    expect(taskFailureInfo({ error_code: 'MCP_CALL_TIMEOUT', result_summary: '' })).toMatchObject({
+      title: 'MCP 工具执行超时',
+      retryable: true,
+    })
+  })
+
+  it('explains reasoning-only truncation without claiming completion', () => {
+    expect(taskFailureInfo({ error_code: 'PROVIDER_REASONING_TRUNCATED', result_summary: '' })).toMatchObject({
+      title: '模型推理达到输出上限',
+      retryable: true,
+    })
+  })
+
+  it('explains that an explicit search budget is enforced', () => {
+    expect(taskFailureInfo({ error_code: 'TOOL_BUDGET_EXCEEDED', result_summary: '' })).toMatchObject({
+      title: '搜索调用已达到任务上限',
+      retryable: true,
+    })
+  })
+
   it('aggregates technical events into a task and one failed execution step', () => {
     const events: RunEvent[] = [
       { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'run.created', occurred_at: '2026-07-20T11:06:01Z', payload: { step_id: 'step-1' } },

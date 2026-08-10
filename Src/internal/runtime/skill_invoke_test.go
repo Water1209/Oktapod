@@ -205,6 +205,45 @@ func TestExplicitSkillInvocationFreezesSelectionAndRejectsDisabledSkill(t *testi
 	}
 }
 
+func TestExplicitSkillSurvivesSemanticPlanContinuation(t *testing.T) {
+	ctx := context.Background()
+	marker := "最终 QA 与交付门禁必须保留"
+	manifest, err := json.Marshal(map[string]any{
+		"description":  "long research workflow",
+		"instructions": strings.Repeat("阶段说明。", 2500) + marker,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, service, project, skill := setupSkillProject(t, string(manifest))
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "/release-check outline", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate, SkillID: skill.ID, SkillArgs: "physical ai"}, "explicit-skill-plan", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedSkillModel{results: []core.ModelResult{
+		semanticPlanResult("explicit-skill-plan-call"),
+		{CallID: "explicit-skill-final", Provider: "test", Model: "test-model", Content: "Skill workflow completed."},
+	}}
+	worker := NewWorker("explicit-skill-plan-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for iteration := 0; iteration < 2; iteration++ {
+		if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
+			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
+		}
+	}
+	completed, err := service.GetTask(ctx, task.ID)
+	if err != nil || completed.Status != core.StatusSucceeded {
+		t.Fatalf("task=%#v err=%v", completed, err)
+	}
+	if len(model.requests) != 2 {
+		t.Fatalf("model requests=%d", len(model.requests))
+	}
+	for index, request := range model.requests {
+		if !strings.Contains(request.SystemPrompt, marker) || !strings.Contains(request.SystemPrompt, "physical ai") {
+			t.Fatalf("request %d lost explicit Skill context: prompt_length=%d", index, len(request.SystemPrompt))
+		}
+	}
+}
+
 func TestSkillInvokeConstraintQueuesModelRepair(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, _ := setupSkillProject(t, `{"description":"release verification","instructions":"Run checks."}`)

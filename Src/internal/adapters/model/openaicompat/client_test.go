@@ -406,6 +406,55 @@ func TestLengthFinishReasonIsPreserved(t *testing.T) {
 	}
 }
 
+func TestReasoningOnlyLengthIsClassifiedForActionRecovery(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":null,"reasoning_content":"long private analysis"}}],"usage":{"prompt_tokens":2,"completion_tokens":2048}}`))
+	}))
+	defer provider.Close()
+	client := New(provider.URL, "model-reasoning-length", func() string { return "fake-test-key" })
+	result, err := client.Complete(t.Context(), okruntime.ModelRequest{SystemPrompt: "system", UserPrompt: "user", MaxOutputTokens: 2048})
+	if err == nil || result.ErrorCode != "PROVIDER_REASONING_TRUNCATED" || result.StopReason != core.StopReasonLength {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(result.ContentBlocks) != 1 || result.ContentBlocks[0].Type != core.ContentBlockThinking {
+		t.Fatalf("reasoning evidence not preserved: %#v", result.ContentBlocks)
+	}
+}
+
+func TestThinkingControlAndPreservedReasoningReachCompatibleProvider(t *testing.T) {
+	var captured map[string]any
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"done"}}]}`))
+	}))
+	defer provider.Close()
+	client := New(provider.URL, "glm-5.2", func() string { return "fake-test-key" })
+	request := okruntime.ModelRequest{
+		ThinkingLevel: "off",
+		Messages: []core.ModelMessage{
+			{Role: core.MessageRoleAssistant, Content: []core.ContentBlock{
+				{Type: core.ContentBlockThinking, Thinking: &core.ThinkingBlock{Text: "preserved reasoning"}},
+				{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: "call-1", Name: "read_file", Arguments: map[string]any{"path": "README.md"}}},
+			}},
+			{Role: core.MessageRoleTool, ToolCallID: "call-1", ToolName: "read_file", Content: []core.ContentBlock{{Type: core.ContentBlockToolResult, ToolResult: &core.ToolResultBlock{ToolCallID: "call-1", ToolName: "read_file", Content: "body"}}}},
+		},
+	}
+	if _, err := client.Complete(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	thinking, _ := captured["thinking"].(map[string]any)
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking control=%#v", captured["thinking"])
+	}
+	messages, _ := captured["messages"].([]any)
+	assistant, _ := messages[0].(map[string]any)
+	if assistant["reasoning_content"] != "preserved reasoning" {
+		t.Fatalf("reasoning history missing: %#v", assistant)
+	}
+}
+
 func TestStreamReassemblesTypedToolCall(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

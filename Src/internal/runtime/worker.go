@@ -61,6 +61,7 @@ type Worker struct {
 	workspace         WorkspaceExecutor
 	webSearch         WebSearchExecutor
 	mcpSecrets        application.ProviderSecretStore
+	mcpCallTimeout    time.Duration
 	queuedTurnStarter QueuedTurnStarter
 }
 
@@ -79,6 +80,15 @@ func (w *Worker) WithMCPSecretStore(secrets application.ProviderSecretStore) *Wo
 	return w
 }
 
+// WithMCPCallTimeout bounds one external MCP invocation. A remote server may
+// keep its connection alive without ever producing a result, so the step lease
+// heartbeat alone is not a completion boundary. Tests can shorten this value;
+// production keeps enough time for research-style tools to finish.
+func (w *Worker) WithMCPCallTimeout(timeout time.Duration) *Worker {
+	w.mcpCallTimeout = timeout
+	return w
+}
+
 func (w *Worker) WithQueuedTurnStarter(starter QueuedTurnStarter) *Worker {
 	w.queuedTurnStarter = starter
 	return w
@@ -94,14 +104,15 @@ func (w *Worker) WithLease(lease time.Duration) *Worker {
 
 func NewWorker(id string, repository WorkerRepository, model ModelGateway, logger *slog.Logger) *Worker {
 	return &Worker{
-		id:           id,
-		repository:   repository,
-		model:        model,
-		agentLoop:    agentloop.New(model),
-		harness:      durableharness.New(repository),
-		logger:       logger,
-		lease:        90 * time.Second,
-		pollInterval: 250 * time.Millisecond,
+		id:             id,
+		repository:     repository,
+		model:          model,
+		agentLoop:      agentloop.New(model),
+		harness:        durableharness.New(repository),
+		logger:         logger,
+		lease:          90 * time.Second,
+		pollInterval:   250 * time.Millisecond,
+		mcpCallTimeout: 10 * time.Minute,
 	}
 }
 
@@ -454,6 +465,22 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		allowedTools = append(allowedTools, core.ToolSkillInvoke)
 	}
 	allowedTools, toolScopeDeclared, scenePolicy := applySceneToolPolicy(run.ConfigSnapshotJSON, allowedTools, toolScopeDeclared)
+	if sceneAllowsWorkspaceCommand(run.ConfigSnapshotJSON) {
+		toolDefinitions = excludeToolDefinition(toolDefinitions, core.ToolRequestPermission)
+		allowedTools = excludeToolName(allowedTools, core.ToolRequestPermission)
+		systemPrompt += "\n\n当前 Run 已获批工作区命令能力；workspace_run_command 与 workspace_shell 可直接使用。request_permission 已从工具集合移除，不得重复申请同一能力。"
+	}
+	searchBudget := core.InferSearchCallBudget(run.Goal, run.Acceptance)
+	priorSearchCalls := searchCallsUsedFromSnapshot(run.ConfigSnapshotJSON)
+	searchCallsUsed := priorSearchCalls + succeededSearchCallsInHistory(continuation)
+	if searchBudget.Enforced {
+		contextPlan["search_budget"] = map[string]any{"limit": searchBudget.Limit, "used": searchCallsUsed}
+		if searchCallsUsed >= searchBudget.Limit {
+			toolDefinitions = excludeSearchToolDefinitions(toolDefinitions)
+			allowedTools = excludeSearchToolNames(allowedTools)
+			systemPrompt += "\n\n用户声明的搜索预算已用完。所有 web_search 以及 search、research、crawl、extract、map、browse、discover 类 MCP 工具已从当前工具集合移除；只能使用已有证据和工作区工具完成剩余任务。"
+		}
+	}
 	if preferredMCP != "" {
 		allowedTools = filterToolNamesForExplicitMCP(allowedTools, preferredMCPID)
 	}
@@ -461,7 +488,7 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	conversationMessages := conversationMessagesFromSnapshot(run.ConfigSnapshotJSON)
 	contextPlan["conversation_messages"] = len(conversationMessages)
 	messages := application.TranscriptAssembler{}.RunWithConversation(conversationMessages, userPrompt, continuation, strings.TrimSpace(continuationInstruction))
-	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: application.RenderLegacyTranscript(messages), Messages: messages, RequestedModel: requestedModel, MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent, ToolDefinitions: toolDefinitions, ToolScopeDeclared: toolScopeDeclared, AllowedTools: allowedTools, ContextPlan: contextPlan, Model: modelName, FallbackModel: fallbackModel})
+	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: application.RenderLegacyTranscript(messages), Messages: messages, RequestedModel: requestedModel, ThinkingLevel: thinkingLevelFromSnapshot(run.ConfigSnapshotJSON), MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent, ToolDefinitions: toolDefinitions, ToolScopeDeclared: toolScopeDeclared, AllowedTools: allowedTools, ContextPlan: contextPlan, Model: modelName, FallbackModel: fallbackModel})
 	if err != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -481,6 +508,24 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	}
 	result.ToolArgumentRepairs += normalizeSafeToolArguments(result.ToolCalls)
 	annotateToolCallExecutionMode(result.ToolCalls, toolDefinitions)
+	if searchBudget.Enforced && searchCallBudgetExceededWithPrior(continuation, result.ToolCalls, searchBudget.Limit, priorSearchCalls) {
+		summary := fmt.Sprintf("任务明确限制最多执行 %d 次搜索；超限调用未执行，系统将使用已有证据继续。", searchBudget.Limit)
+		if searchBudget.Limit == 0 {
+			summary = "用户已明确禁止继续搜索；违规调用未执行，系统将使用已有证据完成任务。"
+		}
+		return core.StepOutcome{
+			Status:        core.StatusFailed,
+			ErrorCode:     "TOOL_BUDGET_EXCEEDED",
+			ResultSummary: summary,
+			Output: map[string]any{
+				"retryable":    true,
+				"search_limit": searchBudget.Limit,
+				"search_used":  priorSearchCalls,
+				"context_plan": contextPlan,
+			},
+			Model: &result,
+		}
+	}
 	result, truncatedToolCalls := normalizeLengthTruncatedModelResult(result)
 	if result.StopReason == core.StopReasonLength && len(truncatedToolCalls) == 0 && run.Mode == core.ModeSingleAgent {
 		// A provider may truncate in the middle of function.arguments before it
@@ -506,6 +551,7 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		ResultSummary: result.Content,
 		Output: map[string]any{
 			"content":                     result.Content,
+			"reasoning_content":           modelResultThinking(result),
 			"model":                       result.Model,
 			"routing_reason":              result.RoutingReason,
 			"usage":                       result.Usage,
@@ -617,7 +663,7 @@ func modelFailureSummary(code string, err error) string {
 		return "模型连接暂时中断；系统将从当前检查点自动重试。"
 	case "PROVIDER_RATE_LIMIT":
 		return "模型服务暂时限流；系统将保留当前进度并自动重试。"
-	case "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE":
+	case "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_REASONING_TRUNCATED":
 		return "模型响应不完整；系统将保留当前进度并重新请求。"
 	default:
 		return safeErrorSummary(err)
@@ -626,7 +672,7 @@ func modelFailureSummary(code string, err error) string {
 
 func isRetryableModelInteractionError(code string) bool {
 	switch code {
-	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT", "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_TOOL_ARGUMENTS_INVALID", "PROVIDER_TOOL_ARGUMENTS_TRUNCATED":
+	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT", "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_REASONING_TRUNCATED", "PROVIDER_TOOL_ARGUMENTS_INVALID", "PROVIDER_TOOL_ARGUMENTS_TRUNCATED", "TOOL_BUDGET_EXCEEDED":
 		return true
 	default:
 		return false
@@ -659,6 +705,12 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 	hint := fmt.Sprintf("系统模型交互重试 %d/%d：上一次请求%s。请从当前检查点继续，不要重复已经成功的步骤。", input.RetryCount, core.DefaultModelRetryLimit, modelRetryReasonLabel(input.RetryReason))
 	if input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_INVALID" || input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_TRUNCATED" {
 		hint += " 每个 function.arguments 必须是完整 JSON 对象，使用双引号并正确转义换行和反斜杠，不要使用 Markdown 代码块；参数过长时拆成更小的工具调用。"
+	}
+	if input.RetryReason == "PROVIDER_REASONING_TRUNCATED" {
+		hint += " 上一次只产生了内部推理并耗尽输出预算，没有形成任何动作。不要重新做全局分析；若执行轨迹已经包含用户要求的交付物与验证，禁止为了总结重复读写或创建额外文件，直接返回不超过 800 字的最终交付摘要。否则立即发出一个最小且完整的工具调用；长文任务一次只写一个不超过 3000 字符的章节，后续轮次再继续。"
+	}
+	if input.RetryReason == "TOOL_BUDGET_EXCEEDED" {
+		hint += " 用户声明的搜索调用上限已经用完，刚才的超限调用没有执行。禁止继续调用 web_search 或任何 search、research、crawl、extract、map、browse、discover 类 MCP 工具；只使用已有工具结果完成剩余写作与工作区核验。"
 	}
 	if input.RetryReason == "RUN_PLAN_STATUS_REGRESSION" {
 		hint += " 上一次 update_plan 试图把已完成项改回未完成，系统已拒绝并保留原计划。先读取当前持久化计划，再提交同一完整清单；所有 completed 项必须继续保持 completed，只推进当前项和后续项。"
@@ -714,6 +766,10 @@ func modelRetryReasonLabel(reason string) string {
 		return "未能连接模型服务"
 	case "PROVIDER_EMPTY_RESPONSE":
 		return "没有返回可用内容"
+	case "PROVIDER_REASONING_TRUNCATED":
+		return "只产生内部推理并在形成动作前达到输出上限"
+	case "TOOL_BUDGET_EXCEEDED":
+		return "规划了超过用户明确上限的搜索调用"
 	case "RUN_PLAN_STATUS_REGRESSION":
 		return "提交了会回退已完成进度的执行计划"
 	case "RUN_PLAN_INVALID":
@@ -733,6 +789,77 @@ func modelRetryReasonLabel(reason string) string {
 	default:
 		return "返回了无法解析的响应"
 	}
+}
+
+func searchCallBudgetExceeded(history []map[string]any, proposed []core.ToolCall, limit int) bool {
+	return searchCallBudgetExceededWithPrior(history, proposed, limit, 0)
+}
+
+func searchCallBudgetExceededWithPrior(history []map[string]any, proposed []core.ToolCall, limit, prior int) bool {
+	used := prior
+	for _, item := range history {
+		kind, _ := item["kind"].(string)
+		status, _ := item["status"].(string)
+		name, _ := item["tool_name"].(string)
+		if kind == "tool_result" && status == core.StatusSucceeded && isSearchEvidenceTool(name) {
+			used++
+		}
+	}
+	for _, call := range proposed {
+		if isSearchEvidenceTool(call.Name) {
+			used++
+		}
+	}
+	return used > limit
+}
+
+func isSearchEvidenceTool(name string) bool {
+	return core.IsSearchEvidenceTool(name)
+}
+
+func succeededSearchCallsInHistory(history []map[string]any) int {
+	used := 0
+	for _, item := range history {
+		kind, _ := item["kind"].(string)
+		status, _ := item["status"].(string)
+		name, _ := item["tool_name"].(string)
+		if kind == "tool_result" && status == core.StatusSucceeded && isSearchEvidenceTool(name) {
+			used++
+		}
+	}
+	return used
+}
+
+func excludeSearchToolDefinitions(definitions []ToolDefinition) []ToolDefinition {
+	filtered := make([]ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		if !isSearchEvidenceTool(definition.Name) {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
+}
+
+func excludeSearchToolNames(names []string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if !isSearchEvidenceTool(name) {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
+func searchCallsUsedFromSnapshot(snapshot string) int {
+	var config map[string]any
+	if json.Unmarshal([]byte(snapshot), &config) != nil {
+		return 0
+	}
+	value, ok := config["continuation_search_calls_used"].(float64)
+	if !ok || value < 0 || value > 100_000 {
+		return 0
+	}
+	return int(value)
 }
 
 func isRunPlanRepairReason(reason string) bool {
@@ -768,7 +895,9 @@ func modelStage(inputJSON string) string {
 
 func completionRecoveryHint(inputJSON string) string {
 	var input struct {
-		Reason string `json:"completion_recovery_reason"`
+		Reason             string `json:"completion_recovery_reason"`
+		RequiredCharacters int64  `json:"completion_required_characters"`
+		ActualCharacters   int64  `json:"completion_actual_characters"`
 	}
 	if json.Unmarshal([]byte(inputJSON), &input) != nil || strings.TrimSpace(input.Reason) == "" {
 		return ""
@@ -777,7 +906,13 @@ func completionRecoveryHint(inputJSON string) string {
 	case "WEB_EVIDENCE_MISSING":
 		return "确定性完成检查未通过：任务要求联网检索，但当前 Run 没有任何成功的 web_search 收据。不得用“无法联网”说明冒充交付；请继续调用 web_search 获取真实证据，或在受控恢复耗尽后请求用户决定。"
 	case "DELIVERABLE_MISSING":
-		return "确定性完成检查未通过：用户要求 Markdown/文档交付物，但当前 Run 没有成功的 workspace_write_file 收据。请把真实内容写入工作区并验证文件存在，再给最终总结。"
+		return "确定性完成检查未通过：用户要求 Markdown/文档交付物，但当前 Run 与可追溯的续跑来源链中都没有最新交付 Artifact。请用 workspace_write_file 创建或 workspace_edit_file 更新真实内容，并验证文件存在，再给最终总结。"
+	case "DELIVERABLE_TOO_SHORT":
+		return fmt.Sprintf("确定性完成检查未通过：当前续跑证据链中的 Markdown 交付物合计 %d 字，用户要求不少于 %d 字。继续按章节交叉验证和写作；每轮用不超过 3000 字符的 workspace_write_file 或 workspace_edit_file 分段更新，达到要求并用 workspace_read_file 或 workspace_list_files 验证后才能总结。", input.ActualCharacters, input.RequiredCharacters)
+	case "WORKSPACE_MUTATION_MISSING":
+		return "确定性完成检查未通过：用户要求创建、修改、修复或提交工作区内容，但当前 Run 没有成功的工作区写入/编辑或受控 Git 变更收据。请使用与目标匹配的 workspace_write_file、workspace_edit_file 或 Git 变更工具执行真实动作并检查结果，不得只描述准备怎么做。"
+	case "VERIFICATION_MISSING":
+		return "确定性完成检查未通过：用户明确要求测试或验证，但当前 Run 没有变更后的验证收据。请运行适用的测试、命令、文件检查或浏览器工具，读取真实结果后再总结。"
 	default:
 		return "确定性完成检查未通过。请补齐缺失的执行证据后再交付，不得再次直接声明完成。"
 	}
@@ -818,7 +953,7 @@ func (w *Worker) executeModelSynthesis(ctx context.Context, step core.ClaimedSte
 	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
 	requestedModel := modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName)
 	contextPlan := map[string]any{"strategy": "verified_web_search_synthesis_v1", "search_calls": len(input.SearchResults), "skills": skillPlan}
-	result, modelErr := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: userPrompt, RequestedModel: requestedModel, MaxOutputTokens: core.DefaultModelOutputTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel, ContextPlan: contextPlan})
+	result, modelErr := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: userPrompt, RequestedModel: requestedModel, ThinkingLevel: thinkingLevelFromSnapshot(run.ConfigSnapshotJSON), MaxOutputTokens: core.DefaultModelOutputTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel, ContextPlan: contextPlan})
 	if modelErr != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -826,7 +961,7 @@ func (w *Worker) executeModelSynthesis(ctx context.Context, step core.ClaimedSte
 		}
 		return core.StepOutcome{Status: status, ErrorCode: result.ErrorCode, ResultSummary: safeErrorSummary(modelErr), Output: map[string]any{"retryable": result.ErrorCode == "PROVIDER_RATE_LIMIT" || result.ErrorCode == "PROVIDER_UNAVAILABLE", "context_plan": contextPlan}, Model: &result}
 	}
-	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: result.Content, Output: map[string]any{"content": result.Content, "model": result.Model, "routing_reason": result.RoutingReason, "usage": result.Usage, "context_plan": contextPlan}, Model: &result}
+	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: result.Content, Output: map[string]any{"content": result.Content, "reasoning_content": modelResultThinking(result), "model": result.Model, "routing_reason": result.RoutingReason, "usage": result.Usage, "context_plan": contextPlan}, Model: &result}
 }
 
 func isMCPTool(name string) bool {
@@ -1055,7 +1190,10 @@ func skillContextForIDs(snapshot string, ids []string, args string) (string, map
 	preferredToolSet := make(map[string]struct{})
 	toolScopeDeclared := false
 	strictFallback := false
-	const maxSkillBody = 6000
+	// Explicit invocation is an auditable user choice. Preserve enough of a
+	// substantial workflow Skill to include its QA and delivery gates; the
+	// smaller automatic-match limit below remains the token-saving fallback.
+	const maxSkillBody = 24000
 	for _, skill := range skills {
 		if _, ok := requested[skill.ID]; !ok {
 			continue
@@ -1360,7 +1498,7 @@ func explicitMCPProviderFromPrompt(snapshot, prompt string) (string, string) {
 func filterToolNamesForExplicitMCP(names []string, capabilityID string) []string {
 	filtered := make([]string, 0, len(names))
 	for _, name := range names {
-		if explicitMCPControlTool(name) || strings.HasPrefix(name, "mcp__"+capabilityID+"__") {
+		if explicitMCPToolAllowed(name, capabilityID) {
 			filtered = append(filtered, name)
 		}
 	}
@@ -1370,15 +1508,42 @@ func filterToolNamesForExplicitMCP(names []string, capabilityID string) []string
 func filterToolsForExplicitMCP(definitions []ToolDefinition, capabilityID string) []ToolDefinition {
 	filtered := make([]ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
-		if explicitMCPControlTool(definition.Name) || strings.HasPrefix(definition.Name, "mcp__"+capabilityID+"__") {
+		if explicitMCPToolAllowed(definition.Name, capabilityID) {
 			filtered = append(filtered, definition)
 		}
 	}
 	return filtered
 }
 
-func explicitMCPControlTool(name string) bool {
-	return name == core.ToolUpdatePlan || name == core.ToolRequestInput || name == core.ToolRequestPermission
+func excludeToolDefinition(definitions []ToolDefinition, excluded string) []ToolDefinition {
+	filtered := make([]ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		if definition.Name != excluded {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
+}
+
+func excludeToolName(names []string, excluded string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != excluded {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
+func explicitMCPToolAllowed(name, capabilityID string) bool {
+	if strings.HasPrefix(name, "mcp__") {
+		return strings.HasPrefix(name, "mcp__"+capabilityID+"__")
+	}
+	// An explicit MCP is a source/provider choice, not an instruction to remove
+	// local delivery capabilities. Exclude the interchangeable builtin search,
+	// while preserving workspace, Git, planning, input and approval tools so a
+	// task can turn MCP evidence into verified artifacts.
+	return name != core.ToolWebSearch
 }
 
 func filterToolDefinitionsBySkill(definitions []ToolDefinition, plan map[string]any) []ToolDefinition {
@@ -1566,7 +1731,7 @@ func (w *Worker) executeAgentTeam(ctx context.Context, step core.ClaimedStep, ru
 	}
 	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
 	requestedModel := modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName)
-	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: system, UserPrompt: strings.Join(parts, "\n\n"), RequestedModel: requestedModel, MaxOutputTokens: maxTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel})
+	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: system, UserPrompt: strings.Join(parts, "\n\n"), RequestedModel: requestedModel, ThinkingLevel: thinkingLevelFromSnapshot(run.ConfigSnapshotJSON), MaxOutputTokens: maxTokens, EnableTools: false, Model: modelName, FallbackModel: fallbackModel})
 	if err != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -1574,7 +1739,35 @@ func (w *Worker) executeAgentTeam(ctx context.Context, step core.ClaimedStep, ru
 		}
 		return core.StepOutcome{Status: status, ErrorCode: result.ErrorCode, ResultSummary: safeErrorSummary(err), Output: map[string]any{"role": input.Role, "stage": input.Stage, "retryable": result.ErrorCode == "PROVIDER_RATE_LIMIT" || result.ErrorCode == "PROVIDER_UNAVAILABLE"}, Model: &result}
 	}
-	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: result.Content, Output: map[string]any{"content": result.Content, "role": input.Role, "stage": input.Stage, "model": result.Model, "routing_reason": result.RoutingReason, "usage": result.Usage}, Model: &result}
+	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: result.Content, Output: map[string]any{"content": result.Content, "reasoning_content": modelResultThinking(result), "role": input.Role, "stage": input.Stage, "model": result.Model, "routing_reason": result.RoutingReason, "usage": result.Usage}, Model: &result}
+}
+
+func thinkingLevelFromSnapshot(snapshot string) string {
+	var config map[string]any
+	if json.Unmarshal([]byte(snapshot), &config) != nil {
+		return "auto"
+	}
+	level, _ := config["thinking_level"].(string)
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "off", "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(level))
+	default:
+		return "auto"
+	}
+}
+
+func modelResultThinking(result core.ModelResult) string {
+	var value strings.Builder
+	for _, block := range result.ContentBlocks {
+		if block.Type != core.ContentBlockThinking || block.Thinking == nil || strings.TrimSpace(block.Thinking.Text) == "" {
+			continue
+		}
+		if value.Len() > 0 {
+			value.WriteByte('\n')
+		}
+		value.WriteString(block.Thinking.Text)
+	}
+	return value.String()
 }
 
 func agentModelsFromSnapshot(snapshot string) (string, string) {
@@ -1631,13 +1824,13 @@ func (w *Worker) executeWorkspaceTool(ctx context.Context, step core.ClaimedStep
 	if planned.Decision == core.PolicyDeny || planned.InputHash == "" || planned.InputHash != input.InputHash {
 		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_POLICY_DENIED", ResultSummary: "The frozen tool input failed deterministic policy validation.", Output: map[string]any{"reason": planned.Reason, "retryable": false}}
 	}
-	if input.Name == core.ToolWorkspaceRunCommand && planned.Decision == core.PolicyAsk && core.FullAccessActive(run.ConfigSnapshotJSON, time.Now().UTC()) {
+	if (input.Name == core.ToolWorkspaceRunCommand || input.Name == core.ToolWorkspaceShell) && planned.Decision == core.PolicyAsk && core.FullAccessActive(run.ConfigSnapshotJSON, time.Now().UTC()) {
 		// Full access suppresses the per-command approval prompt only inside
-		// its explicit, time-bounded Run window. PlanTool's deterministic hard
+		// the explicitly selected Run. PlanTool's deterministic hard
 		// denies (shells, network tools, malformed paths/args) still win.
 		planned.Decision = core.PolicyAllow
 	}
-	if input.Name == core.ToolWorkspaceRunCommand && !sceneAllowsWorkspaceCommand(run.ConfigSnapshotJSON) {
+	if (input.Name == core.ToolWorkspaceRunCommand || input.Name == core.ToolWorkspaceShell) && !sceneAllowsWorkspaceCommand(run.ConfigSnapshotJSON) {
 		return core.StepOutcome{Status: core.StatusFailed, ErrorCode: "SCENE_POLICY_DENIED", ResultSummary: "当前 Work 场景不允许执行工作区命令，系统将保留已完成步骤并改用允许的工具重新规划。", Output: map[string]any{"retryable": true, "scene": "work", "recovery": "replan"}}
 	}
 	if w.workspace == nil {
@@ -1659,6 +1852,9 @@ func (w *Worker) executeWorkspaceTool(ctx context.Context, step core.ClaimedStep
 }
 
 func sceneAllowsWorkspaceCommand(snapshot string) bool {
+	if core.FullAccessActive(snapshot, time.Now().UTC()) {
+		return true
+	}
 	var config map[string]any
 	if json.Unmarshal([]byte(snapshot), &config) != nil {
 		return true
@@ -1836,7 +2032,13 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 			return w.mcpSecrets.Set(saveContext, credentialRef, payload)
 		}
 	}
-	callResult, callErr := mcpadapter.CallWithCredentialUpdater(ctx, manifestJSON, credential, toolName, input.Arguments, credentialUpdater)
+	callContext := ctx
+	cancelCall := func() {}
+	if w.mcpCallTimeout > 0 {
+		callContext, cancelCall = context.WithTimeout(ctx, w.mcpCallTimeout)
+	}
+	defer cancelCall()
+	callResult, callErr := mcpadapter.CallWithCredentialUpdater(callContext, manifestJSON, credential, toolName, input.Arguments, credentialUpdater)
 	output := map[string]any{
 		"capability_id": capabilityID,
 		"tool_name":     toolName,
@@ -1866,6 +2068,11 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 		execution.Status = core.StatusFailed
 		execution.ErrorCode = "MCP_CALL_FAILED"
 		output["reason"] = callErr.Error()
+		if errors.Is(callErr, context.DeadlineExceeded) || errors.Is(callContext.Err(), context.DeadlineExceeded) {
+			execution.ErrorCode = "MCP_CALL_TIMEOUT"
+			output["reason"] = "MCP tool exceeded the configured execution deadline"
+			output["retryable"] = true
+		}
 	} else if callResult.IsError {
 		execution.Status = core.StatusFailed
 		execution.ErrorCode = "MCP_TOOL_ERROR"

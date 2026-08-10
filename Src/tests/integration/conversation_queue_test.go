@@ -44,22 +44,7 @@ func queuedTurnStarterForTest(repository interface {
 	HasActiveTask(context.Context, core.Scope, string) (bool, string, error)
 }, service *application.Service) okruntime.QueuedTurnStarter {
 	return func(ctx context.Context, scope core.Scope, item core.ConversationQueueItem) (core.Task, error) {
-		hasActive, _, activeErr := repository.HasActiveTask(ctx, scope, item.ConversationID)
-		if activeErr != nil {
-			return core.Task{}, activeErr
-		}
-		if hasActive {
-			return core.Task{}, errors.New("conversation already has an active task")
-		}
-		var turnInput core.ProjectTurnInput
-		if decodeErr := json.Unmarshal([]byte(item.InputJSON), &turnInput); decodeErr != nil {
-			return core.Task{}, decodeErr
-		}
-		taskInput := core.CreateTaskInput{ConversationID: item.ConversationID, Goal: item.Content, Mode: turnInput.Mode, Visibility: turnInput.Visibility}
-		if taskInput.Mode == core.ModeAuto || taskInput.Mode == "" {
-			taskInput.Mode = core.ModeSingleAgent
-		}
-		return service.CreateTask(ctx, item.ProjectID, taskInput, "queue-"+item.ID, "queue-"+item.ID)
+		return service.StartQueuedConversationTurn(ctx, item)
 	}
 }
 
@@ -363,6 +348,102 @@ func TestConversationFollowUpStartsSequentially(t *testing.T) {
 	final, err := service.GetTask(context.Background(), thirdTask.ID)
 	if err != nil || final.Status != core.StatusSucceeded {
 		t.Fatalf("third task status=%s err=%v", final.Status, err)
+	}
+}
+
+func TestTerminalSteeringSuccessorPreservesGoalAndExplicitSkill(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://example.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Steering successor", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, err := service.CreateCapability(context.Background(), project.ID, core.CreateCapabilityInput{Kind: core.CapabilityKindSkill, Name: "research-method", ManifestJSON: `{"description":"research deeply","instructions":"Collect evidence, then verify the deliverable.","permissions":["workspace.read"]}`}, "steering-successor-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, err = service.ReviewCapability(context.Background(), skill.ID, core.ReviewCapabilityInput{Decision: core.CapabilityReviewApproved, Note: "trusted test skill"}, "steering-successor-review", "steering-successor-review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "研究 Physical AI 并交付 30000 字报告", Acceptance: "必须真实写入文件", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, SkillID: skill.ID, SkillArgs: "primary sources"}, "steering-successor-first", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := enqueueTurn(t, repository, project.ID, first.ConversationID, first.ID, "停止继续检索，立即写报告", "steering")
+	if _, err := service.ControlTask(context.Background(), first.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "steering-successor-cancel", "steering-successor-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.StartQueuedConversationTurn(context.Background(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(second.Goal, first.Goal) || !strings.Contains(second.Goal, item.Content) || second.Acceptance != first.Acceptance {
+		t.Fatalf("steering successor lost source contract: %#v", second)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var inputJSON string
+	if err := db.QueryRow(`SELECT s.input_json FROM steps s JOIN runs r ON r.id = s.run_id WHERE r.task_id = ? ORDER BY s.position LIMIT 1`, second.ID).Scan(&inputJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(inputJSON, skill.ID) || !strings.Contains(inputJSON, "primary sources") {
+		t.Fatalf("steering successor did not inherit explicit Skill: %s", inputJSON)
+	}
+}
+
+func TestNaturalLanguageContinuationUpdatePreservesTerminalTaskContract(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://example.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Natural continuation", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, err := service.CreateCapability(context.Background(), project.ID, core.CreateCapabilityInput{Kind: core.CapabilityKindSkill, Name: "research-method", ManifestJSON: `{"description":"research deeply","instructions":"Collect evidence, write, and verify.","permissions":["workspace.read"]}`}, "natural-continuation-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, err = service.ReviewCapability(context.Background(), skill.ID, core.ReviewCapabilityInput{Decision: core.CapabilityReviewApproved, Note: "trusted test skill"}, "natural-continuation-review", "natural-continuation-review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "研究 Physical AI 并交付报告", Acceptance: "报告必须写入工作区", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, SkillID: skill.ID, SkillArgs: "primary sources"}, "natural-continuation-first", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ControlTask(context.Background(), first.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "natural-continuation-cancel", "natural-continuation-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SubmitProjectTurn(context.Background(), project.ID, core.ProjectTurnInput{ConversationID: first.ConversationID, Content: "继续当前任务。不要再检索，补足现有报告并核对总字数", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "natural-continuation-turn", "natural-continuation-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Task == nil || !strings.Contains(result.Task.Goal, first.Goal) || !strings.Contains(result.Task.Goal, "不要再检索") || result.Task.Acceptance != first.Acceptance {
+		t.Fatalf("continuation lost source contract: %#v", result.Task)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(databasePath)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var inputJSON, configSnapshotJSON string
+	if err := db.QueryRow(`SELECT s.input_json, r.config_snapshot_json FROM steps s JOIN runs r ON r.id = s.run_id WHERE r.task_id = ? ORDER BY s.position LIMIT 1`, result.Task.ID).Scan(&inputJSON, &configSnapshotJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(inputJSON, skill.ID) || !strings.Contains(inputJSON, "primary sources") {
+		t.Fatalf("natural-language continuation lost explicit Skill: %s", inputJSON)
+	}
+	if !strings.Contains(configSnapshotJSON, first.RunID) || !strings.Contains(configSnapshotJSON, "continuation_run_ids") {
+		t.Fatalf("natural-language continuation lost evidence provenance: %s", configSnapshotJSON)
 	}
 }
 

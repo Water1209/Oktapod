@@ -124,7 +124,7 @@ const (
 	DefaultTaskMaxTokens     = 200_000
 	DefaultModelRetryLimit   = 3
 	DefaultToolRetryLimit    = 5
-	DefaultModelOutputTokens = 2_048
+	DefaultModelOutputTokens = 4_096
 
 	SideEffectReceiptStarted   = "started"
 	SideEffectReceiptSucceeded = "succeeded"
@@ -669,6 +669,10 @@ type CreateTaskInput struct {
 	ContextMemoryIDs []string
 	SkillID          string
 	SkillArgs        string
+	// ContinuationRunIDs is internal provenance for a successor Run. Public
+	// HTTP payloads cannot set it; application services populate it only after
+	// ownership checks on the source task.
+	ContinuationRunIDs []string `json:"-"`
 }
 
 // TeamRole is an immutable per-Run role definition. Empty TeamRoles keeps the

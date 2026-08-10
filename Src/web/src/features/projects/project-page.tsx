@@ -863,7 +863,7 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content permission-mode-dialog" aria-describedby="full-access-description">
           <Dialog.Title>启用完全访问？</Dialog.Title>
-          <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你在发送框中手动切换权限模式。它不会绕过路径、网络、命令黑名单或场景能力边界；破坏性和开放世界 MCP 仍需人工确认。</Dialog.Description>
+          <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你在发送框中手动切换权限模式。工作区命令不再逐次询问，但路径边界、命令黑名单等确定性硬拒绝仍然生效；破坏性和开放世界 MCP 仍需人工确认。</Dialog.Description>
           <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" onClick={() => { selectPermissionMode('full_access'); setFullAccessOpen(false) }}>确认启用</button></div>
         </Dialog.Content>
       </Dialog.Portal>

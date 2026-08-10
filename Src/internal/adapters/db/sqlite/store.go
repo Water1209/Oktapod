@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
@@ -7446,15 +7447,21 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 		}
 	}
 	if run.Mode == core.ModeSingleAgent && taskStatus == core.StatusSucceeded && outcome.Model != nil && len(outcome.Model.ToolCalls) == 0 {
-		reason, invariantErr := completionInvariantFailure(ctx, tx, run)
+		validation, invariantErr := s.completionInvariantFailure(ctx, tx, run)
 		if invariantErr != nil {
 			return invariantErr
 		}
-		if reason != "" {
+		if validation.Reason != "" {
 			if modelStageFromInput(step.InputJSON) == "completion_recovery" {
-				taskStatus, taskErrorCode = core.StatusBlocked, reason
-				if reason == "WEB_EVIDENCE_MISSING" {
+				taskStatus, taskErrorCode = core.StatusBlocked, validation.Reason
+				if validation.Reason == "WEB_EVIDENCE_MISSING" {
 					taskSummary = "任务要求联网检索，但当前 Run 没有成功的互联网检索收据，不能标记为完成。"
+				} else if validation.Reason == "DELIVERABLE_TOO_SHORT" {
+					taskSummary = fmt.Sprintf("报告实际为 %d 字，未达到不少于 %d 字的验收要求，不能标记为完成。", validation.ActualCharacters, validation.RequiredCharacters)
+				} else if validation.Reason == "WORKSPACE_MUTATION_MISSING" {
+					taskSummary = "任务要求修改工作区，但当前 Run 没有成功的文件写入或编辑收据，不能标记为完成。"
+				} else if validation.Reason == "VERIFICATION_MISSING" {
+					taskSummary = "任务要求完成后验证结果，但当前 Run 没有变更后的验证收据，不能标记为完成。"
 				} else {
 					taskSummary = "任务要求生成文档交付物，但当前 Run 没有成功写入任何工作区文件，不能标记为完成。"
 				}
@@ -7465,7 +7472,9 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 				}
 				nextStepID, queueErr := insertQueuedModelStep(ctx, tx, run, map[string]any{
 					"history": history, "stage": "completion_recovery",
-					"source_step_id": step.ID, "completion_recovery_reason": reason,
+					"source_step_id": step.ID, "completion_recovery_reason": validation.Reason,
+					"completion_required_characters": validation.RequiredCharacters,
+					"completion_actual_characters":   validation.ActualCharacters,
 				}, now)
 				if queueErr != nil {
 					return queueErr
@@ -7478,7 +7487,7 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
 					EventType: "completion.validation_failed", ActorType: "validator", ActorID: "runtime",
 					CorrelationID: correlationID, Visibility: run.Visibility,
-					Payload: map[string]any{"source_step_id": step.ID, "recovery_step_id": nextStepID, "reason": reason},
+					Payload: map[string]any{"source_step_id": step.ID, "recovery_step_id": nextStepID, "reason": validation.Reason, "required_characters": validation.RequiredCharacters, "actual_characters": validation.ActualCharacters},
 				}); err != nil {
 					return err
 				}
@@ -7739,40 +7748,242 @@ func (s *Store) createToolRecoveryHumanAction(ctx context.Context, tx *sql.Tx, q
 	})
 }
 
-func completionInvariantFailure(ctx context.Context, tx *sql.Tx, run core.RunContext) (string, error) {
-	goal := strings.ToLower(strings.TrimSpace(run.Goal))
-	var successfulSearches, failedSearches int64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT
-			COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)
-		FROM tool_calls WHERE run_id = ? AND tool_name = ?`, run.RunID, core.ToolWebSearch,
-	).Scan(&successfulSearches, &failedSearches); err != nil {
-		return "", err
+type completionInvariantResult struct {
+	Reason             string
+	RequiredCharacters int64
+	ActualCharacters   int64
+}
+
+func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run core.RunContext) (completionInvariantResult, error) {
+	requirements := core.InferTaskCompletionRequirements(run.Goal, run.Acceptance)
+	evidenceRunIDs := completionEvidenceRunIDs(run)
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(evidenceRunIDs)), ",")
+	searchArgs := make([]any, 0, len(evidenceRunIDs)+1)
+	for _, id := range evidenceRunIDs {
+		searchArgs = append(searchArgs, id)
 	}
-	requiresWeb := strings.Contains(goal, "检索") || strings.Contains(goal, "调研") ||
-		strings.Contains(goal, "最新") || strings.Contains(goal, "互联网") ||
-		strings.Contains(goal, "research") || strings.Contains(goal, "search")
-	if requiresWeb && successfulSearches == 0 && failedSearches > 0 {
-		return "WEB_EVIDENCE_MISSING", nil
+	searchArgs = append(searchArgs, core.ToolWebSearch)
+	var successfulSearches int64
+	searchQuery := `
+		SELECT COUNT(*) FROM tool_calls
+		WHERE run_id IN (` + runFilter + `) AND status = 'succeeded' AND (
+			tool_name = ? OR (
+				tool_name LIKE 'mcp__%__%' AND (
+					lower(tool_name) LIKE '%search%' OR lower(tool_name) LIKE '%research%' OR
+					lower(tool_name) LIKE '%crawl%' OR lower(tool_name) LIKE '%extract%'
+				)
+			)
+		)`
+	if err := tx.QueryRowContext(ctx, searchQuery, searchArgs...).Scan(&successfulSearches); err != nil {
+		return completionInvariantResult{}, err
 	}
-	requiresDocument := strings.Contains(goal, "md文档") || strings.Contains(goal, "markdown") ||
-		strings.Contains(goal, "形成文档") || strings.Contains(goal, "生成文档") ||
-		strings.Contains(goal, "写入工作区")
-	if requiresDocument {
-		var successfulWrites int64
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM tool_calls
-			WHERE run_id = ? AND tool_name = ? AND status = 'succeeded'`,
-			run.RunID, core.ToolWorkspaceWriteFile,
-		).Scan(&successfulWrites); err != nil {
-			return "", err
+	if requirements.RequiresWebEvidence && successfulSearches == 0 {
+		return completionInvariantResult{Reason: "WEB_EVIDENCE_MISSING"}, nil
+	}
+	if requirements.RequiresDeliverable {
+		deliverables, err := countLatestRunDeliverables(ctx, tx, evidenceRunIDs, requirements.DeliverableFormat)
+		if err != nil {
+			return completionInvariantResult{}, err
 		}
-		if successfulWrites == 0 {
-			return "DELIVERABLE_MISSING", nil
+		if deliverables == 0 {
+			return completionInvariantResult{Reason: "DELIVERABLE_MISSING"}, nil
+		}
+		if requirements.MinimumCharacters > 0 {
+			characters, err := s.countRunDeliverableCharacters(ctx, tx, evidenceRunIDs, requirements.DeliverableFormat)
+			if err != nil {
+				return completionInvariantResult{}, err
+			}
+			if characters < requirements.MinimumCharacters {
+				return completionInvariantResult{Reason: "DELIVERABLE_TOO_SHORT", RequiredCharacters: requirements.MinimumCharacters, ActualCharacters: characters}, nil
+			}
 		}
 	}
-	return "", nil
+	lastMutationPosition, currentMutationCount, mutationCount, err := successfulWorkspaceMutationEvidence(ctx, tx, run.RunID, evidenceRunIDs)
+	if err != nil {
+		return completionInvariantResult{}, err
+	}
+	if requirements.RequiresWorkspaceMutation && mutationCount == 0 {
+		return completionInvariantResult{Reason: "WORKSPACE_MUTATION_MISSING"}, nil
+	}
+	if requirements.RequiresVerification {
+		if currentMutationCount == 0 {
+			lastMutationPosition = 0
+		}
+		verificationCount, err := successfulVerificationEvidence(ctx, tx, run.RunID, lastMutationPosition)
+		if err != nil {
+			return completionInvariantResult{}, err
+		}
+		if verificationCount == 0 {
+			return completionInvariantResult{Reason: "VERIFICATION_MISSING"}, nil
+		}
+	}
+	return completionInvariantResult{}, nil
+}
+
+func completionEvidenceRunIDs(run core.RunContext) []string {
+	ids := []string{run.RunID}
+	var snapshot map[string]any
+	if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot) == nil {
+		if raw, ok := snapshot["continuation_run_ids"].([]any); ok {
+			for _, item := range raw {
+				if id, ok := item.(string); ok {
+					ids = append(ids, strings.TrimSpace(id))
+				}
+			}
+		}
+	}
+	result := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+		if len(result) == 9 {
+			break
+		}
+	}
+	return result
+}
+
+func successfulWorkspaceMutationEvidence(ctx context.Context, tx *sql.Tx, runID string, evidenceRunIDs []string) (int64, int64, int64, error) {
+	mutationTools := []string{
+		core.ToolWorkspaceWriteFile, core.ToolWorkspaceEditFile,
+		core.ToolGitCommit, core.ToolGitCommitPaths,
+		core.ToolGitRestore, core.ToolGitRestoreHunk, core.ToolGitBranch,
+	}
+	toolFilter := strings.TrimSuffix(strings.Repeat("?,", len(mutationTools)), ",")
+	currentArgs := make([]any, 0, len(mutationTools)+1)
+	currentArgs = append(currentArgs, runID)
+	for _, tool := range mutationTools {
+		currentArgs = append(currentArgs, tool)
+	}
+	var lastPosition, currentCount int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(position), 0), COUNT(*) FROM tool_calls
+		WHERE run_id = ? AND status = 'succeeded' AND tool_name IN (`+toolFilter+`)`,
+		currentArgs...,
+	).Scan(&lastPosition, &currentCount)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(evidenceRunIDs)), ",")
+	args := make([]any, 0, len(evidenceRunIDs)+len(mutationTools))
+	for _, id := range evidenceRunIDs {
+		args = append(args, id)
+	}
+	for _, tool := range mutationTools {
+		args = append(args, tool)
+	}
+	var totalCount int64
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_calls WHERE run_id IN (`+runFilter+`) AND status = 'succeeded' AND tool_name IN (`+toolFilter+`)`, args...).Scan(&totalCount)
+	return lastPosition, currentCount, totalCount, err
+}
+
+func countLatestRunDeliverables(ctx context.Context, tx *sql.Tx, runIDs []string, format string) (int64, error) {
+	mediaFilter := "%"
+	if format == "markdown" {
+		mediaFilter = "text/markdown%"
+	}
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, 0, len(runIDs)*2+1)
+	for _, id := range runIDs {
+		args = append(args, id)
+	}
+	args = append(args, mediaFilter)
+	for _, id := range runIDs {
+		args = append(args, id)
+	}
+	query := `
+		SELECT COUNT(*) FROM artifacts a
+		WHERE a.run_id IN (` + runFilter + `) AND a.kind = 'deliverable' AND a.media_type LIKE ?
+		  AND a.id = (
+			SELECT latest.id FROM artifacts latest
+			WHERE latest.run_id IN (` + runFilter + `) AND latest.name = a.name AND latest.kind = 'deliverable'
+			ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+		  )`
+	var count int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
+	return count, err
+}
+
+func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID string, afterPosition int64) (int64, error) {
+	var count int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tool_calls
+		WHERE run_id = ? AND status = 'succeeded' AND position > ? AND (
+			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
+				tool_name LIKE 'mcp__%__%' AND (
+					lower(tool_name) LIKE '%playwright%' OR lower(tool_name) LIKE '%browser%' OR
+					lower(tool_name) LIKE '%test%' OR lower(tool_name) LIKE '%verify%' OR
+					lower(tool_name) LIKE '%validate%' OR lower(tool_name) LIKE '%inspect%' OR
+					lower(tool_name) LIKE '%open%' OR lower(tool_name) LIKE '%read%'
+				)
+			)
+		)`, runID, afterPosition,
+		core.ToolWebSearch,
+		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell,
+		core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
+		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog,
+	).Scan(&count)
+	return count, err
+}
+
+func (s *Store) countRunDeliverableCharacters(ctx context.Context, tx *sql.Tx, runIDs []string, format string) (int64, error) {
+	mediaFilter := "%"
+	if format == "markdown" {
+		mediaFilter = "text/markdown%"
+	}
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, 0, len(runIDs)*2+1)
+	for _, id := range runIDs {
+		args = append(args, id)
+	}
+	args = append(args, mediaFilter)
+	for _, id := range runIDs {
+		args = append(args, id)
+	}
+	query := `
+		SELECT a.size_bytes, b.storage_key
+		FROM artifacts a
+		JOIN blobs b ON b.content_hash = a.content_hash
+		WHERE a.run_id IN (` + runFilter + `) AND a.kind = 'deliverable' AND a.media_type LIKE ?
+		  AND a.id = (
+			SELECT latest.id FROM artifacts latest
+			WHERE latest.run_id IN (` + runFilter + `) AND latest.name = a.name AND latest.kind = 'deliverable'
+			ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+		  )`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var total int64
+	for rows.Next() {
+		var size int64
+		var storageKey string
+		if err := rows.Scan(&size, &storageKey); err != nil {
+			return 0, err
+		}
+		content, err := s.blobStore.Open(ctx, storageKey, size)
+		if err != nil {
+			return 0, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(content, size+1))
+		closeErr := content.Close()
+		if readErr != nil {
+			return 0, readErr
+		}
+		if closeErr != nil {
+			return 0, closeErr
+		}
+		if int64(len(body)) != size || !utf8.Valid(body) {
+			return 0, fmt.Errorf("DELIVERABLE_CONTENT_INVALID: verified text artifact cannot be read")
+		}
+		total += int64(utf8.RuneCount(body))
+	}
+	return total, rows.Err()
 }
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
@@ -8482,10 +8693,10 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 	planRevisionID, executionPlanItemID := activeExecutionPlanBinding(ctx, tx, run.RunID)
 	for index, plan := range plans {
 		// A full-access Run still goes through PlanTool's deterministic hard
-		// denies, but its explicit 30-minute window suppresses per-command
+		// denies, but the explicit Run setting suppresses workspace command
 		// approval creation. Applying this at planning time is essential: a
 		// waiting-approval step is not claimable by the Worker.
-		if plan.Decision == core.PolicyAsk && fullAccess && plan.Call.Name == core.ToolWorkspaceRunCommand {
+		if plan.Decision == core.PolicyAsk && fullAccess && (plan.Call.Name == core.ToolWorkspaceRunCommand || plan.Call.Name == core.ToolWorkspaceShell) {
 			plan.Decision = core.PolicyAllow
 		} else if plan.Decision == core.PolicyAsk {
 			matched, err := approvalRuleMatches(ctx, tx, run, plan.Call, plan.RiskLevel, now)
@@ -9587,6 +9798,13 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		toolStatus = "succeeded"
 		validationStatus = "passed"
 	}
+	var editedArtifactContent *string
+	if step.StepType == core.ToolWorkspaceEditFile && execution.Output != nil {
+		if content, ok := execution.Output["artifact_content"].(string); ok {
+			delete(execution.Output, "artifact_content")
+			editedArtifactContent = &content
+		}
+	}
 	if step.StepType == core.ToolWorkspaceRunCommand && execution.Output != nil {
 		if content, _ := execution.Output["artifact_content"].(string); content != "" {
 			delete(execution.Output, "artifact_content")
@@ -9660,8 +9878,8 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "validation.completed", ActorType: "validator", ActorID: validator, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"validation_id": validationID, "tool_call_id": execution.ToolCallID, "validator": validator, "status": validationStatus, "input_hash": execution.InputHash}}); err != nil {
 		return err
 	}
-	if step.StepType == core.ToolWorkspaceWriteFile && validationStatus == "passed" {
-		return s.persistWorkspaceFileArtifact(ctx, tx, q, step, run, execution, now, correlationID)
+	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile) && validationStatus == "passed" {
+		return s.persistWorkspaceFileArtifact(ctx, tx, q, step, run, execution, editedArtifactContent, now, correlationID)
 	}
 	return nil
 }
@@ -9704,7 +9922,7 @@ func (s *Store) persistCommandOutputArtifact(ctx context.Context, tx *sql.Tx, q 
 	return artifact, nil
 }
 
-func (s *Store) persistWorkspaceFileArtifact(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, execution core.ToolExecution, now, correlationID string) error {
+func (s *Store) persistWorkspaceFileArtifact(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, execution core.ToolExecution, editedContent *string, now, correlationID string) error {
 	var argumentsJSON string
 	if err := tx.QueryRowContext(ctx, `SELECT arguments_json FROM tool_calls WHERE id = ? AND run_id = ?`, execution.ToolCallID, run.RunID).Scan(&argumentsJSON); err != nil {
 		return err
@@ -9720,7 +9938,11 @@ func (s *Store) persistWorkspaceFileArtifact(ctx context.Context, tx *sql.Tx, q 
 	if path == "." || strings.HasPrefix(path, ".oktapod/") {
 		return nil
 	}
-	persisted, err := s.persistBlob(ctx, []byte(arguments.Content), workspaceArtifactMediaType(path))
+	content := arguments.Content
+	if editedContent != nil {
+		content = *editedContent
+	}
+	persisted, err := s.persistBlob(ctx, []byte(content), workspaceArtifactMediaType(path))
 	if err != nil {
 		return fmt.Errorf("persist workspace artifact: %w", err)
 	}
@@ -9956,7 +10178,8 @@ func (s *Store) collectContinuationHistory(ctx context.Context, tx *sql.Tx, run 
 			continue
 		}
 		content, _ := output["content"].(string)
-		history = append(history, map[string]any{"kind": "assistant", "step_id": stepID, "group_id": stepID, "position": position, "content": content})
+		reasoningContent, _ := output["reasoning_content"].(string)
+		history = append(history, map[string]any{"kind": "assistant", "step_id": stepID, "group_id": stepID, "position": position, "content": content, "reasoning_content": reasoningContent})
 	}
 	if err := modelRows.Close(); err != nil {
 		return nil, err
@@ -10011,6 +10234,32 @@ func (s *Store) collectContinuationHistory(ctx context.Context, tx *sql.Tx, run 
 // insertQueuedModelStep appends a queued model_continue step carrying input to
 // the run. Shared by the Agent Loop continuation and the steering replan path.
 func insertQueuedModelStep(ctx context.Context, tx *sql.Tx, run core.RunContext, input map[string]any, now string) (string, error) {
+	if _, explicit := input["invoked_skill_ids"]; !explicit {
+		rows, err := tx.QueryContext(ctx, `SELECT input_json FROM steps WHERE run_id = ? ORDER BY position DESC`, run.RunID)
+		if err != nil {
+			return "", err
+		}
+		for rows.Next() {
+			var previousInput string
+			if err := rows.Scan(&previousInput); err != nil {
+				_ = rows.Close()
+				return "", err
+			}
+			ids, args := stepSkillInvocation(previousInput)
+			if len(ids) > 0 {
+				input["invoked_skill_ids"] = ids
+				input["skill_args"] = args
+				break
+			}
+		}
+		iterationErr := rows.Err()
+		if err := rows.Close(); err != nil {
+			return "", err
+		}
+		if iterationErr != nil {
+			return "", iterationErr
+		}
+	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return "", err
@@ -10191,7 +10440,7 @@ func (s *Store) queueToolFailureRecovery(ctx context.Context, tx *sql.Tx, q *sql
 
 func isRetryableModelInteractionError(code string) bool {
 	switch code {
-	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT", "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_TOOL_ARGUMENTS_INVALID", "PROVIDER_TOOL_ARGUMENTS_TRUNCATED":
+	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT", "PROVIDER_PROTOCOL_ERROR", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_REASONING_TRUNCATED", "PROVIDER_TOOL_ARGUMENTS_INVALID", "PROVIDER_TOOL_ARGUMENTS_TRUNCATED", "TOOL_BUDGET_EXCEEDED":
 		return true
 	default:
 		return false

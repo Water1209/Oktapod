@@ -88,8 +88,8 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
         {taskActive ? <LoaderCircle className="spin" size={12} /> : taskFailed ? <AlertTriangle size={12} /> : taskCanceled ? <X size={12} /> : <Check size={12} />}
         {taskActive ? (runningStep?.label ?? '任务执行中') : failure ? failure.title : taskCanceled ? '任务已取消' : '任务已完成'}
       </span>
-      <span className={`task-skill-summary${skillNames.length ? ' loaded' : ''}`} title={skillNames.length ? `已加载：${skillNames.join('、')}` : '本次 Run 未加载 Skill'}>
-        <Puzzle size={11} />{skillNames.length ? skillNames.join('、') : '未加载 Skill'}
+      <span className={`task-skill-summary${skillNames.length ? ' loaded' : ''}`} title={skillNames.length ? `已显式加载：${skillNames.join('、')}` : '本次 Run 未显式指定 Skill；系统仍可按目标自动加载匹配 Skill'}>
+        <Puzzle size={11} />{skillNames.length ? skillNames.join('、') : '自动匹配 Skill'}
       </span>
       {artifacts.length > 0 ? <small>{artifacts.length} 个文件</small> : null}
         <span className="message-task-stream-actions">

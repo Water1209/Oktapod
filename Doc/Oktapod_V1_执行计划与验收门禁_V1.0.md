@@ -31,7 +31,7 @@ V1 唯一交付目标：
 - `session_entries.entry_seq` 与 `messages.server_seq` 独立。
 - 现有工具名、Run 快照、Receipt 和 SSE cursor 保持可恢复兼容。
 - Steering 在已提交 Checkpoint 后生效；Retry 选择最新失败/阻塞前沿。
-- 完全访问（内部值 `full_access`）仍受硬拒绝、Scope 和 MCP 人工确认约束。
+- 完全访问（内部值 `full_access`）直接开放工作区命令并移除重复 `request_permission`，仍受硬拒绝、Scope 和 MCP 人工确认约束。
 - 内建搜索在可替代能力完成真实验收前不得删除。
 - 不恢复独立非交互 Terminal 导航；命令在 Thread 内受 Policy、审批和 Receipt 治理。
 
@@ -71,6 +71,8 @@ V1 唯一交付目标：
 - 提取 `agentloop`：模型调用、ToolCall 解析、ToolBatch 提议、ToolResult 观察和终止判断。
 - 提取 `harness`：Run、Lease、Checkpoint、审批、Receipt、预算、Steering、Follow-up 和恢复。
 - Worker 逐步收敛为队列调度和装配；复杂度、职责数量和变更耦合是主指标，约 800 行仅作拆分参考。
+- 任务成功终态由 Domain 推导的完成要求与 Harness 持久证据共同决定；模型无 ToolCall 仅结束当前 Turn。显式 Skill 的 ID、参数和完整交付门禁跨计划、工具、截断与完成修复续轮继承；带新约束的自然语言续作还冻结来源 Run 证据链。
+- Thinking 选择必须真实传到 Provider；交错思考的 `reasoning_content` 与 ToolCall 一起续接。推理/参数截断进入有界动作恢复；搜索次数上限和“禁止再搜索”跨继任 Run 继承，预算耗尽后搜索语义族不再暴露，漏网提案仍由 Harness 拒绝。
 - 将 `project-page.tsx` 中的 Inspector、Changes 等稳定业务块提取为组件；约 300 行仅作维护参考，不作为用户闭环发布门禁。
 
 门禁：
@@ -83,6 +85,7 @@ pnpm verify
 ```
 
 - Golden Trace 证明重构前后事件、消息、Receipt 和恢复语义一致。
+- 报告、代码修改、文件创建、外部检索等任务只靠文本宣称完成时必须继续；真实变更、变更后验证、最新 Artifact 和显式字数门禁均有反例测试。
 - HTTP 无 Principal 返回 401；跨用户项目访问仍被拒绝。
 
 ### B2：执行授权、宿主受控执行与双平台 CI
@@ -111,6 +114,7 @@ pnpm verify
 - 新 Run 可暴露 `read/edit/write/ls/find/grep/run_command` 简洁别名；历史 `workspace_*` 名称继续映射到同一实现。
 - `run_command` 产生可恢复的 started/completed/failed/cancelled、截断摘要和 Artifact；逐块 stdout/stderr/progress 直播进入 V1.1。
 - 长输出保存为 Artifact；事件和模型上下文只接收受限摘要。
+- `workspace_write_file` 与 `workspace_edit_file` 都生成最新可验证交付 Artifact；适配器内部传递的完整编辑后内容不得进入 Receipt、事件或模型上下文。
 
 门禁：
 
@@ -140,6 +144,7 @@ pnpm verify
 - Bearer、多 Secret 和缺凭据恢复通过；`auth.type=oauth` 使用官方 SDK 的标准授权发现、动态客户端注册、PKCE、浏览器回调、取消和加密刷新令牌持久化。手工 access token 明确使用 `bearer`，不会与 OAuth 生命周期混用。
 - OAuth 回调只保留短期内存会话并绑定当前 Capability/登录 Scope；API 不单独返回 state、授权码或 Token。Personal V1 使用同机 loopback 回调，外部账号真实数据调用在缺少用户 Secret 时标记为可选烟测，但发现、配置、审批、凭据请求和失败恢复不得跳过。
 - Windows stdio 通过 `node.exe` 直接启动 `npx-cli.js`，不依赖 shell 包装脚本；HOME、APPDATA 与 npm/uv 缓存收敛到系统临时运行目录。真实 Filesystem MCP 必须完成授权目录写读和越界拒绝。
+- 外部 MCP 调用必须有可配置硬截止；默认 10 分钟，超时产生脱敏、可恢复 Receipt，不允许无限占用 Worker。
 - 真实 Playwright MCP 必须以固定版本打开本地 Oktapod 并返回可访问性内容；真实 Git MCP 必须对临时仓库返回 status 和 log。第三方包未限定主版本依赖时不由 Oktapod 猜测兼容版本；应将完整命令与依赖约束作为待审核配置固定。
 - 外部内容不能改变权限、系统提示或安全策略。
 
