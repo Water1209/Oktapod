@@ -56,6 +56,34 @@ type ModelCatalogEntry struct {
 	Stale            bool
 }
 
+const (
+	ProviderModelSourceCatalog = "catalog"
+	ProviderModelSourceManual  = "manual"
+)
+
+// ProviderModelOption is the user-controlled model selection for one Provider.
+// Catalog metadata is optional: manually entered model IDs intentionally keep
+// capabilities unknown until the Provider advertises them.
+type ProviderModelOption struct {
+	OrganizationID   string
+	ProviderID       string
+	ProviderName     string
+	ModelID          string
+	Source           string
+	Enabled          bool
+	Default          bool
+	ProviderDefault  bool
+	CapabilitiesJSON string
+	ContextWindow    int64
+	MaxOutput        int64
+	FetchedAt        time.Time
+	ExpiresAt        time.Time
+	CatalogVersion   string
+	Stale            bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type ProviderTestResult struct {
 	ProviderID    string
 	Stage         string

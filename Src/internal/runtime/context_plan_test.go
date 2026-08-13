@@ -160,9 +160,12 @@ func TestWebSearchDropsOnlyEmptyOptionalDomainsBeforePolicyFreeze(t *testing.T) 
 	}
 }
 
-func TestScenePolicyDeniesWorkspaceCommandsOutsideCode(t *testing.T) {
+func TestScenePolicyOnlyRestrictsHistoricalSnapshots(t *testing.T) {
 	if sceneAllowsWorkspaceCommand(`{"scene":"work","scene_policy":{"workspace_command":false}}`) {
-		t.Fatal("work scene must deny workspace commands")
+		t.Fatal("historical work snapshot must preserve its frozen command restriction")
+	}
+	if !sceneAllowsWorkspaceCommand(`{"schema_version":2,"scene":"work"}`) {
+		t.Fatal("new work snapshot must expose governed workspace commands")
 	}
 	if !sceneAllowsWorkspaceCommand(`{"scene":"code","scene_policy":{"workspace_command":true}}`) {
 		t.Fatal("code scene must allow workspace commands")
@@ -198,6 +201,11 @@ func TestScenePolicyFiltersWorkspaceCommandBeforeModelPlanning(t *testing.T) {
 	allowed, declared, plan = applySceneToolPolicy(`{"scene":"work","permission_mode":"full_access","scene_policy":{"workspace_command":false}}`, nil, false)
 	if declared || allowed != nil || plan["workspace_command"] != true {
 		t.Fatalf("full access unexpectedly restricted tools: declared=%v allowed=%#v plan=%#v", declared, allowed, plan)
+	}
+
+	allowed, declared, plan = applySceneToolPolicy(`{"schema_version":2,"scene":"work","permission_mode":"ask"}`, []string{core.ToolWorkspaceRunCommand}, true)
+	if !declared || len(allowed) != 1 || allowed[0] != core.ToolWorkspaceRunCommand || plan["source"] != "execution_policy" {
+		t.Fatalf("new work snapshot was scene-filtered: declared=%v allowed=%#v plan=%#v", declared, allowed, plan)
 	}
 }
 

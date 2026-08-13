@@ -13,29 +13,55 @@ test.beforeEach(async ({ page }, testInfo) => {
 })
 
 async function createProject(page: Page, name: string) {
-  await page.getByRole('button', { name: '打开项目' }).click()
+  await page.getByRole('link', { name: '查看项目' }).click()
+  await page.getByRole('button', { name: '新建项目' }).click()
   await page.getByRole('textbox', { name: '项目名称' }).fill(name)
   await page.getByRole('textbox', { name: '目标说明' }).fill('验证 Codex 式工作台路由与响应式交互')
   await page.getByRole('button', { name: '建立工作空间' }).click()
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/)
 }
 
-test('Provider 实例页不回填凭据并可显示连接测试结果', async ({ page }) => {
+test('模型服务不回填凭据，并用启用列表控制项目可选模型', async ({ page }) => {
   await page.goto('/settings/providers')
   await expect(page.getByRole('heading', { name: '模型服务', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '添加实例' }).click()
   await page.getByLabel('显示名称').fill('E2E Provider')
   await page.getByLabel('Endpoint').fill('http://127.0.0.1:19090/v1')
-  await page.getByLabel('默认模型').fill('model-e2e')
   await page.getByLabel(/API Key/).fill('fake-e2e-key')
-  await page.getByRole('button', { name: '保存实例' }).click()
-  const providerList = page.getByRole('complementary', { name: 'Provider 实例' })
+  await page.getByRole('button', { name: '保存连接' }).click()
+  const providerList = page.getByRole('complementary', { name: '模型服务实例' })
   await expect(providerList.getByRole('button', { name: /E2E Provider/ })).toBeVisible()
   await expect(page.getByText('已配置 · 留空保持不变')).toBeVisible()
   await expect(page.locator('input[type="password"]')).toHaveValue('')
   await page.getByRole('button', { name: '测试连接' }).click()
-  await expect(page.locator('.test-result')).toContainText(/models|个模型|fresh|stale/, { timeout: 15_000 })
+  await expect(page.getByRole('status')).toContainText(/连接正常.*1 个模型/s)
+  await page.getByRole('textbox', { name: '手动模型 ID' }).fill('model-e2e')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await page.getByRole('combobox', { name: '默认模型' }).selectOption('model-e2e')
+  await page.getByRole('button', { name: '保存模型并启用' }).click()
+  await expect(page.getByText('1 个模型已选择')).toBeVisible()
   await expect(page.locator('input[type="password"]')).toHaveValue('')
+})
+
+test('项目标题菜单可以在个人项目之间切换', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const firstName = `切换甲 ${suffix}`
+  const secondName = `切换乙 ${suffix}`
+  await createProject(page, firstName)
+  const firstURL = page.url()
+
+  await page.getByRole('link', { name: '项目', exact: true }).click()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('textbox', { name: '项目名称' }).fill(secondName)
+  await page.getByRole('textbox', { name: '目标说明' }).fill('验证项目切换菜单')
+  await page.getByRole('button', { name: '建立工作空间' }).click()
+
+  await page.getByRole('button', { name: new RegExp(secondName) }).click()
+  const switcher = page.getByRole('menu', { name: '切换项目' })
+  await expect(switcher).toBeVisible()
+  await switcher.getByRole('menuitem', { name: new RegExp(firstName) }).click()
+  await expect(page).toHaveURL(firstURL)
+  await expect(page.getByRole('button', { name: new RegExp(firstName) })).toBeVisible()
 })
 
 test('Session Tree 可预览、标记并从用户消息重新编辑', async ({ page }) => {
@@ -46,17 +72,20 @@ test('Session Tree 可预览、标记并从用户消息重新编辑', async ({ p
   await page.getByRole('button', { name: '发送' }).click()
   await expect(page.getByRole('main').getByText('E2E 模型执行成功。', { exact: true })).toBeVisible({ timeout: 15_000 })
 
-  await page.getByRole('link', { name: 'Session Tree' }).click()
+  const activeThread = page.locator('.thread-nav-row.active')
+  await activeThread.hover()
+  await activeThread.getByRole('button', { name: /管理/ }).click()
+  await page.getByRole('link', { name: '查看会话分支' }).click()
   await expect(page.getByRole('heading', { name: '会话树' })).toBeVisible()
   const userEntry = page.getByRole('region', { name: 'Session Tree' }).getByRole('button').filter({ hasText: content })
   await expect(userEntry).toBeVisible()
   await userEntry.click()
   await expect(page.getByRole('button', { name: '重新编辑' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Fork' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Clone 当前路径' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '创建分支' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '复制当前路径' })).toBeVisible()
 
   page.once('dialog', async (dialog) => dialog.accept(`关键节点 ${suffix}`))
-  await page.getByRole('button', { name: 'Label' }).click()
+  await page.getByRole('button', { name: '添加标签' }).click()
   await expect(page.getByText(`关键节点 ${suffix}`, { exact: true }).first()).toBeVisible()
 
   page.once('dialog', async (dialog) => dialog.accept())
@@ -80,7 +109,7 @@ test('首页与工作台在五档视口无横向溢出', async ({ page }) => {
     await expect(page.getByRole('textbox', { name: '消息' })).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `workbench width ${width}`).toBe(true)
   }
-  await page.getByRole('button', { name: '打开检查器' }).click()
+  await page.getByRole('button', { name: '打开任务面板' }).click()
   await expect(page.locator('.project-management-panel')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
@@ -110,7 +139,9 @@ test('设置显示生效来源并能切换显式主题', async ({ page }) => {
   expect(darkFixture.link.color).toBe('rgb(138, 167, 255)')
   expect(darkFixture.task.background).toBe('rgb(23, 26, 34)')
   await page.goto('/settings/providers')
-  await expect(page.getByRole('link', { name: '主题与外观' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '模型服务' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '外观' })).toBeVisible()
+  await expect(page.locator('.settings-layout > nav a')).toHaveCount(2)
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   const providerTheme = await page.evaluate(() => ({
     body: getComputedStyle(document.body).backgroundColor,
@@ -122,11 +153,17 @@ test('设置显示生效来源并能切换显式主题', async ({ page }) => {
   expect(providerTheme.sidebar).not.toBe('rgb(240, 242, 245)')
   expect(providerTheme.list).not.toBe('rgb(247, 248, 250)')
   expect(providerTheme.action).toBe('rgb(36, 85, 230)')
-  await page.getByRole('link', { name: '主题与外观' }).click()
+  await page.getByRole('link', { name: '外观' }).click()
   await page.getByRole('combobox', { name: '主题' }).selectOption('light')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await page.getByRole('link', { name: '数据维护' }).click()
-  await expect(page.getByRole('link', { name: '导入与导出' })).toBeVisible()
+  await page.getByRole('link', { name: '项目', exact: true }).click()
+  await expect(page).toHaveURL('/projects')
+  await expect(page.getByRole('heading', { name: '全部项目' })).toBeVisible()
+  await page.getByRole('link', { name: '设置', exact: true }).click()
+  await expect(page).toHaveURL('/settings/appearance')
+  await page.goto('/settings/data')
+  await expect(page).toHaveURL('/import-export')
+  await expect(page.getByRole('heading', { name: '导入与导出' })).toBeVisible()
 })
 
 test('导入导出先预检并拒绝包含敏感字段的包', async ({ page }) => {
@@ -168,6 +205,9 @@ test('导入导出先预检并拒绝包含敏感字段的包', async ({ page }) 
   await page.getByRole('button', { name: '导入为个人项目' }).click()
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+/)
   await expect(page.getByRole('link', { name: /Thread hello/ })).toBeVisible()
-  await page.getByRole('link', { name: 'Session Tree' }).click()
+  const activeThread = page.locator('.thread-nav-row.active')
+  await activeThread.hover()
+  await activeThread.getByRole('button', { name: /管理/ }).click()
+  await page.getByRole('link', { name: '查看会话分支' }).click()
   await expect(page.getByRole('region', { name: 'Session Tree' }).getByRole('button').filter({ hasText: 'hello' })).toBeVisible()
 })

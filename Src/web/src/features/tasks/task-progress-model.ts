@@ -25,6 +25,15 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   const summary = task.result_summary?.trim() ?? ''
   const timedOut = /context deadline exceeded|Client\.Timeout exceeded|awaiting headers/i.test(summary)
 
+  if (/通过确定性校验/.test(summary)) {
+    return {
+      title: '任务已停止',
+      detail: '最后一个工具步骤成功，但任务整体终态为失败；系统不会把局部成功当作任务完成，也不会自动继续执行。',
+      action: '已完成的工具收据和文件仍会保留。请查看失败步骤，确认后从原目标重新发起。',
+      retryable: false,
+    }
+  }
+
   if (code === 'PROVIDER_UNAVAILABLE') {
     return timedOut
       ? { title: '模型服务请求超时', detail: '等待模型响应超过 120 秒，本次模型交互没有完成。', action: '系统会从当前检查点自动重试，连续 3 次失败后才停止。', retryable: true }

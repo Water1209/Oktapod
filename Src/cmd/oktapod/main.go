@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	localblob "github.com/oktapod/oktapod/Src/internal/adapters/blob/localfs"
 	postgresdb "github.com/oktapod/oktapod/Src/internal/adapters/db/postgres"
 	"github.com/oktapod/oktapod/Src/internal/adapters/db/sqlite"
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
@@ -171,6 +173,15 @@ func run() error {
 		return err
 	}
 	service.WithChatToolExecutor(workspaceExecutor, config.WorkspaceRoot)
+	blobStore, err := localblob.New(filepath.Join(filepath.Dir(config.WorkspaceRoot), "blobs"))
+	if err != nil {
+		return err
+	}
+	artifactCapture, err := application.NewArtifactCaptureService(workspaceExecutor, blobStore)
+	if err != nil {
+		return err
+	}
+	service.WithArtifactCapture(artifactCapture)
 	webSearchExecutor, err := websearch.New("")
 	if err != nil {
 		return err
@@ -186,6 +197,8 @@ func run() error {
 		workerID := fmt.Sprintf("%s-%d", workerInstanceID, index+1)
 		worker := okruntime.NewWorker(workerID, store, model, logger).
 			WithWorkspaceExecutor(workspaceExecutor).
+			WithArtifactCapture(artifactCapture).
+			WithAssetStager(workspaceExecutor).
 			WithWebSearchExecutor(webSearchExecutor).
 			WithMCPSecretStore(credentials).
 			WithQueuedTurnStarter(queuedTurnStarter)

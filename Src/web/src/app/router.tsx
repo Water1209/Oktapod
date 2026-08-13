@@ -3,6 +3,7 @@ import { createRootRoute, createRoute, createRouter, Link, Navigate } from '@tan
 import { AuthenticatedRoot } from './authenticated-root'
 
 const ProjectsPage = lazyNamed(() => import('../features/projects/projects-page'), 'ProjectsPage')
+const ProjectLibraryPage = lazyNamed(() => import('../features/projects/projects-page'), 'ProjectLibraryPage')
 const ProjectPage = lazyNamed(() => import('../features/projects/project-page'), 'ProjectPage')
 const LegacyTaskResolver = lazyNamed(() => import('../features/tasks/legacy-task-resolver'), 'LegacyTaskResolver')
 const ApprovalInbox = lazyNamed(() => import('../features/approvals/approval-inbox'), 'ApprovalInbox')
@@ -35,6 +36,12 @@ const projectsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: suspend(ProjectsPage),
+})
+
+const projectLibraryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects',
+  component: suspend(ProjectLibraryPage),
 })
 
 const projectRoute = createRoute({
@@ -95,6 +102,18 @@ const settingsIndexRoute = createRoute({
   component: () => <Navigate to="/settings/$section" params={{ section: 'appearance' }} />,
 })
 
+const legacySecuritySettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/security',
+  component: () => <Navigate to="/approvals" />,
+})
+
+const legacyDataSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/data',
+  component: () => <Navigate to="/import-export" />,
+})
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/$section',
@@ -127,7 +146,7 @@ const invitationAcceptRoute = createRoute({
   component: () => <Navigate to="/" />,
 })
 
-const routeTree = rootRoute.addChildren([projectsRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
+const routeTree = rootRoute.addChildren([projectsRoute, projectLibraryRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, legacySecuritySettingsRoute, legacyDataSettingsRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
 
 export const router = createRouter({ routeTree })
 

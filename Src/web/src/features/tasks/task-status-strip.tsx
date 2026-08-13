@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, ChevronUp, Circle, LoaderCircle, MoreHorizontal, PauseCircle, RotateCw, ShieldAlert } from 'lucide-react'
-import { api, type Task } from '../../shared/api/client'
+import { AlertTriangle, Check, CheckCircle2, ChevronUp, Circle, Layers3, LoaderCircle, MoreHorizontal, PauseCircle, RotateCw, ShieldAlert } from 'lucide-react'
+import { api, type HumanAction, type Task } from '../../shared/api/client'
 import { taskFailureInfo, taskStatusView } from './task-progress-model'
 import { useRunEvents } from '../runs/use-run-events'
 import { HumanActionCard } from '../approvals/human-action-card'
@@ -53,6 +53,19 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
       await queryClient.invalidateQueries({ queryKey: ['run-plan', task?.run_id] })
     },
   })
+  const approveBatch = useMutation({
+    mutationFn: (batch: HumanAction[]) => Promise.all(batch.map((action) => api.decideHumanAction(action.id, {
+      decision: 'approved', scope: 'once', version: action.version,
+    }))),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['human-actions', conversationId, active?.run_id] }),
+        queryClient.invalidateQueries({ queryKey: ['run-plan', active?.run_id] }),
+        queryClient.invalidateQueries({ queryKey: ['run-events', active?.run_id] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks', task?.project_id] }),
+      ])
+    },
+  })
 
   const latestPlanOrActionSeq = useMemo(
     () => events.data.items.reduce(
@@ -77,6 +90,17 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
     () => (actions.data?.items ?? []).filter((item) => item.status === 'waiting_user' || item.status === 'reviewing'),
     [actions.data?.items],
   )
+  const approvalBatches = useMemo(() => {
+    const groups = new Map<string, HumanAction[]>()
+    for (const action of pendingActions) {
+      if (action.kind !== 'tool_approval' || action.status !== 'waiting_user') continue
+      const tool = String(action.request.tool_name ?? action.title)
+      const key = `${action.run_plan_item_id || action.step_id}:${tool}:${action.risk_level}`
+      groups.set(key, [...(groups.get(key) ?? []), action])
+    }
+    return [...groups.values()].filter((group) => group.length > 1)
+  }, [pendingActions])
+  const batchedActionIDs = useMemo(() => new Set(approvalBatches.flatMap((group) => group.map((action) => action.id))), [approvalBatches])
   useEffect(() => {
     if (pendingActions.length === 0) return
     const frame = window.requestAnimationFrame(() => {
@@ -145,7 +169,12 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
             <p className="task-capsule-detail-current">{plan.isLoading ? '正在形成完整执行计划…' : currentLabel}</p>
           )}
           {pendingActions.length > 0 ? <section ref={actionRef} tabIndex={-1} className="human-action-stack" aria-label="需要你处理">
-            {pendingActions.map((action) => <HumanActionCard action={action} key={action.id} />)}
+            {approvalBatches.map((batch) => <details className="human-action-batch" open key={`batch:${batch[0]?.id}`}>
+              <summary><span><Layers3 size={14} /><strong>同一计划项的 {batch.length} 个冻结动作</strong><small>每项仍保留独立参数、哈希与审批记录</small></span><button type="button" disabled={approveBatch.isPending} onClick={(event) => { event.preventDefault(); event.stopPropagation(); approveBatch.mutate(batch) }}><Check size={13} />批准本批 {batch.length} 项</button></summary>
+              <div>{batch.map((action) => <HumanActionCard action={action} key={action.id} />)}</div>
+            </details>)}
+            {pendingActions.filter((action) => !batchedActionIDs.has(action.id)).map((action) => <HumanActionCard action={action} key={action.id} />)}
+            {approveBatch.error ? <div className="task-capsule-error" role="alert"><AlertTriangle size={12} />{approveBatch.error.message}</div> : null}
           </section> : null}
           {pendingQueue.length > 0 ? (
             <div className="task-capsule-queue">

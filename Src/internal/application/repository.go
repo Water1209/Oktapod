@@ -51,6 +51,10 @@ type ProviderRepository interface {
 	DeleteProviderInstance(ctx context.Context, organizationID, providerID string) error
 	ReplaceModelCatalog(ctx context.Context, organizationID, providerID string, entries []core.ModelCatalogEntry) error
 	ListModelCatalogEntries(ctx context.Context, organizationID, providerID string) ([]core.ModelCatalogEntry, error)
+	ReplaceEnabledModels(ctx context.Context, organizationID, providerID string, modelIDs []string, defaultModelID string) error
+	ListProviderModelOptions(ctx context.Context, organizationID, providerID string) ([]core.ProviderModelOption, error)
+	ListEnabledModels(ctx context.Context, organizationID string) ([]core.ProviderModelOption, error)
+	ProviderModelInUse(ctx context.Context, organizationID, providerID, modelID string) (bool, error)
 }
 
 type ProjectRepository interface {
@@ -170,7 +174,7 @@ type ScheduleRepository interface {
 }
 
 type ConversationQueueRepository interface {
-	EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string) (core.ConversationQueueItem, error)
+	EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation) (core.ConversationQueueItem, error)
 	ListConversationQueue(ctx context.Context, scope core.Scope, conversationID string, status string) ([]core.ConversationQueueItem, error)
 	ApplyConversationSteering(ctx context.Context, scope core.Scope, sourceStep core.ClaimedStep, run core.RunContext, correlationID string) (core.ConversationQueueItem, string, error)
 	ClaimSteeringAfterStep(ctx context.Context, scope core.Scope, taskID, conversationID string) (core.ConversationQueueItem, error)

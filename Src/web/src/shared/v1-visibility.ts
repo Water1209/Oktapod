@@ -11,7 +11,7 @@ export const V1_VISIBILITY = {
 } as const
 
 export const V1_INSPECTOR_TABS = new Set([
-  'run', 'context', 'usage', 'changes', 'trace', 'tools', 'security',
+  'run', 'files', 'context', 'usage', 'changes', 'trace', 'tools', 'security',
   'overview', 'tasks', 'assets', 'activity', 'plan', 'agents', 'project_usage',
 ])
 

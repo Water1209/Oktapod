@@ -177,6 +177,12 @@ const (
 	CapabilityStatusQuarantined CapabilityStatus = "quarantined"
 )
 
+// Defines values for CaptureWorkspaceArtifactRequestKind.
+const (
+	Deliverable CaptureWorkspaceArtifactRequestKind = "deliverable"
+	Evidence    CaptureWorkspaceArtifactRequestKind = "evidence"
+)
+
 // Defines values for ControlTaskRequestCommand.
 const (
 	Cancel ControlTaskRequestCommand = "cancel"
@@ -521,6 +527,18 @@ const (
 	MessageVisibilitySelected MessageVisibility = "selected"
 )
 
+// Defines values for MessagePresentationQueueKind.
+const (
+	MessagePresentationQueueKindFollowUp MessagePresentationQueueKind = "follow_up"
+	MessagePresentationQueueKindSteering MessagePresentationQueueKind = "steering"
+)
+
+// Defines values for ModelDescriptorSource.
+const (
+	ModelDescriptorSourceCatalog ModelDescriptorSource = "catalog"
+	ModelDescriptorSourceManual  ModelDescriptorSource = "manual"
+)
+
 // Defines values for MovePlanItemRequestStatus.
 const (
 	MovePlanItemRequestStatusDone       MovePlanItemRequestStatus = "done"
@@ -696,6 +714,12 @@ const (
 	ProviderInstanceStatusError    ProviderInstanceStatus = "error"
 )
 
+// Defines values for ProviderModelOptionSource.
+const (
+	Catalog ProviderModelOptionSource = "catalog"
+	Manual  ProviderModelOptionSource = "manual"
+)
+
 // Defines values for PublishArtifactRequestVisibility.
 const (
 	PublishArtifactRequestVisibilityPrivate  PublishArtifactRequestVisibility = "private"
@@ -768,11 +792,11 @@ const (
 
 // Defines values for RunPlanRevisionTrigger.
 const (
-	RunPlanRevisionTriggerFollowUp         RunPlanRevisionTrigger = "follow_up"
-	RunPlanRevisionTriggerInitial          RunPlanRevisionTrigger = "initial"
-	RunPlanRevisionTriggerPermissionChange RunPlanRevisionTrigger = "permission_change"
-	RunPlanRevisionTriggerRecovery         RunPlanRevisionTrigger = "recovery"
-	RunPlanRevisionTriggerSteering         RunPlanRevisionTrigger = "steering"
+	FollowUp         RunPlanRevisionTrigger = "follow_up"
+	Initial          RunPlanRevisionTrigger = "initial"
+	PermissionChange RunPlanRevisionTrigger = "permission_change"
+	Recovery         RunPlanRevisionTrigger = "recovery"
+	Steering         RunPlanRevisionTrigger = "steering"
 )
 
 // Defines values for RunUsageBudgetStatus.
@@ -787,6 +811,13 @@ const (
 	RunUsageCostStatusConfirmed RunUsageCostStatus = "confirmed"
 	RunUsageCostStatusEstimated RunUsageCostStatus = "estimated"
 	RunUsageCostStatusUnpriced  RunUsageCostStatus = "unpriced"
+)
+
+// Defines values for SaveArtifactAsProjectFileRequestVisibility.
+const (
+	SaveArtifactAsProjectFileRequestVisibilityPrivate  SaveArtifactAsProjectFileRequestVisibility = "private"
+	SaveArtifactAsProjectFileRequestVisibilityProject  SaveArtifactAsProjectFileRequestVisibility = "project"
+	SaveArtifactAsProjectFileRequestVisibilitySelected SaveArtifactAsProjectFileRequestVisibility = "selected"
 )
 
 // Defines values for SaveProviderRequestProtocolFamily.
@@ -916,6 +947,13 @@ const (
 	UploadAssetRequestVisibilitySelected UploadAssetRequestVisibility = "selected"
 )
 
+// Defines values for WorkspaceFileKind.
+const (
+	WorkspaceFileKindDirectory WorkspaceFileKind = "directory"
+	WorkspaceFileKindFile      WorkspaceFileKind = "file"
+	WorkspaceFileKindSymlink   WorkspaceFileKind = "symlink"
+)
+
 // Defines values for SetAgentDefinitionStatusJSONBodyStatus.
 const (
 	SetAgentDefinitionStatusJSONBodyStatusDisabled    SetAgentDefinitionStatusJSONBodyStatus = "disabled"
@@ -960,8 +998,8 @@ const (
 
 // Defines values for ListProjectAssetsParamsKind.
 const (
-	ListProjectAssetsParamsKindFile   ListProjectAssetsParamsKind = "file"
-	ListProjectAssetsParamsKindFolder ListProjectAssetsParamsKind = "folder"
+	File   ListProjectAssetsParamsKind = "file"
+	Folder ListProjectAssetsParamsKind = "folder"
 )
 
 // Defines values for GetRunChangesParamsBaseline.
@@ -1273,6 +1311,13 @@ type AuthSession struct {
 	UserId         openapi_types.UUID `json:"user_id"`
 }
 
+// AutoReviewDiagnostics defines model for AutoReviewDiagnostics.
+type AutoReviewDiagnostics struct {
+	Available  bool   `json:"available"`
+	Configured bool   `json:"configured"`
+	Reason     string `json:"reason"`
+}
+
 // Bootstrap defines model for Bootstrap.
 type Bootstrap struct {
 	Capabilities    RuntimeCapabilities `json:"capabilities"`
@@ -1328,6 +1373,16 @@ type CapabilityScopeType string
 
 // CapabilityStatus defines model for Capability.Status.
 type CapabilityStatus string
+
+// CaptureWorkspaceArtifactRequest defines model for CaptureWorkspaceArtifactRequest.
+type CaptureWorkspaceArtifactRequest struct {
+	Kind  CaptureWorkspaceArtifactRequestKind `json:"kind"`
+	Path  string                              `json:"path"`
+	RunId openapi_types.UUID                  `json:"run_id"`
+}
+
+// CaptureWorkspaceArtifactRequestKind defines model for CaptureWorkspaceArtifactRequest.Kind.
+type CaptureWorkspaceArtifactRequestKind string
 
 // CloneSessionRequest defines model for CloneSessionRequest.
 type CloneSessionRequest struct {
@@ -1473,12 +1528,13 @@ type CreateProjectInvitationRequestRole string
 
 // CreateProjectRequest defines model for CreateProjectRequest.
 type CreateProjectRequest struct {
-	DefaultModel  *string                   `json:"default_model,omitempty"`
-	Description   *string                   `json:"description,omitempty"`
-	FallbackModel *string                   `json:"fallback_model,omitempty"`
-	Kind          CreateProjectRequestKind  `json:"kind"`
-	Name          string                    `json:"name"`
-	Scene         CreateProjectRequestScene `json:"scene"`
+	DefaultModel    *string                   `json:"default_model,omitempty"`
+	Description     *string                   `json:"description,omitempty"`
+	FallbackModel   *string                   `json:"fallback_model,omitempty"`
+	Kind            CreateProjectRequestKind  `json:"kind"`
+	ModelProviderId *string                   `json:"model_provider_id,omitempty"`
+	Name            string                    `json:"name"`
+	Scene           CreateProjectRequestScene `json:"scene"`
 }
 
 // CreateProjectRequestKind defines model for CreateProjectRequest.Kind.
@@ -1628,6 +1684,7 @@ type DiagnosticLogPolicy struct {
 
 // Diagnostics defines model for Diagnostics.
 type Diagnostics struct {
+	AutoReview  AutoReviewDiagnostics  `json:"auto_review"`
 	Database    DatabaseDiagnostics    `json:"database"`
 	Logs        DiagnosticLogPolicy    `json:"logs"`
 	Maintenance MaintenanceDiagnostics `json:"maintenance"`
@@ -1635,6 +1692,7 @@ type Diagnostics struct {
 	Providers   ProviderDiagnostics    `json:"providers"`
 	Sse         SseDiagnostics         `json:"sse"`
 	Status      DiagnosticsStatus      `json:"status"`
+	Storage     *StorageDiagnostics    `json:"storage,omitempty"`
 	Version     string                 `json:"version"`
 	Worker      WorkerDiagnostics      `json:"worker"`
 }
@@ -1892,6 +1950,7 @@ type Message struct {
 	ConversationId openapi_types.UUID  `json:"conversation_id"`
 	CreatedAt      time.Time           `json:"created_at"`
 	Id             openapi_types.UUID  `json:"id"`
+	Presentation   MessagePresentation `json:"presentation"`
 	ProjectId      openapi_types.UUID  `json:"project_id"`
 	Role           MessageRole         `json:"role"`
 	ServerSeq      int64               `json:"server_seq"`
@@ -1905,15 +1964,51 @@ type MessageRole string
 // MessageVisibility defines model for Message.Visibility.
 type MessageVisibility string
 
+// MessageAttachment defines model for MessageAttachment.
+type MessageAttachment struct {
+	ContentHash string             `json:"content_hash"`
+	Id          openapi_types.UUID `json:"id"`
+	MediaType   string             `json:"media_type"`
+	Name        string             `json:"name"`
+	SizeBytes   int64              `json:"size_bytes"`
+}
+
+// MessagePresentation defines model for MessagePresentation.
+type MessagePresentation struct {
+	Attachments *[]MessageAttachment          `json:"attachments,omitempty"`
+	QueueKind   *MessagePresentationQueueKind `json:"queue_kind,omitempty"`
+	Skill       *MessageSkillInvocation       `json:"skill,omitempty"`
+}
+
+// MessagePresentationQueueKind defines model for MessagePresentation.QueueKind.
+type MessagePresentationQueueKind string
+
+// MessageSkillInvocation defines model for MessageSkillInvocation.
+type MessageSkillInvocation struct {
+	Args    string             `json:"args"`
+	Command string             `json:"command"`
+	Id      openapi_types.UUID `json:"id"`
+	Name    string             `json:"name"`
+	Version string             `json:"version"`
+}
+
 // ModelDescriptor defines model for ModelDescriptor.
 type ModelDescriptor struct {
-	ContextWindow    *int64 `json:"context_window,omitempty"`
-	Id               string `json:"id"`
-	Reasoning        *bool  `json:"reasoning,omitempty"`
-	StructuredOutput *bool  `json:"structured_output,omitempty"`
-	ToolCalling      *bool  `json:"tool_calling,omitempty"`
-	Vision           *bool  `json:"vision,omitempty"`
+	ContextWindow    *int64                 `json:"context_window,omitempty"`
+	Default          *bool                  `json:"default,omitempty"`
+	Id               string                 `json:"id"`
+	ProviderId       *string                `json:"provider_id,omitempty"`
+	ProviderName     *string                `json:"provider_name,omitempty"`
+	Reasoning        *bool                  `json:"reasoning,omitempty"`
+	Source           *ModelDescriptorSource `json:"source,omitempty"`
+	Stale            *bool                  `json:"stale,omitempty"`
+	StructuredOutput *bool                  `json:"structured_output,omitempty"`
+	ToolCalling      *bool                  `json:"tool_calling,omitempty"`
+	Vision           *bool                  `json:"vision,omitempty"`
 }
+
+// ModelDescriptorSource defines model for ModelDescriptor.Source.
+type ModelDescriptorSource string
 
 // MovePlanItemRequest defines model for MovePlanItemRequest.
 type MovePlanItemRequest struct {
@@ -2005,11 +2100,12 @@ type Project struct {
 	MaxModelCalls int64 `json:"max_model_calls"`
 
 	// MaxTokens Project default for new Runs; zero means unlimited.
-	MaxTokens      int64              `json:"max_tokens"`
-	Name           string             `json:"name"`
-	OrganizationId openapi_types.UUID `json:"organization_id"`
-	Scene          ProjectScene       `json:"scene"`
-	UpdatedAt      time.Time          `json:"updated_at"`
+	MaxTokens       int64              `json:"max_tokens"`
+	ModelProviderId string             `json:"model_provider_id"`
+	Name            string             `json:"name"`
+	OrganizationId  openapi_types.UUID `json:"organization_id"`
+	Scene           ProjectScene       `json:"scene"`
+	UpdatedAt       time.Time          `json:"updated_at"`
 }
 
 // ProjectKind defines model for Project.Kind.
@@ -2200,20 +2296,24 @@ type ProviderInstanceProtocolFamily string
 // ProviderInstanceStatus defines model for ProviderInstance.Status.
 type ProviderInstanceStatus string
 
-// ProviderModelCatalogEntry defines model for ProviderModelCatalogEntry.
-type ProviderModelCatalogEntry struct {
-	Capabilities   map[string]interface{} `json:"capabilities"`
-	CatalogVersion string                 `json:"catalog_version"`
-	ContextWindow  int64                  `json:"context_window"`
-	ExpiresAt      time.Time              `json:"expires_at"`
-	FetchedAt      time.Time              `json:"fetched_at"`
-	MaxOutput      int64                  `json:"max_output"`
-	ModelId        string                 `json:"model_id"`
-	Pricing        map[string]interface{} `json:"pricing"`
-	ProviderId     string                 `json:"provider_id"`
-	Stale          bool                   `json:"stale"`
-	ThinkingMap    map[string]interface{} `json:"thinking_map"`
+// ProviderModelOption defines model for ProviderModelOption.
+type ProviderModelOption struct {
+	Capabilities   map[string]interface{}    `json:"capabilities"`
+	CatalogVersion string                    `json:"catalog_version"`
+	ContextWindow  int64                     `json:"context_window"`
+	Default        bool                      `json:"default"`
+	Enabled        bool                      `json:"enabled"`
+	ExpiresAt      time.Time                 `json:"expires_at"`
+	FetchedAt      time.Time                 `json:"fetched_at"`
+	MaxOutput      int64                     `json:"max_output"`
+	ModelId        string                    `json:"model_id"`
+	ProviderId     string                    `json:"provider_id"`
+	Source         ProviderModelOptionSource `json:"source"`
+	Stale          bool                      `json:"stale"`
 }
+
+// ProviderModelOptionSource defines model for ProviderModelOption.Source.
+type ProviderModelOptionSource string
 
 // ProviderTestResult defines model for ProviderTestResult.
 type ProviderTestResult struct {
@@ -2386,6 +2486,23 @@ type RuntimeCapabilities struct {
 	Sandbox    string `json:"sandbox"`
 }
 
+// SaveArtifactAsProjectFileRequest defines model for SaveArtifactAsProjectFileRequest.
+type SaveArtifactAsProjectFileRequest struct {
+	Name       string                                     `json:"name"`
+	ParentId   *openapi_types.UUID                        `json:"parent_id,omitempty"`
+	Visibility SaveArtifactAsProjectFileRequestVisibility `json:"visibility"`
+}
+
+// SaveArtifactAsProjectFileRequestVisibility defines model for SaveArtifactAsProjectFileRequest.Visibility.
+type SaveArtifactAsProjectFileRequestVisibility string
+
+// SaveProviderModelsRequest defines model for SaveProviderModelsRequest.
+type SaveProviderModelsRequest struct {
+	Activate       *bool    `json:"activate,omitempty"`
+	DefaultModelId string   `json:"default_model_id"`
+	ModelIds       []string `json:"model_ids"`
+}
+
 // SaveProviderRequest defines model for SaveProviderRequest.
 type SaveProviderRequest struct {
 	// Credential Replaces the credential when supplied and is never returned.
@@ -2514,6 +2631,12 @@ type SseDiagnostics struct {
 	ActiveConnections int64 `json:"active_connections"`
 }
 
+// StorageDiagnostics defines model for StorageDiagnostics.
+type StorageDiagnostics struct {
+	DataRoot      string `json:"data_root"`
+	WorkspaceRoot string `json:"workspace_root"`
+}
+
 // Task defines model for Task.
 type Task struct {
 	Acceptance     *string            `json:"acceptance,omitempty"`
@@ -2578,10 +2701,11 @@ type UpdateMemoryRequestVisibility string
 
 // UpdateProjectSettingsRequest defines model for UpdateProjectSettingsRequest.
 type UpdateProjectSettingsRequest struct {
-	DefaultModel  *string `json:"default_model,omitempty"`
-	FallbackModel *string `json:"fallback_model,omitempty"`
-	MaxModelCalls *int64  `json:"max_model_calls,omitempty"`
-	MaxTokens     *int64  `json:"max_tokens,omitempty"`
+	DefaultModel    *string `json:"default_model,omitempty"`
+	FallbackModel   *string `json:"fallback_model,omitempty"`
+	MaxModelCalls   *int64  `json:"max_model_calls,omitempty"`
+	MaxTokens       *int64  `json:"max_tokens,omitempty"`
+	ModelProviderId *string `json:"model_provider_id,omitempty"`
 }
 
 // UpdateRunBudgetRequest defines model for UpdateRunBudgetRequest.
@@ -2627,6 +2751,25 @@ type WorkerDiagnostics struct {
 	WaitingApprovals int64 `json:"waiting_approvals"`
 }
 
+// WorkspaceFile defines model for WorkspaceFile.
+type WorkspaceFile struct {
+	GitStatus  string            `json:"git_status"`
+	Kind       WorkspaceFileKind `json:"kind"`
+	ModifiedAt time.Time         `json:"modified_at"`
+	Path       string            `json:"path"`
+	SizeBytes  int64             `json:"size_bytes"`
+}
+
+// WorkspaceFileKind defines model for WorkspaceFile.Kind.
+type WorkspaceFileKind string
+
+// WorkspaceFilePage defines model for WorkspaceFilePage.
+type WorkspaceFilePage struct {
+	HasMore    bool            `json:"has_more"`
+	Items      []WorkspaceFile `json:"items"`
+	NextCursor int             `json:"next_cursor"`
+}
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
@@ -2656,6 +2799,11 @@ type ListApprovalsParamsStatus string
 
 // DecideApprovalParams defines parameters for DecideApproval.
 type DecideApprovalParams struct {
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// SaveArtifactAsProjectFileParams defines parameters for SaveArtifactAsProjectFile.
+type SaveArtifactAsProjectFileParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
@@ -2796,6 +2944,23 @@ type CreateAgentDefinitionParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// ListProjectArtifactsParams defines parameters for ListProjectArtifacts.
+type ListProjectArtifactsParams struct {
+	RunId          *openapi_types.UUID `form:"run_id,omitempty" json:"run_id,omitempty"`
+	ConversationId *openapi_types.UUID `form:"conversation_id,omitempty" json:"conversation_id,omitempty"`
+	Kind           *string             `form:"kind,omitempty" json:"kind,omitempty"`
+	Q              *string             `form:"q,omitempty" json:"q,omitempty"`
+	Limit          *int                `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// IncludeHistory Include older versions of the same logical Artifact path and kind
+	IncludeHistory *bool `form:"include_history,omitempty" json:"include_history,omitempty"`
+}
+
+// CaptureWorkspaceArtifactParams defines parameters for CaptureWorkspaceArtifact.
+type CaptureWorkspaceArtifactParams struct {
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
 // CreateAssetFolderParams defines parameters for CreateAssetFolder.
 type CreateAssetFolderParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -2889,6 +3054,17 @@ type GetProjectUsageParams struct {
 	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
 }
 
+// ListWorkspaceFilesParams defines parameters for ListWorkspaceFiles.
+type ListWorkspaceFilesParams struct {
+	Cursor *int `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// DownloadWorkspaceFileContentParams defines parameters for DownloadWorkspaceFileContent.
+type DownloadWorkspaceFileContentParams struct {
+	Path string `form:"path" json:"path"`
+}
+
 // GetRunChangesParams defines parameters for GetRunChanges.
 type GetRunChangesParams struct {
 	Baseline *GetRunChangesParamsBaseline `form:"baseline,omitempty" json:"baseline,omitempty"`
@@ -2962,6 +3138,9 @@ type SetAgentDefinitionStatusJSONRequestBody SetAgentDefinitionStatusJSONBody
 // DecideApprovalJSONRequestBody defines body for DecideApproval for application/json ContentType.
 type DecideApprovalJSONRequestBody = DecideApprovalRequest
 
+// SaveArtifactAsProjectFileJSONRequestBody defines body for SaveArtifactAsProjectFile for application/json ContentType.
+type SaveArtifactAsProjectFileJSONRequestBody = SaveArtifactAsProjectFileRequest
+
 // PublishArtifactJSONRequestBody defines body for PublishArtifact for application/json ContentType.
 type PublishArtifactJSONRequestBody = PublishArtifactRequest
 
@@ -3022,6 +3201,9 @@ type UpdateProjectSettingsJSONRequestBody = UpdateProjectSettingsRequest
 // CreateAgentDefinitionJSONRequestBody defines body for CreateAgentDefinition for application/json ContentType.
 type CreateAgentDefinitionJSONRequestBody = CreateAgentRequest
 
+// CaptureWorkspaceArtifactJSONRequestBody defines body for CaptureWorkspaceArtifact for application/json ContentType.
+type CaptureWorkspaceArtifactJSONRequestBody = CaptureWorkspaceArtifactRequest
+
 // CreateAssetFolderJSONRequestBody defines body for CreateAssetFolder for application/json ContentType.
 type CreateAssetFolderJSONRequestBody = CreateAssetFolderRequest
 
@@ -3066,6 +3248,9 @@ type CreateProviderJSONRequestBody = SaveProviderRequest
 
 // UpdateProviderJSONRequestBody defines body for UpdateProvider for application/json ContentType.
 type UpdateProviderJSONRequestBody = SaveProviderRequest
+
+// SaveProviderModelsJSONRequestBody defines body for SaveProviderModels for application/json ContentType.
+type SaveProviderModelsJSONRequestBody = SaveProviderModelsRequest
 
 // CreateAdvisorReportJSONRequestBody defines body for CreateAdvisorReport for application/json ContentType.
 type CreateAdvisorReportJSONRequestBody = CreateAdvisorReportRequest
@@ -3167,6 +3352,9 @@ type ServerInterface interface {
 
 	// (GET /artifacts/{artifact_id}/content)
 	DownloadArtifactContent(w http.ResponseWriter, r *http.Request, artifactId openapi_types.UUID)
+
+	// (POST /artifacts/{artifact_id}/project-files)
+	SaveArtifactAsProjectFile(w http.ResponseWriter, r *http.Request, artifactId openapi_types.UUID, params SaveArtifactAsProjectFileParams)
 
 	// (POST /artifacts/{artifact_id}/publish)
 	PublishArtifact(w http.ResponseWriter, r *http.Request, artifactId openapi_types.UUID, params PublishArtifactParams)
@@ -3318,6 +3506,12 @@ type ServerInterface interface {
 	// (DELETE /projects/{project_id}/approval-rules/{rule_id})
 	RevokeProjectApprovalRule(w http.ResponseWriter, r *http.Request, projectId openapi_types.UUID, ruleId openapi_types.UUID)
 
+	// (GET /projects/{project_id}/artifacts)
+	ListProjectArtifacts(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListProjectArtifactsParams)
+
+	// (POST /projects/{project_id}/artifacts)
+	CaptureWorkspaceArtifact(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CaptureWorkspaceArtifactParams)
+
 	// (POST /projects/{project_id}/asset-folders)
 	CreateAssetFolder(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CreateAssetFolderParams)
 
@@ -3396,6 +3590,12 @@ type ServerInterface interface {
 	// (GET /projects/{project_id}/usage)
 	GetProjectUsage(w http.ResponseWriter, r *http.Request, projectId ProjectId, params GetProjectUsageParams)
 
+	// (GET /projects/{project_id}/workspace/files)
+	ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListWorkspaceFilesParams)
+
+	// (GET /projects/{project_id}/workspace/files/content)
+	DownloadWorkspaceFileContent(w http.ResponseWriter, r *http.Request, projectId ProjectId, params DownloadWorkspaceFileContentParams)
+
 	// (GET /providers)
 	ListProviders(w http.ResponseWriter, r *http.Request)
 
@@ -3413,6 +3613,12 @@ type ServerInterface interface {
 
 	// (GET /providers/{provider_id}/models)
 	ListProviderModels(w http.ResponseWriter, r *http.Request, providerId string)
+
+	// (PUT /providers/{provider_id}/models)
+	SaveProviderModels(w http.ResponseWriter, r *http.Request, providerId string)
+
+	// (POST /providers/{provider_id}/models/refresh)
+	RefreshProviderModels(w http.ResponseWriter, r *http.Request, providerId string)
 
 	// (POST /providers/{provider_id}/test)
 	TestProvider(w http.ResponseWriter, r *http.Request, providerId string)
@@ -3495,6 +3701,11 @@ func (_ Unimplemented) DecideApproval(w http.ResponseWriter, r *http.Request, ap
 
 // (GET /artifacts/{artifact_id}/content)
 func (_ Unimplemented) DownloadArtifactContent(w http.ResponseWriter, r *http.Request, artifactId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /artifacts/{artifact_id}/project-files)
+func (_ Unimplemented) SaveArtifactAsProjectFile(w http.ResponseWriter, r *http.Request, artifactId openapi_types.UUID, params SaveArtifactAsProjectFileParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3753,6 +3964,16 @@ func (_ Unimplemented) RevokeProjectApprovalRule(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (GET /projects/{project_id}/artifacts)
+func (_ Unimplemented) ListProjectArtifacts(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListProjectArtifactsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /projects/{project_id}/artifacts)
+func (_ Unimplemented) CaptureWorkspaceArtifact(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CaptureWorkspaceArtifactParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (POST /projects/{project_id}/asset-folders)
 func (_ Unimplemented) CreateAssetFolder(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CreateAssetFolderParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -3885,6 +4106,16 @@ func (_ Unimplemented) GetProjectUsage(w http.ResponseWriter, r *http.Request, p
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (GET /projects/{project_id}/workspace/files)
+func (_ Unimplemented) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListWorkspaceFilesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /projects/{project_id}/workspace/files/content)
+func (_ Unimplemented) DownloadWorkspaceFileContent(w http.ResponseWriter, r *http.Request, projectId ProjectId, params DownloadWorkspaceFileContentParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (GET /providers)
 func (_ Unimplemented) ListProviders(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -3912,6 +4143,16 @@ func (_ Unimplemented) UpdateProvider(w http.ResponseWriter, r *http.Request, pr
 
 // (GET /providers/{provider_id}/models)
 func (_ Unimplemented) ListProviderModels(w http.ResponseWriter, r *http.Request, providerId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PUT /providers/{provider_id}/models)
+func (_ Unimplemented) SaveProviderModels(w http.ResponseWriter, r *http.Request, providerId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /providers/{provider_id}/models/refresh)
+func (_ Unimplemented) RefreshProviderModels(w http.ResponseWriter, r *http.Request, providerId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4180,6 +4421,55 @@ func (siw *ServerInterfaceWrapper) DownloadArtifactContent(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DownloadArtifactContent(w, r, artifactId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SaveArtifactAsProjectFile operation middleware
+func (siw *ServerInterfaceWrapper) SaveArtifactAsProjectFile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "artifact_id" -------------
+	var artifactId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "artifact_id", chi.URLParam(r, "artifact_id"), &artifactId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "artifact_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SaveArtifactAsProjectFileParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SaveArtifactAsProjectFile(w, r, artifactId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5860,6 +6150,131 @@ func (siw *ServerInterfaceWrapper) RevokeProjectApprovalRule(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
+// ListProjectArtifacts operation middleware
+func (siw *ServerInterfaceWrapper) ListProjectArtifacts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProjectArtifactsParams
+
+	// ------------- Optional query parameter "run_id" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "run_id", r.URL.Query(), &params.RunId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "run_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "conversation_id" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "conversation_id", r.URL.Query(), &params.ConversationId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "conversation_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "kind" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "kind", r.URL.Query(), &params.Kind)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "kind", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "q", r.URL.Query(), &params.Q)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "include_history" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "include_history", r.URL.Query(), &params.IncludeHistory)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_history", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProjectArtifacts(w, r, projectId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CaptureWorkspaceArtifact operation middleware
+func (siw *ServerInterfaceWrapper) CaptureWorkspaceArtifact(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CaptureWorkspaceArtifactParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CaptureWorkspaceArtifact(w, r, projectId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateAssetFolder operation middleware
 func (siw *ServerInterfaceWrapper) CreateAssetFolder(w http.ResponseWriter, r *http.Request) {
 
@@ -6880,6 +7295,93 @@ func (siw *ServerInterfaceWrapper) GetProjectUsage(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListWorkspaceFiles operation middleware
+func (siw *ServerInterfaceWrapper) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListWorkspaceFilesParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWorkspaceFiles(w, r, projectId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DownloadWorkspaceFileContent operation middleware
+func (siw *ServerInterfaceWrapper) DownloadWorkspaceFileContent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DownloadWorkspaceFileContentParams
+
+	// ------------- Required query parameter "path" -------------
+
+	if paramValue := r.URL.Query().Get("path"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "path"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "path", r.URL.Query(), &params.Path)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DownloadWorkspaceFileContent(w, r, projectId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListProviders operation middleware
 func (siw *ServerInterfaceWrapper) ListProviders(w http.ResponseWriter, r *http.Request) {
 
@@ -6999,6 +7501,56 @@ func (siw *ServerInterfaceWrapper) ListProviderModels(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListProviderModels(w, r, providerId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SaveProviderModels operation middleware
+func (siw *ServerInterfaceWrapper) SaveProviderModels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "provider_id" -------------
+	var providerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider_id", chi.URLParam(r, "provider_id"), &providerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SaveProviderModels(w, r, providerId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RefreshProviderModels operation middleware
+func (siw *ServerInterfaceWrapper) RefreshProviderModels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "provider_id" -------------
+	var providerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider_id", chi.URLParam(r, "provider_id"), &providerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RefreshProviderModels(w, r, providerId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7755,6 +8307,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/artifacts/{artifact_id}/content", wrapper.DownloadArtifactContent)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/artifacts/{artifact_id}/project-files", wrapper.SaveArtifactAsProjectFile)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/artifacts/{artifact_id}/publish", wrapper.PublishArtifact)
 	})
 	r.Group(func(r chi.Router) {
@@ -7905,6 +8460,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Delete(options.BaseURL+"/projects/{project_id}/approval-rules/{rule_id}", wrapper.RevokeProjectApprovalRule)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/projects/{project_id}/artifacts", wrapper.ListProjectArtifacts)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/projects/{project_id}/artifacts", wrapper.CaptureWorkspaceArtifact)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/projects/{project_id}/asset-folders", wrapper.CreateAssetFolder)
 	})
 	r.Group(func(r chi.Router) {
@@ -7983,6 +8544,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/projects/{project_id}/usage", wrapper.GetProjectUsage)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/projects/{project_id}/workspace/files", wrapper.ListWorkspaceFiles)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/projects/{project_id}/workspace/files/content", wrapper.DownloadWorkspaceFileContent)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/providers", wrapper.ListProviders)
 	})
 	r.Group(func(r chi.Router) {
@@ -7999,6 +8566,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/providers/{provider_id}/models", wrapper.ListProviderModels)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/providers/{provider_id}/models", wrapper.SaveProviderModels)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/providers/{provider_id}/models/refresh", wrapper.RefreshProviderModels)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/providers/{provider_id}/test", wrapper.TestProvider)
@@ -8224,6 +8797,37 @@ type DownloadArtifactContentdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response DownloadArtifactContentdefaultApplicationProblemPlusJSONResponse) VisitDownloadArtifactContentResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SaveArtifactAsProjectFileRequestObject struct {
+	ArtifactId openapi_types.UUID `json:"artifact_id"`
+	Params     SaveArtifactAsProjectFileParams
+	Body       *SaveArtifactAsProjectFileJSONRequestBody
+}
+
+type SaveArtifactAsProjectFileResponseObject interface {
+	VisitSaveArtifactAsProjectFileResponse(w http.ResponseWriter) error
+}
+
+type SaveArtifactAsProjectFile201JSONResponse Asset
+
+func (response SaveArtifactAsProjectFile201JSONResponse) VisitSaveArtifactAsProjectFileResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SaveArtifactAsProjectFiledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response SaveArtifactAsProjectFiledefaultApplicationProblemPlusJSONResponse) VisitSaveArtifactAsProjectFileResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -9749,6 +10353,69 @@ func (response RevokeProjectApprovalRuledefaultApplicationProblemPlusJSONRespons
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type ListProjectArtifactsRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Params    ListProjectArtifactsParams
+}
+
+type ListProjectArtifactsResponseObject interface {
+	VisitListProjectArtifactsResponse(w http.ResponseWriter) error
+}
+
+type ListProjectArtifacts200JSONResponse struct {
+	Items []Artifact `json:"items"`
+}
+
+func (response ListProjectArtifacts200JSONResponse) VisitListProjectArtifactsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListProjectArtifactsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListProjectArtifactsdefaultApplicationProblemPlusJSONResponse) VisitListProjectArtifactsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CaptureWorkspaceArtifactRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Params    CaptureWorkspaceArtifactParams
+	Body      *CaptureWorkspaceArtifactJSONRequestBody
+}
+
+type CaptureWorkspaceArtifactResponseObject interface {
+	VisitCaptureWorkspaceArtifactResponse(w http.ResponseWriter) error
+}
+
+type CaptureWorkspaceArtifact201JSONResponse Artifact
+
+func (response CaptureWorkspaceArtifact201JSONResponse) VisitCaptureWorkspaceArtifactResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CaptureWorkspaceArtifactdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CaptureWorkspaceArtifactdefaultApplicationProblemPlusJSONResponse) VisitCaptureWorkspaceArtifactResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreateAssetFolderRequestObject struct {
 	ProjectId ProjectId `json:"project_id"`
 	Params    CreateAssetFolderParams
@@ -10538,6 +11205,86 @@ func (response GetProjectUsagedefaultApplicationProblemPlusJSONResponse) VisitGe
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type ListWorkspaceFilesRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Params    ListWorkspaceFilesParams
+}
+
+type ListWorkspaceFilesResponseObject interface {
+	VisitListWorkspaceFilesResponse(w http.ResponseWriter) error
+}
+
+type ListWorkspaceFiles200JSONResponse WorkspaceFilePage
+
+func (response ListWorkspaceFiles200JSONResponse) VisitListWorkspaceFilesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListWorkspaceFilesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListWorkspaceFilesdefaultApplicationProblemPlusJSONResponse) VisitListWorkspaceFilesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type DownloadWorkspaceFileContentRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Params    DownloadWorkspaceFileContentParams
+}
+
+type DownloadWorkspaceFileContentResponseObject interface {
+	VisitDownloadWorkspaceFileContentResponse(w http.ResponseWriter) error
+}
+
+type DownloadWorkspaceFileContent200ResponseHeaders struct {
+	ContentDisposition string
+	ContentLength      int64
+	XWorkspacePath     string
+}
+
+type DownloadWorkspaceFileContent200ApplicationoctetStreamResponse struct {
+	Body          io.Reader
+	Headers       DownloadWorkspaceFileContent200ResponseHeaders
+	ContentLength int64
+}
+
+func (response DownloadWorkspaceFileContent200ApplicationoctetStreamResponse) VisitDownloadWorkspaceFileContentResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprint(response.Headers.ContentDisposition))
+	w.Header().Set("Content-Length", fmt.Sprint(response.Headers.ContentLength))
+	w.Header().Set("X-Workspace-Path", fmt.Sprint(response.Headers.XWorkspacePath))
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type DownloadWorkspaceFileContentdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DownloadWorkspaceFileContentdefaultApplicationProblemPlusJSONResponse) VisitDownloadWorkspaceFileContentResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type ListProvidersRequestObject struct {
 }
 
@@ -10693,7 +11440,7 @@ type ListProviderModelsResponseObject interface {
 }
 
 type ListProviderModels200JSONResponse struct {
-	Items []ProviderModelCatalogEntry `json:"items"`
+	Items []ProviderModelOption `json:"items"`
 }
 
 func (response ListProviderModels200JSONResponse) VisitListProviderModelsResponse(w http.ResponseWriter) error {
@@ -10709,6 +11456,69 @@ type ListProviderModelsdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListProviderModelsdefaultApplicationProblemPlusJSONResponse) VisitListProviderModelsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SaveProviderModelsRequestObject struct {
+	ProviderId string `json:"provider_id"`
+	Body       *SaveProviderModelsJSONRequestBody
+}
+
+type SaveProviderModelsResponseObject interface {
+	VisitSaveProviderModelsResponse(w http.ResponseWriter) error
+}
+
+type SaveProviderModels200JSONResponse struct {
+	Items []ProviderModelOption `json:"items"`
+}
+
+func (response SaveProviderModels200JSONResponse) VisitSaveProviderModelsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SaveProviderModelsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response SaveProviderModelsdefaultApplicationProblemPlusJSONResponse) VisitSaveProviderModelsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type RefreshProviderModelsRequestObject struct {
+	ProviderId string `json:"provider_id"`
+}
+
+type RefreshProviderModelsResponseObject interface {
+	VisitRefreshProviderModelsResponse(w http.ResponseWriter) error
+}
+
+type RefreshProviderModels200JSONResponse struct {
+	Items []ProviderModelOption `json:"items"`
+}
+
+func (response RefreshProviderModels200JSONResponse) VisitRefreshProviderModelsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RefreshProviderModelsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RefreshProviderModelsdefaultApplicationProblemPlusJSONResponse) VisitRefreshProviderModelsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -11267,6 +12077,9 @@ type StrictServerInterface interface {
 	// (GET /artifacts/{artifact_id}/content)
 	DownloadArtifactContent(ctx context.Context, request DownloadArtifactContentRequestObject) (DownloadArtifactContentResponseObject, error)
 
+	// (POST /artifacts/{artifact_id}/project-files)
+	SaveArtifactAsProjectFile(ctx context.Context, request SaveArtifactAsProjectFileRequestObject) (SaveArtifactAsProjectFileResponseObject, error)
+
 	// (POST /artifacts/{artifact_id}/publish)
 	PublishArtifact(ctx context.Context, request PublishArtifactRequestObject) (PublishArtifactResponseObject, error)
 
@@ -11417,6 +12230,12 @@ type StrictServerInterface interface {
 	// (DELETE /projects/{project_id}/approval-rules/{rule_id})
 	RevokeProjectApprovalRule(ctx context.Context, request RevokeProjectApprovalRuleRequestObject) (RevokeProjectApprovalRuleResponseObject, error)
 
+	// (GET /projects/{project_id}/artifacts)
+	ListProjectArtifacts(ctx context.Context, request ListProjectArtifactsRequestObject) (ListProjectArtifactsResponseObject, error)
+
+	// (POST /projects/{project_id}/artifacts)
+	CaptureWorkspaceArtifact(ctx context.Context, request CaptureWorkspaceArtifactRequestObject) (CaptureWorkspaceArtifactResponseObject, error)
+
 	// (POST /projects/{project_id}/asset-folders)
 	CreateAssetFolder(ctx context.Context, request CreateAssetFolderRequestObject) (CreateAssetFolderResponseObject, error)
 
@@ -11495,6 +12314,12 @@ type StrictServerInterface interface {
 	// (GET /projects/{project_id}/usage)
 	GetProjectUsage(ctx context.Context, request GetProjectUsageRequestObject) (GetProjectUsageResponseObject, error)
 
+	// (GET /projects/{project_id}/workspace/files)
+	ListWorkspaceFiles(ctx context.Context, request ListWorkspaceFilesRequestObject) (ListWorkspaceFilesResponseObject, error)
+
+	// (GET /projects/{project_id}/workspace/files/content)
+	DownloadWorkspaceFileContent(ctx context.Context, request DownloadWorkspaceFileContentRequestObject) (DownloadWorkspaceFileContentResponseObject, error)
+
 	// (GET /providers)
 	ListProviders(ctx context.Context, request ListProvidersRequestObject) (ListProvidersResponseObject, error)
 
@@ -11512,6 +12337,12 @@ type StrictServerInterface interface {
 
 	// (GET /providers/{provider_id}/models)
 	ListProviderModels(ctx context.Context, request ListProviderModelsRequestObject) (ListProviderModelsResponseObject, error)
+
+	// (PUT /providers/{provider_id}/models)
+	SaveProviderModels(ctx context.Context, request SaveProviderModelsRequestObject) (SaveProviderModelsResponseObject, error)
+
+	// (POST /providers/{provider_id}/models/refresh)
+	RefreshProviderModels(ctx context.Context, request RefreshProviderModelsRequestObject) (RefreshProviderModelsResponseObject, error)
 
 	// (POST /providers/{provider_id}/test)
 	TestProvider(ctx context.Context, request TestProviderRequestObject) (TestProviderResponseObject, error)
@@ -11736,6 +12567,40 @@ func (sh *strictHandler) DownloadArtifactContent(w http.ResponseWriter, r *http.
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DownloadArtifactContentResponseObject); ok {
 		if err := validResponse.VisitDownloadArtifactContentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SaveArtifactAsProjectFile operation middleware
+func (sh *strictHandler) SaveArtifactAsProjectFile(w http.ResponseWriter, r *http.Request, artifactId openapi_types.UUID, params SaveArtifactAsProjectFileParams) {
+	var request SaveArtifactAsProjectFileRequestObject
+
+	request.ArtifactId = artifactId
+	request.Params = params
+
+	var body SaveArtifactAsProjectFileJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SaveArtifactAsProjectFile(ctx, request.(SaveArtifactAsProjectFileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SaveArtifactAsProjectFile")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SaveArtifactAsProjectFileResponseObject); ok {
+		if err := validResponse.VisitSaveArtifactAsProjectFileResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -13191,6 +14056,67 @@ func (sh *strictHandler) RevokeProjectApprovalRule(w http.ResponseWriter, r *htt
 	}
 }
 
+// ListProjectArtifacts operation middleware
+func (sh *strictHandler) ListProjectArtifacts(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListProjectArtifactsParams) {
+	var request ListProjectArtifactsRequestObject
+
+	request.ProjectId = projectId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListProjectArtifacts(ctx, request.(ListProjectArtifactsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListProjectArtifacts")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProjectArtifactsResponseObject); ok {
+		if err := validResponse.VisitListProjectArtifactsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CaptureWorkspaceArtifact operation middleware
+func (sh *strictHandler) CaptureWorkspaceArtifact(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CaptureWorkspaceArtifactParams) {
+	var request CaptureWorkspaceArtifactRequestObject
+
+	request.ProjectId = projectId
+	request.Params = params
+
+	var body CaptureWorkspaceArtifactJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CaptureWorkspaceArtifact(ctx, request.(CaptureWorkspaceArtifactRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CaptureWorkspaceArtifact")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CaptureWorkspaceArtifactResponseObject); ok {
+		if err := validResponse.VisitCaptureWorkspaceArtifactResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CreateAssetFolder operation middleware
 func (sh *strictHandler) CreateAssetFolder(w http.ResponseWriter, r *http.Request, projectId ProjectId, params CreateAssetFolderParams) {
 	var request CreateAssetFolderRequestObject
@@ -13975,6 +14901,60 @@ func (sh *strictHandler) GetProjectUsage(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// ListWorkspaceFiles operation middleware
+func (sh *strictHandler) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListWorkspaceFilesParams) {
+	var request ListWorkspaceFilesRequestObject
+
+	request.ProjectId = projectId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWorkspaceFiles(ctx, request.(ListWorkspaceFilesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWorkspaceFiles")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWorkspaceFilesResponseObject); ok {
+		if err := validResponse.VisitListWorkspaceFilesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DownloadWorkspaceFileContent operation middleware
+func (sh *strictHandler) DownloadWorkspaceFileContent(w http.ResponseWriter, r *http.Request, projectId ProjectId, params DownloadWorkspaceFileContentParams) {
+	var request DownloadWorkspaceFileContentRequestObject
+
+	request.ProjectId = projectId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DownloadWorkspaceFileContent(ctx, request.(DownloadWorkspaceFileContentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DownloadWorkspaceFileContent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DownloadWorkspaceFileContentResponseObject); ok {
+		if err := validResponse.VisitDownloadWorkspaceFileContentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListProviders operation middleware
 func (sh *strictHandler) ListProviders(w http.ResponseWriter, r *http.Request) {
 	var request ListProvidersRequestObject
@@ -14134,6 +15114,65 @@ func (sh *strictHandler) ListProviderModels(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListProviderModelsResponseObject); ok {
 		if err := validResponse.VisitListProviderModelsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SaveProviderModels operation middleware
+func (sh *strictHandler) SaveProviderModels(w http.ResponseWriter, r *http.Request, providerId string) {
+	var request SaveProviderModelsRequestObject
+
+	request.ProviderId = providerId
+
+	var body SaveProviderModelsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SaveProviderModels(ctx, request.(SaveProviderModelsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SaveProviderModels")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SaveProviderModelsResponseObject); ok {
+		if err := validResponse.VisitSaveProviderModelsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RefreshProviderModels operation middleware
+func (sh *strictHandler) RefreshProviderModels(w http.ResponseWriter, r *http.Request, providerId string) {
+	var request RefreshProviderModelsRequestObject
+
+	request.ProviderId = providerId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RefreshProviderModels(ctx, request.(RefreshProviderModelsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RefreshProviderModels")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RefreshProviderModelsResponseObject); ok {
+		if err := validResponse.VisitRefreshProviderModelsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

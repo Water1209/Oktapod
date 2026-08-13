@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.4
-> 更新日期：2026-08-10
+> 版本：V1.5
+> 更新日期：2026-08-11
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -48,6 +48,17 @@ V1 唯一交付目标：
 | B4 | `PASS` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、OAuth Authorization Code/回调/取消/刷新、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
 | B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
+
+### 2.2 场景、文件产物与审核体系收口（2026-08-11）
+
+| 批次 | 状态 | 已落地范围 | 延期边界 |
+|---|---|---|---|
+| F1 | `PASS` | Work/Code 共用工具内核；新 Run 冻结 `scene`、`permission_mode`、Prompt Profile 和项目指令 Hash；历史 `scene_policy` 仍可恢复 | 不新增第三种场景 |
+| F2 | `PASS` | `ArtifactCapture` 统一 Workspace 写入与脚本产物登记；100 MiB、路径/symlink、MIME、Hash 和 PDF 签名校验；PDF 无 Artifact 不得成功；旧 Run 遗漏文件可在明确选择当前任务后保存为任务输出 | 不自动扫描或猜测历史产物归属 |
+| F3 | `PASS` | 文件页固定为“工作区 / 项目文件 / 任务输出”，用“范围/版本”明确筛选；“保存到项目文件”仅表示项目内复用；Changes 仍只是 Git 差异；Personal Diagnostics 显示存储根 | Team 不返回宿主绝对路径 |
+| F4 | `PASS` | Composer 多附件、上传进度/重试/移除、Run 附件快照、`asset_stage` 延迟物化与终态/24h 清理 | 更多 Office 格式深度验收进 V1.1 |
+| F5 | `PASS` | Reviewer 仅处理 L2 `Ask`；`reviewer-decision-v1`、脱敏输入、fail-closed 和 Diagnostics 可用性；未配置时 UI 禁用自动审查 | L3 和静态拒绝永不交给 Reviewer 放行 |
+| F6 | `PASS` | 每次用户发送先持久化可见消息，并冻结附件、Skill 与排队展示；后继任务绑定原消息 ID；同计划项审批聚合但逐项审计；预算扩展展示明确增量、收尾、不限额和终止语义 | 不把历史消息展示元数据反推回填到旧 Run |
 
 ### B0：统一基线和验收真源
 
@@ -153,8 +164,8 @@ pnpm verify
 
 交付：
 
-- Composer 保留输入、附件、安全姿态、发送/停止；审批、输入和阻塞动作紧邻 Composer。
-- Inspector 默认收起，包含 Run、Changes、Terminal、Tools、Context、Usage、Security 和 Trace。
+- Composer 保留输入、附件、安全姿态、已启用模型选择、发送/停止；审批、输入和阻塞动作紧邻 Composer。模型选择必须同时携带 Provider，服务端拒绝未启用模型绕过。
+- Inspector 默认收起，文件与 Changes 只从 Inspector 进入；工作台与项目库为不同路由，会话树从 Thread 菜单进入并保留历史深链。
 - Changes 支持 Run 开始、Git HEAD、当前工作区三基线，以及文件/行/Hunk 定位、撤销、选择提交和冲突反馈。
 - Diff 修改动作创建受治理的确定性 Tool Task，不由 UI 直接写工作区。
 - 计划 UI 以持久化计划为真源；模型回退已完成项时自动修复，耗尽后再请求用户。
@@ -200,7 +211,9 @@ pnpm --dir Src/web test:e2e:approval
 - `AgentLoop.Next(ctx, LoopState) (LoopEvent, error)`：不依赖 DB、HTTP、具体 Provider 或具体工具。
 - `DurableHarness`：消费 LoopEvent 并负责持久化、授权、执行与恢复。
 - `ExecutionAuthorization`：引用审批/规则、输入 Hash、Scope、Risk 和 Policy Version。
-- `ToolSpec`：Native、MCP 和内建搜索共用。
+- `ToolSpec`：Native、MCP 和内建搜索共用；`PromptHint/Guidelines` 从实际下发工具动态组装。
+- `ArtifactCapture`：Workspace 只解析受控路径，BlobStore 只管不可变内容，Repository 只管事务化元数据/收据/验证。
+- `ProjectFileQueries`：Workspace、Asset 和 Artifact 各有查询契约，Changes 不进入文件存储。
 
 ### 数据
 
@@ -211,6 +224,7 @@ pnpm --dir Src/web test:e2e:approval
 ### OpenAPI
 
 - 增加 Run Changes 只读查询。
+- 增加 Workspace 列表/内容、Project Artifact 查询与 Diagnostics 存储/自动审查状态。
 - 为 Tool Execution Event 定义稳定结构。
 - Changes 的写操作复用受治理 Task/Human Action 流程。
 

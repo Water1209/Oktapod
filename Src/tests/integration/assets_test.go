@@ -248,6 +248,14 @@ func TestProjectAssetsStreamSearchAuthorizeAndPublishArtifact(t *testing.T) {
 	if err != nil || len(artifacts) != 1 {
 		t.Fatalf("artifacts=%#v err=%v", artifacts, err)
 	}
+	projectArtifacts, err := ownerService.ListProjectArtifacts(context.Background(), project.ID, application.ProjectArtifactQuery{RunID: task.RunID})
+	if err != nil || len(projectArtifacts) != 1 || projectArtifacts[0].ID != artifacts[0].ID {
+		t.Fatalf("project artifacts=%#v err=%v", projectArtifacts, err)
+	}
+	memberArtifacts, err := memberService.ListProjectArtifacts(context.Background(), project.ID, application.ProjectArtifactQuery{RunID: task.RunID})
+	if err != nil || len(memberArtifacts) != 0 {
+		t.Fatalf("private project artifact leaked to member: %#v err=%v", memberArtifacts, err)
+	}
 	published, err := ownerService.PublishArtifact(context.Background(), artifacts[0].ID, core.PublishArtifactInput{Name: "任务结果.md", Visibility: core.VisibilityProject}, "publish-artifact-key")
 	if err != nil {
 		t.Fatal(err)

@@ -33,7 +33,7 @@ export function ProjectsPage() {
 
   return (
     <main className="home-page">
-      <header className="home-heading"><div><span className="privacy-label"><LockKeyhole size={13} /> 仅你可见</span><h1>工作台</h1><p>继续正在进行的工作，或从一个清晰的新任务开始。</p></div><div className="home-actions">{hasProvider ? <Link className="primary-button" to={primaryProject ? '/projects/$projectId' : '/'} params={primaryProject ? { projectId: primaryProject.id } : undefined} search={primaryProject ? { conversation: 'new' } : undefined}><Plus size={15} />新建任务</Link> : <Link className="primary-button" to="/settings/providers"><Plus size={15} />配置模型服务</Link>}<button className="secondary-button" type="button" onClick={() => setCreateOpen(true)}><FolderOpen size={15} />打开项目</button></div></header>
+      <header className="home-heading"><div><span className="privacy-label"><LockKeyhole size={13} /> 仅你可见</span><h1>工作台</h1><p>继续正在进行的工作，或从一个清晰的新任务开始。</p></div><div className="home-actions">{hasProvider ? <Link className="primary-button" to={primaryProject ? '/projects/$projectId' : '/projects'} params={primaryProject ? { projectId: primaryProject.id } : undefined} search={primaryProject ? { conversation: 'new' } : undefined}><Plus size={15} />新建任务</Link> : <Link className="primary-button" to="/settings/providers"><Plus size={15} />配置模型服务</Link>}<Link className="secondary-button" to="/projects"><FolderOpen size={15} />查看项目</Link></div></header>
 
       {!hasProvider && !providers.isLoading ? <Link className="home-provider-callout" to="/settings/providers"><AlertCircle size={17} /><span><strong>发送任务前需要配置模型服务</strong><small>添加 Provider 实例并测试连接；不会静默使用未知配置。</small></span><ArrowRight size={15} /></Link> : null}
 
@@ -69,6 +69,27 @@ export function ProjectsPage() {
   }
 }
 
+export function ProjectLibraryPage() {
+  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
+  const models = useQuery({ queryKey: ['models'], queryFn: api.models, retry: false, staleTime: 60_000 })
+  const [query, setQuery] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const filtered = useMemo(() => [...(projects.data?.items ?? [])]
+    .filter((project) => `${project.name} ${project.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()), [projects.data, query])
+  return <main className="home-page project-library-page">
+    <header className="home-heading"><div><span className="eyebrow">项目库</span><h1>全部项目</h1><p>按项目组织长期上下文、文件、任务和版本。</p></div><button className="primary-button" type="button" onClick={() => setCreateOpen(true)}><FolderPlus size={15} />新建项目</button></header>
+    <section className="home-section home-projects library-projects">
+      <header><span><FolderClosed size={14} />个人项目 <em>{filtered.length}</em></span><label className="project-search"><Search size={14} /><input aria-label="搜索全部项目" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或说明" /></label></header>
+      {projects.isLoading ? <ProjectSkeleton /> : null}
+      {projects.error ? <div className="inline-error">项目读取失败：{projects.error.message}</div> : null}
+      {filtered.length ? <div className="project-library-grid">{filtered.map((project) => <Link key={project.id} to="/projects/$projectId" params={{ projectId: project.id }}><span className={`project-row-icon ${project.scene}`}><FolderClosed size={18} /></span><span><strong>{project.name}</strong><small>{project.description || (project.scene === 'code' ? '代码项目' : '通用项目')}</small></span><dl><div><dt>场景</dt><dd>{project.scene === 'code' ? '代码' : '通用'}</dd></div><div><dt>最近更新</dt><dd>{formatRecent(project.updated_at)}</dd></div></dl><ArrowRight size={14} /></Link>)}</div> : null}
+      {!projects.isLoading && filtered.length === 0 ? <HomeEmpty icon={<FolderPlus />} text={query ? '没有匹配的项目' : '还没有个人项目'} action={!query ? <button type="button" onClick={() => setCreateOpen(true)}>创建第一个项目</button> : undefined} /> : null}
+    </section>
+    <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} models={models.data?.items ?? []} providerDefaultModel={models.data?.default_model ?? ''} modelsError={models.error?.message} />
+  </main>
+}
+
 function HomeEmpty({ icon, text, action }: { icon: React.ReactNode; text: string; action?: React.ReactNode }) {
   return <div className="home-empty">{icon}<span>{text}</span>{action}</div>
 }
@@ -87,16 +108,18 @@ function CreateProjectDialog({ open, onOpenChange, models, providerDefaultModel,
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [scene, setScene] = useState<Scene>('code')
-  const [defaultModel, setDefaultModel] = useState('')
-  const modelOptions = useMemo(() => Array.from(new Set([providerDefaultModel, ...models.map((model) => model.id)].filter(Boolean))), [models, providerDefaultModel])
+  const [modelKey, setModelKey] = useState('')
+  const modelOptions = useMemo(() => models.map((model) => ({ ...model, key: `${model.provider_id || ''}::${model.id}` })), [models])
+  const providerDefault = modelOptions.find((model) => model.default) ?? modelOptions.find((model) => model.id === providerDefaultModel)
+  const selectedModel = modelOptions.find((model) => model.key === modelKey)
   const create = useMutation({
-    mutationFn: () => api.createProject({ name, description, kind: 'personal', scene, default_model: defaultModel || undefined }),
+    mutationFn: () => api.createProject({ name, description, kind: 'personal', scene, model_provider_id: selectedModel?.provider_id || providerDefault?.provider_id, default_model: selectedModel?.id }),
     onSuccess: async (project) => {
       await queryClient.invalidateQueries({ queryKey: ['projects'] })
       onOpenChange(false)
       setName('')
       setDescription('')
-      setDefaultModel('')
+      setModelKey('')
       await navigate({ to: '/projects/$projectId', params: { projectId: project.id } })
     },
   })
@@ -117,7 +140,7 @@ function CreateProjectDialog({ open, onOpenChange, models, providerDefaultModel,
               <button className={scene === 'code' ? 'active' : ''} type="button" onClick={() => setScene('code')}><Code2 size={16} /><span><strong>代码</strong><small>仓库、命令与测试</small></span></button>
               <button className={scene === 'work' ? 'active' : ''} type="button" onClick={() => setScene('work')}><FolderClosed size={16} /><span><strong>通用</strong><small>研究、文档与协作</small></span></button>
             </div></fieldset>
-            <label className="form-field"><span>默认模型 <em>可选</em></span><select aria-label="默认模型" value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)}><option value="">{providerDefaultModel ? `系统默认 · ${providerDefaultModel}` : '系统默认'}</option>{modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
+            <label className="form-field"><span>默认模型 <em>仅显示已启用模型</em></span><select aria-label="默认模型" value={modelKey} onChange={(event) => setModelKey(event.target.value)}><option value="">{providerDefaultModel ? `系统默认 · ${providerDefaultModel}` : '系统默认'}</option>{modelOptions.map((model) => <option value={model.key} key={model.key}>{model.provider_name ? `${model.provider_name} · ` : ''}{model.id}</option>)}</select></label>
             {modelsError ? <div className="form-hint">模型目录暂不可用，仍可使用系统默认模型；目录恢复后会自动补充选项。</div> : null}
             {create.error ? <div className="form-error">{create.error.message}</div> : null}
             <div className="dialog-actions"><Dialog.Close asChild><button className="secondary-button" type="button">取消</button></Dialog.Close><button className="primary-button" disabled={create.isPending || !name.trim()} type="submit">{create.isPending ? '正在建立...' : '建立工作空间'}</button></div>

@@ -138,6 +138,13 @@ func TestDeliverableRecoveryAcceptsEditArtifactsAndContinuationEvidence(t *testi
 	}
 }
 
+func TestAttachmentRecoveryRequiresFrozenAssetStaging(t *testing.T) {
+	hint := completionRecoveryHint(`{"completion_recovery_reason":"ATTACHMENT_NOT_READ"}`)
+	if hint == "" || !containsAll(hint, "asset_stage", "只读路径", "不得改查空的项目 Workspace") {
+		t.Fatalf("unexpected attachment recovery hint: %q", hint)
+	}
+}
+
 func containsAll(value string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(value, part) {

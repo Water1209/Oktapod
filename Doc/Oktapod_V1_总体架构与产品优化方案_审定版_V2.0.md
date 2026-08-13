@@ -1,8 +1,8 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.2（V1.0.0 发布事实修订）
+> **文档版本**：V2.3（场景、文件产物与审核体系修订）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
-> **编制日期**：2026-08-10
+> **编制日期**：2026-08-11
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
 > **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），`main@22b29bc` 及 V1.0.0 发布收口改动
@@ -71,10 +71,13 @@ Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以�
 ### 1.4 V1 界面主题合同
 
 - 全局只存在一套语义色来源，工作台、设置、资源、审批、表单、弹窗、Markdown 与原生控件不得各自硬编码浅色/深色背景。
-- “设置 → 外观”提供跟随系统、浅色、深色三个选择；设置入口默认打开外观页，Provider 页保留“主题与外观”返回入口。
+- 设置只展示会真实生效的“模型服务、外观”；外观提供跟随系统、浅色、深色三个选择，Provider 使用同一设置布局，不再设置重复的“主题与外观”入口。上下文压缩、重试、Shell 与固定快捷键属于运行时策略或固定行为，不伪装成可配置项。
 - 已保存主题在 React 首次绘制前应用，避免刷新时先出现相反主题；选择只保存在当前浏览器，不伪装为项目或服务端策略。
 - Light、Dark、System 均要求正文与状态文字可读，主要文本目标对比度不低于 WCAG AA 4.5:1；主题不能只改变容器背景而保留另一主题的文字、表格或表单颜色。
 - 全局导航保留 `#071454` 品牌深蓝，不视为内容区主题混用；其交互与文字仍需满足可读性和焦点要求。
+- 导航以用户目标分层：`/` 是工作台，`/projects` 是项目库；项目标题是带当前状态的真实项目切换器，不得使用无行为按钮；项目文件和 Git 变更只属于右侧 Inspector，会话树保留领域能力并从 Thread 菜单进入。头像只打开账号菜单，退出是菜单内的第二次明确操作。
+- Provider 的 `model_catalog_entries` 是 API 发现缓存，`provider_enabled_models` 是用户选择真源；`GET /models` 只暴露活动 Provider 的启用模型。项目冻结 `model_provider_id + default_model + fallback_model`，新 Run 再冻结有效 ModelRef；历史 Run 不受后续启停影响，手动模型能力保持未知。
+- Provider 连接配置与模型启用列表是两个阶段；“测试连接”调用受控服务端探测并只展示脱敏错误、延迟和模型数量，不以保存配置或刷新目录替代显式反馈。
 
 ---
 
@@ -179,7 +182,7 @@ V1 已建立：
 
 **当前边界**：`ExecutionPolicy` 与 `ExecutionAuthorization` 已形成统一执行门禁；Prompt/Context 与 Tool Context 是逻辑边界，仍有部分编排位于 Worker。V1 以行为合同和安全不变量为门禁，后续再继续物理拆分。
 
-交互层以 `conversation_id` 作为上下文硬边界。Auto 路由依赖模型时，Provider 暂时不可用必须先把用户目标持久化为可恢复 Task，不能让首条消息随请求失败而消失。暂停、取消、恢复和重试由 Application 层的确定性对话指令解释器处理，不把系统生命周期操作塞进 Agent Loop；只有“取消当前任务”“继续当前任务”等显式表达才触发控制，裸“继续”仍作为普通用户内容。“继续当前任务，并……”属于带约束续作：运行中进入 Steering，终态后创建继任 Run，并继承原目标、验收、显式 Skill 与最多 8 个已校验来源 Run 的收据/交付物链；普通后续需求仍是独立 Task。取消终止当前 Run 但不回滚 Workspace。运行中普通发送用于 Steering，`Alt+Enter` 进入下一轮队列，排队项可提升为当前引导或撤回。空 Thread 不得读取工作区内容猜测其他会话目标。初始“制定计划”只是在模型返回前的临时占位，同一计划修订内必须由目标特定的语义步骤替换；模型按协议调用 `update_plan` 时采用其完整步骤，模型直接给出执行工具时运行时把占位项原地物化为本次真实目标，不能让占位文案进入执行期。计划结构无效、占位文案、过早完成或与其他工具混用时由模型自动修正，不把任务直接判失败。缺少可授予权限时创建审批；确定性硬拒绝不伪装成用户拒绝，也不直接终止任务，而是保留审计收据、废弃同批次冻结动作并排队模型修正。任务终态会把最新有效计划修订及其真实步骤状态同步到终态，避免成功任务仍显示 `0/N`。
+交互层以 `conversation_id` 作为上下文硬边界。Auto 路由依赖模型时，Provider 暂时不可用必须先把用户目标持久化为可恢复 Task，不能让首条消息随请求失败而消失。暂停、取消、恢复和重试由 Application 层的确定性对话指令解释器处理，不把系统生命周期操作塞进 Agent Loop；“取消当前任务”“继续当前任务”等显式表达触发控制，Task/Auto 模式下的裸“继续”也解释为恢复当前会话任务，绝不能新建一个标题为“继续”的无上下文任务；Answer 模式仍把它作为普通聊天内容。空会话中的恢复指令必须明确报错。“继续当前任务，并……”属于带约束续作：运行中进入 Steering，终态后创建继任 Run，并继承原目标、验收、显式 Skill 与最多 8 个已校验来源 Run 的收据/交付物链；普通后续需求仍是独立 Task。取消终止当前 Run 但不回滚 Workspace。运行中每次用户发送都会先以独立消息持久化，附件、显式 Skill 和“引导当前任务/排到下一轮”状态属于消息展示快照；开始后继 Task 时绑定原消息 ID，不重复追加或隐藏。`Alt+Enter` 进入下一轮队列，排队项可提升为当前引导或撤回。空 Thread 不得读取工作区内容猜测其他会话目标。初始“制定计划”只是在模型返回前的临时占位，同一计划修订内必须由目标特定的语义步骤替换；模型按协议调用 `update_plan` 时采用其完整步骤，模型直接给出执行工具时运行时把占位项原地物化为本次真实目标，不能让占位文案进入执行期。计划结构无效、占位文案、过早完成或与其他工具混用时由模型自动修正，不把任务直接判失败。缺少可授予权限时创建审批；同一计划项、同一工具和风险级别的冻结动作可在 UI 聚合批准，但底层仍逐项保存参数、Hash、Receipt 与决定。确定性硬拒绝不伪装成用户拒绝，也不直接终止任务，而是保留审计收据、废弃同批次冻结动作并排队模型修正。预算不足时审批必须展示当前上限、建议新增额度和“现有结果收尾/本次不限额/停止任务”；停止是终态取消并保留现有证据，不再自动恢复。任务终态会把最新有效计划修订及其真实步骤状态同步到终态，避免成功任务仍显示 `0/N`。
 
 ---
 
@@ -271,6 +274,25 @@ V1 的默认模式命名为 `governed_host`，只承诺：
 
 **V1.1 再补**：网络默认拒绝、受控网络授权、完整容器沙箱。
 
+### 4.6 Scene、Permission Mode 与 ExecutionPolicy
+
+V1 只保留一套 Executor。`scene=work|code` 是工作流配置，只影响 Prompt、上下文优先级和默认界面；`permission_mode=ask|auto_review|full_access` 只决定 `ExecutionPolicy` 返回 `Ask` 后由用户、Reviewer 还是已授权自动执行。`ExecutionPolicy` 只根据工具、冻结参数、Scope 和风险产生 `Allow / Ask / Deny`，不读 Work/Code。因此 Work/Code 都可使用 Workspace、命令、Git、Skill、MCP 和 Artifact；历史 Run 仍按冻结的 `scene_policy` 恢复，新 Run 不再由场景生成能力升级。
+
+Reviewer 只审查 Policy 已判为 `Ask` 的 L2 动作，输入只有脱敏目标、工具、冻结参数摘要、Scope、风险和策略理由；没有工具、凭据或完整执行输出。结构版本为 `reviewer-decision-v1`，超时、非法输出、未配置或 L3 全部 fail-closed 并转人工/拒绝。
+
+### 4.7 Workspace、Asset、Artifact 与 Changes
+
+- **Workspace**：项目当前可变文件，包括 Shell/脚本生成但尚未登记的文件；
+- **Project Asset（界面名“项目文件”）**：上传附件和从 Artifact 明确保存的可复用输入，只在当前项目内使用，不表示向外部系统发布；
+- **Artifact**：按 Run 和逻辑路径版本化的不可变交付物/证据；
+- **Changes**：完全由 Git 派生的差异视图，不是第四类文件存储。
+
+Composer 选择附件后，无论用户文字是否被聊天分类器判为轻量问答，都必须进入 Task 并冻结 `context_asset_snapshots`；二进制附件只提供可信元数据，Worker 必须调用 `asset_stage` 获得当前 Run 的只读路径后再解析。完成门禁逐一核对冻结的非文本 Asset 是否存在成功 `asset_stage` Receipt，缺失时进入一次受控完成修复，仍缺失则阻塞而不能输出“未找到工作区文件”或假总结。
+
+`ArtifactCapture` 是 Application Port，由 Workspace 负责安全解析项目相对路径，BlobStore 负责流式 Hash 和内容寻址存储，Repository 只在完成事务中落 Artifact、Receipt、Validation 和事件。单文件上限 100 MiB；拒绝绝对路径、越界、symlink、目录和 `.oktapod/`。PDF 完成合同要求新 `application/pdf` Artifact 且前缀为 `%PDF-`，二进制产物不走 UTF-8 字数检查。
+
+脚本生成但旧 Run 未登记的文件不会被全工作区扫描或自动回填，因为系统无法可靠推断其任务归属。文件页只对当前明确选择的 Run 提供“保存为本次任务输出”，复用同一 `ArtifactCapture` 端口并生成 Receipt、Validation 和 `artifact.created`；从任务输出进入 Project Asset 的动作统一叫“保存到项目文件”。历史 `/publish` HTTP 路径仅作兼容别名，新客户端使用 `/project-files`，产品界面不再使用“发布”。
+
 ---
 
 ## 5. 统一工具体系（V1 终版）
@@ -280,7 +302,7 @@ V1 的默认模式命名为 `governed_host`，只承诺：
 ```text
 read / edit / write / ls / find / grep /
 git_status / git_diff / git_restore / git_commit /
-run_command / update_plan
+run_command / artifact_capture / asset_stage / update_plan
 ```
 
 **V1 已采用的合同**：
@@ -309,6 +331,7 @@ V1 不建设完整 Tool Ontology，当前 ToolSpec 包含：
 
 ```text
 Identity / Name / Aliases / Description / Parameters /
+PromptHint / Guidelines /
 Source / Capabilities /
 ReadOnly / Destructive / OpenWorld / Idempotent /
 MaxOutputBytes / ExecutorKind / ValidatorKind /
@@ -421,6 +444,8 @@ Skill 工具约束保存在已审核 Manifest；执行授权复用 approval、ap
 
 ## 10. Prompt 与外部内容安全（V1 终版）
 
+`PromptAssembler` 只组装公共身份/安全边界、Work/Code 工作流、计划/执行/恢复 Stage 和当前真实 ToolSpec 目录；不在 Worker 重复声明规则，不提示 Schema 中不存在的工具。项目指令按项目根到当前目录合并，同目录 `AGENTS.override.md` 优先于 `AGENTS.md`，最多 32 KiB；路径、内容 Hash 和内容冻结到 Run，Run 中修改只影响下一个 Run。
+
 所有外部内容统一标记 `external_untrusted`，包括：搜索结果、网页内容、GitHub Issue、MCP ToolResult、数据库文本、邮件、仓库内指令文件。
 
 统一 Context Envelope：
@@ -488,6 +513,9 @@ V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Ubuntu 与 Win
 | ADR-010 | 双平台原生 CI/恢复测试是发布前置 | V1 精简门禁，V1.1 补完整矩阵 |
 | ADR-011 | **内核端口先行** | 先拆 Repository/Principal/Policy/Artifact，再长功能 |
 | ADR-012 | **V1 最小沙箱** | 隔离 HOME/凭据/工作区/进程树，网络沙箱进 V1.1 |
+| ADR-013 | **Scene 不授权** | Work/Code 共用执行内核，只改工作流；授权与风险判定独立 |
+| ADR-014 | **Artifact Capture 是唯一产物登记口** | 不扫描整个 Workspace，完成必须有可审计、可校验的新 Artifact |
+| ADR-015 | **文件类型不混储** | Workspace、Asset、Artifact 分别表示可变工作、可复用输入和不可变交付；Changes 只派生 Git |
 
 ---
 

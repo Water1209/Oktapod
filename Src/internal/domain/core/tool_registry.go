@@ -8,6 +8,8 @@ type ToolSpec struct {
 	Name           string
 	Aliases        []string
 	Description    string
+	PromptHint     string
+	Guidelines     []string
 	Parameters     map[string]any
 	Source         string
 	Capabilities   []string
@@ -77,6 +79,8 @@ func BuiltinToolSpecs() []ToolSpec {
 		{Name: ToolWorkspaceGrep, Description: "Search bounded UTF-8 workspace files for literal text with deterministic pagination and secret redaction.", Parameters: objectSchema([]string{"query"}, map[string]any{"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "path": map[string]any{"type": "string", "maxLength": 500}, "glob": map[string]any{"type": "string", "maxLength": 200}, "cursor": cursor, "limit": limit})},
 		{Name: ToolWorkspaceEditFile, Description: "Replace one exact text occurrence only when the current file matches preimage_hash. The write is atomic and conflicts never overwrite external changes.", Sequential: true, Parameters: objectSchema([]string{"path", "preimage_hash", "old_text", "new_text"}, map[string]any{"path": path, "preimage_hash": map[string]any{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "old_text": map[string]any{"type": "string", "maxLength": 1000000}, "new_text": map[string]any{"type": "string", "maxLength": 1000000}})},
 		{Name: ToolWorkspaceWriteFile, Description: "Create a new file in the project workspace. Use workspace_edit_file to modify existing files.", Sequential: true, Parameters: objectSchema([]string{"path", "content"}, map[string]any{"path": path, "content": map[string]any{"type": "string", "maxLength": 1048576}})},
+		{Name: ToolArtifactCapture, Description: "Register one existing project-relative file as an immutable task output after validating its path, content hash, size, and media signature.", PromptHint: "Capture a script- or command-generated file as a deliverable or evidence. A generated file is not a task output until this succeeds.", Sequential: true, Parameters: objectSchema([]string{"path", "kind"}, map[string]any{"path": path, "kind": map[string]any{"type": "string", "enum": []string{"deliverable", "evidence"}}})},
+		{Name: ToolAssetStage, Description: "Materialize one attachment frozen into this Run at a read-only internal workspace path for script or command processing.", PromptHint: "Stage a selected binary or large attachment before processing it with workspace tools.", Sequential: true, Parameters: objectSchema([]string{"asset_id"}, map[string]any{"asset_id": map[string]any{"type": "string", "minLength": 36, "maxLength": 36}})},
 		{Name: ToolWorkspaceRunCommand, Description: "Run a single command (e.g. 'go build', 'npm test'). For shell pipes and redirects, use workspace_shell.", Sequential: true, Parameters: objectSchema([]string{"program", "args"}, map[string]any{"program": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "args": map[string]any{"type": "array", "maxItems": 64, "items": map[string]any{"type": "string", "maxLength": 2000}}})},
 		{Name: ToolWorkspaceShell, Description: "Execute a shell command in the project workspace. Supports pipes, redirects, and command chaining. Use for compound operations like 'git clone xxx && npm install'. Destructive commands are rejected.", Sequential: true, Parameters: objectSchema([]string{"command"}, map[string]any{"command": map[string]any{"type": "string", "minLength": 1, "maxLength": 10000}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300}})},
 		{Name: ToolGitStatus, Description: "Read bounded Git status and return a precondition hash.", Parameters: emptyObjectSchema()},
@@ -108,6 +112,9 @@ func applyBuiltinToolMetadata(spec *ToolSpec) {
 	spec.ReadOnly = planned.RiskLevel == "L0" && spec.Name != ToolUpdatePlan && spec.Name != ToolRequestInput && spec.Name != ToolRequestPermission && spec.Name != ToolSkillInvoke
 	spec.Destructive = planned.RiskLevel == "L2" || planned.RiskLevel == "L3"
 	spec.OpenWorld = spec.Name == ToolWebSearch
+	if spec.PromptHint == "" {
+		spec.PromptHint = spec.Description
+	}
 	if spec.Name == ToolWebSearch {
 		spec.Source = "builtin"
 		spec.Identity = "builtin:" + spec.Name
@@ -119,6 +126,12 @@ func applyBuiltinToolMetadata(spec *ToolSpec) {
 		spec.Aliases, spec.Capabilities = []string{"edit"}, []string{"repository.write"}
 	case ToolWorkspaceWriteFile:
 		spec.Aliases, spec.Capabilities = []string{"write"}, []string{"repository.write"}
+	case ToolArtifactCapture:
+		spec.Capabilities = []string{"artifact.capture"}
+		spec.Guidelines = []string{"Call after a command or script creates the final file; PDF capture validates the %PDF- signature."}
+	case ToolAssetStage:
+		spec.Capabilities = []string{"asset.stage"}
+		spec.Guidelines = []string{"Only asset ids frozen into the current Run are accepted; staged copies are read-only and temporary."}
 	case ToolWorkspaceListFiles:
 		spec.Aliases, spec.Capabilities = []string{"ls"}, []string{"repository.read"}
 	case ToolWorkspaceFindFiles:
@@ -127,8 +140,16 @@ func applyBuiltinToolMetadata(spec *ToolSpec) {
 		spec.Aliases, spec.Capabilities = []string{"grep"}, []string{"repository.search"}
 	case ToolWorkspaceRunCommand:
 		spec.Aliases, spec.Capabilities = []string{"run_command"}, []string{"workspace.command"}
+		spec.Guidelines = []string{"Use for one direct program invocation; use workspace_shell only when shell syntax is required."}
+	case ToolWorkspaceShell:
+		spec.Capabilities = []string{"workspace.command"}
+		spec.Guidelines = []string{"Keep commands scoped to the project workspace; deterministic policy still rejects destructive or out-of-scope actions."}
+	case ToolGitCommit, ToolGitCommitPaths, ToolGitBranch, ToolGitRestore, ToolGitRestoreHunk:
+		spec.Capabilities = []string{"repository.git.write"}
+		spec.Guidelines = []string{"Inspect git_status first and use its frozen precondition hash."}
 	case ToolWebSearch:
 		spec.Capabilities = []string{"web.search"}
+		spec.Guidelines = []string{"Use bounded authoritative sources and cite the evidence used in the deliverable."}
 	}
 }
 
@@ -163,6 +184,10 @@ func minimumValidToolArguments(name string) map[string]any {
 		return map[string]any{"path": "file.txt", "preimage_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "old_text": "a", "new_text": "b"}
 	case ToolWorkspaceWriteFile:
 		return map[string]any{"path": "file.txt", "content": ""}
+	case ToolArtifactCapture:
+		return map[string]any{"path": "output.pdf", "kind": "deliverable"}
+	case ToolAssetStage:
+		return map[string]any{"asset_id": "00000000-0000-7000-8000-000000000001"}
 	case ToolWorkspaceFindFiles:
 		return map[string]any{"pattern": "*"}
 	case ToolWorkspaceGrep:

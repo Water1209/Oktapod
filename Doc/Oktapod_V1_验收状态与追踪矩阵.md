@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.3
-> 更新日期：2026-08-10
+> 版本：v1.4
+> 更新日期：2026-08-11
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`
 
@@ -35,6 +35,7 @@
 | B4 | MCP/Skill/搜索 | `PASS` | 通用 MCP 来源解析、官方 SDK、本地/远端传输、多 Secret、产品级 OAuth 回调/取消/刷新、Skill ZIP 与内置 Skill Creator 已落地并有确定性测试 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、文件/Hunk、接受及受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
 | B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
+| B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；Files 三分类；Composer 附件/asset_stage；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
 
 ## 2.2 V1 正式范围决策
 
@@ -95,16 +96,18 @@
 | R1A-004 | 上下文与 Compaction | `PASS` | Active Leaf typed transcript、真实 usage、初次/增量六节模板、文件清单、ToolResult Artifact、split-turn 和失败不推进全绿；同 Thread 新 Run 继承压缩感知消息上下文并保留当前目标顺序 |
 | R1A-005 | Durable ToolBatch | `PASS` | 000046 批次持久化；并行/串行、审批收敛、源顺序、唯一 continuation、lease 恢复语义通过；并行兄弟失败会收齐后仅创建一个恢复分支；批次收据已提交但 continuation 尚未入队的崩溃窗口会自动补建模型续接，不再留下无可执行 Step 的 `running` Run |
 | R1A-006 | Session Tree V2 | `PASS` | 000047、独立 entry_seq、事务追加、Active Leaf 上下文、Navigate/Fork/Clone/Label/五节 Summary/CAS/Busy Guard/分页/循环检测/重启恢复及 OpenAPI 通过；PostgreSQL 已按 V1 范围决策排除 |
-| R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填；同协议多实例与同名模型隔离；Registry REST；SecretStore 补偿；脱敏测试；stale-while-revalidate；Run ModelRef/Thinking/Catalog 冻结及下一 Turn 生效全绿 |
-| R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、Artifact、Policy、审批和 Receipt 测试通过 |
+| R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填、000056 启用模型真源；同协议多实例与同名模型按 Provider 隔离；API 目录显式刷新且不覆盖用户选择；手动模型能力未知；项目/会话/Agent 拒绝未启用模型，历史 Run 继续使用冻结 ModelRef |
+| R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write/capture/stage；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、100 MiB、MIME/PDF 签名、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行保留；取消终态、SQLite Busy 退避和未知副作用保护通过 |
-| R1A-010 | Codex 式工作台 | `PASS` | 四区 Shell、统一 Thread、桌面右侧 Inspector、Composer、Activity Spine、内联任务/审批及 1440/1280/1024/768/390 响应式 E2E 通过；Thread 操作收敛到“编辑名称/删除”下拉，执行记录的搜索/展开位于卡片顶部，任务流显示实际 Agent；运行中 Enter 引导当前任务、Alt+Enter 排队下一轮，明确自然语言可暂停/取消/恢复，停止后可安全删除 Thread |
+| R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出，品牌图形标/字标来自仓库唯一 Logo 源 |
 | R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效 |
 | R1A-012 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；Inspector 文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt 与真实子进程 kill 后 Lease 恢复自动化通过；`TestClaimNextStepRecoversCompletedBatchWithoutRunnableStep` 覆盖全部 Step 已终态但 Task/Run 仍运行的批次续接恢复 |
-| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问和 Composer 邻接 UI 已实现；完全访问自动放行冻结风险 L0-L2，MCP L3 仍强制人工；暂停/取消/恢复由 Application 层确定性指令处理，裸“继续”不会劫持普通对话，取消后同 Thread 继任 Run 保留 Workspace 改动 |
+| R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问和 Composer 邻接 UI 已实现；Reviewer 只审 L2 Ask，脱敏、超时/非法输出 fail-closed 与可用性 Diagnostics 有确定性测试；完全访问自动放行冻结风险 L0-L2，L3/硬拒绝仍强制人工或拒绝；暂停/取消/恢复仍由 Application 层处理 |
+| R1A-017 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作区/项目文件/任务输出/Changes 分层查询与 Scope 通过；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
+| R1A-018 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；队列消费绑定原消息避免重复；Task/Auto 裸“继续”恢复当前会话而不新建无上下文任务；同计划项审批可批量决定但每项保留冻结 Hash；预算请求采用有意义增量，并支持现有结果收尾、本 Run 不限额或终止且保留证据 |
 
 ## 6. Release 1B 验收矩阵
 
@@ -115,7 +118,7 @@
 | R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；标准远端默认按 OAuth challenge 自动发现，Registry 声明的 Secret Header 则生成安全绑定。Authorization Code/PKCE、浏览器回调、取消、动态客户端注册与刷新令牌 SecretStore 回写均有确定性测试。Tavily 发现 5 个工具并真实搜索，Filesystem 完成受限目录写读与越界拒绝；OAuth fixture 覆盖首次授权、取消和过期令牌刷新，故障 fixture 覆盖超时、非法 Schema、超量输出、进程缺失、SSRF/重定向与活动 Run 删除阻止。GitHub/Notion 无外部账号时仍完整验证发现、配置、审批和失败恢复，真实数据调用标记为可选外部烟测。单 Skill ZIP 严格校验覆盖路径穿越、Unicode 冲突、符号链接、嵌套 Skill、隐藏载荷和压缩炸弹。 |
 | R1B-004 | Provider 协议与真实主链路 | `PASS` | 原生 Anthropic/Gemini 增量合同通过；OpenAI 兼容通道已经真实 MiniMax 端到端验证可见流式、工具、文件修改和回读哈希；更多原生真实凭据已按 V1 范围决策排除 |
 | R1B-005 | 高级 Git | `PASS` | `git_conflicts`、按 Hunk 恢复、选择路径提交具备状态 Hash、Policy、审批与 Receipt；Changes UI 通过原 Thread 创建受治理动作。远程 Git 不进入 V1 |
-| R1B-006 | V1 设置 | `PASS` | Context、Retry、安全、Shell、主题、快捷键和数据维护路由/来源展示及 E2E 已完成；主题在首次绘制前恢复，设置入口直达外观，Light/Dark/System 共用语义 token，工作台、Markdown 表格、任务卡、资源、审批、表单和弹窗完成跨页对比度回归；非敏感显示偏好允许浏览器持久化，完整服务端化进入 V1.1 |
+| R1B-006 | V1 设置 | `PASS` | 设置只保留真实可改且生效的“模型服务、外观”；安全重定向审批中心，数据维护重定向导入与导出，其余旧设置深链回到外观。设置页只按自身冻结的 `section` 参数处理旧深链，不会在离开设置时用全局待跳转路径把用户重定向回来；主题在首次绘制前恢复；运行时 Context/Retry/Shell 和固定快捷键不再伪装成设置 |
 | R1B-007 | 项目级审批规则 | `PASS` | 000049；API 强制二次确认；Tool + 确定性窄键；30 天 TTL；Owner 查看/撤销；撤销后恢复审批；Policy 静态拒绝不被绕过；Go 与 Playwright 验收通过 |
 
 ## 7. 前端验收
@@ -188,3 +191,7 @@
 | 2026-08-10 | 证据驱动完成协议与 Skill 续轮 | 复盘真实 Physical AI 任务确认：MCP 研究成功后 Provider 工具参数截断，重试只说“开始写文件”，旧运行时即误判成功；同时显式 `researchpilot` 只在首轮加载且 6000 字正文裁掉末尾 QA/交付门禁。完成协议现统一要求联网/MCP Receipt、真实工作区变更、变更后验证、最新 Artifact 与显式字数，失败进入受控修复；显式长 Skill 跨计划、工具、截断与完成修复续轮继承。真实重跑进一步修复显式 MCP 误删工作区工具、完全访问仍重复申请命令能力、Thinking 只展示不下传、GLM 交错推理未续接、推理到上限空转、搜索次数/禁用约束不跨 Run 且可用 `map` 绕过、MCP 长调用无截止，以及终态“继续当前任务，并……”丢失原目标/Skill/证据的问题；预算耗尽会同时收缩 Tool Schema 与执行门禁，默认模型输出已在同日极限回归后校准为 8192，恢复 16384/32768，MCP 截止 10 分钟。相关反例、适配器、续作与完成门禁测试通过。 |
 | 2026-08-10 | 单一完整报告与预算实跑校准 | 从网页新建独立 Thread，以自然语言调用 `researchpilot@0.1.0` 和已连接 Tavily MCP；3 次互补搜索均为 L2/allow、无审批并产生成功 Receipt。Run 最终完成 11/11，单一 `physical_ai_complete_report_2026.md` 独立核验 30,021 个汉字、77 个 URL、15/15 必需章节、无 TODO/TBD/待补充/续写锚点；总用量 67 次模型调用、778,648 输入 + 61,272 输出 Token，证明旧 32/200k 和候选 64 次上限不足，默认最终校准为 80 次/1,000,000 Token，单次输出 8192→16384→32768。完成门禁改为单一主 Artifact 而非分片求和，Skill `name@version` 可解析，完全访问仅自动放行 L0-L2，50 个不可变文件版本在 UI 收敛为 1 个最新交付文件。 |
 | 2026-08-10 | 并发调度短暂锁恢复 | 完整门禁复现两个 SQLite 调度实例同时领取同一 Schedule 时，胜出实例可能在创建任务阶段遭遇短暂 `SQLITE_BUSY`，造成 Fire 已记录但任务未创建。Scheduler 现基于既有 `schedule-fire-{id}` 幂等键执行有界退避重试；单元反例与双实例并发用例连续 50 轮通过，不扩大租约或绕过失败审计。 |
+| 2026-08-11 | 场景、Files、Artifact Capture 与 Reviewer 收口 | 新 Run 解除 Work/Code 工具能力差异，Prompt 从 ToolSpec/项目指令冻结动态组装；新增 Workspace/Artifact API、中文文件三页、Composer 多附件和 `asset_stage`；脚本产物通过 `artifact_capture` 流式入 Blob 并事务化落库，PDF 完成门禁校验 `%PDF-`/MIME/Hash。旧任务遗漏的 PDF 可在明确 Run 下保存为任务输出，再保存为仅项目内复用的项目文件；界面不再使用含混的“发布”，窄屏长报告不会遮挡检查器。Reviewer 收窄为 L2 Ask 并在未可用时 UI 禁用。真实 `go run` PDF 集成用例 Ask/Full Access、旧 Run 显式 Capture、PDF 43 页预览、项目文件复用、刷新后状态和浏览器零错误均通过；Web 25/25、OpenAPI drift、`$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`、Playwright foundation 1/1 + success 23/23 与发行 smoke 通过；Windows 工件 SHA256 `36ff8bafb0226f2a7a67835f3746ef8ccb16e3aee41add30ca40b3d1d11b3101`。 |
+| 2026-08-11 | 设置页跨路由卡死修复 | 修复外观设置页读取全局待跳转路径并误触发自身重定向、导致“设置 → 首页/项目”等所有离开设置的 Link 被取消的问题；改为读取当前 `/settings/$section` 路由参数。新增“外观 → 项目库 → 外观”浏览器回归；Web lint、25/25 单测、production build、定向 Playwright 1/1 和真实 `127.0.0.1:8787` 浏览器点击链路通过。 |
+| 2026-08-11 | 项目切换、附件读取与 Provider 探测修复 | 项目标题由无行为按钮改为可键盘关闭的真实项目切换器；Composer 只要选择附件，Auto 就确定性创建 Task 并冻结附件，非文本附件未产生成功 `asset_stage` Receipt 时完成门禁自动修复或阻塞；模型服务恢复“测试连接”并显示脱敏结果、延迟和模型数。新增附件路由/冻结快照、二进制完成门禁、恢复提示及项目切换/Provider 探测回归；`pnpm verify` 全绿，真实浏览器完成跨项目切换、Provider 连接正常和 2.2 MiB PDF 暂存、32 页正文提取、4/4 总结及任务输出登记闭环。 |
+| 2026-08-13 | 消息真源、预算决策与任务面板收口 | 用户消息在进入 Steering/下一轮队列时先事务化持久化，附件、`/Skill` 和队列类型作为展示快照随消息保留；修复运行中快速连发被 `submit.isPending` 静默丢弃。预算扩展改为显示当前额度与明确增量，并提供“现有结果收尾 / 本次不限额 / 停止任务”；同一计划项的冻结动作支持批量批准但保持逐项审计。旧故障 Run 复核为 112 次成功续写、72 次预算阻塞、72 次预算批准和 47 次工具批准，终态 `failed` 且没有继续运行；终态失败不再制造“待我处理”红点，局部工具成功也不会覆盖整体失败摘要，历史矛盾摘要仅在技术追踪保留原文。右侧统一为可最大化“任务面板”，文件操作使用带无障碍提示的图标，附件可直接关联已有项目文件。`pnpm verify`、foundation 1/1、turn 1/1、success 24/24、Windows 发行构建及独立数据目录 smoke 全部通过；工件 SHA256 `ccb7a03e3eb5520da0e97f6226f0d2a68fc506e0901fc23ef206f6ff6df1315f`。 |

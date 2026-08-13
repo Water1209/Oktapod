@@ -158,7 +158,7 @@ func TestProviderCatalogPreservesUnknownToolCallingCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := service.ListProviderModels(t.Context(), provider.ProviderID)
+	models, err := service.RefreshProviderModels(t.Context(), provider.ProviderID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +175,49 @@ func TestProviderCatalogPreservesUnknownToolCallingCapability(t *testing.T) {
 	}
 	if knownByID["unknown-tool-support"] || !knownByID["known-no-tools"] {
 		t.Fatalf("tool calling knowledge was not preserved: %+v", knownByID)
+	}
+}
+
+func TestEnabledProviderModelsAreTheProjectSelectionBoundary(t *testing.T) {
+	store, actor, org := openProviderTestStore(t)
+	defer store.Close()
+	secrets := &memoryProviderSecrets{values: map[string]string{}}
+	service := application.NewService(store, core.ProfilePersonal, "https://provider.invalid/v1", actor, org, func() string { return "" }).
+		WithProviderRegistry(secrets, func(core.ProviderInstance, string) application.ModelCatalog {
+			return staticCatalog{models: []core.ModelDescriptor{{ID: "enabled-model"}, {ID: "catalog-only-model"}}}
+		})
+	credential := "provider-secret"
+	provider, err := service.SaveProvider(t.Context(), "", application.SaveProviderInput{
+		DisplayName: "Boundary", ProtocolFamily: core.ProviderProtocolOpenAICompatible,
+		Endpoint: "https://boundary.example.test/v1", DefaultModelID: "enabled-model", Credential: &credential,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.RefreshProviderModels(t.Context(), provider.ProviderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SaveProviderModels(t.Context(), provider.ProviderID, application.SaveProviderModelsInput{ModelIDs: []string{"enabled-model"}, DefaultModelID: "enabled-model", Activate: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Blocked", Kind: core.ProjectKindPersonal, Scene: core.SceneWork, ModelProviderID: provider.ProviderID, DefaultModel: "catalog-only-model"}, "blocked-project")
+	var validation *core.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("expected disabled model validation, got %v", err)
+	}
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Allowed", Kind: core.ProjectKindPersonal, Scene: core.SceneWork, ModelProviderID: provider.ProviderID, DefaultModel: "enabled-model"}, "allowed-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.ModelProviderID != provider.ProviderID || project.DefaultModel != "enabled-model" {
+		t.Fatalf("project model boundary not persisted: %+v", project)
+	}
+	inherited, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Inherited", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "inherited-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.ModelProviderID != provider.ProviderID || inherited.DefaultModel != "" {
+		t.Fatalf("project did not inherit the active default provider: %+v", inherited)
 	}
 }
 

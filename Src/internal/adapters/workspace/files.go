@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
@@ -68,6 +69,10 @@ func (l *Local) listFiles(root string, call core.ToolCall, planned core.PlannedT
 		if candidate == path {
 			return true
 		}
+		relative := relativeSlash(root, candidate)
+		if isInternalWorkspacePath(relative) {
+			return true
+		}
 		kind := "file"
 		if entry.IsDir() {
 			kind = "directory"
@@ -76,10 +81,12 @@ func (l *Local) listFiles(root string, call core.ToolCall, planned core.PlannedT
 		}
 		info, _ := entry.Info()
 		size := int64(0)
+		modifiedAt := ""
 		if info != nil {
 			size = info.Size()
+			modifiedAt = info.ModTime().UTC().Format(time.RFC3339Nano)
 		}
-		items = append(items, map[string]any{"path": relativeSlash(root, candidate), "kind": kind, "size_bytes": size})
+		items = append(items, map[string]any{"path": relative, "kind": kind, "size_bytes": size, "modified_at": modifiedAt})
 		return len(items) < maxWorkspaceScan
 	})
 	if err != nil {
@@ -297,6 +304,9 @@ func walkWorkspace(root string, recursive bool, visit func(string, fs.DirEntry) 
 		if err != nil {
 			return err
 		}
+		if path != root && entry.IsDir() && (entry.Name() == ".oktapod" || entry.Name() == ".git") {
+			return fs.SkipDir
+		}
 		if path != root && entry.Type()&os.ModeSymlink != 0 {
 			if !visit(path, entry) {
 				return fs.SkipAll
@@ -317,6 +327,10 @@ func walkWorkspace(root string, recursive bool, visit func(string, fs.DirEntry) 
 		}
 		return nil
 	})
+}
+
+func isInternalWorkspacePath(path string) bool {
+	return path == ".oktapod" || strings.HasPrefix(path, ".oktapod/") || path == ".git" || strings.HasPrefix(path, ".git/")
 }
 
 func readTextFile(path string, maximum int64) ([]byte, error) {

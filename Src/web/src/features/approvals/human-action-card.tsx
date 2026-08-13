@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Clock3, LockKeyhole, ShieldAlert, X } from 'lucide-react'
+import { Check, Clock3, Gauge, Infinity as InfinityIcon, LockKeyhole, ShieldAlert, Square, X } from 'lucide-react'
 import { api, type ApprovalScope, type HumanAction } from '../../shared/api/client'
 
 export function HumanActionCard({ action }: { action: HumanAction }) {
@@ -37,6 +37,14 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
   const permission = action.kind === 'permission_escalation'
   const budget = action.kind === 'budget_request'
   const sideEffect = action.kind === 'side_effect_resolution'
+  const currentCalls = numericRequest(action.request.current_max_model_calls)
+  const currentTokens = numericRequest(action.request.current_max_tokens)
+  const recommendedCalls = numericRequest(action.request.recommended_max_model_calls ?? action.request.proposed_max_model_calls)
+  const recommendedTokens = numericRequest(action.request.recommended_max_tokens ?? action.request.proposed_max_tokens)
+  const addCalls = numericRequest(action.request.recommended_add_model_calls) || Math.max(0, recommendedCalls - currentCalls)
+  const addTokens = numericRequest(action.request.recommended_add_tokens) || Math.max(0, recommendedTokens - currentTokens)
+  const finishCalls = numericRequest(action.request.finish_add_model_calls) || 2
+  const finishTokens = numericRequest(action.request.finish_add_tokens) || 131072
 
   const approve = (scope: ApprovalScope) => decision.mutate({ decision: 'approved', scope })
 
@@ -48,7 +56,12 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
     </header>
     <p>{action.reason}</p>
 	{waiting && approval && !persistentApprovalSupported ? <small className="human-action-error">外部 MCP 的参数与返回边界由服务端决定，为避免静默扩大权限，仅支持逐次批准。</small> : null}
-    {!input ? <div className="human-action-frozen"><LockKeyhole size={14} /><span><small>{approval ? '冻结参数' : '请求内容'}</small><code>{formatRequest(toolName, frozen)}</code></span></div> : null}
+	{!input && !budget ? <div className="human-action-frozen"><LockKeyhole size={14} /><span><small>{approval ? '冻结参数' : '请求内容'}</small><code>{formatRequest(toolName, frozen)}</code></span></div> : null}
+    {budget ? <div className="human-action-budget-summary">
+      <div><Gauge size={15} /><span><small>当前上限</small><strong>{formatCount(currentCalls)} 次 · {formatTokens(currentTokens)}</strong></span></div>
+      <div><span aria-hidden="true">→</span><span><small>建议扩展后</small><strong>{formatCount(recommendedCalls)} 次 · {formatTokens(recommendedTokens)}</strong></span></div>
+      <p>本次建议增加 <strong>{formatCount(addCalls)} 次模型调用</strong>和 <strong>{formatTokens(addTokens)}</strong>；只影响当前 Run。</p>
+    </div> : null}
     <dl><div><dt>影响范围</dt><dd>{impact}</dd></div><div><dt>请求哈希</dt><dd><code>{action.request_hash.slice(0, 16)}</code></dd></div></dl>
 
     {waiting && input ? <div className="human-action-answer">
@@ -57,11 +70,18 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       <button className="approve" disabled={decision.isPending || !answer.trim()} onClick={() => decision.mutate({ decision: 'answered', answer: answer.trim() })}>提交并继续</button>
     </div> : null}
 
-    {waiting && (approval || permission || budget) ? <div className="human-action-actions">
+    {waiting && (approval || permission) ? <div className="human-action-actions">
       <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-      <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />{budget ? '批准扩展并继续' : '批准一次'}</button>
+	  <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />批准一次</button>
 	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
 	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
+    </div> : null}
+
+    {waiting && budget ? <div className="human-action-actions budget-actions">
+      <button className="reject" disabled={decision.isPending} title="终止当前 Run，保留已有文件和执行记录" onClick={() => decision.mutate({ decision: 'rejected', answer: 'stop' })}><Square size={12} />停止任务</button>
+      <button disabled={decision.isPending} title={`仅增加 ${formatCount(finishCalls)} 次和 ${formatTokens(finishTokens)}，要求模型立即收尾`} onClick={() => decision.mutate({ decision: 'approved', answer: 'finish_existing' })}><Check size={14} />用现有结果收尾</button>
+      <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', answer: 'recommended' })}><Check size={14} />扩展 +{formatCount(addCalls)} 次 / +{formatTokens(addTokens)}</button>
+      <button disabled={decision.isPending} title="仅当前 Run 取消模型调用和 Token 上限；风险动作仍受审批策略约束" onClick={() => decision.mutate({ decision: 'approved', answer: 'unlimited' })}><InfinityIcon size={14} />本次不限额</button>
     </div> : null}
 
     {waiting && sideEffect ? <div className="human-action-actions">
@@ -122,4 +142,19 @@ function statusLabel(value: HumanAction['status']) {
 function formatTime(value: string) {
   const time = new Date(value)
   return Number.isNaN(time.getTime()) ? '未设置' : time.toLocaleString('zh-CN')
+}
+
+function numericRequest(value: unknown) {
+  const number = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : 0
+}
+
+function formatCount(value: number) {
+  return value.toLocaleString('zh-CN')
+}
+
+function formatTokens(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M Token`
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K Token`
+  return `${value.toLocaleString('zh-CN')} Token`
 }

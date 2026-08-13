@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/robfig/cron/v3"
 
@@ -21,8 +23,9 @@ import (
 )
 
 const (
-	MaxAssetFileBytes = 100 * 1024 * 1024
-	ProjectAssetQuota = 5 * 1024 * 1024 * 1024
+	MaxAssetFileBytes          = 100 * 1024 * 1024
+	ProjectAssetQuota          = 5 * 1024 * 1024 * 1024
+	maxProjectInstructionBytes = 32 * 1024
 )
 
 type Service struct {
@@ -42,6 +45,8 @@ type Service struct {
 	providerCatalogs ProviderCatalogFactory
 	chatToolExec     ChatToolExecutor
 	workspaceReader  WorkspaceReader
+	workspaceFiles   WorkspaceCaptureReader
+	artifactCapture  ArtifactCapture
 	workspaceRoot    string
 	mcpRegistry      MCPRegistry
 	mcpOAuth         MCPOAuthCoordinator
@@ -77,7 +82,17 @@ func (s *Service) WithChatToolExecutor(executor ChatToolExecutor, workspaceRoot 
 	if reader, ok := executor.(WorkspaceReader); ok {
 		s.workspaceReader = reader
 	}
+	if reader, ok := executor.(WorkspaceCaptureReader); ok {
+		s.workspaceFiles = reader
+	}
 	s.workspaceRoot = strings.TrimSpace(workspaceRoot)
+	return s
+}
+
+// WithArtifactCapture wires the same scoped capture port used by the Worker
+// into explicit user-driven recovery actions in the Files inspector.
+func (s *Service) WithArtifactCapture(capture ArtifactCapture) *Service {
+	s.artifactCapture = capture
 	return s
 }
 
@@ -93,6 +108,29 @@ func (s *Service) WithCapabilityTrustedKeys(keys map[string]ed25519.PublicKey) *
 }
 
 func (s *Service) ListModels(ctx context.Context) ([]core.ModelDescriptor, error) {
+	organizationID := s.ScopeFor(ctx).OrganizationID
+	options, err := s.repository.ListEnabledModels(ctx, organizationID)
+	if err == nil && len(options) > 0 {
+		models := make([]core.ModelDescriptor, 0, len(options))
+		for _, option := range options {
+			var capabilities map[string]bool
+			_ = json.Unmarshal([]byte(option.CapabilitiesJSON), &capabilities)
+			models = append(models, core.ModelDescriptor{
+				ID: option.ModelID, ProviderID: option.ProviderID, ProviderName: option.ProviderName,
+				Source: option.Source, Stale: option.Stale, Default: option.Default && option.ProviderDefault,
+				ToolCalling: capabilities["tool_calling"], ToolCallingKnown: capabilities["tool_calling_known"],
+				Vision: capabilities["vision"], StructuredOutput: capabilities["structured_output"],
+				Reasoning: capabilities["reasoning"], ContextWindow: option.ContextWindow,
+			})
+		}
+		return models, nil
+	}
+	providers, providerErr := s.repository.ListProviderInstances(ctx, organizationID)
+	if providerErr == nil && len(providers) > 0 {
+		return []core.ModelDescriptor{}, err
+	}
+	// Compatibility path for tests and offline bootstrap before a Provider has
+	// been created. Once a Provider exists, the enabled list is authoritative.
 	if s.catalog == nil {
 		return []core.ModelDescriptor{}, nil
 	}
@@ -109,6 +147,11 @@ func (s *Service) ListModels(ctx context.Context) ([]core.ModelDescriptor, error
 }
 
 func (s *Service) DefaultModel(ctx context.Context, models []core.ModelDescriptor) (string, error) {
+	for _, model := range models {
+		if model.Default {
+			return model.ID, nil
+		}
+	}
 	if resolver, ok := s.catalog.(DefaultModelCatalog); ok {
 		return resolver.DefaultModel(ctx)
 	}
@@ -274,10 +317,22 @@ func (s *Service) CreateProject(ctx context.Context, input core.CreateProjectInp
 	input.Description = strings.TrimSpace(input.Description)
 	input.DefaultModel = strings.TrimSpace(input.DefaultModel)
 	input.FallbackModel = strings.TrimSpace(input.FallbackModel)
+	input.ModelProviderID = strings.TrimSpace(input.ModelProviderID)
 	if input.Kind == "" {
 		input.Kind = core.ProjectKindPersonal
 	}
+	if input.ModelProviderID == "" {
+		provider, providerErr := s.repository.GetDefaultProviderInstance(ctx, s.ScopeFor(ctx).OrganizationID)
+		if providerErr == nil {
+			input.ModelProviderID = provider.ProviderID
+		} else if !errors.Is(providerErr, sql.ErrNoRows) {
+			return core.Project{}, providerErr
+		}
+	}
 	if err := core.ValidateCreateProject(input); err != nil {
+		return core.Project{}, err
+	}
+	if err := s.validateProjectModels(ctx, &input.ModelProviderID, input.DefaultModel, input.FallbackModel); err != nil {
 		return core.Project{}, err
 	}
 	idempotencyKey, err := normalizeIdempotencyKey(idempotencyKey)
@@ -315,6 +370,13 @@ func (s *Service) UpdateProjectSettings(ctx context.Context, projectID string, i
 	if err != nil {
 		return core.Project{}, err
 	}
+	if input.ModelProviderID != nil {
+		value := strings.TrimSpace(*input.ModelProviderID)
+		input.ModelProviderID = &value
+	} else {
+		value := current.ModelProviderID
+		input.ModelProviderID = &value
+	}
 	if input.DefaultModel != nil {
 		value := strings.TrimSpace(*input.DefaultModel)
 		input.DefaultModel = &value
@@ -351,6 +413,9 @@ func (s *Service) UpdateProjectSettings(ctx context.Context, projectID string, i
 			return core.Project{}, &core.ValidationError{Field: field, Message: "must be a single-line model id with at most 200 characters"}
 		}
 	}
+	if err := s.validateProjectModels(ctx, input.ModelProviderID, *input.DefaultModel, *input.FallbackModel); err != nil {
+		return core.Project{}, err
+	}
 	idempotencyKey, err = normalizeIdempotencyKey(idempotencyKey)
 	if err != nil {
 		return core.Project{}, err
@@ -359,6 +424,59 @@ func (s *Service) UpdateProjectSettings(ctx context.Context, projectID string, i
 		ProjectID string                          `json:"project_id"`
 		Input     core.UpdateProjectSettingsInput `json:"input"`
 	}{ProjectID: projectID, Input: input})})
+}
+
+func (s *Service) validateProjectModels(ctx context.Context, providerID *string, modelIDs ...string) error {
+	hasModel := false
+	for _, modelID := range modelIDs {
+		if strings.TrimSpace(modelID) != "" {
+			hasModel = true
+			break
+		}
+	}
+	if !hasModel && (providerID == nil || strings.TrimSpace(*providerID) == "") {
+		return nil
+	}
+	organizationID := s.ScopeFor(ctx).OrganizationID
+	var provider core.ProviderInstance
+	var err error
+	if providerID != nil && strings.TrimSpace(*providerID) != "" {
+		provider, err = s.repository.GetProviderInstance(ctx, organizationID, strings.TrimSpace(*providerID))
+	} else {
+		provider, err = s.repository.GetDefaultProviderInstance(ctx, organizationID)
+	}
+	if errors.Is(err, sql.ErrNoRows) && (providerID == nil || strings.TrimSpace(*providerID) == "") {
+		return nil
+	}
+	if err != nil {
+		return &core.ValidationError{Field: "model_provider_id", Message: "does not identify a visible provider"}
+	}
+	if provider.Status != core.ProviderStatusActive {
+		return &core.ValidationError{Field: "model_provider_id", Message: "provider is not active"}
+	}
+	if providerID != nil {
+		*providerID = provider.ProviderID
+	}
+	options, err := s.repository.ListProviderModelOptions(ctx, organizationID, provider.ProviderID)
+	if err != nil {
+		return err
+	}
+	enabled := make(map[string]struct{}, len(options))
+	for _, option := range options {
+		if option.Enabled {
+			enabled[option.ModelID] = struct{}{}
+		}
+	}
+	for _, modelID := range modelIDs {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		if _, ok := enabled[modelID]; !ok {
+			return &core.ValidationError{Field: "model", Message: modelID + " is not enabled for the selected provider"}
+		}
+	}
+	return nil
 }
 
 func (s *Service) ListProjects(ctx context.Context) ([]core.Project, error) {
@@ -450,6 +568,62 @@ func (s *Service) RevokeProjectInvitation(ctx context.Context, invitationID, cor
 	return s.repository.RevokeProjectInvitation(ctx, s.ScopeFor(ctx), invitationID, correlationID, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
 }
 
+// snapshotProjectInstructions loads the instruction chain through the scoped
+// Workspace port, never by reaching around it with host filesystem access.
+// V1 tools always execute from the project root, so the root is also the
+// current working directory; the shape remains a list for future nested cwd
+// support. AGENTS.override.md takes precedence over AGENTS.md.
+func (s *Service) snapshotProjectInstructions(ctx context.Context, projectID string) []map[string]any {
+	for _, candidate := range []string{"AGENTS.override.md", "AGENTS.md"} {
+		result := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{
+			ID:   "run-project-instructions",
+			Name: core.ToolWorkspaceReadFile,
+			Arguments: map[string]any{
+				"path": candidate, "offset_line": float64(0), "limit_lines": float64(1000),
+			},
+		})
+		if result.Status != core.StatusSucceeded {
+			continue
+		}
+		content, _ := result.Output["content"].(string)
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		truncated := false
+		if len([]byte(content)) > maxProjectInstructionBytes {
+			content = truncateUTF8Bytes(content, maxProjectInstructionBytes)
+			truncated = true
+		}
+		contentHash, _ := result.Output["content_hash"].(string)
+		if strings.TrimSpace(contentHash) == "" {
+			sum := sha256.Sum256([]byte(content))
+			contentHash = "sha256:" + hex.EncodeToString(sum[:])
+		}
+		path, _ := result.Output["path"].(string)
+		if strings.TrimSpace(path) == "" {
+			path = candidate
+		}
+		return []map[string]any{{
+			"path": path, "content_hash": contentHash, "content": content, "truncated": truncated,
+		}}
+	}
+	return nil
+}
+
+func truncateUTF8Bytes(value string, maximum int) string {
+	if maximum <= 0 {
+		return ""
+	}
+	for len(value) > maximum {
+		_, size := utf8.DecodeLastRuneInString(value)
+		if size <= 0 {
+			return ""
+		}
+		value = value[:len(value)-size]
+	}
+	return value
+}
+
 func (s *Service) CreateTask(ctx context.Context, projectID string, input core.CreateTaskInput, correlationID, idempotencyKey string) (core.Task, error) {
 	input.ConversationID = strings.TrimSpace(input.ConversationID)
 	input.Title = strings.TrimSpace(input.Title)
@@ -457,12 +631,16 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	input.Acceptance = strings.TrimSpace(input.Acceptance)
 	input.Model = strings.TrimSpace(input.Model)
 	input.FallbackModel = strings.TrimSpace(input.FallbackModel)
+	hasModelOverride := input.Model != ""
+	hasFallbackModelOverride := input.FallbackModel != ""
 	input.SceneOverride = strings.ToLower(strings.TrimSpace(input.SceneOverride))
 	input.PermissionMode = strings.ToLower(strings.TrimSpace(input.PermissionMode))
 	input.ContextAssetIDs = normalizeIDs(input.ContextAssetIDs)
 	input.ContextMemoryIDs = normalizeIDs(input.ContextMemoryIDs)
 	input.SkillID = strings.TrimSpace(input.SkillID)
 	input.SkillArgs = strings.TrimSpace(input.SkillArgs)
+	input.UserMessageContent = strings.TrimSpace(input.UserMessageContent)
+	input.ExistingUserMessageID = strings.TrimSpace(input.ExistingUserMessageID)
 	requestedMode := input.Mode
 	if input.SkillID != "" {
 		if input.Mode == core.ModeAgentTeam || strings.TrimSpace(input.TeamDefinitionID) != "" || len(input.TeamRoles) > 0 {
@@ -478,6 +656,18 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	}
 	project, err := s.repository.GetProject(ctx, s.ScopeFor(ctx), projectID)
 	if err != nil {
+		return core.Task{}, err
+	}
+	if strings.TrimSpace(input.ProviderID) == "" {
+		input.ProviderID = strings.TrimSpace(project.ModelProviderID)
+	}
+	if input.Model == "" {
+		input.Model = strings.TrimSpace(project.DefaultModel)
+	}
+	if input.FallbackModel == "" {
+		input.FallbackModel = strings.TrimSpace(project.FallbackModel)
+	}
+	if err := s.validateProjectModels(ctx, &input.ProviderID, input.Model, input.FallbackModel); err != nil {
 		return core.Task{}, err
 	}
 	if input.MaxModelCalls == 0 {
@@ -503,12 +693,17 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	if err := core.ValidateCreateTask(input); err != nil {
 		return core.Task{}, err
 	}
+	contextAssetSnapshots := make([]map[string]any, 0, len(input.ContextAssetIDs))
 	if len(input.ContextAssetIDs) > 0 {
 		for _, assetID := range input.ContextAssetIDs {
 			asset, assetErr := s.repository.GetAsset(ctx, s.ScopeFor(ctx), assetID)
 			if assetErr != nil || asset.ProjectID != projectID || asset.Kind != core.AssetKindFile {
 				return core.Task{}, &core.ForbiddenError{Message: "selected context asset is not visible in this project"}
 			}
+			contextAssetSnapshots = append(contextAssetSnapshots, map[string]any{
+				"id": asset.ID, "name": asset.Name, "media_type": asset.MediaType,
+				"size_bytes": asset.SizeBytes, "content_hash": asset.ContentHash,
+			})
 		}
 	}
 	if len(input.ContextMemoryIDs) > 0 {
@@ -531,21 +726,24 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		return core.Task{}, err
 	}
 	snapshot := map[string]any{
-		"schema_version":        1,
-		"profile":               s.profile,
-		"model_endpoint":        s.endpoint,
-		"mode":                  input.Mode,
-		"requested_mode":        requestedMode,
-		"classification_reason": classificationReason,
-		"scene":                 scene,
-		"permission_mode":       input.PermissionMode,
-		"scene_policy": map[string]any{
-			"workspace_write":   true,
-			"workspace_command": scene == core.SceneCode || input.PermissionMode == core.PermissionModeFullAccess,
-			"network":           false,
-		},
+		"schema_version":         2,
+		"profile":                s.profile,
+		"model_endpoint":         s.endpoint,
+		"mode":                   input.Mode,
+		"requested_mode":         requestedMode,
+		"classification_reason":  classificationReason,
+		"scene":                  scene,
+		"permission_mode":        input.PermissionMode,
+		"prompt_profile_version": core.PromptProfileVersionCurrent,
+	}
+	if input.ProviderID != "" {
+		snapshot["model_provider_id"] = input.ProviderID
 	}
 	if s.workspaceReader != nil {
+		if instructions := s.snapshotProjectInstructions(ctx, projectID); len(instructions) > 0 {
+			snapshot["project_instructions"] = instructions
+			snapshot["project_instructions_max_bytes"] = 32 * 1024
+		}
 		baseline := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{
 			ID:   "run-baseline",
 			Name: core.ToolGitStatus,
@@ -567,16 +765,16 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	if input.MaxTokens > 0 {
 		snapshot["max_tokens"] = input.MaxTokens
 	}
-	if input.Model != "" {
+	if hasModelOverride {
 		snapshot["model_override"] = input.Model
 	}
-	if input.FallbackModel != "" {
+	if hasFallbackModelOverride {
 		snapshot["fallback_model_override"] = input.FallbackModel
 	}
-	if input.Model == "" && project.DefaultModel != "" {
+	if !hasModelOverride && project.DefaultModel != "" {
 		snapshot["project_default_model"] = project.DefaultModel
 	}
-	if input.FallbackModel == "" && project.FallbackModel != "" {
+	if !hasFallbackModelOverride && project.FallbackModel != "" {
 		snapshot["project_fallback_model"] = project.FallbackModel
 	}
 	if input.MaxTokens > 0 {
@@ -712,6 +910,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	}
 	if len(input.ContextAssetIDs) > 0 {
 		snapshot["context_asset_ids"] = input.ContextAssetIDs
+		snapshot["context_asset_snapshots"] = contextAssetSnapshots
 	}
 	if len(input.ContextMemoryIDs) > 0 {
 		snapshot["context_memory_ids"] = input.ContextMemoryIDs
@@ -811,6 +1010,7 @@ func (s *Service) StartQueuedConversationTurn(ctx context.Context, item core.Con
 		MaxTokens: turnInput.MaxTokens, AgentID: turnInput.AgentID, TeamDefinitionID: turnInput.TeamDefinitionID,
 		TeamRoles: turnInput.TeamRoles, ContextAssetIDs: turnInput.ContextAssetIDs,
 		ContextMemoryIDs: turnInput.ContextMemoryIDs, SkillID: turnInput.SkillID, SkillArgs: turnInput.SkillArgs,
+		UserMessageContent: item.Content, ExistingUserMessageID: item.MessageID,
 	}
 	if item.Kind == "steering" && strings.TrimSpace(item.ActiveTaskID) != "" {
 		source, sourceErr := s.repository.GetTask(ctx, scope, item.ActiveTaskID)
@@ -911,11 +1111,17 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 	if err != nil {
 		return core.ProjectTurnResult{}, err
 	}
+	if strings.TrimSpace(input.ProviderID) == "" {
+		input.ProviderID = strings.TrimSpace(project.ModelProviderID)
+	}
 	if strings.TrimSpace(input.Model) == "" {
 		input.Model = strings.TrimSpace(project.DefaultModel)
 	}
 	if strings.TrimSpace(input.FallbackModel) == "" {
 		input.FallbackModel = strings.TrimSpace(project.FallbackModel)
+	}
+	if err := s.validateProjectModels(ctx, &input.ProviderID, input.Model, input.FallbackModel); err != nil {
+		return core.ProjectTurnResult{}, err
 	}
 	input.SkillID = strings.TrimSpace(input.SkillID)
 	input.SkillArgs = strings.TrimSpace(input.SkillArgs)
@@ -991,7 +1197,14 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		}{projectID, input})})
 	}
 
-	if directive, matched := resolveConversationDirective(content); matched {
+	directive, matched := resolveConversationDirective(content)
+	if !matched && mode != core.ModeAnswer && normalizeConversationDirective(content) == "继续" {
+		// In task-capable composer modes, a bare continuation is lifecycle
+		// intent, not a new goal named "继续". Answer mode keeps the phrase as
+		// ordinary conversation content for chat-only threads.
+		directive, matched = conversationDirective{Action: conversationDirectiveContinue}, true
+	}
+	if matched {
 		return s.executeConversationDirective(ctx, projectID, input, content, conversationID, visibility, directive, correlationID, idempotencyKey, onRoute, onDelta)
 	}
 	if sourceInput, matched := parseMCPInstallDirective(content); matched {
@@ -1001,7 +1214,14 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 	var classification core.ModelResult
 	route := TurnRouteTask
 	classificationReason := "user_selected_task"
-	if mode == core.ModeAnswer {
+	hasSelectedAttachments := len(input.ContextAssetIDs) > 0
+	if hasSelectedAttachments {
+		// Selected attachments are immutable Run context. Keeping this turn on
+		// the chat-only path would discard that context and expose no governed
+		// tool for staging binary files such as PDF documents.
+		route = TurnRouteTask
+		classificationReason = "selected_attachments_require_task"
+	} else if mode == core.ModeAnswer {
 		route = TurnRouteChat
 		classificationReason = "user_selected_chat"
 	} else if mode == core.ModeAuto {
@@ -1050,6 +1270,11 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		}{projectID, input})})
 	}
 
+	presentation, presentationErr := s.messagePresentationForTurn(ctx, projectID, content, input)
+	if presentationErr != nil {
+		return core.ProjectTurnResult{}, presentationErr
+	}
+
 	// A conversation owns at most one active task. Additional task turns are
 	// persisted as follow-ups and become visible immediately through the queue
 	// API; the worker starts them after the active task reaches a terminal state.
@@ -1060,12 +1285,13 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		}
 		if hasActive {
 			queuedInput := inputWithTurnDefaults(input, content, conversationID, visibility)
-			queuedInput.Mode = mode
+			queuedInput.Mode = effectiveTaskMode(mode, hasSelectedAttachments)
 			inputJSON, marshalErr := json.Marshal(queuedInput)
 			if marshalErr != nil {
 				return core.ProjectTurnResult{}, fmt.Errorf("encode queued conversation turn: %w", marshalErr)
 			}
-			queueItem, enqueueErr := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, conversationID, activeTaskID, content, string(inputJSON), input.QueueKind)
+			presentation.QueueKind = input.QueueKind
+			queueItem, enqueueErr := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, conversationID, activeTaskID, content, string(inputJSON), input.QueueKind, presentation)
 			if enqueueErr != nil {
 				return core.ProjectTurnResult{}, enqueueErr
 			}
@@ -1091,10 +1317,7 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		// mistake it for an absolute workspace path and triggers a policy denial.
 		taskGoal = input.SkillArgs
 	}
-	taskInput := core.CreateTaskInput{ConversationID: conversationID, Title: titleFromGoal(taskGoal), Goal: taskGoal, Acceptance: input.Acceptance, Mode: mode, Visibility: visibility, PermissionMode: input.PermissionMode, SceneOverride: input.SceneOverride, Model: input.Model, FallbackModel: input.FallbackModel, ProviderID: input.ProviderID, Thinking: input.Thinking, MaxModelCalls: input.MaxModelCalls, MaxTokens: input.MaxTokens, AgentID: input.AgentID, TeamDefinitionID: input.TeamDefinitionID, TeamRoles: input.TeamRoles, ContextAssetIDs: input.ContextAssetIDs, ContextMemoryIDs: input.ContextMemoryIDs, SkillID: input.SkillID, SkillArgs: input.SkillArgs}
-	if mode == core.ModeAuto {
-		taskInput.Mode = core.ModeSingleAgent
-	}
+	taskInput := core.CreateTaskInput{ConversationID: conversationID, Title: titleFromGoal(taskGoal), Goal: taskGoal, Acceptance: input.Acceptance, Mode: effectiveTaskMode(mode, hasSelectedAttachments), Visibility: visibility, PermissionMode: input.PermissionMode, SceneOverride: input.SceneOverride, Model: input.Model, FallbackModel: input.FallbackModel, ProviderID: input.ProviderID, Thinking: input.Thinking, MaxModelCalls: input.MaxModelCalls, MaxTokens: input.MaxTokens, AgentID: input.AgentID, TeamDefinitionID: input.TeamDefinitionID, TeamRoles: input.TeamRoles, ContextAssetIDs: input.ContextAssetIDs, ContextMemoryIDs: input.ContextMemoryIDs, SkillID: input.SkillID, SkillArgs: input.SkillArgs, UserMessageContent: content, MessagePresentation: presentation}
 	task, taskErr := s.CreateTask(ctx, projectID, taskInput, correlationID, idempotencyKey)
 	if taskErr != nil {
 		return core.ProjectTurnResult{}, taskErr
@@ -1113,6 +1336,58 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		return core.ProjectTurnResult{}, messagesErr
 	}
 	return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &task}, nil
+}
+
+func (s *Service) messagePresentationForTurn(ctx context.Context, projectID, content string, input core.ProjectTurnInput) (core.MessagePresentation, error) {
+	presentation := core.MessagePresentation{Attachments: make([]core.MessageAttachment, 0, len(input.ContextAssetIDs))}
+	seenAssets := make(map[string]struct{}, len(input.ContextAssetIDs))
+	for _, assetID := range normalizeIDs(input.ContextAssetIDs) {
+		if _, duplicate := seenAssets[assetID]; duplicate {
+			continue
+		}
+		seenAssets[assetID] = struct{}{}
+		asset, err := s.repository.GetAsset(ctx, s.ScopeFor(ctx), assetID)
+		if err != nil || asset.ProjectID != projectID || asset.Kind != core.AssetKindFile {
+			return core.MessagePresentation{}, &core.ForbiddenError{Message: "selected context asset is not visible in this project"}
+		}
+		presentation.Attachments = append(presentation.Attachments, core.MessageAttachment{
+			ID: asset.ID, Name: asset.Name, MediaType: asset.MediaType,
+			SizeBytes: asset.SizeBytes, ContentHash: asset.ContentHash,
+		})
+	}
+	if strings.TrimSpace(input.SkillID) == "" {
+		return presentation, nil
+	}
+	capabilities, err := s.repository.ListCapabilities(ctx, s.ScopeFor(ctx), projectID, 500)
+	if err != nil {
+		return core.MessagePresentation{}, err
+	}
+	for _, capability := range capabilities {
+		if capability.ID != strings.TrimSpace(input.SkillID) {
+			continue
+		}
+		if capability.Kind != core.CapabilityKindSkill || capability.Status != core.CapabilityStatusEnabled {
+			return core.MessagePresentation{}, &core.ForbiddenError{Message: "selected Skill is not enabled"}
+		}
+		command := strings.Fields(strings.TrimSpace(content))
+		commandName := ""
+		if len(command) > 0 && strings.HasPrefix(command[0], "/") {
+			commandName = command[0]
+		}
+		presentation.Skill = &core.MessageSkillInvocation{
+			ID: capability.ID, Name: capability.Name, Version: capability.Version,
+			Command: commandName, Args: strings.TrimSpace(input.SkillArgs),
+		}
+		return presentation, nil
+	}
+	return core.MessagePresentation{}, &core.ValidationError{Field: "skill_id", Message: "Skill is not available in this project"}
+}
+
+func effectiveTaskMode(mode string, hasSelectedAttachments bool) string {
+	if mode == core.ModeAuto || hasSelectedAttachments {
+		return core.ModeSingleAgent
+	}
+	return mode
 }
 
 func inputWithTurnDefaults(input core.ProjectTurnInput, content, conversationID, visibility string) core.ProjectTurnInput {
@@ -2402,13 +2677,21 @@ func (s *Service) CreateAgentDefinition(ctx context.Context, projectID string, i
 	if err := core.ValidateCreateAgent(input); err != nil {
 		return core.AgentDefinition{}, err
 	}
+	project, err := s.repository.GetProject(ctx, s.ScopeFor(ctx), projectID)
+	if err != nil {
+		return core.AgentDefinition{}, err
+	}
+	providerID := project.ModelProviderID
+	if err := s.validateProjectModels(ctx, &providerID, input.Model, input.FallbackModel); err != nil {
+		return core.AgentDefinition{}, err
+	}
 	status := core.CapabilityStatusEnabled
 	var config map[string]any
 	_ = json.Unmarshal([]byte(input.ConfigJSON), &config)
 	if value, ok := config["requires_approval"]; ok && value == true {
 		status = core.CapabilityStatusQuarantined
 	}
-	idempotencyKey, err := normalizeIdempotencyKey(idempotencyKey)
+	idempotencyKey, err = normalizeIdempotencyKey(idempotencyKey)
 	if err != nil {
 		return core.AgentDefinition{}, err
 	}
@@ -2575,13 +2858,7 @@ func (s *Service) ListInbox(ctx context.Context) ([]core.InboxItem, error) {
 			return nil, listErr
 		}
 		for _, task := range tasks {
-			kind, reason := "", ""
-			switch task.Status {
-			case core.StatusWaitingInput:
-				kind, reason = "task_input", "任务需要补充输入"
-			case core.StatusBlocked, core.StatusFailed:
-				kind, reason = "task_recovery", taskInboxReason(task)
-			}
+			kind, reason := taskInboxAction(task)
 			if kind == "" {
 				continue
 			}
@@ -2592,7 +2869,27 @@ func (s *Service) ListInbox(ctx context.Context) ([]core.InboxItem, error) {
 	return items, nil
 }
 
+func taskInboxAction(task core.Task) (kind, reason string) {
+	switch task.Status {
+	case core.StatusWaitingInput:
+		return "task_input", "任务需要补充输入"
+	case core.StatusBlocked:
+		return "task_recovery", taskInboxReason(task)
+	default:
+		// Failed/canceled/succeeded tasks are terminal records, not pending
+		// human actions. Keeping them here creates a badge the user cannot
+		// resolve and can incorrectly imply that the Worker is still active.
+		return "", ""
+	}
+}
+
 func taskInboxReason(task core.Task) string {
+	if task.Status == core.StatusFailed && strings.Contains(task.ResultSummary, "通过确定性校验") {
+		if code := strings.TrimSpace(task.ErrorCode); code != "" {
+			return fmt.Sprintf("任务已停止，终态为 %s；最后一步摘要与失败终态不一致，系统不会自动继续。请打开任务查看追踪，或从原目标重新发起。", code)
+		}
+		return "任务已停止；最后一步摘要与失败终态不一致，系统不会自动继续。已完成的工具收据和文件仍会保留，请打开任务查看追踪，或从原目标重新发起。"
+	}
 	switch strings.TrimSpace(task.ErrorCode) {
 	case "BUDGET_RESERVATION_EXCEEDED":
 		return "本次运行的 Token 或模型调用配额不足，系统已保留执行进度。增加本次 Run 的配额后可从检查点继续。"

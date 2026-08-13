@@ -57,7 +57,7 @@ const server = createServer(async (request, response) => {
       }))
       return
     }
-    if (userContent.includes('提交以下已选文件') || calledToolNames.includes('git_commit_paths') || calledToolNames.includes('git_status')) {
+    if (userContent.includes('提交以下已选文件') || userContent.includes('保存以下已选文件') || calledToolNames.includes('git_commit_paths') || calledToolNames.includes('git_status')) {
       if (calledToolNames.includes('git_status')) {
         response.end(JSON.stringify({
           id: 'provider-e2e-changes-commit-finished',

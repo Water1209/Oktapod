@@ -87,4 +87,7 @@ func TestFullAccessAutoAllowsOnlyNonL3Asks(t *testing.T) {
 	if fullAccessAutoAllows(false, core.PlannedTool{Decision: core.PolicyAsk, RiskLevel: "L2"}) {
 		t.Fatal("ask mode must retain L2 approval")
 	}
+	if fullAccessAutoAllows(true, core.PlannedTool{Decision: core.PolicyAsk, RiskLevel: "L0"}) {
+		t.Fatal("full access must not bypass explicit human-input checkpoints")
+	}
 }

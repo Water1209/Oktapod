@@ -66,7 +66,7 @@ ON CONFLICT(organization_id) DO UPDATE SET
 	if err != nil {
 		return core.ModelProviderConfig{}, fmt.Errorf("save model provider config: %w", err)
 	}
-	_, err = s.UpsertProviderInstance(ctx, organizationID, core.UpsertProviderInstanceInput{
+	provider, err := s.UpsertProviderInstance(ctx, organizationID, core.UpsertProviderInstanceInput{
 		ProviderID:     "legacy-default-" + organizationID,
 		DisplayName:    "Default Provider",
 		ProtocolFamily: core.ProviderProtocolOpenAICompatible,
@@ -78,6 +78,9 @@ ON CONFLICT(organization_id) DO UPDATE SET
 	})
 	if err != nil {
 		return core.ModelProviderConfig{}, fmt.Errorf("sync default provider registry: %w", err)
+	}
+	if err = s.ReplaceEnabledModels(ctx, organizationID, provider.ProviderID, []string{input.DefaultModel}, input.DefaultModel); err != nil {
+		return core.ModelProviderConfig{}, fmt.Errorf("sync default provider enabled model: %w", err)
 	}
 	return s.GetModelProviderConfig(ctx, organizationID)
 }

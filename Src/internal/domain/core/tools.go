@@ -110,6 +110,26 @@ func PlanTool(call ToolCall) PlannedTool {
 		}
 		planned.Decision = PolicyAllow
 		planned.Reason = "Standard policy allows create-only writes inside the project workspace"
+	case ToolArtifactCapture:
+		planned.RiskLevel = "L1"
+		planned.Idempotent = true
+		if err := validateArtifactCaptureArguments(call.Arguments); err != nil {
+			planned.Decision = PolicyDeny
+			planned.Reason = err.Error()
+			return planned
+		}
+		planned.Decision = PolicyAllow
+		planned.Reason = "Captures one validated regular workspace file into immutable content-addressed storage"
+	case ToolAssetStage:
+		planned.RiskLevel = "L1"
+		planned.Idempotent = true
+		if err := validateAssetStageArguments(call.Arguments); err != nil {
+			planned.Decision = PolicyDeny
+			planned.Reason = err.Error()
+			return planned
+		}
+		planned.Decision = PolicyAllow
+		planned.Reason = "Stages one Run-frozen Asset at a temporary read-only internal workspace path"
 	case ToolWorkspaceReadFile, ToolWorkspaceListFiles, ToolWorkspaceFindFiles, ToolWorkspaceGrep:
 		planned.RiskLevel = "L0"
 		planned.Idempotent = true
@@ -391,6 +411,47 @@ func validateRelativeToolPath(value any, allowEmpty bool) error {
 	clean := filepath.Clean(path)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("workspace path escape is denied")
+	}
+	return nil
+}
+
+func validateArtifactCaptureArguments(arguments map[string]any) error {
+	if len(arguments) != 2 {
+		return fmt.Errorf("artifact_capture accepts only path and kind")
+	}
+	if err := validateRelativeToolPath(arguments["path"], false); err != nil {
+		return err
+	}
+	path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(arguments["path"].(string))))
+	if path == ".oktapod" || strings.HasPrefix(path, ".oktapod/") {
+		return fmt.Errorf("internal workspace paths cannot be captured")
+	}
+	kind, ok := arguments["kind"].(string)
+	if !ok || (kind != "deliverable" && kind != "evidence") {
+		return fmt.Errorf("kind must be deliverable or evidence")
+	}
+	return nil
+}
+
+func validateAssetStageArguments(arguments map[string]any) error {
+	if len(arguments) != 1 {
+		return fmt.Errorf("asset_stage accepts only asset_id")
+	}
+	assetID, ok := arguments["asset_id"].(string)
+	assetID = strings.TrimSpace(assetID)
+	if !ok || len(assetID) != 36 {
+		return fmt.Errorf("asset_id must be a UUID")
+	}
+	for index, char := range assetID {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if char != '-' {
+				return fmt.Errorf("asset_id must be a UUID")
+			}
+			continue
+		}
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
+			return fmt.Errorf("asset_id must be a UUID")
+		}
 	}
 	return nil
 }

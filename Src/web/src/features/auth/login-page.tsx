@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, Eye, EyeOff, LockKeyhole } from 'lucide-react'
 import { api } from '../../shared/api/client'
+import brandWordmark from '../../shared/brand-wordmark.png'
 
 export function LoginPage({ onAuthenticated, sessionExpired = false }: { onAuthenticated: () => Promise<void>; sessionExpired?: boolean }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
@@ -25,11 +26,8 @@ export function LoginPage({ onAuthenticated, sessionExpired = false }: { onAuthe
   return (
     <main className="auth-layout">
       <section className="auth-identity" aria-label="Oktapod">
-        <div className="auth-mark">O</div>
-        <div>
-          <strong>Oktapod</strong>
-          <span>Agent workspace</span>
-        </div>
+        <img className="auth-wordmark" src={brandWordmark} alt="Oktapod" />
+        <span>Agent workspace</span>
       </section>
 
       <section className="auth-surface">

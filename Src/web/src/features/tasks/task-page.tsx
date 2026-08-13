@@ -145,11 +145,11 @@ export function TaskPage() {
 function UnknownSideEffectPanel({ receipts, pending, error, onResolve }: { receipts: SideEffectReceipt[]; pending: boolean; error: Error | null; onResolve: (receiptId: string, decision: 'confirm_applied' | 'confirm_not_applied' | 'abandon', note: string) => void }) {
   const [notes, setNotes] = useState<Record<string, string>>({})
   return <div className="unknown-side-effect-panel" role="alert">
-    <div className="unknown-side-effect-heading"><AlertTriangle size={18} /><strong>外部副作用结果未知</strong><span>系统已停止自动重试。先核查外部系统，再选择结果；不确定时请放弃并 Fork 新任务。</span></div>
+    <div className="unknown-side-effect-heading"><AlertTriangle size={18} /><strong>外部副作用结果未知</strong><span>系统已停止自动重试。先核查外部系统，再选择结果；不确定时请放弃并创建新任务分支。</span></div>
     {receipts.map((receipt) => <div className="unknown-side-effect-row" key={receipt.id}>
       <div><strong>{receipt.tool_name}</strong><small>输入哈希 {receipt.input_hash.slice(0, 18)}… · 收据 {receipt.id.slice(0, 8)}</small></div>
       <textarea aria-label={`${receipt.tool_name} 副作用核查备注`} rows={2} placeholder="核查依据（放弃或确认未执行时必填）" value={notes[receipt.id] ?? ''} onChange={(event) => setNotes((current) => ({ ...current, [receipt.id]: event.target.value }))} />
-      <div className="unknown-side-effect-actions"><button type="button" disabled={pending} onClick={() => onResolve(receipt.id, 'confirm_applied', notes[receipt.id] ?? '')}>确认已执行</button><button type="button" disabled={pending || !(notes[receipt.id] ?? '').trim()} onClick={() => onResolve(receipt.id, 'confirm_not_applied', notes[receipt.id] ?? '')}>确认未执行</button><button type="button" disabled={pending || !(notes[receipt.id] ?? '').trim()} onClick={() => onResolve(receipt.id, 'abandon', notes[receipt.id] ?? '')}>放弃并 Fork</button></div>
+      <div className="unknown-side-effect-actions"><button type="button" disabled={pending} onClick={() => onResolve(receipt.id, 'confirm_applied', notes[receipt.id] ?? '')}>确认已执行</button><button type="button" disabled={pending || !(notes[receipt.id] ?? '').trim()} onClick={() => onResolve(receipt.id, 'confirm_not_applied', notes[receipt.id] ?? '')}>确认未执行</button><button type="button" disabled={pending || !(notes[receipt.id] ?? '').trim()} onClick={() => onResolve(receipt.id, 'abandon', notes[receipt.id] ?? '')}>放弃并创建分支</button></div>
     </div>)}
     {error ? <small className="control-error">{error.message}</small> : null}
   </div>
@@ -190,11 +190,11 @@ function ArtifactPublishRow({ artifact, projectId }: { artifact: Artifact; proje
   const [previewOpen, setPreviewOpen] = useState(false)
   const [visibility, setVisibility] = useState<Visibility>('private')
   const queryClient = useQueryClient()
-  const publish = useMutation({
-    mutationFn: () => api.publishArtifact(artifact.id, { name: artifact.name, visibility }),
+  const save = useMutation({
+    mutationFn: () => api.saveArtifactAsProjectFile(artifact.id, { name: artifact.name, visibility }),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['assets', projectId] }),
   })
-  return <div className="artifact-publish-row"><span><strong>{artifact.name}</strong><small>{artifact.kind === 'evidence' ? '研究过程材料' : '任务交付文件'} · {artifact.media_type} · {artifact.size_bytes} B</small></span><button type="button" className="artifact-open-link" onClick={() => setPreviewOpen(true)}><ExternalLink size={14} />直接打开</button><select aria-label={`${artifact.name} 发布可见性`} value={visibility} disabled={publish.isPending || publish.isSuccess} onChange={(event) => setVisibility(event.target.value as Visibility)}><option value="private">仅自己</option><option value="project">项目成员</option></select><button type="button" disabled={publish.isPending || publish.isSuccess} onClick={() => publish.mutate()}><FileUp size={14} />{publish.isSuccess ? '已发布' : publish.isPending ? '发布中' : '发布到资产'}</button>{publish.error ? <em>{publish.error.message}</em> : null}
+  return <div className="artifact-publish-row"><span><strong>{artifact.name}</strong><small>{artifact.kind === 'evidence' ? '研究过程材料' : '任务交付文件'} · {artifact.media_type} · {artifact.size_bytes} B</small></span><button type="button" className="artifact-open-link" onClick={() => setPreviewOpen(true)}><ExternalLink size={14} />直接打开</button><select aria-label={`${artifact.name} 保存范围`} value={visibility} disabled={save.isPending || save.isSuccess} onChange={(event) => setVisibility(event.target.value as Visibility)}><option value="private">仅自己</option><option value="project">项目成员</option></select><button type="button" title="保存后供项目后续任务复用，不会发布到项目外" disabled={save.isPending || save.isSuccess} onClick={() => save.mutate()}><FileUp size={14} />{save.isSuccess ? '已保存到项目文件' : save.isPending ? '保存中' : '保存到项目文件'}</button>{save.error ? <em>{save.error.message}</em> : null}
     <MarkdownPreviewDialog artifact={previewOpen ? artifact : null} open={previewOpen} onOpenChange={setPreviewOpen} />
   </div>
 }

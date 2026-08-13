@@ -3,14 +3,18 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"log/slog"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
+	okruntime "github.com/oktapod/oktapod/Src/internal/runtime"
 )
 
 func TestTaskBudgetIsPersistedWithRunAndVisibleToGuard(t *testing.T) {
@@ -133,6 +137,56 @@ func TestRunBudgetExtensionRequiresApprovalAndLeavesAuditEvent(t *testing.T) {
 	usage, err = service.GetRunUsage(context.Background(), task.RunID)
 	if err != nil || usage.BudgetStatus != "active" || usage.BudgetMaxCalls != 1 {
 		t.Fatalf("shrunk usage=%#v err=%v", usage, err)
+	}
+}
+
+func TestBudgetHumanActionShowsMeaningfulExtensionAndRejectStopsRun(t *testing.T) {
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "fake-test-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Budget decision", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "生成报告", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 10, MaxTokens: 4096}, "budget-action-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("budget-action-worker", repository, openaicompat.New("https://provider.invalid/v1", "", func() string { return "fake-test-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if _, err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	actions, err := service.ListHumanActions(context.Background(), core.HumanActionWaitingUser, task.ConversationID, task.RunID)
+	if err != nil || len(actions) != 1 || actions[0].Kind != core.HumanActionBudgetRequest {
+		t.Fatalf("budget actions=%#v err=%v", actions, err)
+	}
+	currentCalls, _ := numericValueForBudgetTest(actions[0].Request["current_max_model_calls"])
+	recommendedCalls, _ := numericValueForBudgetTest(actions[0].Request["recommended_max_model_calls"])
+	currentTokens, _ := numericValueForBudgetTest(actions[0].Request["current_max_tokens"])
+	recommendedTokens, _ := numericValueForBudgetTest(actions[0].Request["recommended_max_tokens"])
+	if recommendedCalls-currentCalls < 8 || recommendedTokens-currentTokens < 262144 {
+		t.Fatalf("budget request still uses trivial increments: %#v", actions[0].Request)
+	}
+	if _, err := service.DecideHumanAction(context.Background(), actions[0].ID, core.DecideHumanActionInput{Decision: core.ApprovalRejected, Answer: "stop", Version: actions[0].Version}, "budget-action-stop", "budget-action-stop"); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || stopped.Status != core.StatusCanceled || stopped.ErrorCode != "USER_STOPPED_AT_BUDGET" {
+		t.Fatalf("stopped task=%#v err=%v", stopped, err)
+	}
+}
+
+func numericValueForBudgetTest(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case float64:
+		return int64(typed), true
+	case int:
+		return int64(typed), true
+	default:
+		return 0, false
 	}
 }
 

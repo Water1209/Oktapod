@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Activity, Database, RefreshCw, Radio, Server, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, Database, HardDrive, RefreshCw, Radio, Server, ShieldCheck, Wrench } from 'lucide-react'
 import { api } from '../../shared/api/client'
 
 export function DiagnosticsPage() {
@@ -15,6 +15,8 @@ export function DiagnosticsPage() {
       <DiagnosticRow icon={<Server />} title="Provider" status={item.providers.active > 0 ? 'ok' : 'attention'} detail={`${item.providers.active}/${item.providers.total} 启用 · ${item.providers.stale_catalog} 个目录过期`} />
       <DiagnosticRow icon={<Wrench />} title="Worker" status="ok" detail={`${item.worker.running_runs} 运行 · ${item.worker.queued_runs} 排队 · ${item.worker.active_leases} 活跃 lease`} />
       <DiagnosticRow icon={<ShieldCheck />} title="审批" status={item.worker.waiting_approvals > 0 ? 'attention' : 'ok'} detail={`${item.worker.waiting_approvals} 项等待处理`} />
+      <DiagnosticRow icon={<ShieldCheck />} title="自动审查" status={item.auto_review.available ? 'ok' : 'attention'} detail={item.auto_review.reason} />
+      {item.storage ? <DiagnosticRow icon={<HardDrive />} title="本机存储" status="ok" detail={`数据根目录：${item.storage.data_root} · Workspace：${item.storage.workspace_root}`} /> : null}
       <DiagnosticRow icon={<Radio />} title="SSE" status="ok" detail={`${item.sse.active_connections} 个活动连接`} />
     </div>
     <section className="diagnostic-policy"><h2>安全与维护边界</h2><div><strong>日志</strong><span>{item.logs.detail}</span><em>{item.logs.redacted ? '脱敏策略已启用' : '需要检查'}</em></div><div><strong>备份与恢复</strong><span>{item.maintenance.detail}</span><em>独立高风险流程</em></div></section>

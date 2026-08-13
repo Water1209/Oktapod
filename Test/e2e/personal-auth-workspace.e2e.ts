@@ -24,7 +24,7 @@ test('用户注册后创建个人私有项目并可重新登录', async ({ page 
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/)
   await expect(page.getByRole('heading', { name: projectName })).toBeVisible()
   await expect(page.getByRole('textbox', { name: '消息' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '打开检查器' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开任务面板' })).toBeVisible()
   if (testInfo.project.name === 'mobile') {
     await page.getByRole('button', { name: '打开导航' }).click()
   }
@@ -35,7 +35,8 @@ test('用户注册后创建个人私有项目并可重新登录', async ({ page 
     await page.getByRole('button', { name: '展开项目栏' }).click()
   }
 
-  await page.getByRole('button', { name: '退出登录', exact: true }).click()
+  await page.getByRole('button', { name: /打开账号菜单/ }).click()
+  await page.getByRole('menuitem', { name: '退出登录', exact: true }).click()
   await expect(page.getByRole('heading', { name: '登录 Oktapod' })).toBeVisible()
   await page.getByRole('textbox', { name: '用户名' }).fill(username)
   await page.getByLabel('密码', { exact: true }).fill(password)

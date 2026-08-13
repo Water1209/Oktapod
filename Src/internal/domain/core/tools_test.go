@@ -72,6 +72,10 @@ func TestPlanToolUsesAllowAskDenyPrecedence(t *testing.T) {
 	if write.Decision != PolicyAllow || write.RiskLevel != "L1" || !write.Idempotent {
 		t.Fatalf("write plan=%#v", write)
 	}
+	capture := PlanTool(ToolCall{Name: ToolArtifactCapture, Arguments: map[string]any{"path": "out/report.pdf", "kind": "deliverable"}})
+	if capture.Decision != PolicyAllow || capture.RiskLevel != "L1" || !capture.Idempotent {
+		t.Fatalf("artifact capture policy=%#v", capture)
+	}
 	command := PlanTool(ToolCall{Name: ToolWorkspaceRunCommand, Arguments: map[string]any{"program": "go", "args": []any{"test", "./..."}}})
 	if command.Decision != PolicyAsk || command.RiskLevel != "L2" || command.Idempotent {
 		t.Fatalf("command plan=%#v", command)

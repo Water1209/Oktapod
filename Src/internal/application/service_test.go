@@ -1,6 +1,7 @@
 package application
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
@@ -23,6 +24,33 @@ func TestClassifyTaskModeUsesDeterministicRules(t *testing.T) {
 				t.Fatalf("mode=%s reason=%s want=%s", mode, reason, test.mode)
 			}
 		})
+	}
+}
+
+func TestTaskInboxReasonDoesNotPresentFailedTaskAsSuccessful(t *testing.T) {
+	task := core.Task{
+		Status:        core.StatusFailed,
+		ResultSummary: "工具执行完成，并通过确定性校验。",
+	}
+
+	reason := taskInboxReason(task)
+	if !strings.Contains(reason, "任务已停止") || !strings.Contains(reason, "不会自动继续") {
+		t.Fatalf("reason=%q must explain the terminal failure", reason)
+	}
+	if strings.Contains(reason, "工具执行完成") {
+		t.Fatalf("reason=%q must not repeat the contradictory success summary", reason)
+	}
+}
+
+func TestTaskInboxActionExcludesTerminalFailure(t *testing.T) {
+	kind, reason := taskInboxAction(core.Task{Status: core.StatusFailed, ErrorCode: "TOOL_EXECUTION_FAILED"})
+	if kind != "" || reason != "" {
+		t.Fatalf("terminal failure must not create pending inbox action: kind=%q reason=%q", kind, reason)
+	}
+
+	kind, reason = taskInboxAction(core.Task{Status: core.StatusBlocked, ErrorCode: "MODEL_CREDENTIAL_MISSING"})
+	if kind != "task_recovery" || !strings.Contains(reason, "模型配置或凭据") {
+		t.Fatalf("blocked task must remain actionable: kind=%q reason=%q", kind, reason)
 	}
 }
 

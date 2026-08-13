@@ -39,6 +39,12 @@ type SaveProviderInput struct {
 	Credential     *string
 }
 
+type SaveProviderModelsInput struct {
+	ModelIDs       []string
+	DefaultModelID string
+	Activate       bool
+}
+
 func (s *Service) WithProviderRegistry(secrets ProviderSecretStore, catalogs ProviderCatalogFactory) *Service {
 	s.providerSecrets = secrets
 	s.providerCatalogs = catalogs
@@ -106,6 +112,9 @@ func (s *Service) SaveProvider(ctx context.Context, providerID string, input Sav
 	if input.Status == "" {
 		input.Status = core.ProviderStatusActive
 	}
+	if input.Status == core.ProviderStatusActive && input.DefaultModelID == "" {
+		return core.ProviderInstance{}, &core.ValidationError{Field: "default_model_id", Message: "is required when the provider is active"}
+	}
 
 	var existing core.ProviderInstance
 	existing, existingErr := s.repository.GetProviderInstance(ctx, organizationID, providerID)
@@ -161,6 +170,20 @@ func (s *Service) SaveProvider(ctx context.Context, providerID string, input Sav
 		return core.ProviderInstance{}, err
 	}
 	saved.CredentialExists = s.providerCredentialExists(ctx, credentialRef)
+	if saved.DefaultModelID != "" {
+		options, listErr := s.repository.ListProviderModelOptions(ctx, organizationID, saved.ProviderID)
+		if listErr == nil {
+			modelIDs := []string{saved.DefaultModelID}
+			for _, option := range options {
+				if option.Enabled && option.ModelID != saved.DefaultModelID {
+					modelIDs = append(modelIDs, option.ModelID)
+				}
+			}
+			if replaceErr := s.repository.ReplaceEnabledModels(ctx, organizationID, saved.ProviderID, modelIDs, saved.DefaultModelID); replaceErr != nil {
+				return core.ProviderInstance{}, replaceErr
+			}
+		}
+	}
 	return saved, nil
 }
 
@@ -175,6 +198,13 @@ func (s *Service) DeleteProvider(ctx context.Context, providerID string) error {
 	existing, err := s.repository.GetProviderInstance(ctx, organizationID, providerID)
 	if err != nil {
 		return err
+	}
+	inUse, err := s.repository.ProviderModelInUse(ctx, organizationID, providerID, "")
+	if err != nil {
+		return err
+	}
+	if inUse {
+		return &core.ModelInUseError{Reason: "provider is still used by a project or Agent"}
 	}
 	oldCredential, credentialErr := s.providerSecrets.Get(ctx, existing.CredentialRef)
 	if credentialErr == nil {
@@ -225,23 +255,64 @@ func (s *Service) TestProvider(ctx context.Context, providerID string) (core.Pro
 	return result, nil
 }
 
-func (s *Service) ListProviderModels(ctx context.Context, providerID string) ([]core.ModelCatalogEntry, error) {
+func (s *Service) ListProviderModels(ctx context.Context, providerID string) ([]core.ProviderModelOption, error) {
 	provider, err := s.GetProvider(ctx, providerID)
 	if err != nil {
 		return nil, err
 	}
-	cached, cacheErr := s.repository.ListModelCatalogEntries(ctx, provider.OrganizationID, providerID)
-	if cacheErr == nil && len(cached) > 0 {
-		if cached[0].Stale {
-			go func(snapshot core.ProviderInstance) {
-				refreshCtx, cancel := context.WithTimeout(context.Background(), providerOperationTimeout)
-				defer cancel()
-				_, _ = s.refreshProviderCatalog(refreshCtx, snapshot)
-			}(provider)
-		}
-		return cached, nil
+	return s.repository.ListProviderModelOptions(ctx, provider.OrganizationID, providerID)
+}
+
+func (s *Service) RefreshProviderModels(ctx context.Context, providerID string) ([]core.ProviderModelOption, error) {
+	provider, err := s.GetProvider(ctx, providerID)
+	if err != nil {
+		return nil, err
 	}
-	return s.refreshProviderCatalog(ctx, provider)
+	if _, err = s.refreshProviderCatalog(ctx, provider); err != nil {
+		return nil, fmt.Errorf("refresh provider models: %s", redactProviderError(err))
+	}
+	return s.repository.ListProviderModelOptions(ctx, provider.OrganizationID, providerID)
+}
+
+func (s *Service) SaveProviderModels(ctx context.Context, providerID string, input SaveProviderModelsInput) ([]core.ProviderModelOption, error) {
+	provider, err := s.GetProvider(ctx, providerID)
+	if err != nil {
+		return nil, err
+	}
+	unique := make(map[string]struct{}, len(input.ModelIDs))
+	modelIDs := make([]string, 0, len(input.ModelIDs))
+	for _, raw := range input.ModelIDs {
+		modelID := strings.TrimSpace(raw)
+		if modelID == "" || len([]rune(modelID)) > 255 || strings.ContainsAny(modelID, "\r\n") {
+			return nil, &core.ValidationError{Field: "model_ids", Message: "must contain single-line model ids with at most 255 characters"}
+		}
+		if _, exists := unique[modelID]; exists {
+			continue
+		}
+		unique[modelID] = struct{}{}
+		modelIDs = append(modelIDs, modelID)
+	}
+	if len(modelIDs) == 0 || len(modelIDs) > 200 {
+		return nil, &core.ValidationError{Field: "model_ids", Message: "must enable between 1 and 200 models"}
+	}
+	input.DefaultModelID = strings.TrimSpace(input.DefaultModelID)
+	if _, ok := unique[input.DefaultModelID]; !ok {
+		return nil, &core.ValidationError{Field: "default_model_id", Message: "must be one of the enabled models"}
+	}
+	if err = s.repository.ReplaceEnabledModels(ctx, provider.OrganizationID, provider.ProviderID, modelIDs, input.DefaultModelID); err != nil {
+		return nil, err
+	}
+	if input.Activate && provider.Status != core.ProviderStatusActive {
+		provider, err = s.repository.UpsertProviderInstance(ctx, provider.OrganizationID, core.UpsertProviderInstanceInput{
+			ProviderID: provider.ProviderID, DisplayName: provider.DisplayName, ProtocolFamily: provider.ProtocolFamily,
+			Endpoint: provider.Endpoint, CredentialRef: provider.CredentialRef, DefaultModelID: input.DefaultModelID,
+			Status: core.ProviderStatusActive, IsDefault: provider.IsDefault,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.repository.ListProviderModelOptions(ctx, provider.OrganizationID, provider.ProviderID)
 }
 
 func (s *Service) refreshProviderCatalog(ctx context.Context, provider core.ProviderInstance) ([]core.ModelCatalogEntry, error) {
@@ -348,6 +419,20 @@ func (s *Service) freezeRunModelSnapshot(ctx context.Context, snapshot map[strin
 	modelID := modelFromSnapshot(snapshot)
 	if modelID == "" {
 		modelID = provider.DefaultModelID
+	}
+	options, listErr := s.repository.ListProviderModelOptions(ctx, organizationID, provider.ProviderID)
+	if listErr != nil {
+		return listErr
+	}
+	enabled := false
+	for _, option := range options {
+		if option.Enabled && option.ModelID == modelID {
+			enabled = true
+			break
+		}
+	}
+	if !enabled {
+		return &core.ValidationError{Field: "model", Message: "is not enabled for the selected provider"}
 	}
 	snapshot["requested_provider_id"] = provider.ProviderID
 	snapshot["requested_model_id"] = modelID

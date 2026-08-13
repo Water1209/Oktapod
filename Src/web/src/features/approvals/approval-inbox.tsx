@@ -8,10 +8,12 @@ import { RunBudgetControl } from '../tasks/run-budget-control'
 import { taskFailureInfo } from '../tasks/task-progress-model'
 
 export function ApprovalInbox() {
-  const [status, setStatus] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending')
+  const [view, setView] = useState<'pending' | 'risk' | 'history'>('pending')
+  const [riskStatus, setRiskStatus] = useState<'all' | 'approved' | 'rejected'>('all')
   const [selected, setSelected] = useState<string[]>([])
   const queryClient = useQueryClient()
-  const approvals = useQuery({ queryKey: ['approvals', status], queryFn: () => api.approvals(status) })
+  const approvalStatus = view === 'pending' ? 'pending' : riskStatus
+  const approvals = useQuery({ queryKey: ['approvals', approvalStatus], queryFn: () => api.approvals(approvalStatus), enabled: view !== 'history' })
   const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: 5_000 })
   const batch = useMutation({
     mutationFn: async (decision: 'approved' | 'rejected') => {
@@ -46,23 +48,29 @@ export function ApprovalInbox() {
 
   return <div className="page approval-page">
     <section className="page-intro compact-intro">
-      <div><p className="eyebrow">GOVERNANCE</p><h1>审批中心</h1><p>风险动作的参数在请求时冻结。页面关闭或服务重启不会丢失审批，修改参数必须重新申请。</p></div>
-      <div className="approval-filter" aria-label="审批状态筛选">
-        {(['pending', 'approved', 'rejected', 'all'] as const).map((item) => <button className={status === item ? 'active' : ''} key={item} onClick={() => { setStatus(item); setSelected([]) }}>{statusLabel(item)}</button>)}
+      <div><p className="eyebrow">治理</p><h1>审批中心</h1><p>待办、风险授权和处理历史各自归位；执行凭证仍保留在任务的安全与追踪中。</p></div>
+      <div className="approval-filter" aria-label="审批中心视图">
+        <button className={view === 'pending' ? 'active' : ''} onClick={() => { setView('pending'); setSelected([]) }}>待我处理</button>
+        <button className={view === 'risk' ? 'active' : ''} onClick={() => { setView('risk'); setSelected([]) }}>风险审批</button>
+        <button className={view === 'history' ? 'active' : ''} onClick={() => { setView('history'); setSelected([]) }}>处理记录</button>
       </div>
     </section>
 
-    {status === 'pending' && pendingIDs.length > 0 ? <section className="approval-batch-toolbar" aria-label="批量处理审批"><label><input type="checkbox" aria-label="全选待处理审批" checked={allPendingSelected} onChange={toggleAll} />全选待处理审批</label><span>已选 {selected.length} 项</span><button type="button" className="reject" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('rejected')}>批量拒绝</button><button type="button" className="approve" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('approved')}>批量批准一次</button>{batch.error ? <small className="approval-error">{batch.error.message}</small> : null}</section> : null}
+    {view !== 'history' && pendingIDs.length > 0 ? <section className="approval-batch-toolbar" aria-label="批量处理审批"><label><input type="checkbox" aria-label="全选待处理审批" checked={allPendingSelected} onChange={toggleAll} />全选待处理审批</label><span>已选 {selected.length} 项</span><button type="button" className="reject" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('rejected')}>批量拒绝</button><button type="button" className="approve" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('approved')}>批量批准一次</button>{batch.error ? <small className="approval-error">{batch.error.message}</small> : null}</section> : null}
 
     <section className="approval-list">
-      {actionItems.length > 0 ? <div className="approval-list-section"><header><h2>需要你处理</h2><span>{actionItems.length} 项</span></header>{actionItems.map((item) => <InboxSummary item={item} key={`${item.kind}:${item.id}`} />)}</div> : null}
-      <div className="approval-list-section"><header><h2>风险审批</h2><span>{approvals.data?.items.length ?? 0} 项</span></header>
+      {view === 'pending' ? <div className="approval-list-section"><header><h2>待我处理</h2><span>{actionItems.length + (approvals.data?.items.length ?? 0)} 项</span></header>
+        {actionItems.map((item) => <InboxSummary item={item} key={`${item.kind}:${item.id}`} />)}
+        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
+        {!approvals.isLoading && actionItems.length === 0 && approvals.data?.items.length === 0 ? <div className="empty-panel"><Check size={28} /><h2>当前没有待处理事项</h2><p>需要补充输入、恢复任务或人工授权的事项会出现在这里。</p></div> : null}
+      </div> : null}
+      {view === 'risk' ? <div className="approval-list-section"><header><h2>风险审批</h2><div className="approval-filter compact" aria-label="风险审批状态">{(['all', 'approved', 'rejected'] as const).map((item) => <button className={riskStatus === item ? 'active' : ''} key={item} onClick={() => setRiskStatus(item)}>{item === 'all' ? '全部审批' : statusLabel(item)}</button>)}</div><span>{approvals.data?.items.length ?? 0} 项</span></header>
         {approvals.isLoading ? <div className="page-loading">正在恢复审批队列…</div> : null}
         {approvals.error ? <div className="empty-panel"><h2>审批队列无法读取</h2><p>{approvals.error.message}</p></div> : null}
-        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable={status === 'pending' && approval.status === 'pending'} selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
-        {approvals.data?.items.length === 0 ? <div className="empty-panel"><ShieldAlert size={28} /><h2>当前没有风险审批</h2><p>需要授权的冻结动作会出现在这里。</p></div> : null}
-      </div>
-      {historyItems.length > 0 ? <details className="approval-history"><summary>最近处理记录 · {historyItems.length}</summary>{historyItems.map((item) => <InboxHistory item={item} key={`history:${item.id}`} />)}</details> : null}
+        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable={approval.status === 'pending'} selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
+        {approvals.data?.items.length === 0 ? <div className="empty-panel"><ShieldAlert size={28} /><h2>当前没有风险审批</h2><p>最近没有触发人工授权，或动作已按“完全访问 / 自动审查”处理。执行 Receipt 仍可在任务的“安全”和“追踪”中查看。</p></div> : null}
+      </div> : null}
+      {view === 'history' ? <div className="approval-list-section approval-history-list"><header><h2>处理记录</h2><span>{historyItems.length} 项</span></header>{historyItems.map((item) => <InboxHistory item={item} key={`history:${item.id}`} />)}{!inbox.isLoading && historyItems.length === 0 ? <div className="empty-panel"><Clock3 size={28} /><h2>还没有处理记录</h2><p>任务验收、暂停、恢复、取消、审批决定和副作用核查会记录在这里。</p></div> : null}</div> : null}
     </section>
   </div>
 }
@@ -80,7 +88,7 @@ function InboxSummary({ item }: { item: InboxItem }) {
   const usage = useQuery({ queryKey: ['run-usage', task.data?.run_id], queryFn: () => api.runUsage(task.data!.run_id), enabled: !!task.data?.run_id && task.data.error_code === 'BUDGET_RESERVATION_EXCEEDED' })
   const failure = task.data ? taskFailureInfo(task.data) : undefined
   const budgetIssue = task.data?.error_code === 'BUDGET_RESERVATION_EXCEEDED'
-  const label = item.kind === 'task_input' ? '等待补充输入' : item.kind === 'side_effect_unknown' ? '未知副作用待核查' : budgetIssue ? '配额不足，等待批准' : '任务需要恢复处理'
+  const label = item.kind === 'task_input' ? '等待补充输入' : item.kind === 'side_effect_unknown' ? '未知副作用待核查' : budgetIssue ? '配额不足，等待批准' : task.data?.status === 'failed' ? '任务已停止' : '等待决定是否恢复'
   const reason = failure?.detail ?? (item.reason === 'BUDGET_RESERVATION_EXCEEDED' ? '本次运行的 Token 或模型调用配额不足，系统已保留执行进度。' : item.reason)
   return <article className="approval-card compact inbox-summary">
     <div className="approval-card-head"><span className="risk-chip l1">待办</span><span><strong>{item.title}</strong><small><Clock3 size={12} />{new Date(item.updated_at).toLocaleString('zh-CN')}</small></span><span className="approval-state">{label}</span></div>

@@ -1,7 +1,7 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.0.0
-> 更新日期：2026-08-10
+> 版本：v1.0.1
+> 更新日期：2026-08-11
 > 发布路径：注册用户 + 个人私有项目 + SQLite
 
 ## 1. 部署结论
@@ -54,6 +54,8 @@ Provider 非敏感元数据保存在数据库，凭据只允许存入 Windows Cr
 
 Web/API 支持多个 Provider 实例，协议族为 `openai_compatible`、`anthropic` 或 `gemini`。V1 发布证据使用真实 OpenAI-compatible Provider；原生 Anthropic/Gemini 保留合同测试，不要求真实凭据。
 
+“自动审查”需通过 `OKTAPOD_REVIEWER_MODEL` 指定当前 Provider Catalog 中真实可用的独立 Reviewer 模型。`GET /api/v1/diagnostics` 的 `auto_review.configured/available/reason` 是运维真源；未配置、模型不在 Catalog、超时或非法结构都会 fail-closed 并转人工审批，不得将“选项可见”当作 Reviewer 已生效。
+
 ## 5. MCP、Skill 与搜索
 
 内建搜索是无需外部凭据的最低可用能力，不因可选 MCP 不健康而删除。资源中心支持当前用户全局或项目级 Skill、MCP 与 Agent 的校验、隔离、人工审核、启用、调用、停用和永久删除；活动 Run 引用时拒绝删除，历史快照与脱敏审计保留。MCP Schema、配置版本、凭据引用与健康状态会进入新 Run 快照，凭据原文不进入 SQLite、Manifest、API 返回、日志或导出。
@@ -77,6 +79,8 @@ Windows 上的 npm stdio MCP 会把 `npx.cmd`/`npx.ps1` 解析为 `node.exe` 直
 - 写文件、命令和 Git 修改受 Policy、状态哈希、审批、Receipt 与验证治理。
 
 这不是容器或 OS 级强沙箱。宿主进程仍可能访问宿主可读资源，因此 UI 明示“宿主受控 · 非强沙箱”。网络默认拒绝、文件挂载白名单、CPU/内存硬隔离属于后续强沙箱。
+
+项目文件在工作台右侧 `Files` 查看：`Workspace` 是可变文件，`Project Files` 是上传/发布的 Asset，`Task Outputs` 是不可变 Artifact；`Changes` 仅显示 Git 差异。Personal Profile 的 Diagnostics 会显示数据根和 Workspace 根的宿主绝对路径，Team Profile 不暴露该路径。脚本生成的文件先在 Workspace 可见；只有经 `artifact_capture` 校验登记后才会进入 Task Outputs 并可作为任务交付证据。
 
 新项目默认将每个任务限制为 80 次模型调用、1,000,000 Token；单次模型输出先使用 8,192 Token，仅在截断恢复时提升到 16,384/32,768。该值来自 30,000 汉字深度报告的真实极限回归（67 次调用、约 840k 输入输出 Token）并保留约 20% 调用余量。项目“资源配额”可显式调整或设为不限额；已有 Run 使用创建时冻结的值，不被配置修改追溯覆盖。
 

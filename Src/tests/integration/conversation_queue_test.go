@@ -26,14 +26,14 @@ func queueTestScope() core.Scope {
 }
 
 func enqueueTurn(t *testing.T, repository interface {
-	EnqueueConversationTurn(context.Context, core.Scope, string, string, string, string, string, string) (core.ConversationQueueItem, error)
+	EnqueueConversationTurn(context.Context, core.Scope, string, string, string, string, string, string, core.MessagePresentation) (core.ConversationQueueItem, error)
 }, projectID, conversationID, taskID, content, kind string) core.ConversationQueueItem {
 	t.Helper()
 	inputJSON, err := json.Marshal(core.ProjectTurnInput{ConversationID: conversationID, Content: content, Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate})
 	if err != nil {
 		t.Fatalf("marshal queue input: %v", err)
 	}
-	item, err := repository.EnqueueConversationTurn(context.Background(), queueTestScope(), projectID, conversationID, taskID, content, string(inputJSON), kind)
+	item, err := repository.EnqueueConversationTurn(context.Background(), queueTestScope(), projectID, conversationID, taskID, content, string(inputJSON), kind, core.MessagePresentation{QueueKind: kind})
 	if err != nil {
 		t.Fatalf("enqueue %s: %v", kind, err)
 	}
@@ -128,6 +128,13 @@ func TestConversationTurnQueuesWhileTaskActive(t *testing.T) {
 	}
 	if !queued.Queued || queued.QueueItem == nil || queued.Task == nil || queued.Task.ID != task.ID {
 		t.Fatalf("queued result=%#v", queued)
+	}
+	if queued.QueueItem.MessageID == "" {
+		t.Fatalf("queued message id was not persisted: %#v", queued.QueueItem)
+	}
+	messages, err := service.ListMessages(context.Background(), task.ConversationID, 0)
+	if err != nil || len(messages) != 2 || messages[1].Content != "第二条消息排队" || messages[1].Presentation.QueueKind != "follow_up" {
+		t.Fatalf("queued message was not immediately visible: messages=%#v err=%v", messages, err)
 	}
 	pending, err := repository.ListConversationQueue(context.Background(), queueTestScope(), task.ConversationID, "pending")
 	if err != nil || len(pending) != 1 || pending[0].Kind != "follow_up" || pending[0].Content != "第二条消息排队" {
@@ -265,7 +272,7 @@ func TestConversationSteeringReplansAfterAtomicStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 2 || messages[1].Content != "已按引导完成。" {
+	if len(messages) != 3 || messages[1].Content != "把报告重点改成物理 AI" || messages[1].Presentation.QueueKind != "steering" || messages[2].Content != "已按引导完成。" {
 		t.Fatalf("messages=%#v", messages)
 	}
 }

@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -252,6 +253,59 @@ func TestProjectTurnAutoChatDoesNotCreateTask(t *testing.T) {
 	}
 }
 
+func TestProjectTurnWithSelectedAttachmentAlwaysCreatesFrozenTaskContext(t *testing.T) {
+	model := &projectTurnModelStub{results: []core.ModelResult{
+		turnModelResult("classification-chat", `{"route":"chat"}`),
+	}}
+	service, databasePath, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Attachment workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, err := service.UploadAsset(t.Context(), project.ID, core.UploadAssetInput{Name: "training.pdf", Visibility: core.VisibilityPrivate, MediaType: "application/pdf"}, strings.NewReader("%PDF-1.4\nfixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{
+		Content:         "帮我总结这个附件",
+		Mode:            core.ModeAuto,
+		Visibility:      core.VisibilityPrivate,
+		ContextAssetIDs: []string{asset.ID},
+	}, "00000000-0000-7000-8000-000000000211", "turn-attachment-0001")
+	if err != nil {
+		t.Fatalf("submit attachment turn: %v", err)
+	}
+	if result.Route != application.TurnRouteTask || result.Task == nil || result.Task.Mode != core.ModeSingleAgent {
+		t.Fatalf("attachment turn did not become a task: %#v", result)
+	}
+	if len(model.prompts) != 0 {
+		t.Fatalf("attachment turn unexpectedly called the chat classifier: %#v", model.prompts)
+	}
+	messages, err := service.ListMessages(t.Context(), result.Conversation.ID, 0)
+	if err != nil || len(messages) != 1 || len(messages[0].Presentation.Attachments) != 1 || messages[0].Presentation.Attachments[0].ID != asset.ID {
+		t.Fatalf("attachment presentation was not persisted with the user message: messages=%#v err=%v", messages, err)
+	}
+
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var snapshotJSON string
+	if err := db.QueryRow(`SELECT config_snapshot_json FROM runs WHERE id = ?`, result.Task.RunID).Scan(&snapshotJSON); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !containsSnapshotID(snapshot["context_asset_ids"], asset.ID) {
+		t.Fatalf("attachment missing from frozen Run context: %#v", snapshot["context_asset_ids"])
+	}
+}
+
 func TestProjectTurnAutoTaskCreatesTaskWithoutConfirmationState(t *testing.T) {
 	service, databasePath, closeStore := newProjectTurnService(t, &projectTurnModelStub{results: []core.ModelResult{
 		turnModelResult("classification-task", `{"route":"task"}`),
@@ -322,6 +376,10 @@ func TestProjectTurnRejectsContextFreeExplicitRecoveryIntent(t *testing.T) {
 	conversations, listErr := service.ListConversations(t.Context(), project.ID)
 	if listErr != nil || len(conversations) != 0 {
 		t.Fatalf("context-free recovery created conversation=%#v err=%v", conversations, listErr)
+	}
+	_, err = service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{Content: "继续", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "", "empty-bare-recovery")
+	if err == nil || !strings.Contains(err.Error(), "没有可继续") {
+		t.Fatalf("context-free bare recovery error=%v", err)
 	}
 }
 
@@ -415,7 +473,7 @@ func TestProjectTurnNaturalLanguagePauseAndResumeBypassModel(t *testing.T) {
 	if err != nil || paused.Task == nil || paused.Task.ID != task.ID || paused.Task.Status != core.StatusPaused || paused.Queued {
 		t.Fatalf("pause result=%#v err=%v", paused, err)
 	}
-	resumed, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "继续当前任务", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "directive-resume", "directive-resume")
+	resumed, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "继续", Mode: core.ModeAuto, Visibility: core.VisibilityPrivate}, "directive-resume", "directive-resume")
 	if err != nil || resumed.Task == nil || resumed.Task.ID != task.ID || resumed.Task.Status != core.StatusQueued || resumed.Queued {
 		t.Fatalf("resume result=%#v err=%v", resumed, err)
 	}

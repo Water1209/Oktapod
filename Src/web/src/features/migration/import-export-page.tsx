@@ -103,7 +103,7 @@ export function ImportExportPage() {
     <header className="management-heading"><div><span className="eyebrow">Data / Portable archive</span><h1>导入与导出</h1><p>先预览、再写入；Provider 凭据、登录会话和 SecretStore 引用永不进入浏览器导出包。</p></div></header>
     <div className="migration-grid">
       <section>
-        <header><Download size={19}/><div><h2>导出 Oktapod 项目</h2><p>生成可检查 JSON，包含 Thread 消息但不含 Secret。</p></div></header>
+        <header><Download size={19}/><div><h2>导出 Oktapod 项目</h2><p>生成可检查 JSON，包含会话消息但不含 Secret。</p></div></header>
         <label className="form-field"><span>项目</span><select value={selectedProject?.id || ''} onChange={(event) => setProjectId(event.target.value)}>{projects.data?.items.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
         <label className="form-field"><span>格式</span><select aria-label="导出格式" value={exportFormat} onChange={(event) => setExportFormat(event.target.value as 'json' | 'jsonl' | 'html')}><option value="json">JSON · 可重新导入</option><option value="jsonl">JSONL · 流式交换</option><option value="html">HTML · 可读报告</option></select></label>
         <button className="primary-button" disabled={!selectedProject || exportProject.isPending} onClick={() => selectedProject && exportProject.mutate(selectedProject)}>{exportProject.isPending ? '正在整理…' : '下载脱敏导出包'}</button>
@@ -113,7 +113,7 @@ export function ImportExportPage() {
         <header><Upload size={19}/><div><h2>导入 Pi / Oktapod</h2><p>支持 Oktapod JSON 和 Pi JSONL 预览；检测疑似凭据后 fail-closed。</p></div></header>
         <label className="import-drop"><FileJson size={24}/><span><strong>选择 JSON / JSONL</strong><small>先在浏览器本地解析，不会立即写入</small></span><input type="file" accept=".json,.jsonl,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void parse(file) }}/></label>
         {parseError ? <div className="form-error"><AlertTriangle size={15}/>{parseError}</div> : null}
-        {archive && counts ? <div className="import-preview"><strong>{archive.project.name}</strong><dl><div><dt>格式</dt><dd>{archive.format}</dd></div><div><dt>Thread</dt><dd>{counts.conversations}</dd></div><div><dt>消息</dt><dd>{counts.messages}</dd></div><div><dt>凭据</dt><dd>未发现</dd></div></dl><p>导入会重建个人私有 Thread 与 Session Entry，并将原始 transcript 同时保存为项目资料以便复核；不会调用模型伪造回复。</p><button className="primary-button" disabled={importArchive.isPending} onClick={() => importArchive.mutate(archive)}>{importArchive.isPending ? '正在导入…' : '导入为个人项目'}</button>{importArchive.error ? <div className="form-error"><AlertTriangle size={15}/>{importArchive.error.message}</div> : null}</div> : null}
+        {archive && counts ? <div className="import-preview"><strong>{archive.project.name}</strong><dl><div><dt>格式</dt><dd>{archive.format}</dd></div><div><dt>会话</dt><dd>{counts.conversations}</dd></div><div><dt>消息</dt><dd>{counts.messages}</dd></div><div><dt>凭据</dt><dd>未发现</dd></div></dl><p>导入会重建个人私有会话与会话树节点，并将原始记录同时保存为项目资料以便复核；不会调用模型伪造回复。</p><button className="primary-button" disabled={importArchive.isPending} onClick={() => importArchive.mutate(archive)}>{importArchive.isPending ? '正在导入…' : '导入为个人项目'}</button>{importArchive.error ? <div className="form-error"><AlertTriangle size={15}/>{importArchive.error.message}</div> : null}</div> : null}
       </section>
     </div>
   </main>

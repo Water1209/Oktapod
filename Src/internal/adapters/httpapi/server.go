@@ -46,8 +46,9 @@ func (response mcpOAuthHTMLResponse) VisitCompleteMCPOAuthResponse(w http.Respon
 	return err
 }
 
-func int64Ptr(value int64) *int64 { return &value }
-func boolPtr(value bool) *bool    { return &value }
+func int64Ptr(value int64) *int64    { return &value }
+func boolPtr(value bool) *bool       { return &value }
+func stringPtr(value string) *string { return &value }
 
 func NewHandler(service *application.Service, logger *slog.Logger) http.Handler {
 	return newHandler(service, logger, nil, true)
@@ -366,7 +367,7 @@ func (s *Server) GetDiagnostics(ctx context.Context, _ generated.GetDiagnosticsR
 	if diagnostics.DatabaseStatus != "ok" {
 		status = generated.DiagnosticsStatusDegraded
 	}
-	return generated.GetDiagnostics200JSONResponse{
+	response := generated.GetDiagnostics200JSONResponse{
 		Status:   status,
 		Version:  diagnostics.Version,
 		Profile:  diagnostics.Profile,
@@ -393,7 +394,12 @@ func (s *Server) GetDiagnostics(ctx context.Context, _ generated.GetDiagnosticsR
 			RestoreEndpointAvailable: false,
 			Detail:                   "Backup and restore remain separate privileged operator workflows.",
 		},
-	}, nil
+		AutoReview: generated.AutoReviewDiagnostics{Configured: diagnostics.AutoReview.Configured, Available: diagnostics.AutoReview.Available, Reason: diagnostics.AutoReview.Reason},
+	}
+	if diagnostics.Storage != nil {
+		response.Storage = &generated.StorageDiagnostics{DataRoot: diagnostics.Storage.DataRoot, WorkspaceRoot: diagnostics.Storage.WorkspaceRoot}
+	}
+	return response, nil
 }
 
 func (s *Server) GetBootstrap(ctx context.Context, _ generated.GetBootstrapRequestObject) (generated.GetBootstrapResponseObject, error) {
@@ -434,7 +440,12 @@ func (s *Server) ListModels(ctx context.Context, _ generated.ListModelsRequestOb
 		item := generated.ModelDescriptor{
 			Id: model.ID, Vision: boolPtr(model.Vision),
 			StructuredOutput: boolPtr(model.StructuredOutput), Reasoning: boolPtr(model.Reasoning),
-			ContextWindow: int64Ptr(model.ContextWindow),
+			ContextWindow: int64Ptr(model.ContextWindow), ProviderId: stringPtr(model.ProviderID),
+			ProviderName: stringPtr(model.ProviderName), Stale: boolPtr(model.Stale), Default: boolPtr(model.Default),
+		}
+		if model.Source != "" {
+			source := generated.ModelDescriptorSource(model.Source)
+			item.Source = &source
 		}
 		// 缺少能力元数据表示“未知”，不能序列化成 false 并让 UI 误判为不支持。
 		if model.ToolCallingKnown {
@@ -516,21 +527,58 @@ func (s *Server) ListProviderModels(ctx context.Context, request generated.ListP
 	if err != nil {
 		return nil, err
 	}
-	items := make([]generated.ProviderModelCatalogEntry, 0, len(models))
+	items := make([]generated.ProviderModelOption, 0, len(models))
 	for _, model := range models {
-		var capabilities, thinkingMap, pricing map[string]any
+		var capabilities map[string]any
 		_ = json.Unmarshal([]byte(model.CapabilitiesJSON), &capabilities)
-		_ = json.Unmarshal([]byte(model.ThinkingMapJSON), &thinkingMap)
-		_ = json.Unmarshal([]byte(model.PricingJSON), &pricing)
-		items = append(items, generated.ProviderModelCatalogEntry{
-			ProviderId: model.ProviderID, ModelId: model.ModelID,
-			Capabilities: capabilities, ContextWindow: model.ContextWindow,
-			MaxOutput: model.MaxOutput, ThinkingMap: thinkingMap, Pricing: pricing,
-			FetchedAt: model.FetchedAt, ExpiresAt: model.ExpiresAt,
-			CatalogVersion: model.CatalogVersion, Stale: model.Stale,
-		})
+		items = append(items, providerModelOptionResponse(model, capabilities))
 	}
 	return generated.ListProviderModels200JSONResponse{Items: items}, nil
+}
+
+func (s *Server) RefreshProviderModels(ctx context.Context, request generated.RefreshProviderModelsRequestObject) (generated.RefreshProviderModelsResponseObject, error) {
+	models, err := s.service.RefreshProviderModels(ctx, request.ProviderId)
+	if err != nil {
+		return nil, err
+	}
+	return generated.RefreshProviderModels200JSONResponse{Items: providerModelOptionResponses(models)}, nil
+}
+
+func (s *Server) SaveProviderModels(ctx context.Context, request generated.SaveProviderModelsRequestObject) (generated.SaveProviderModelsResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	activate := true
+	if request.Body.Activate != nil {
+		activate = *request.Body.Activate
+	}
+	models, err := s.service.SaveProviderModels(ctx, request.ProviderId, application.SaveProviderModelsInput{ModelIDs: request.Body.ModelIds, DefaultModelID: request.Body.DefaultModelId, Activate: activate})
+	if err != nil {
+		return nil, err
+	}
+	return generated.SaveProviderModels200JSONResponse{Items: providerModelOptionResponses(models)}, nil
+}
+
+func providerModelOptionResponses(models []core.ProviderModelOption) []generated.ProviderModelOption {
+	items := make([]generated.ProviderModelOption, 0, len(models))
+	for _, model := range models {
+		var capabilities map[string]any
+		_ = json.Unmarshal([]byte(model.CapabilitiesJSON), &capabilities)
+		items = append(items, providerModelOptionResponse(model, capabilities))
+	}
+	return items
+}
+
+func providerModelOptionResponse(model core.ProviderModelOption, capabilities map[string]any) generated.ProviderModelOption {
+	if capabilities == nil {
+		capabilities = map[string]any{}
+	}
+	return generated.ProviderModelOption{
+		ProviderId: model.ProviderID, ModelId: model.ModelID,
+		Source: generated.ProviderModelOptionSource(model.Source), Enabled: model.Enabled, Default: model.Default,
+		Capabilities: capabilities, ContextWindow: model.ContextWindow, MaxOutput: model.MaxOutput,
+		FetchedAt: model.FetchedAt, ExpiresAt: model.ExpiresAt, CatalogVersion: model.CatalogVersion, Stale: model.Stale,
+	}
 }
 
 func providerInstanceResponse(provider core.ProviderInstance) generated.ProviderInstance {
@@ -641,13 +689,18 @@ func (s *Server) CreateProject(ctx context.Context, request generated.CreateProj
 	if request.Body.FallbackModel != nil {
 		fallbackModel = *request.Body.FallbackModel
 	}
+	modelProviderID := ""
+	if request.Body.ModelProviderId != nil {
+		modelProviderID = *request.Body.ModelProviderId
+	}
 	project, err := s.service.CreateProject(ctx, core.CreateProjectInput{
-		Name:          request.Body.Name,
-		Description:   description,
-		Kind:          string(request.Body.Kind),
-		Scene:         string(request.Body.Scene),
-		DefaultModel:  defaultModel,
-		FallbackModel: fallbackModel,
+		Name:            request.Body.Name,
+		Description:     description,
+		Kind:            string(request.Body.Kind),
+		Scene:           string(request.Body.Scene),
+		ModelProviderID: modelProviderID,
+		DefaultModel:    defaultModel,
+		FallbackModel:   fallbackModel,
 	}, optionalIdempotencyKey(request.Params.IdempotencyKey))
 	if err != nil {
 		return nil, err
@@ -773,6 +826,10 @@ func (s *Server) UpdateProjectSettings(ctx context.Context, request generated.Up
 		return nil, &core.ValidationError{Field: "body", Message: "is required"}
 	}
 	input := core.UpdateProjectSettingsInput{}
+	if request.Body.ModelProviderId != nil {
+		value := *request.Body.ModelProviderId
+		input.ModelProviderID = &value
+	}
 	if request.Body.DefaultModel != nil {
 		value := *request.Body.DefaultModel
 		input.DefaultModel = &value
@@ -2134,6 +2191,27 @@ func (s *Server) PublishArtifact(ctx context.Context, request generated.PublishA
 	return generated.PublishArtifact201JSONResponse(response), nil
 }
 
+func (s *Server) SaveArtifactAsProjectFile(ctx context.Context, request generated.SaveArtifactAsProjectFileRequestObject) (generated.SaveArtifactAsProjectFileResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	parentID := ""
+	if request.Body.ParentId != nil {
+		parentID = request.Body.ParentId.String()
+	}
+	asset, err := s.service.PublishArtifact(ctx, request.ArtifactId.String(), core.PublishArtifactInput{
+		Name: request.Body.Name, ParentID: parentID, Visibility: string(request.Body.Visibility),
+	}, optionalIdempotencyKey(request.Params.IdempotencyKey))
+	if err != nil {
+		return nil, err
+	}
+	response, err := assetResponse(asset)
+	if err != nil {
+		return nil, err
+	}
+	return generated.SaveArtifactAsProjectFile201JSONResponse(response), nil
+}
+
 func (s *Server) CreateTask(ctx context.Context, request generated.CreateTaskRequestObject) (generated.CreateTaskResponseObject, error) {
 	if request.Body == nil {
 		return nil, &core.ValidationError{Field: "body", Message: "is required"}
@@ -2454,6 +2532,114 @@ func (s *Server) ListRunArtifacts(ctx context.Context, request generated.ListRun
 		items = append(items, item)
 	}
 	return generated.ListRunArtifacts200JSONResponse{Items: items}, nil
+}
+
+func (s *Server) ListWorkspaceFiles(ctx context.Context, request generated.ListWorkspaceFilesRequestObject) (generated.ListWorkspaceFilesResponseObject, error) {
+	cursor, limit := 0, application.MaxWorkspaceFilePage
+	if request.Params.Cursor != nil {
+		cursor = *request.Params.Cursor
+	}
+	if request.Params.Limit != nil {
+		limit = *request.Params.Limit
+	}
+	page, err := s.service.ListWorkspaceFiles(ctx, request.ProjectId.String(), cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]generated.WorkspaceFile, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, generated.WorkspaceFile{Path: item.Path, Kind: generated.WorkspaceFileKind(item.Kind), SizeBytes: item.SizeBytes, ModifiedAt: item.ModifiedAt, GitStatus: item.GitStatus})
+	}
+	return generated.ListWorkspaceFiles200JSONResponse{Items: items, HasMore: page.HasMore, NextCursor: page.NextCursor}, nil
+}
+
+func (s *Server) DownloadWorkspaceFileContent(ctx context.Context, request generated.DownloadWorkspaceFileContentRequestObject) (generated.DownloadWorkspaceFileContentResponseObject, error) {
+	content, err := s.service.OpenWorkspaceFile(ctx, request.ProjectId.String(), request.Params.Path)
+	if err != nil {
+		return nil, err
+	}
+	disposition := mime.FormatMediaType("inline", map[string]string{"filename": filepath.Base(content.Path)})
+	return workspaceFileContentResponse{body: content.Body, path: content.Path, mediaType: content.MediaType, disposition: disposition, sizeBytes: content.SizeBytes}, nil
+}
+
+type workspaceFileContentResponse struct {
+	body        io.ReadCloser
+	path        string
+	mediaType   string
+	disposition string
+	sizeBytes   int64
+}
+
+func (response workspaceFileContentResponse) VisitDownloadWorkspaceFileContentResponse(w http.ResponseWriter) error {
+	defer response.body.Close()
+	mediaType := strings.ToLower(strings.TrimSpace(response.mediaType))
+	if strings.HasSuffix(strings.ToLower(response.path), ".md") || mediaType == "text/markdown" {
+		mediaType = "text/plain; charset=utf-8"
+	} else if strings.HasPrefix(mediaType, "text/") && !strings.Contains(mediaType, "charset=") {
+		mediaType += "; charset=utf-8"
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", response.disposition)
+	w.Header().Set("Content-Length", strconv.FormatInt(response.sizeBytes, 10))
+	w.Header().Set("X-Workspace-Path", response.path)
+	w.WriteHeader(http.StatusOK)
+	_, err := io.Copy(w, response.body)
+	return err
+}
+
+func (s *Server) ListProjectArtifacts(ctx context.Context, request generated.ListProjectArtifactsRequestObject) (generated.ListProjectArtifactsResponseObject, error) {
+	query := application.ProjectArtifactQuery{}
+	if request.Params.RunId != nil {
+		query.RunID = request.Params.RunId.String()
+	}
+	if request.Params.ConversationId != nil {
+		query.ConversationID = request.Params.ConversationId.String()
+	}
+	if request.Params.Kind != nil {
+		query.Kind = *request.Params.Kind
+	}
+	if request.Params.Q != nil {
+		query.Search = *request.Params.Q
+	}
+	if request.Params.Limit != nil {
+		query.Limit = *request.Params.Limit
+	}
+	if request.Params.IncludeHistory != nil {
+		query.IncludeHistory = *request.Params.IncludeHistory
+	}
+	artifacts, err := s.service.ListProjectArtifacts(ctx, request.ProjectId.String(), query)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]generated.Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		item, convertErr := artifactResponse(artifact)
+		if convertErr != nil {
+			return nil, convertErr
+		}
+		items = append(items, item)
+	}
+	return generated.ListProjectArtifacts200JSONResponse{Items: items}, nil
+}
+
+func (s *Server) CaptureWorkspaceArtifact(ctx context.Context, request generated.CaptureWorkspaceArtifactRequestObject) (generated.CaptureWorkspaceArtifactResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	artifact, err := s.service.CaptureWorkspaceArtifact(ctx, request.ProjectId.String(), application.CaptureWorkspaceArtifactInput{
+		RunID: request.Body.RunId.String(), Path: request.Body.Path, Kind: string(request.Body.Kind),
+	}, correlationID(ctx), optionalIdempotencyKey(request.Params.IdempotencyKey))
+	if err != nil {
+		return nil, err
+	}
+	response, err := artifactResponse(artifact)
+	if err != nil {
+		return nil, err
+	}
+	return generated.CaptureWorkspaceArtifact201JSONResponse(response), nil
 }
 
 func (s *Server) GetRunChanges(ctx context.Context, request generated.GetRunChangesRequestObject) (generated.GetRunChangesResponseObject, error) {
@@ -2902,7 +3088,7 @@ func projectResponse(project core.Project) (generated.Project, error) {
 		return generated.Project{}, err
 	}
 	description := project.Description
-	return generated.Project{Id: id, OrganizationId: orgID, Name: project.Name, Description: &description, Kind: generated.ProjectKind(project.Kind), Scene: generated.ProjectScene(project.Scene), DefaultModel: project.DefaultModel, FallbackModel: project.FallbackModel, MaxModelCalls: project.MaxModelCalls, MaxTokens: project.MaxTokens, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt}, nil
+	return generated.Project{Id: id, OrganizationId: orgID, Name: project.Name, Description: &description, Kind: generated.ProjectKind(project.Kind), Scene: generated.ProjectScene(project.Scene), ModelProviderId: project.ModelProviderID, DefaultModel: project.DefaultModel, FallbackModel: project.FallbackModel, MaxModelCalls: project.MaxModelCalls, MaxTokens: project.MaxTokens, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt}, nil
 }
 
 func projectMemberResponse(member core.ProjectMember) (generated.ProjectMember, error) {
@@ -3365,11 +3551,40 @@ func messageResponse(message core.Message) (generated.Message, error) {
 		convertedTaskID := openapi_types.UUID(parsedTaskID)
 		taskID = &convertedTaskID
 	}
+	presentation := generated.MessagePresentation{}
+	if len(message.Presentation.Attachments) > 0 {
+		attachments := make([]generated.MessageAttachment, 0, len(message.Presentation.Attachments))
+		for _, attachment := range message.Presentation.Attachments {
+			attachmentID, parseErr := uuid.Parse(attachment.ID)
+			if parseErr != nil {
+				return generated.Message{}, parseErr
+			}
+			attachments = append(attachments, generated.MessageAttachment{
+				Id: attachmentID, Name: attachment.Name, MediaType: attachment.MediaType,
+				SizeBytes: attachment.SizeBytes, ContentHash: attachment.ContentHash,
+			})
+		}
+		presentation.Attachments = &attachments
+	}
+	if message.Presentation.Skill != nil {
+		skillID, parseErr := uuid.Parse(message.Presentation.Skill.ID)
+		if parseErr != nil {
+			return generated.Message{}, parseErr
+		}
+		presentation.Skill = &generated.MessageSkillInvocation{
+			Id: skillID, Name: message.Presentation.Skill.Name, Version: message.Presentation.Skill.Version,
+			Command: message.Presentation.Skill.Command, Args: message.Presentation.Skill.Args,
+		}
+	}
+	if message.Presentation.QueueKind != "" {
+		queueKind := generated.MessagePresentationQueueKind(message.Presentation.QueueKind)
+		presentation.QueueKind = &queueKind
+	}
 	return generated.Message{
 		Id: id, ProjectId: projectID, ConversationId: conversationID, TaskId: taskID,
 		ServerSeq: message.ServerSeq, Role: generated.MessageRole(message.Role),
 		Visibility: generated.MessageVisibility(message.Visibility), Content: message.Content,
-		CreatedAt: message.CreatedAt,
+		Presentation: presentation, CreatedAt: message.CreatedAt,
 	}, nil
 }
 
@@ -3703,6 +3918,7 @@ func (s *Server) writeMappedProblem(w http.ResponseWriter, r *http.Request, err 
 	var idempotencyConflict *core.IdempotencyConflictError
 	var stateConflict *core.StateConflictError
 	var resourceConflict *core.ResourceConflictError
+	var modelInUse *core.ModelInUseError
 	var capacityExceeded *core.CapacityExceededError
 	var modelCatalogUnavailable *application.ModelCatalogUnavailableError
 	var modelTurnUnavailable *application.ModelTurnUnavailableError
@@ -3718,6 +3934,8 @@ func (s *Server) writeMappedProblem(w http.ResponseWriter, r *http.Request, err 
 		s.writeProblem(w, r, http.StatusConflict, "INVALID_STATE_TRANSITION", "Invalid state transition", stateConflict.Error())
 	case errors.As(err, &resourceConflict):
 		s.writeProblem(w, r, http.StatusConflict, "RESOURCE_CONFLICT", "Resource conflict", resourceConflict.Error())
+	case errors.As(err, &modelInUse):
+		s.writeProblem(w, r, http.StatusConflict, "MODEL_IN_USE", "Model in use", modelInUse.Error())
 	case errors.As(err, &capacityExceeded):
 		s.writeProblem(w, r, http.StatusInsufficientStorage, "PROJECT_CAPACITY_EXCEEDED", "Project capacity exceeded", capacityExceeded.Error())
 	case errors.As(err, &modelCatalogUnavailable):

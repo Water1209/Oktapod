@@ -48,9 +48,12 @@ func InferTaskCompletionRequirements(goal, acceptance string) TaskCompletionRequ
 
 	hasFileReference := containsAny(text, "文件", "文档", "报告", "交付物", "file", "document", "report")
 	hasArtifactAction := containsAny(text,
-		"形成", "生成", "创建", "保存", "写入", "导出", "交付", "落盘",
-		"create", "write", "save", "export", "deliver")
+		"形成", "生成", "创建", "保存", "写入", "导出", "交付", "落盘", "转换", "转成", "转为",
+		"create", "write", "save", "export", "deliver", "convert")
 	hasMarkdownFormat := containsAny(compact, "md文件", "md文档", "markdown", ".md")
+	hasPDFFormat := containsAny(compact, "pdf", ".pdf", "便携式文档")
+	hasPDFConversion := containsAny(compact, "转pdf", "转成pdf", "转为pdf", "转换pdf", "转换为pdf", "md转pdf")
+	hasGitVersionAction := containsAny(compact, "git提交", "gitcommit", "git版本", "保存版本", "提交所选", "提交以下已选")
 	mutationExcluded := containsAny(compact, "先不改", "不要改", "不修改", "只分析", "仅分析", "只检查", "仅检查", "只诊断", "仅诊断")
 	if !mutationExcluded && containsAny(text,
 		"修复", "修改", "实现", "新增", "创建", "重构", "改造", "写入", "保存", "生成文件", "形成文件",
@@ -60,12 +63,16 @@ func InferTaskCompletionRequirements(goal, acceptance string) TaskCompletionRequ
 	if containsAny(text, "测试", "验证", "校验", "核对", "验收", "确保正常", " test", "verify", "validate") {
 		requirements.RequiresVerification = true
 	}
-	if (hasFileReference && hasArtifactAction) || containsAny(text, "写入工作区", "保存到", "落盘") {
+	if (hasFileReference && hasArtifactAction && !hasGitVersionAction) || (hasPDFFormat && (hasArtifactAction || hasPDFConversion)) || containsAny(text, "写入工作区", "保存到", "落盘") {
 		requirements.RequiresDeliverable = true
 		requirements.RequiresWorkspaceMutation = true
 	}
-	if requirements.RequiresDeliverable && hasMarkdownFormat {
+	if requirements.RequiresDeliverable && hasPDFConversion {
+		requirements.DeliverableFormat = "pdf"
+	} else if requirements.RequiresDeliverable && hasMarkdownFormat {
 		requirements.DeliverableFormat = "markdown"
+	} else if requirements.RequiresDeliverable && hasPDFFormat {
+		requirements.DeliverableFormat = "pdf"
 	}
 	if match := minimumCharacterPattern.FindStringSubmatch(text); len(match) == 3 {
 		digits := strings.NewReplacer(",", "", "，", "").Replace(match[1])

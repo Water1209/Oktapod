@@ -109,6 +109,22 @@ func (s *Store) ListModelCatalogEntries(ctx context.Context, organizationID, pro
 	return s.Store.ListModelCatalogEntries(withBootstrapContext(ctx), organizationID, providerID)
 }
 
+func (s *Store) ReplaceEnabledModels(ctx context.Context, organizationID, providerID string, modelIDs []string, defaultModelID string) error {
+	return s.Store.ReplaceEnabledModels(withBootstrapContext(ctx), organizationID, providerID, modelIDs, defaultModelID)
+}
+
+func (s *Store) ListProviderModelOptions(ctx context.Context, organizationID, providerID string) ([]core.ProviderModelOption, error) {
+	return s.Store.ListProviderModelOptions(withBootstrapContext(ctx), organizationID, providerID)
+}
+
+func (s *Store) ListEnabledModels(ctx context.Context, organizationID string) ([]core.ProviderModelOption, error) {
+	return s.Store.ListEnabledModels(withBootstrapContext(ctx), organizationID)
+}
+
+func (s *Store) ProviderModelInUse(ctx context.Context, organizationID, providerID, modelID string) (bool, error) {
+	return s.Store.ProviderModelInUse(withBootstrapContext(ctx), organizationID, providerID, modelID)
+}
+
 // Invitation acceptance is intentionally unauthenticated: the one-time token
 // is the credential. The repository constrains the transaction to that token
 // and target project; mark it as a privileged bootstrap-like transaction so it

@@ -19,7 +19,7 @@ func builtinToolDefinitions() []ToolDefinition {
 	definitions := make([]ToolDefinition, 0, len(specs))
 	for _, spec := range specs {
 		definitions = append(definitions, ToolDefinition{
-			Name: spec.Name, Description: spec.Description,
+			Name: spec.Name, Description: spec.Description, PromptHint: spec.PromptHint, Guidelines: append([]string(nil), spec.Guidelines...),
 			Parameters: spec.Parameters, Sequential: spec.Sequential,
 		})
 	}

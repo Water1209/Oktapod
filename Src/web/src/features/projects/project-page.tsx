@@ -3,11 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import * as Select from '@radix-ui/react-select'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, File as FileIcon, FileBox, Folder, FolderPlus, HardDrive, Infinity as InfinityIcon, LockKeyhole, MessageSquare, MoreHorizontal, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, Search, Settings2, SlidersHorizontal, Sparkles, Square, Upload, Users, Workflow, XCircle } from 'lucide-react'
-import { api, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type ResourceInstallDraft, type Scene, type TaskMode, type TeamDefinition, type Visibility } from '../../shared/api/client'
+import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, File as FileIcon, FileBox, FileCheck2, Folder, FolderInput, FolderPlus, HardDrive, Infinity as InfinityIcon, LockKeyhole, Maximize2, MessageSquare, Minimize2, MoreHorizontal, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, RefreshCw, Search, Settings2, ShieldAlert, SlidersHorizontal, Sparkles, Square, Upload, Users, Workflow, X, XCircle } from 'lucide-react'
+import { api, type Artifact, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type ConversationMessage, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type ResourceInstallDraft, type Scene, type TaskMode, type TeamDefinition, type Visibility, type WorkspaceFile } from '../../shared/api/client'
 import { AssistantContent } from '../../shared/assistant-content'
 import { useBootstrap } from '../../shared/bootstrap-context'
 import { TASK_RUNTIME_DEFAULTS } from '../../shared/runtime-defaults'
+import brandMark from '../../shared/brand-mark.png'
 import { V1_VISIBILITY, visibleInspectorTab } from '../../shared/v1-visibility'
 import { FileReviewProvider } from '../tasks/multi-file-review'
 import { useFileReview } from '../tasks/file-review-context'
@@ -28,6 +29,18 @@ type ComposerDraft =
   | { kind: 'capability'; capabilityKind: CapabilityKind; name: string; version: string; manifest: string }
   | { kind: 'agent'; name: string; version: string; instructions: string; model: string }
   | { kind: 'team'; name: string; version: string; rolesJSON: string }
+
+type ComposerAttachment = {
+  key: string
+  file?: File
+  asset?: Asset
+  name: string
+  size: number
+  source: 'upload' | 'project'
+  status: 'uploading' | 'ready' | 'failed'
+  progress: number
+  error?: string
+}
 
 export function ProjectPage() {
   return (
@@ -54,12 +67,15 @@ function ProjectWorkspace() {
   const agents = useQuery({ queryKey: ['agents', projectId], queryFn: () => api.agents(projectId) })
   const models = useQuery({ queryKey: ['models'], queryFn: () => api.models(), retry: false, staleTime: 60_000 })
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers, retry: false, staleTime: 60_000 })
+  const diagnostics = useQuery({ queryKey: ['diagnostics'], queryFn: api.diagnostics, retry: false, staleTime: 30_000 })
   const [membersOpen, setMembersOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const inspectorStorageKey = `oktapod.inspector.${bootstrap.user.id}.${projectId}`
   const [managementOpen, setManagementOpen] = useState(Boolean(inspectorSearch))
   const [managementTab, setManagementTab] = useState(() => visibleInspectorTab(inspectorSearch || window.localStorage.getItem(inspectorStorageKey) || undefined))
   const [managementMoreOpen, setManagementMoreOpen] = useState(false)
+  const [managementMaximized, setManagementMaximized] = useState(false)
+  const [filesSection, setFilesSection] = useState<'workspace' | 'project' | 'outputs'>('workspace')
   const activeConversationId = conversationSearch === 'new' ? undefined : threadId ?? conversationSearch ?? conversations.data?.items[0]?.id
   const messages = useQuery({ queryKey: ['conversation-messages', activeConversationId], queryFn: () => api.conversationMessages(activeConversationId ?? ''), enabled: Boolean(activeConversationId), refetchInterval: 1_500 })
   const usage = useQuery({ queryKey: ['project-usage', projectId], queryFn: () => api.projectUsage(projectId), enabled: managementOpen && managementTab === 'project_usage', staleTime: 15_000 })
@@ -87,7 +103,7 @@ function ProjectWorkspace() {
   const inspectedTask = allConversationTasks[0]
   const inspectedRunEvents = useRunEvents(inspectedTask?.run_id, Boolean(inspectedTask && managementOpen))
   const inspectedUsage = useQuery({ queryKey: ['run-usage', inspectedTask?.run_id], queryFn: () => api.runUsage(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'usage'].includes(managementTab)) })
-  const inspectedArtifacts = useQuery({ queryKey: ['run-artifacts', inspectedTask?.run_id], queryFn: () => api.runArtifacts(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'changes'].includes(managementTab)) })
+  const inspectedArtifacts = useQuery({ queryKey: ['run-artifacts', inspectedTask?.run_id], queryFn: () => api.runArtifacts(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'changes', 'files'].includes(managementTab)) })
   const inspectedArtifactVersions = latestDeliverableArtifacts(inspectedArtifacts.data?.items ?? [])
   const inspectedApprovals = useQuery({ queryKey: ['approvals', 'all'], queryFn: () => api.approvals('all'), enabled: Boolean(inspectedTask && managementOpen && managementTab === 'security') })
   const inspectedAgentTeam = useQuery({ queryKey: ['agent-team-room', inspectedTask?.run_id], queryFn: () => api.agentTeamRoom(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && inspectedTask?.mode === 'agent_team' && managementOpen && managementTab === 'run') })
@@ -126,23 +142,24 @@ function ProjectWorkspace() {
   if (project.error || !project.data) return <div className="empty-state"><div className="empty-icon"><XCircle size={32}/></div><h3>项目不可用</h3><p>{project.error?.message ?? '没有找到这个项目。'}</p></div>
 
   return (
-    <div className={`project-chat-workspace ${managementOpen ? 'drawer-open' : ''}`}>
+    <div className={`project-chat-workspace ${managementOpen ? 'drawer-open' : ''} ${managementMaximized ? 'drawer-maximized' : ''}`}>
       <main className="conversation-main">
         <header className="conversation-header">
           <div><strong>{selectedConversation?.title || '新会话'}</strong><span><LockKeyhole size={12} />个人私有</span></div>
           <div className="conversation-header-actions">
             <button className="icon-control" type="button" aria-label="新建会话" title="新建会话" onClick={() => void navigate({ to: '/projects/$projectId', params: { projectId }, search: { conversation: 'new' } })}><Plus size={17} /></button>
             {V1_VISIBILITY.teamProjects && project.data.kind === 'team' ? <button className="icon-control" type="button" aria-label="项目成员" title="项目成员" onClick={() => setMembersOpen(true)}><Users size={17} /></button> : null}
-            <button className="icon-control" type="button" aria-label={managementOpen ? '隐藏检查器' : '打开检查器'} title={managementOpen ? '隐藏检查器' : '打开检查器'} onClick={() => { if (managementOpen) { setManagementOpen(false); updateInspectorLocation() } else selectInspectorTab(managementTab) }}>{managementOpen ? <PanelRightClose size={18} /> : <PanelRight size={18} />}</button>
+            <button className="icon-control" type="button" aria-label={managementOpen ? '隐藏任务面板' : '打开任务面板'} title={managementOpen ? '隐藏任务面板' : '打开任务面板'} onClick={() => { if (managementOpen) { setManagementOpen(false); setManagementMaximized(false); updateInspectorLocation() } else selectInspectorTab(managementTab) }}>{managementOpen ? <PanelRightClose size={18} /> : <PanelRight size={18} />}</button>
           </div>
         </header>
 
         <div className="message-thread" aria-live="polite" ref={threadRef}>
           {messages.isLoading ? <div className="thread-state">正在载入会话…</div> : null}
-          {!messages.isLoading && visibleMessages.length === 0 && !(streamVisible && streamPhase) ? <div className="thread-welcome"><span className="thread-welcome-mark">O</span><h1>{project.data.name}</h1><p>{project.data.description || '在这里提问、讨论，或直接交给 Oktapod 执行。自动模式会判断是否需要创建任务。'}</p></div> : null}
+          {!messages.isLoading && visibleMessages.length === 0 && !(streamVisible && streamPhase) ? <div className="thread-welcome"><span className="thread-welcome-mark"><img src={brandMark} alt="Oktapod" /></span><h1>{project.data.name}</h1><p>{project.data.description || '在这里提问、讨论，或直接交给 Oktapod 执行。自动模式会判断是否需要创建任务。'}</p></div> : null}
           {visibleMessages.map((message, messageIndex) => {
             const linkedTask = message.task_id ? conversationTasks.find((task) => task.id === message.task_id) : undefined
             const taskIsActive = Boolean(linkedTask && ['queued', 'running', 'waiting_approval', 'waiting_input'].includes(linkedTask.status))
+            const displayedContent = legacySafeMessageContent(message, linkedTask?.status)
             // Codex 式：任务执行流是独立的 assistant 区块，挂在“拥有该任务的最近一条消息”之后，
             // 不占用右侧 user 气泡，也不因任务终态而消失（终态后保留为可展开摘要）。
             // 归属判断：该消息是同 task_id 的最后一条可见消息（后续不再有同任务消息）。
@@ -158,18 +175,20 @@ function ProjectWorkspace() {
               return <div key={message.id} className="thread-entry">
                 <article className={`thread-message ${message.role}${conversationCommand ? ' conversation-command' : ''}`}>
                   <div className="message-role">{roleLabel}</div>
-                  <div className="message-body">{message.role === 'assistant' ? <AssistantContent content={message.content} /> : message.content}</div>
+                  <div className="message-body">{message.role === 'assistant' ? <AssistantContent content={displayedContent} /> : displayedContent}</div>
+                  {message.role === 'user' ? <MessagePresentation presentation={message.presentation} /> : null}
                 </article>
                 <div className="thread-task-stream">
-                  <MessageTaskStream taskId={message.task_id!} runId={linkedTask!.run_id ?? ''} active={taskIsActive} onRequestFileReview={(items, task) => fileReview?.open(items, task)} />
+                  <MessageTaskStream taskId={message.task_id!} runId={linkedTask!.run_id ?? ''} active={taskIsActive} onRequestFileReview={() => { setFilesSection('outputs'); selectInspectorTab('files') }} />
                 </div>
               </div>
             }
             return <article key={message.id} className={`thread-message ${message.role}${conversationCommand ? ' conversation-command' : ''}`}>
   <div className="message-role">{roleLabel}</div>
   <div className="message-body">
-    {message.role === 'assistant' ? <AssistantContent content={message.content} /> : message.content}
+    {message.role === 'assistant' ? <AssistantContent content={displayedContent} /> : displayedContent}
   </div>
+  {message.role === 'user' ? <MessagePresentation presentation={message.presentation} /> : null}
 </article>
           })}
           {streamVisible && streamPhase ? <article className="thread-message assistant streaming"><div className="message-role">Oktapod</div><div className="message-body">{streamingAssistant ? <><AssistantContent content={streamingAssistant} streaming /><span className="stream-caret" aria-hidden="true" /></> : <>{streamPhase === 'routing' ? '正在判断如何处理…' : streamPhase === 'task' ? '正在创建任务…' : '正在生成回复…'}<span className="stream-caret" aria-hidden="true" /></>}</div></article> : null}
@@ -179,7 +198,58 @@ function ProjectWorkspace() {
           <TaskStatusStrip activeTask={allConversationTasks[0]} conversationId={activeConversationId} />
           {resourceInstallNotice ? <div className="composer-install-status" role="status"><Check size={14} />{resourceInstallNotice}</div> : null}
           {resourceInstallError ? <p className="form-error composer-resource-error" role="alert">{resourceInstallError}</p> : null}
-          <TaskComposer key={`composer-${activeConversationKey}`} projectId={projectId} conversationId={activeConversationId} activeTask={activeConversationTasks[0]} agents={agents.data?.items ?? []} skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')} providers={providers.data?.items ?? []} models={models.data?.items ?? []} projectDefaultModel={project.data.default_model} onComposerDraft={handleComposerDraft} onResourceInstallDraft={(draft, conversationId) => { setResourceInstallDraft(draft); setResourceInstallConversationId(conversationId); setResourceInstallError(''); setResourceInstallNotice('') }} onConversationSelected={selectConversation} onOptimisticMessage={(content) => { setPendingMessages([{ id: `pending-${Date.now()}`, project_id: projectId, conversation_id: activeConversationKey, task_id: null, server_seq: Number.MAX_SAFE_INTEGER, role: 'user', visibility: 'private', content, created_at: new Date().toISOString() }]); setStreamingAssistant(''); setStreamPhase('routing') }} onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')} onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }} onFailed={() => { setStreamingAssistant(''); setStreamPhase(undefined) }} onSettled={() => { setPendingMessages([]); setStreamingAssistant(''); setStreamPhase(undefined) }} />
+          <TaskComposer
+            key={`composer-${activeConversationKey}`}
+            projectId={projectId}
+            conversationId={activeConversationId}
+            activeTask={activeConversationTasks[0]}
+            agents={agents.data?.items ?? []}
+            skills={(capabilities.data?.items ?? []).filter((item) => item.kind === 'skill' && item.status === 'enabled')}
+            providers={providers.data?.items ?? []}
+            models={models.data?.items ?? []}
+            projectModelProviderId={project.data.model_provider_id}
+            projectDefaultModel={project.data.default_model}
+            projectScene={project.data.scene}
+            autoReviewAvailable={diagnostics.data?.auto_review.available}
+            autoReviewReason={diagnostics.data?.auto_review.reason}
+            onComposerDraft={handleComposerDraft}
+            onResourceInstallDraft={(draft, conversationId) => { setResourceInstallDraft(draft); setResourceInstallConversationId(conversationId); setResourceInstallError(''); setResourceInstallNotice('') }}
+            onConversationSelected={selectConversation}
+            onOptimisticMessage={(clientMessageId, content, presentation) => {
+              setPendingMessages((current) => [...current, {
+                id: clientMessageId,
+                project_id: projectId,
+                conversation_id: activeConversationKey,
+                task_id: null,
+                server_seq: Number.MAX_SAFE_INTEGER,
+                role: 'user',
+                visibility: 'private',
+                content,
+                presentation,
+                created_at: new Date().toISOString(),
+              }])
+              if (!activeConversationTasks[0]) {
+                setStreamingAssistant('')
+                setStreamPhase('routing')
+              }
+            }}
+            onRoute={(route) => setStreamPhase(route === 'task' ? 'task' : 'responding')}
+            onDelta={(delta) => { setStreamPhase('responding'); setStreamingAssistant((current) => current + delta) }}
+            onFailed={(clientMessageId) => {
+              setPendingMessages((current) => current.filter((message) => message.id !== clientMessageId))
+              if (!activeConversationTasks[0]) {
+                setStreamingAssistant('')
+                setStreamPhase(undefined)
+              }
+            }}
+            onSettled={(clientMessageId) => {
+              setPendingMessages((current) => current.filter((message) => message.id !== clientMessageId))
+              if (!activeConversationTasks[0]) {
+                setStreamingAssistant('')
+                setStreamPhase(undefined)
+              }
+            }}
+          />
         </div>
       </main>
 
@@ -198,27 +268,27 @@ function ProjectWorkspace() {
       }} /> : null}
 
       {managementOpen ? <aside className="project-management-panel">
-        <header><div><strong>检查器</strong><span>{inspectedTask?.title || project.data.name}</span></div><button className="icon-control" type="button" aria-label="关闭检查器" title="关闭检查器" onClick={() => { setManagementOpen(false); updateInspectorLocation() }}><PanelRightClose size={17} /></button></header>
-        <nav aria-label="工作台检查器">
-          {([['run', 'Run'], ['context', 'Context'], ['usage', 'Usage'], ['changes', 'Changes'], ['trace', 'Trace']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => selectInspectorTab(value)}>{label}</button>)}
-          <button className={managementMoreOpen || ['tools', 'security', 'overview', 'tasks', 'assets', 'activity', 'plan', 'agents', 'project_usage'].includes(managementTab) ? 'active' : ''} type="button" aria-expanded={managementMoreOpen} onClick={() => setManagementMoreOpen((value) => !value)}><MoreHorizontal size={14} />更多</button>
+        <header><div><strong>任务面板</strong><span>{inspectedTask?.title || project.data.name}</span></div><span className="panel-header-actions"><button className="icon-control" type="button" aria-label={managementMaximized ? '还原任务面板' : '最大化任务面板'} title={managementMaximized ? '还原任务面板' : '最大化任务面板'} onClick={() => setManagementMaximized((value) => !value)}>{managementMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button><button className="icon-control" type="button" aria-label="关闭任务面板" title="关闭任务面板" onClick={() => { setManagementOpen(false); setManagementMaximized(false); updateInspectorLocation() }}><PanelRightClose size={17} /></button></span></header>
+        <nav aria-label="任务面板导航">
+          {([['run', '运行'], ['files', '文件'], ['changes', '变更'], ['security', '安全'], ['trace', '追踪']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => selectInspectorTab(value)}>{label}</button>)}
+          <button className={managementMoreOpen || ['tools', 'context', 'usage', 'overview', 'tasks', 'activity', 'plan', 'agents', 'project_usage'].includes(managementTab) ? 'active' : ''} type="button" aria-expanded={managementMoreOpen} onClick={() => setManagementMoreOpen((value) => !value)}><MoreHorizontal size={14} />更多</button>
         </nav>
-        {managementMoreOpen ? <div className="panel-secondary-nav" aria-label="更多检查器与项目视图">
-          {([['tools', 'Tools'], ['security', 'Security'], ['overview', '项目'], ['tasks', '任务'], ['assets', '文件'], ['activity', '动态'], ['plan', '计划'], ['agents', '智能体'], ['project_usage', '项目用量']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => { selectInspectorTab(value); setManagementMoreOpen(false) }}>{label}</button>)}
+        {managementMoreOpen ? <div className="panel-secondary-nav" aria-label="更多任务与项目视图">
+          {([['context', '上下文'], ['usage', '用量'], ['tools', '工具'], ['overview', '项目'], ['tasks', '任务'], ['activity', '动态'], ['plan', '计划'], ['agents', '智能体'], ['project_usage', '项目用量']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => { selectInspectorTab(value); setManagementMoreOpen(false) }}>{label}</button>)}
         </div> : null}
         <div className="panel-content">
           {managementTab === 'run' ? <InspectorRun task={inspectedTask} events={inspectedRunEvents.data.items} usage={inspectedUsage.data} artifacts={inspectedArtifactVersions} agentTeam={inspectedAgentTeam.data} /> : null}
+          {managementTab === 'files' ? <FilesInspector projectId={projectId} task={inspectedTask} section={filesSection} onSectionChange={setFilesSection} /> : null}
           {managementTab === 'context' ? <InspectorContext projectModel={project.data.default_model} events={inspectedRunEvents.data.items} /> : null}
           {managementTab === 'tools' ? <InspectorEvents events={inspectedRunEvents.data.items.filter((item) => item.event_type.includes('tool'))} empty="当前 Run 尚无工具事件。" /> : null}
           {managementTab === 'security' ? <InspectorSecurity projectId={projectId} taskId={inspectedTask?.id} approvals={inspectedApprovals.data?.items ?? []} /> : null}
-          {managementTab === 'changes' ? <InspectorChanges task={inspectedTask} artifacts={inspectedArtifactVersions} /> : null}
+          {managementTab === 'changes' ? <InspectorChanges task={inspectedTask} artifacts={inspectedArtifactVersions} scene={project.data.scene} /> : null}
           {managementTab === 'trace' ? <InspectorEvents events={inspectedRunEvents.data.items} empty="当前 Run 尚无事件。" /> : null}
           {managementTab === 'usage' ? <InspectorUsage usage={inspectedUsage.data} /> : null}
           {managementTab === 'overview' ? <div className="project-overview-list"><button type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /><span><strong>项目设置</strong><small>{project.data.description || '补充项目目标与模型策略'}</small></span><ChevronRight size={15} /></button><div><Bot size={16} /><span><strong>默认智能体</strong><small>Oktapod Generalist</small></span></div><div><Sparkles size={16} /><span><strong>模型策略</strong><small>{project.data.default_model || '由 Provider 自动选择'}</small></span></div><div><LockKeyhole size={16} /><span><strong>可见范围</strong><small>仅当前用户</small></span></div></div> : null}
           {managementTab === 'tasks' ? <TasksView tasks={tasks.data?.items ?? []} loading={tasks.isLoading} /> : null}
           {managementTab === 'activity' ? <ActivityView activity={activity.data?.items ?? []} /> : null}
           {managementTab === 'plan' ? <PlanView projectId={projectId} planItems={planItems.data?.items ?? []} /> : null}
-          {managementTab === 'assets' ? <AssetsView projectId={projectId} /> : null}
           {managementTab === 'agents' ? <AgentView key={composerDraft?.kind === 'agent' ? JSON.stringify(composerDraft) : 'agent-default'} projectId={projectId} agents={agents.data?.items ?? []} models={models.data?.items ?? []} modelsError={models.error?.message} draft={composerDraft?.kind === 'agent' ? composerDraft : undefined} /> : null}
           {managementTab === 'project_usage' ? <UsageView usage={usage.data} loading={usage.isLoading} error={usage.error?.message} /> : null}
         </div>
@@ -230,26 +300,29 @@ function ProjectWorkspace() {
   )
 }
 
-function ProjectSettingsDialog({ project, models, providerDefaultModel, modelsError, open, onOpenChange }: { project: Awaited<ReturnType<typeof api.project>>; models: { id: string }[]; providerDefaultModel: string; modelsError?: string; open: boolean; onOpenChange: (open: boolean) => void }) {
+function ProjectSettingsDialog({ project, models, providerDefaultModel, modelsError, open, onOpenChange }: { project: Awaited<ReturnType<typeof api.project>>; models: { id: string; provider_id?: string; provider_name?: string }[]; providerDefaultModel: string; modelsError?: string; open: boolean; onOpenChange: (open: boolean) => void }) {
   const queryClient = useQueryClient()
   const [defaultModel, setDefaultModel] = useState(project.default_model)
   const [fallbackModel, setFallbackModel] = useState(project.fallback_model)
+  const [providerId, setProviderId] = useState(project.model_provider_id)
   const [budgetLimited, setBudgetLimited] = useState(project.max_model_calls > 0 || project.max_tokens > 0)
   const [maxModelCalls, setMaxModelCalls] = useState(project.max_model_calls || TASK_RUNTIME_DEFAULTS.maxModelCalls)
   const [maxTokens, setMaxTokens] = useState(project.max_tokens || TASK_RUNTIME_DEFAULTS.maxTokens)
-  const modelOptions = Array.from(new Set([providerDefaultModel, project.default_model, project.fallback_model, ...models.map((model) => model.id)].filter(Boolean)))
+  const providerOptions = Array.from(new Map(models.filter((model) => model.provider_id).map((model) => [model.provider_id!, model.provider_name || model.provider_id!])).entries())
+  const modelOptions = Array.from(new Set([project.default_model, project.fallback_model, ...models.filter((model) => !providerId || model.provider_id === providerId).map((model) => model.id)].filter(Boolean)))
   const update = useMutation({
-    mutationFn: () => api.updateProjectSettings(project.id, { default_model: defaultModel.trim(), fallback_model: fallbackModel.trim(), max_model_calls: budgetLimited ? maxModelCalls : 0, max_tokens: budgetLimited ? maxTokens : 0 }),
+    mutationFn: () => api.updateProjectSettings(project.id, { model_provider_id: providerId, default_model: defaultModel.trim(), fallback_model: fallbackModel.trim(), max_model_calls: budgetLimited ? maxModelCalls : 0, max_tokens: budgetLimited ? maxTokens : 0 }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['project', project.id] })
       onOpenChange(false)
     },
   })
   const budgetInvalid = budgetLimited && (maxModelCalls < 1 || maxModelCalls > 1000 || maxTokens < 1 || maxTokens > 10_000_000)
-  return <Dialog.Root open={open} onOpenChange={(next) => { if (next) { setDefaultModel(project.default_model); setFallbackModel(project.fallback_model); setBudgetLimited(project.max_model_calls > 0 || project.max_tokens > 0); setMaxModelCalls(project.max_model_calls || TASK_RUNTIME_DEFAULTS.maxModelCalls); setMaxTokens(project.max_tokens || TASK_RUNTIME_DEFAULTS.maxTokens) } onOpenChange(next) }}>
+  return <Dialog.Root open={open} onOpenChange={(next) => { if (next) { setProviderId(project.model_provider_id); setDefaultModel(project.default_model); setFallbackModel(project.fallback_model); setBudgetLimited(project.max_model_calls > 0 || project.max_tokens > 0); setMaxModelCalls(project.max_model_calls || TASK_RUNTIME_DEFAULTS.maxModelCalls); setMaxTokens(project.max_tokens || TASK_RUNTIME_DEFAULTS.maxTokens) } onOpenChange(next) }}>
     <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content">
       <div className="dialog-heading"><div><Dialog.Title>项目配置</Dialog.Title><Dialog.Description>Owner 或 Approver 可更新模型策略；已创建的 Run 仍使用自己的不可变快照。</Dialog.Description></div><Dialog.Close className="icon-button" aria-label="关闭">×</Dialog.Close></div>
       <form onSubmit={(event) => { event.preventDefault(); update.mutate() }}>
+        <label className="form-field"><span>模型服务</span><select aria-label="项目模型服务" value={providerId} onChange={(event) => { setProviderId(event.target.value); setDefaultModel(''); setFallbackModel('') }}>{providerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
         <label className="form-field"><span>默认模型</span><select aria-label="项目默认模型" value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)}><option value="">{providerDefaultModel ? `系统默认 · ${providerDefaultModel}` : '系统默认'}</option>{modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
         <label className="form-field"><span>Fallback 模型</span><select aria-label="项目 fallback 模型" value={fallbackModel} onChange={(event) => setFallbackModel(event.target.value)}><option value="">不使用 Fallback</option>{modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
         <fieldset className="project-budget-setting">
@@ -567,7 +640,66 @@ function TasksView({ tasks, loading }: { tasks: Awaited<ReturnType<typeof api.ta
   return <div className="task-table"><div className="task-table-head"><span>任务</span><span>模式</span><span>状态</span><span>更新时间</span></div>{tasks.map((task) => <Link className="task-table-row" key={task.id} to="/tasks/$taskId" params={{ taskId: task.id }}><span><strong>{task.title}</strong><small>{task.goal}</small>{task.error_code ? <em className="task-error-code">{task.error_code}</em> : null}</span><span>{task.mode === 'answer' ? '直接回答' : task.mode === 'single_agent' ? '单智能体' : 'Agent Team'}</span><span><em className={`status-pill ${task.status}`}>{statusLabels[task.status]}</em></span><span>{new Date(task.updated_at).toLocaleString('zh-CN')}</span></Link>)}</div>
 }
 
-function AssetsView({ projectId }: { projectId: string }) {
+function FilesInspector({ projectId, task, section, onSectionChange }: { projectId: string; task?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; section: 'workspace' | 'project' | 'outputs'; onSectionChange: (section: 'workspace' | 'project' | 'outputs') => void }) {
+  const [outputScope, setOutputScope] = useState<'current' | 'project'>('current')
+  const [outputVersions, setOutputVersions] = useState<'latest' | 'all'>('latest')
+  const includeHistory = outputVersions === 'all'
+  const allOutputs = outputScope === 'project'
+  const workspace = useQuery({ queryKey: ['workspace-files', projectId], queryFn: () => api.workspaceFiles(projectId), enabled: section === 'workspace' || section === 'outputs', refetchInterval: section === 'workspace' ? 3_000 : false })
+  const outputs = useQuery({ queryKey: ['project-artifacts', projectId, allOutputs ? '' : task?.run_id, includeHistory], queryFn: () => api.projectArtifacts(projectId, { runId: allOutputs ? undefined : task?.run_id, includeHistory }), enabled: section === 'outputs' })
+  const currentOutputs = useQuery({ queryKey: ['project-artifacts', projectId, task?.run_id, true], queryFn: () => api.projectArtifacts(projectId, { runId: task?.run_id, includeHistory: true }), enabled: Boolean(task?.run_id) && (section === 'workspace' || (section === 'outputs' && allOutputs)) })
+  const rootProjectFiles = useQuery({ queryKey: ['assets', projectId, '', '', ''], queryFn: () => api.assets(projectId), enabled: section === 'outputs' })
+  const currentArtifactNames = new Set(((section === 'workspace' || allOutputs) ? currentOutputs.data?.items : outputs.data?.items)?.map((artifact) => artifact.name) ?? [])
+  const savedArtifactIds = new Set((rootProjectFiles.data?.items ?? []).filter((asset) => asset.source_type === 'artifact').map((asset) => asset.source_artifact_id))
+  const uncapturedPDFs = (workspace.data?.items ?? []).filter((file) => file.kind === 'file' && file.path.toLowerCase().endsWith('.pdf') && !currentArtifactNames.has(file.path))
+  return <div className="files-inspector">
+    <nav className="files-inspector-tabs" aria-label="文件类型">
+      {([['workspace', '工作区'], ['project', '项目文件'], ['outputs', '任务输出']] as const).map(([value, label]) => <button type="button" className={section === value ? 'active' : ''} key={value} onClick={() => onSectionChange(value)}>{label}</button>)}
+    </nav>
+    {section === 'workspace' ? <section className="files-inspector-section workspace"><header><div><span className="file-lifecycle-label">可编辑</span><strong>工作区文件</strong><small>脚本和命令直接读写这里；任务输出只会保存经过明确登记的文件。</small></div><button type="button" aria-label="刷新工作区" title="刷新工作区" onClick={() => workspace.refetch()}><RefreshCw size={14} /></button></header>{workspace.error ? <div className="panel-error">{workspace.error.message}</div> : null}<div className="files-inspector-list">{workspace.data?.items.map((file) => <WorkspaceFileRow currentArtifactNames={currentArtifactNames} file={file} key={file.path} projectId={projectId} runId={task?.run_id} />)}</div>{workspace.isLoading ? <div className="inspector-empty compact"><Folder size={16} /><strong>正在读取工作区…</strong></div> : null}{!workspace.isLoading && workspace.data?.items.length === 0 ? <div className="inspector-empty compact"><Folder size={16} /><strong>工作区暂无文件</strong></div> : null}</section> : null}
+    {section === 'project' ? <section className="files-inspector-section project"><header><div><span className="file-lifecycle-label">可复用</span><strong>项目文件</strong><small>上传文件，或从任务输出保存；供本项目后续任务作为附件使用，不会发布到项目外。</small></div></header><AssetsView projectId={projectId} compact /></section> : null}
+    {section === 'outputs' ? <section className="files-inspector-section outputs"><header><div><span className="file-lifecycle-label">不可变</span><strong>任务输出</strong><small>{allOutputs ? '查看这个项目所有任务登记的输出' : task ? `本次任务 · Run ${task.run_id.slice(0, 12)}` : '当前会话尚无任务'}</small></div></header><div className="files-output-filters" aria-label="任务输出筛选"><label><span>范围</span><select aria-label="任务输出范围" value={outputScope} onChange={(event) => setOutputScope(event.target.value as 'current' | 'project')}><option value="current">本次任务</option><option value="project">项目全部任务</option></select></label><label><span>版本</span><select aria-label="任务输出版本" value={outputVersions} onChange={(event) => setOutputVersions(event.target.value as 'latest' | 'all')}><option value="latest">仅最新版本</option><option value="all">包含旧版本</option></select></label></div>{!allOutputs && task?.run_id && uncapturedPDFs.length ? <div className="files-recovery-card"><div><strong>发现尚未保存的 PDF</strong><small>文件已生成在工作区，但这个旧任务没有登记为输出。确认后会归属到本次任务。</small></div>{uncapturedPDFs.map((file) => <WorkspaceCaptureAction file={file} key={file.path} projectId={projectId} runId={task.run_id} />)}</div> : null}{outputs.error ? <div className="panel-error">{outputs.error.message}</div> : null}<div className="files-inspector-list">{outputs.data?.items.map((artifact) => <TaskOutputRow artifact={artifact} key={artifact.id} saved={savedArtifactIds.has(artifact.id)} />)}</div>{outputs.isLoading ? <div className="inspector-empty compact"><FileBox size={16} /><strong>正在读取任务输出…</strong></div> : null}{!outputs.isLoading && outputs.data?.items.length === 0 ? <div className="inspector-empty compact"><FileBox size={16} /><strong>这个范围还没有任务输出</strong><span>{uncapturedPDFs.length ? '上方检测到工作区 PDF，可以明确保存到本次任务。' : '脚本生成的文件需要登记后才会成为不可变任务输出。'}</span></div> : null}</section> : null}
+  </div>
+}
+
+function legacySafeMessageContent(message: ConversationMessage, linkedTaskStatus?: string) {
+  if (message.role === 'assistant' && linkedTaskStatus === 'failed' && /通过确定性校验/.test(message.content)) {
+    return '最后一个工具步骤已完成，但任务整体已停止。已生成的文件和执行收据仍然保留，请查看下方失败原因。'
+  }
+  return message.content
+}
+
+function MessagePresentation({ presentation }: { presentation?: ConversationMessage['presentation'] }) {
+  const attachments = presentation?.attachments ?? []
+  const skill = presentation?.skill
+  if (attachments.length === 0 && !skill && !presentation?.queue_kind) return null
+  return <div className="message-presentation" aria-label="本次发送上下文">
+    {skill ? <span className="message-context-chip skill" title={`Skill ${skill.name} v${skill.version}`}><Puzzle size={13} /><strong>{skill.command || `/${skill.name}`}</strong>{skill.args ? <small>{skill.args}</small> : null}</span> : null}
+    {attachments.map((attachment) => <a className="message-context-chip attachment" href={api.assetContentUrl(attachment.id)} target="_blank" rel="noreferrer" key={attachment.id} title={`打开附件 ${attachment.name}`}><FileIcon size={13} /><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.size_bytes)}</small></span></a>)}
+    {presentation?.queue_kind ? <span className="message-queue-state"><Clock3 size={12} />{presentation.queue_kind === 'steering' ? '已发送 · 引导当前任务' : '已发送 · 排到下一轮'}</span> : null}
+  </div>
+}
+
+function WorkspaceFileRow({ currentArtifactNames, file, projectId, runId }: { currentArtifactNames: Set<string>; file: WorkspaceFile; projectId: string; runId?: string }) {
+  return <div><span>{file.kind === 'directory' ? <Folder size={15} /> : <FileIcon size={15} />}<span>{file.kind === 'file' ? <a href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer">{file.path}</a> : <strong>{file.path}</strong>}<small>{file.git_status || '未变更'} · {formatBytes(file.size_bytes)} · {new Date(file.modified_at).toLocaleString('zh-CN')}</small></span></span><span className="files-row-actions">{file.kind === 'file' && runId && !currentArtifactNames.has(file.path) ? <WorkspaceCaptureAction compact file={file} projectId={projectId} runId={runId} /> : null}{file.kind === 'file' ? <a aria-label={`打开 ${file.path}`} href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer"><ChevronRight size={14} /></a> : null}</span></div>
+}
+
+function WorkspaceCaptureAction({ compact = false, file, projectId, runId }: { compact?: boolean; file: WorkspaceFile; projectId: string; runId: string }) {
+  const queryClient = useQueryClient()
+  const capture = useMutation({ mutationFn: () => api.captureWorkspaceArtifact(projectId, { run_id: runId, path: file.path, kind: 'deliverable' }), onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['project-artifacts', projectId] }) })
+  const label = capture.isSuccess ? '已保存到任务输出' : capture.isPending ? '正在保存到任务输出' : '保存为本次任务输出'
+  return <span className={compact ? 'workspace-capture-action compact' : 'workspace-capture-action'}>{compact ? null : <span><FileBox size={14} /><strong>{file.path}</strong></span>}<button className="file-icon-action" type="button" aria-label={`${label}：${file.path}`} title={`${label}；保存后成为本次任务的不可变输出`} disabled={capture.isPending || capture.isSuccess} onClick={() => capture.mutate()}><FileCheck2 size={15} /></button>{capture.error ? <small>{capture.error.message}</small> : null}</span>
+}
+
+function TaskOutputRow({ artifact, saved }: { artifact: Artifact; saved: boolean }) {
+  const queryClient = useQueryClient()
+  const save = useMutation({ mutationFn: () => api.saveArtifactAsProjectFile(artifact.id, { name: artifact.name, visibility: 'private' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['assets', artifact.project_id] }) })
+  const alreadySaved = saved || save.isSuccess
+  const saveLabel = alreadySaved ? '已保存到项目文件' : save.isPending ? '正在保存到项目文件' : '保存到项目文件'
+  return <div><span><FileIcon size={15} /><span><a href={api.artifactPreviewUrl(artifact.id)} target="_blank" rel="noreferrer">{artifact.name}</a><small>{artifact.kind === 'evidence' ? '过程证据' : '交付物'} · {artifact.media_type} · {formatBytes(artifact.size_bytes)}</small></span></span><span className="files-row-actions"><button className="file-icon-action" type="button" aria-label={`${saveLabel}：${artifact.name}`} title={`${saveLabel}；供本项目后续任务复用，不会发布到项目外`} disabled={save.isPending || alreadySaved} onClick={() => save.mutate()}><FolderInput size={15} /></button><a aria-label={`下载 ${artifact.name}`} title={`下载 ${artifact.name}`} href={api.artifactContentUrl(artifact.id)}><Download size={14} /></a></span></div>
+}
+
+function AssetsView({ projectId, compact = false }: { projectId: string; compact?: boolean }) {
   const [folderStack, setFolderStack] = useState<Asset[]>([])
   const [search, setSearch] = useState('')
   const [kind, setKind] = useState<'file' | 'folder' | ''>('')
@@ -594,7 +726,7 @@ function AssetsView({ projectId }: { projectId: string }) {
   const error = assets.error ?? createFolder.error ?? upload.error
   const capacity = assets.data ? `${formatBytes(assets.data.visible_bytes)} / ${formatBytes(assets.data.quota_bytes)}` : '读取中…'
 
-  return <div className="asset-surface">
+  return <div className={`asset-surface${compact ? ' compact' : ''}`}>
     <div className="asset-toolbar">
       <form onSubmit={(event) => { event.preventDefault(); if (folderName.trim()) createFolder.mutate() }}>
         <label><FolderPlus size={16} /><span className="sr-only">新文件夹名称</span><input value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="新文件夹名称" /></label>
@@ -621,7 +753,7 @@ function AssetsView({ projectId }: { projectId: string }) {
         <span>{asset.kind === 'folder' ? '—' : formatBytes(asset.size_bytes)}</span>
         <span>{asset.kind === 'file' ? <a aria-label={`下载 ${asset.name}`} href={api.assetContentUrl(asset.id)}><Download size={16} /></a> : <button aria-label={`打开 ${asset.name}`} type="button" onClick={() => setFolderStack((current) => [...current, asset])}><ChevronRight size={16} /></button>}</span>
       </div>)}
-      {!assets.isLoading && assets.data?.items.length === 0 ? <div className="asset-empty"><FileBox size={26} /><strong>{search ? '没有匹配的资产' : '当前目录为空'}</strong><small>{search ? '调整搜索词或类型筛选。' : '上传文件，或从任务结果发布可复用资产。'}</small></div> : null}
+      {!assets.isLoading && assets.data?.items.length === 0 ? <div className="asset-empty"><FileBox size={26} /><strong>{search ? '没有匹配的项目文件' : '当前目录为空'}</strong><small>{search ? '调整搜索词或类型筛选。' : '上传文件，或从任务输出保存可复用文件。'}</small></div> : null}
     </div>
   </div>
 }
@@ -692,7 +824,7 @@ function skillDescription(skill: Capability) {
   }
 }
 
-function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, models, projectDefaultModel, initialValue, onComposerDraft, onResourceInstallDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; models: Array<{ id: string; tool_calling?: boolean }>; projectDefaultModel: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onResourceInstallDraft: (draft: ResourceInstallDraft, conversationId: string) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (content: string) => void; onRoute: (route: 'chat' | 'task' | 'resource') => void; onDelta: (delta: string) => void; onFailed: () => void; onSettled: () => void }) {
+function TaskComposer({ projectId, conversationId, activeTask, agents, skills, providers, models, projectModelProviderId, projectDefaultModel, projectScene, autoReviewAvailable, autoReviewReason, initialValue, onComposerDraft, onResourceInstallDraft, onConversationSelected, onOptimisticMessage, onRoute, onDelta, onFailed, onSettled }: { projectId: string; conversationId?: string; activeTask?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; agents: Awaited<ReturnType<typeof api.agents>>['items']; skills: Capability[]; providers: ProviderInstance[]; models: Array<{ id: string; provider_id?: string; tool_calling?: boolean }>; projectModelProviderId: string; projectDefaultModel: string; projectScene: Scene; autoReviewAvailable?: boolean; autoReviewReason?: string; initialValue?: string; onComposerDraft: (draft: ComposerDraft) => void; onResourceInstallDraft: (draft: ResourceInstallDraft, conversationId: string) => void; onConversationSelected: (id: string) => void; onOptimisticMessage: (clientMessageId: string, content: string, presentation: ConversationMessage['presentation']) => void; onRoute: (route: 'chat' | 'task' | 'resource') => void; onDelta: (delta: string) => void; onFailed: (clientMessageId: string) => void; onSettled: (clientMessageId: string) => void }) {
   const bootstrap = useBootstrap()
   const storageKey = `oktapod.composer.${bootstrap.user.id}.${projectId}.${conversationId ?? 'new'}`
   const permissionStorageKey = `oktapod.permission-mode.${bootstrap.user.id}.${projectId}`
@@ -709,23 +841,28 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     const saved = window.localStorage.getItem(permissionStorageKey)
     return saved === 'ask' || saved === 'auto_review' || saved === 'full_access' ? saved : 'ask'
   })
+
+  const effectivePermissionMode = autoReviewAvailable === false && permissionMode === 'auto_review' ? 'ask' : permissionMode
   const [fullAccessOpen, setFullAccessOpen] = useState(false)
-  const [scene, setScene] = useState<Scene>('work')
+  const [scene, setScene] = useState<Scene>(projectScene)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [agentId, setAgentId] = useState('default')
-  const [providerId, setProviderId] = useState(() => readModelSelection(modelStorageKey).providerId)
+  const [providerId, setProviderId] = useState(() => { const saved = readModelSelection(modelStorageKey).providerId; return saved === 'default' && projectModelProviderId ? projectModelProviderId : saved })
   const [model, setModel] = useState(() => readModelSelection(modelStorageKey).model)
   const [thinking, setThinking] = useState<'auto' | 'off' | 'low' | 'medium' | 'high'>('auto')
   const [skillCommandError, setSkillCommandError] = useState('')
-  const [capabilityInstallMessage, setCapabilityInstallMessage] = useState('')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false)
+  const [assetQuery, setAssetQuery] = useState('')
   const [selectedSkillIndex, setSelectedSkillIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const capabilityAttachmentRef = useRef<HTMLInputElement>(null)
+  const attachmentInputRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
+  const projectAssets = useQuery({ queryKey: ['assets', projectId, 'composer'], queryFn: () => api.assets(projectId, { kind: 'file' }), enabled: attachmentPickerOpen, staleTime: 5_000 })
   const providerModels = useQuery({ queryKey: ['provider-models', providerId], queryFn: () => api.providerModels(providerId), enabled: providerId !== 'default', retry: false, staleTime: 60_000 })
   const submit = useMutation({
-    mutationFn: ({ content, invocation, queueKind, forcedMode }: { content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering'; forcedMode?: TaskMode }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: forcedMode ?? (isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode), visibility: 'private', permission_mode: permissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: selectedModel || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs }, { onRoute, onDelta }),
-    onSuccess: async (result) => {
+    mutationFn: ({ content, invocation, queueKind, forcedMode, contextAssetIds }: { clientMessageId: string; content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering'; forcedMode?: TaskMode; contextAssetIds: string[] }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: forcedMode ?? (isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode), visibility: 'private', permission_mode: effectivePermissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: selectedModel || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs, context_asset_ids: contextAssetIds }, { onRoute, onDelta }),
+    onSuccess: async (result, variables) => {
       if (result.resource_install_draft) onResourceInstallDraft(result.resource_install_draft, result.conversation.id)
       else onConversationSelected(result.conversation.id)
       await queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
@@ -733,9 +870,9 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
       await queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
       await queryClient.invalidateQueries({ queryKey: ['conversation-messages', result.conversation.id] })
       await queryClient.invalidateQueries({ queryKey: ['plan-items', projectId] })
-      onSettled()
+      onSettled(variables.clientMessageId)
     },
-    onError: () => onFailed(),
+    onError: (_error, variables) => onFailed(variables.clientMessageId),
   })
   const abort = useMutation({
     mutationFn: () => api.controlTask(activeTask!.id, 'cancel'),
@@ -745,16 +882,6 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         queryClient.invalidateQueries({ queryKey: ['run-plan', activeTask?.run_id] }),
         queryClient.invalidateQueries({ queryKey: ['project-activity', projectId] }),
       ])
-    },
-  })
-  const installCapability = useMutation({
-    mutationFn: async (file: File) => {
-      if (!/\.zip$/i.test(file.name)) throw new Error('对话附件安装当前支持 ZIP 包；SKILL.md 和 JSON 可在能力中心导入。')
-      return api.createCapability(projectId, { kind: 'skill', name: file.name.replace(/\.zip$/i, ''), version: '0.1.0', manifest_json: '{}', scope_type: 'global', source_filename: file.name, bundle_base64: await fileToBase64(file) })
-    },
-    onSuccess: async (capability) => {
-      setCapabilityInstallMessage(`${capability.name} 已${capability.status === 'quarantined' ? '进入隔离审查' : '安装到全局'}`)
-      await queryClient.invalidateQueries({ queryKey: ['capabilities', projectId] })
     },
   })
 
@@ -791,8 +918,53 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     window.requestAnimationFrame(() => textareaRef.current?.focus())
   }
 
+  const uploadAttachment = (attachment: ComposerAttachment) => {
+    if (!attachment.file) return
+    setAttachments((current) => current.map((item) => item.key === attachment.key ? { ...item, status: 'uploading', progress: 0, error: undefined } : item))
+    void api.uploadAssetWithProgress(projectId, attachment.file, 'private', (progress) => {
+      setAttachments((current) => current.map((item) => item.key === attachment.key ? { ...item, progress } : item))
+    }).then((asset) => {
+      setAttachments((current) => current.map((item) => item.key === attachment.key ? { ...item, asset, status: 'ready', progress: 100 } : item))
+      void queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+    }).catch((error: unknown) => {
+      setAttachments((current) => current.map((item) => item.key === attachment.key ? { ...item, status: 'failed', error: error instanceof Error ? error.message : '附件上传失败' } : item))
+    })
+  }
+
+  const addAttachments = (files: FileList | null) => {
+    if (!files?.length) return
+    const available = Math.max(0, 8 - attachments.length)
+    const selected = Array.from(files).slice(0, available).map((file) => ({ key: crypto.randomUUID(), file, name: file.name, size: file.size, source: 'upload' as const, status: 'uploading' as const, progress: 0 }))
+    if (selected.length === 0) {
+      setSkillCommandError('每次最多选择 8 个附件。')
+      return
+    }
+    setAttachments((current) => [...current, ...selected])
+    selected.forEach(uploadAttachment)
+    if (files.length > available) setSkillCommandError('每次最多选择 8 个附件，超出的文件未加入。')
+  }
+
+  const attachProjectAsset = (asset: Asset) => {
+    if (attachments.some((item) => item.asset?.id === asset.id)) {
+      setAttachmentPickerOpen(false)
+      return
+    }
+    if (attachments.length >= 8) {
+      setSkillCommandError('每次最多选择 8 个附件。')
+      return
+    }
+    setAttachments((current) => [...current, {
+      key: crypto.randomUUID(), asset, name: asset.name, size: asset.size_bytes,
+      source: 'project', status: 'ready', progress: 100,
+    }])
+    setAttachmentPickerOpen(false)
+    setSkillCommandError('')
+  }
+
   const send = (queueKind: 'follow_up' | 'steering' = activeTask ? 'steering' : 'follow_up') => {
-    if (!goal.trim() || submit.isPending) return
+	if (!goal.trim() || (submit.isPending && !activeTask)) return
+	if (attachments.some((item) => item.status === 'uploading')) { setSkillCommandError('附件仍在上传，请等待完成后发送。'); return }
+	if (attachments.some((item) => item.status === 'failed')) { setSkillCommandError('有附件上传失败，请重试或移除后发送。'); return }
     const content = goal.trim()
     const draft = parseComposerDraft(content)
     if (draft?.kind === 'agent') { onComposerDraft(draft); setGoal(''); return }
@@ -805,21 +977,35 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     window.localStorage.removeItem(storageKey)
     if (treePrefillKey) window.sessionStorage.removeItem(treePrefillKey)
     setSkillCommandError('')
-    onOptimisticMessage(content)
-    submit.mutate({ content, invocation, queueKind })
+	// Attachments are immutable Run context. When a task is already active,
+	// route this message to the next Run instead of mutating the current snapshot.
+    const effectiveQueueKind = attachments.length > 0 && activeTask ? 'follow_up' : queueKind
+    const clientMessageId = `pending-${crypto.randomUUID()}`
+    const readyAttachments = attachments.filter((item) => item.status === 'ready' && item.asset)
+    const contextAssetIds = readyAttachments.map((item) => item.asset!.id)
+    onOptimisticMessage(clientMessageId, content, {
+      attachments: readyAttachments.map((item) => ({
+        id: item.asset!.id, name: item.asset!.name, media_type: item.asset!.media_type,
+        size_bytes: item.asset!.size_bytes, content_hash: item.asset!.content_hash,
+      })),
+      skill: invocation ? { id: invocation.skillId, name: invocation.skillName, version: skills.find((item) => item.id === invocation.skillId)?.version ?? '', command: content.split(/\s+/, 1)[0] ?? '', args: invocation.skillArgs } : undefined,
+      queue_kind: activeTask ? effectiveQueueKind : undefined,
+    })
+    setAttachments([])
+    submit.mutate({ clientMessageId, content, invocation, queueKind: effectiveQueueKind, contextAssetIds })
   }
 
   const enabledAgents = agents.filter((agent) => agent.status === 'enabled')
   const executorItems: [string, string][] = [['default', '默认 Agent'], ...enabledAgents.map((agent) => [agent.id, agent.name] as [string, string])]
   const providerItems: [string, string][] = [
-    ['default', '默认 Provider'],
+    ['default', '全部模型服务'],
     ...providers.filter((provider) => provider.status === 'active').map((provider) => [provider.provider_id, provider.display_name] as [string, string]),
   ]
   const selectedProvider = providers.find((provider) => provider.provider_id === providerId)
   type ToolSupport = 'yes' | 'no' | 'unknown'
   const catalog: Array<{ id: string; toolSupport: ToolSupport }> = providerId === 'default'
     ? models.map((item) => ({ id: item.id, toolSupport: item.tool_calling === true ? 'yes' : item.tool_calling === false ? 'no' : 'unknown' }))
-    : (providerModels.data?.items ?? []).map((item) => ({
+    : (providerModels.data?.items ?? []).filter((item) => item.enabled).map((item) => ({
       id: item.model_id,
       toolSupport: item.capabilities.tool_calling_known === true
         ? item.capabilities.tool_calling === false ? 'no' as const : 'yes' as const
@@ -847,10 +1033,10 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     setPermissionMode(value)
     window.localStorage.setItem(permissionStorageKey, value)
   }
+  const availableProjectAssets = (projectAssets.data?.items ?? []).filter((asset) => asset.kind === 'file' && (!assetQuery.trim() || asset.name.toLowerCase().includes(assetQuery.trim().toLowerCase())))
 
   return <div className="conversation-composer-wrap">
-    {skillCommandError || submit.error || installCapability.error || abort.error ? <div className="composer-error" role="alert">{skillCommandError || submit.error?.message || installCapability.error?.message || abort.error?.message}</div> : null}
-    {capabilityInstallMessage ? <div className="composer-install-status"><Check size={14} />{capabilityInstallMessage}</div> : null}
+    {skillCommandError || submit.error || abort.error ? <div className="composer-error" role="alert">{skillCommandError || submit.error?.message || abort.error?.message}</div> : null}
     {commandSuggestions.length > 0 ? <div className="skill-command-menu" role="listbox" aria-label="Skills">
       <div className="skill-command-menu-heading"><Sparkles size={14} /><span>命令</span><small>{commandSuggestions.length}</small></div>
       {commandSuggestions.map((suggestion, index) => suggestion.kind === 'system'
@@ -858,6 +1044,7 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         : <button type="button" role="option" aria-selected={activeSkillIndex === index} className={activeSkillIndex === index ? 'active' : ''} key={suggestion.skill.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(suggestion)}><span className="skill-command-icon"><Puzzle size={15} /></span><span><strong>/{skillCommandName(suggestion.skill.name)}</strong><small>{skillDescription(suggestion.skill) || `Skill v${suggestion.skill.version}`}</small></span><em>v{suggestion.skill.version}</em></button>)}
     </div> : null}
     <form className="conversation-composer" noValidate onSubmit={(event) => { event.preventDefault(); send() }}>
+      {attachments.length > 0 ? <div className="composer-attachments" aria-label="已选附件">{attachments.map((attachment) => <div className={`composer-attachment ${attachment.status}`} key={attachment.key}><FileIcon size={15} /><span><strong>{attachment.name}</strong><small>{attachment.status === 'uploading' ? `上传中 ${attachment.progress}%` : attachment.status === 'failed' ? attachment.error || '附件上传失败，可改为关联已有项目文件' : `${formatBytes(attachment.size)} · ${attachment.source === 'project' ? '项目文件' : '已上传'}`}</small></span>{attachment.status === 'failed' ? <button type="button" aria-label={`重试 ${attachment.name}`} title="重试上传" onClick={() => uploadAttachment(attachment)}><RefreshCw size={13} /></button> : null}{attachment.status === 'failed' ? <button type="button" aria-label="选择已有项目文件" title="关联已有项目文件" onClick={() => setAttachmentPickerOpen(true)}><FolderInput size={13} /></button> : null}<button type="button" aria-label={`移除 ${attachment.name}`} title="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.key !== attachment.key))}><X size={13} /></button></div>)}</div> : null}
       <textarea ref={textareaRef} aria-label="消息" value={goal} onChange={(event) => { setGoal(event.target.value); setSelectedSkillIndex(0); setSkillCommandError('') }} onKeyDown={(event) => {
         if (commandSuggestions.length > 0 && event.key === 'ArrowDown') { event.preventDefault(); setSelectedSkillIndex((current) => (current + 1) % commandSuggestions.length); return }
         if (commandSuggestions.length > 0 && event.key === 'ArrowUp') { event.preventDefault(); setSelectedSkillIndex((current) => (current - 1 + commandSuggestions.length) % commandSuggestions.length); return }
@@ -869,16 +1056,31 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
       {advancedOpen ? <div className="composer-advanced">
         <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={selectProvider} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' && enabledAgents.length > 0 ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} ariaLabel="执行 Agent" /> : null}</div>
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
+        {autoReviewAvailable === false ? <p className="composer-governance-notice"><ShieldAlert size={13} />自动审查当前不可用。启动服务前设置 <code>OKTAPOD_REVIEWER_MODEL</code> 为已启用的独立模型；<Link to="/diagnostics">查看诊断原因</Link>。未可用时系统会关闭式转为人工审批。</p> : null}
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="安装能力附件" title="安装 ZIP 能力包（默认全局）" disabled={installCapability.isPending} onClick={() => { setCapabilityInstallMessage(''); capabilityAttachmentRef.current?.click() }}><Paperclip size={16} /></button><input ref={capabilityAttachmentRef} className="sr-only" type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) installCapability.mutate(file) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={permissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", "自动审查"], ["full_access", "完全访问"]]} ariaLabel="权限模式" /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、Provider 与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={submit.isPending || !goal.trim()} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="添加附件" title="上传新文件或关联项目文件（最多 8 个）" disabled={attachments.length >= 8} onClick={() => setAttachmentPickerOpen(true)}><Paperclip size={16} /></button><input ref={attachmentInputRef} className="sr-only" type="file" multiple onChange={(event) => { addAttachments(event.target.files); event.target.value = ''; setAttachmentPickerOpen(false) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={effectivePermissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", autoReviewAvailable === false ? "自动审查（未配置）" : "自动审查", autoReviewAvailable === false], ["full_access", "完全访问"]]} ariaLabel="权限模式" title={autoReviewAvailable === false ? `${autoReviewReason ?? ''} 在服务启动环境设置 OKTAPOD_REVIEWER_MODEL。` : undefined} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、模型服务与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={(submit.isPending && !activeTask) || !goal.trim() || attachments.some((item) => item.status === 'uploading')} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
       {providerModels.error || (model && !selectedModel) ? <p className="composer-model-notice" role="status">{providerModels.error ? '模型目录暂时不可用，将使用该 Provider 的默认模型。' : '之前选择的模型已失效，已自动使用默认模型。'}</p> : null}
     </form>
+    <Dialog.Root open={attachmentPickerOpen} onOpenChange={setAttachmentPickerOpen}>
+      <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content composer-asset-picker" aria-describedby="composer-asset-picker-description">
+        <Dialog.Title>添加附件</Dialog.Title>
+        <Dialog.Description id="composer-asset-picker-description">上传新文件，或直接关联已经存在的项目文件。关联不会复制文件，也不会因同名冲突失败。</Dialog.Description>
+        <div className="composer-asset-picker-actions"><button className="primary" type="button" onClick={() => attachmentInputRef.current?.click()}><Upload size={15} />上传新文件</button><span>最多 8 个附件</span></div>
+        <label className="composer-asset-search"><Search size={14} /><input value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} placeholder="搜索项目文件" /></label>
+        <div className="composer-asset-list">
+          {projectAssets.isLoading ? <span>正在读取项目文件…</span> : null}
+          {availableProjectAssets.map((asset) => <button type="button" key={asset.id} onClick={() => attachProjectAsset(asset)}><FileIcon size={15} /><span><strong>{asset.name}</strong><small>{formatBytes(asset.size_bytes)} · {asset.media_type || '文件'}</small></span><Plus size={14} /></button>)}
+          {!projectAssets.isLoading && availableProjectAssets.length === 0 ? <span>没有匹配的项目文件，可上传新文件。</span> : null}
+        </div>
+        <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close></div>
+      </Dialog.Content></Dialog.Portal>
+    </Dialog.Root>
     <Dialog.Root open={fullAccessOpen} onOpenChange={setFullAccessOpen}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content permission-mode-dialog" aria-describedby="full-access-description">
           <Dialog.Title>启用完全访问？</Dialog.Title>
-          <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你在发送框中手动切换权限模式。工作区命令不再逐次询问，但路径边界、命令黑名单等确定性硬拒绝仍然生效；破坏性和开放世界 MCP 仍需人工确认。</Dialog.Description>
+          <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你手动切换权限模式。工作区内 L0-L2 动作免逐次审批；越界访问、确定性硬拒绝和 L3 高风险动作仍不会放行。</Dialog.Description>
           <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" onClick={() => { selectPermissionMode('full_access'); setFullAccessOpen(false) }}>确认启用</button></div>
         </Dialog.Content>
       </Dialog.Portal>

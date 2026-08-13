@@ -28,6 +28,8 @@ type ModelRequest struct {
 type ToolDefinition struct {
 	Name            string
 	Description     string
+	PromptHint      string
+	Guidelines      []string
 	Parameters      map[string]any
 	Sequential      bool
 	ReadOnlyHint    *bool

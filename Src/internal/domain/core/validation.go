@@ -297,6 +297,12 @@ type ResourceConflictError struct {
 	Reason   string
 }
 
+type ModelInUseError struct{ Reason string }
+
+func (e *ModelInUseError) Error() string {
+	return "model provider configuration is in use: " + e.Reason
+}
+
 func (e *ResourceConflictError) Error() string {
 	return fmt.Sprintf("%s conflicts with an existing resource: %s", e.Resource, e.Reason)
 }

@@ -27,6 +27,8 @@ const (
 	PermissionModeAutoReview = "auto_review"
 	PermissionModeFullAccess = "full_access"
 
+	PromptProfileVersionCurrent = "oktapod-prompt-v2"
+
 	VisibilityPrivate  = "private"
 	VisibilitySelected = "selected"
 	VisibilityProject  = "project"
@@ -54,6 +56,8 @@ const (
 	ToolWorkspaceEditFile       = "workspace_edit_file"
 	ToolWorkspaceRunCommand     = "workspace_run_command"
 	ToolWorkspaceShell          = "workspace_shell"
+	ToolArtifactCapture         = "artifact_capture"
+	ToolAssetStage              = "asset_stage"
 	ToolGitStatus               = "git_status"
 	ToolGitDiff                 = "git_diff"
 	ToolGitLog                  = "git_log"
@@ -275,35 +279,38 @@ type RuntimeCapabilities struct {
 }
 
 type Project struct {
-	ID             string
-	OrganizationID string
-	OwnerUserID    string
-	Name           string
-	Description    string
-	Kind           string
-	Scene          string
-	DefaultModel   string
-	FallbackModel  string
-	MaxModelCalls  int64
-	MaxTokens      int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID              string
+	OrganizationID  string
+	OwnerUserID     string
+	Name            string
+	Description     string
+	Kind            string
+	Scene           string
+	ModelProviderID string
+	DefaultModel    string
+	FallbackModel   string
+	MaxModelCalls   int64
+	MaxTokens       int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type CreateProjectInput struct {
-	Name          string
-	Description   string
-	Kind          string
-	Scene         string
-	DefaultModel  string
-	FallbackModel string
+	Name            string
+	Description     string
+	Kind            string
+	Scene           string
+	ModelProviderID string
+	DefaultModel    string
+	FallbackModel   string
 }
 
 type UpdateProjectSettingsInput struct {
-	DefaultModel  *string
-	FallbackModel *string
-	MaxModelCalls *int64
-	MaxTokens     *int64
+	ModelProviderID *string
+	DefaultModel    *string
+	FallbackModel   *string
+	MaxModelCalls   *int64
+	MaxTokens       *int64
 }
 
 type ProjectMember struct {
@@ -433,7 +440,34 @@ type Message struct {
 	Role           string
 	Visibility     string
 	Content        string
+	Presentation   MessagePresentation
 	CreatedAt      time.Time
+}
+
+// MessagePresentation is immutable, server-resolved display context for one
+// user turn. It deliberately stores trusted Asset/Skill metadata rather than
+// relying on Composer-local state, so queued turns and restored sessions show
+// exactly what the user sent without injecting binary content into the prompt.
+type MessagePresentation struct {
+	Attachments []MessageAttachment     `json:"attachments,omitempty"`
+	Skill       *MessageSkillInvocation `json:"skill,omitempty"`
+	QueueKind   string                  `json:"queue_kind,omitempty"`
+}
+
+type MessageAttachment struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	MediaType   string `json:"media_type"`
+	SizeBytes   int64  `json:"size_bytes"`
+	ContentHash string `json:"content_hash"`
+}
+
+type MessageSkillInvocation struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Command string `json:"command"`
+	Args    string `json:"args"`
 }
 
 // ConversationContextSettings controls when a user's conversation history is
@@ -600,6 +634,7 @@ type ConversationQueueItem struct {
 	ProjectID      string
 	ConversationID string
 	ActiveTaskID   string
+	MessageID      string
 	Content        string
 	InputJSON      string
 	Kind           string
@@ -671,6 +706,13 @@ type CreateTaskInput struct {
 	ContextMemoryIDs []string
 	SkillID          string
 	SkillArgs        string
+	// UserMessageContent and MessagePresentation keep presentation separate
+	// from the normalized execution Goal (for example /skill arguments).
+	// ExistingUserMessageID binds a queued user turn to its successor Task
+	// without appending a duplicate message.
+	UserMessageContent    string              `json:"-"`
+	MessagePresentation   MessagePresentation `json:"-"`
+	ExistingUserMessageID string              `json:"-"`
 	// ContinuationRunIDs is internal provenance for a successor Run. Public
 	// HTTP payloads cannot set it; application services populate it only after
 	// ownership checks on the source task.
@@ -1454,6 +1496,11 @@ type ModelResult struct {
 // owned until a catalog contract is introduced.
 type ModelDescriptor struct {
 	ID               string
+	ProviderID       string
+	ProviderName     string
+	Source           string
+	Stale            bool
+	Default          bool
 	ToolCalling      bool
 	ToolCallingKnown bool
 	Vision           bool

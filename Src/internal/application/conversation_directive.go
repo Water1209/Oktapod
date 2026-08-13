@@ -191,7 +191,7 @@ func (s *Service) continueTaskWithUpdate(
 		if err != nil {
 			return core.ProjectTurnResult{}, fmt.Errorf("encode continuation update: %w", err)
 		}
-		item, err := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, previous.ConversationID, previous.ID, update, string(inputJSON), "steering")
+		item, err := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, previous.ConversationID, previous.ID, update, string(inputJSON), "steering", core.MessagePresentation{QueueKind: "steering"})
 		if err != nil {
 			return core.ProjectTurnResult{}, err
 		}
@@ -211,6 +211,7 @@ func (s *Service) continueTaskWithUpdate(
 	}
 	continuation := continuationTaskInput(previous, run)
 	continuation.Goal = previous.Goal + "\n\n用户后续要求：" + strings.TrimSpace(update)
+	continuation.UserMessageContent = strings.TrimSpace(turnInput.Content)
 	if strings.TrimSpace(turnInput.Acceptance) != "" {
 		continuation.Acceptance = strings.TrimSpace(strings.TrimSpace(continuation.Acceptance) + "\n" + strings.TrimSpace(turnInput.Acceptance))
 	}

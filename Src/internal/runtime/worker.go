@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	goruntime "runtime"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -59,6 +59,8 @@ type Worker struct {
 	lease             time.Duration
 	pollInterval      time.Duration
 	workspace         WorkspaceExecutor
+	artifactCapture   application.ArtifactCapture
+	assetStager       application.AssetStager
 	webSearch         WebSearchExecutor
 	mcpSecrets        application.ProviderSecretStore
 	mcpCallTimeout    time.Duration
@@ -67,6 +69,29 @@ type Worker struct {
 
 func (w *Worker) WithWorkspaceExecutor(executor WorkspaceExecutor) *Worker {
 	w.workspace = executor
+	// Compose the capture port from independently scoped Workspace and Blob
+	// interfaces when the bootstrap repository exposes both. Production may
+	// still inject an explicit capture service; this path keeps alternate
+	// bootstraps from turning successful writes into unregistered outputs.
+	if w.artifactCapture == nil {
+		workspaceReader, workspaceOK := executor.(application.WorkspaceCaptureReader)
+		blobStore, blobOK := w.repository.(application.BlobStore)
+		if workspaceOK && blobOK {
+			if capture, err := application.NewArtifactCaptureService(workspaceReader, blobStore); err == nil {
+				w.artifactCapture = capture
+			}
+		}
+	}
+	return w
+}
+
+func (w *Worker) WithArtifactCapture(capture application.ArtifactCapture) *Worker {
+	w.artifactCapture = capture
+	return w
+}
+
+func (w *Worker) WithAssetStager(stager application.AssetStager) *Worker {
+	w.assetStager = stager
 	return w
 }
 
@@ -275,6 +300,11 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	// new task freezes the latest project configuration snapshot.
 	taskAfter, taskErr := w.repository.GetTask(ctx, scope, run.TaskID)
 	if taskErr == nil && (taskAfter.Status == core.StatusSucceeded || taskAfter.Status == core.StatusFailed || taskAfter.Status == core.StatusCanceled) {
+		if w.assetStager != nil {
+			if cleanupErr := w.assetStager.CleanupRunInputs(ctx, run.ProjectID, run.RunID); cleanupErr != nil {
+				w.logger.WarnContext(ctx, "cleanup staged Run inputs failed", "run_id", run.RunID, "error", cleanupErr)
+			}
+		}
 		followUp, followUpErr := w.repository.ClaimNextFollowUp(ctx, scope, run.ConversationID)
 		switch {
 		case followUpErr == nil:
@@ -331,7 +361,7 @@ func isWorkspaceTool(stepType string) bool {
 	switch core.ResolveToolName(stepType) {
 	case core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles,
 		core.ToolWorkspaceGrep, core.ToolWorkspaceEditFile, core.ToolWorkspaceWriteFile,
-		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell, core.ToolWorkspaceExtractArchive,
+		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell, core.ToolWorkspaceExtractArchive, core.ToolArtifactCapture, core.ToolAssetStage,
 		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolGitConflicts,
 		core.ToolGitBranch, core.ToolGitCommit, core.ToolGitCommitPaths, core.ToolGitRestore, core.ToolGitRestoreHunk:
 		return true
@@ -378,6 +408,10 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		continuationInstruction = "语义执行计划已经持久化发布。现在按计划执行唯一标记为 in_progress 的子任务。完成该语义项后，单独调用 update_plan 提交同一完整清单，将它标记 completed，并把下一个标记 in_progress；不要把工具调用写进计划。全部语义项完成后直接交付最终回答。"
 	} else if modelStage(step.InputJSON) == "permission_replan" {
 		continuationInstruction = "用户已经批准本次任务所需的能力范围。基于生效后的工具范围重新规划原目标；保留已完成结果，不要把权限批准误解为拒绝或新的用户需求。"
+	} else if modelStage(step.InputJSON) == "budget_finish" {
+		continuationInstruction = "用户选择用现有结果收尾。不得继续扩展搜索、重复读取或重复统计；基于已有证据、文件和校验结果立即交付最终答复，并明确任何尚未完成的缺口。"
+	} else if modelStage(step.InputJSON) == "budget_resume" {
+		continuationInstruction = "用户已按界面中明确显示的额度扩展本次 Run 预算。继续原目标，但不得重复已经成功的工具和校验；在本次额度内完成剩余工作并及时收尾。"
 	}
 	if len(continuation) > 0 || steering != "" {
 		continuationInstruction += "\n\n长文交付必须主动分段：单次 workspace_write_file / workspace_edit_file 的新增正文建议不超过 3000 个字符。用户要求一份或一个完整报告时，必须维护一个可独立阅读的主文件：先创建带稳定尾部锚点的主文件，再读取最新 preimage_hash，用 workspace_edit_file 替换该锚点为下一段正文加同一锚点；完成时移除锚点。过程章节可以保留，但不能用多个分片的合计字数冒充主报告字数。不要等待参数截断后再拆分。"
@@ -396,17 +430,17 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	}
 	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
 	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
-	systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input；当前场景缺少工作区命令能力但目标确实需要时，只能单独调用 request_permission。不得在普通助手文本中伪装阻塞式提问或声称工具不存在。"
+	if currentSnapshotSemantics(run.ConfigSnapshotJSON) {
+		systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input。审批由 ExecutionPolicy 与权限模式自动路由；不得在普通助手文本中伪装阻塞式提问或把场景当作权限限制。"
+	} else {
+		systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input；历史 Run 缺少工作区命令能力但目标确实需要时，只能单独调用 request_permission。不得在普通助手文本中伪装阻塞式提问。"
+	}
 	completionRequirements := core.InferTaskCompletionRequirements(run.Goal, run.Acceptance)
 	if completionRequirements.RequiresSingleDeliverable {
 		systemPrompt += "\n\n单一主交付物规则：用户要求的是一份可独立阅读的完整报告，显式最低字数必须由同一个主文件满足，多个章节分片的合计不算完成。长文应分轮追加到同一个主文件：先用 workspace_write_file 创建包含 `<!-- OKTAPOD_CONTINUE -->` 尾部锚点的主文件；后续读取最新 preimage_hash，用 workspace_edit_file 把该锚点替换为下一段正文加同一锚点；全部写完后移除锚点，再读取主文件验证。过程材料可以另存，但最终总结必须首先给出主报告路径。"
 	}
-	if modelStage(step.InputJSON) == "plan" {
-		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，提交完整、具体、面向用户结果的语义子任务清单。初次计划中尚无执行证据：不得把任何项目标记 completed，且必须恰好把第一个项目标记 in_progress，其余均为 pending。标题必须体现本次目标的真实工作（例如检索哪些主题、比较哪些维度、产出什么交付物），禁止使用“理解目标”“完成目标”“生成下一步计划”“验证并交付”等通用占位步骤，也禁止把 read_file、web_search 等工具调用写成计划项。计划发布后系统会恢复同一 Run 执行。"
-	} else if modelStage(step.InputJSON) == "steering_replan" {
-		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，基于用户 Steering 重规划尚未完成的语义子任务。保留真实完成项，不得把未执行工作标记 completed；最多一个项目为 in_progress。标题必须描述用户结果而非工具调用。"
-	} else if modelStage(step.InputJSON) == "permission_replan" {
-		systemPrompt += "\n\n计划规则：本轮必须先单独调用 update_plan，基于刚批准的能力范围更新原目标的完整语义计划。保留真实完成项，不得把未执行工作标记 completed；最多一个项目为 in_progress。标题必须描述用户结果而非工具或权限动作。"
+	if stagePrompt := (PromptAssembler{}).Stage(modelStage(step.InputJSON)); stagePrompt != "" {
+		systemPrompt += "\n\n# Stage instructions\n" + stagePrompt
 	}
 	contextPlan["builtin_tool_definitions"] = len(core.BuiltinToolSpecs())
 	selectedContext, selectedContextPlan := w.contextForPrompt(ctx, run)
@@ -489,6 +523,9 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		allowedTools = filterToolNamesForExplicitMCP(allowedTools, preferredMCPID)
 	}
 	contextPlan["scene_policy"] = scenePolicy
+	if catalog := (PromptAssembler{}).ToolCatalog(toolDefinitions); catalog != "" {
+		systemPrompt += "\n\n" + catalog
+	}
 	conversationMessages := conversationMessagesFromSnapshot(run.ConfigSnapshotJSON)
 	contextPlan["conversation_messages"] = len(conversationMessages)
 	messages := application.TranscriptAssembler{}.RunWithConversation(conversationMessages, userPrompt, continuation, strings.TrimSpace(continuationInstruction))
@@ -568,48 +605,136 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 
 func (w *Worker) executeHumanActionReview(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
 	var input struct {
-		ActionID     string         `json:"human_action_id"`
-		Title        string         `json:"title"`
-		Reason       string         `json:"reason"`
-		RiskLevel    string         `json:"risk_level"`
-		ToolName     string         `json:"tool_name"`
-		FrozenParams map[string]any `json:"frozen_params"`
+		ActionID       string         `json:"human_action_id"`
+		Title          string         `json:"title"`
+		Reason         string         `json:"reason"`
+		RiskLevel      string         `json:"risk_level"`
+		ToolName       string         `json:"tool_name"`
+		FrozenParams   map[string]any `json:"frozen_params"`
+		InputHash      string         `json:"input_hash"`
+		PolicyDecision string         `json:"policy_decision"`
 	}
 	if json.Unmarshal([]byte(step.InputJSON), &input) != nil || input.ActionID == "" {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "REVIEW_INPUT_INVALID", ResultSummary: "自动审查输入无效。", Output: map[string]any{"decision": "escalate_to_user"}}
+		return reviewerEscalation("REVIEW_INPUT_INVALID", "自动审查输入无效。", "invalid_input", nil)
+	}
+	if input.PolicyDecision != core.PolicyAsk {
+		return reviewerEscalation("REVIEW_SCOPE_INVALID", "只有 ExecutionPolicy 判定为 ask 的动作可以进入自动审查。", "policy_not_ask", nil)
+	}
+	if !strings.EqualFold(input.RiskLevel, "L2") {
+		return reviewerEscalation("", "只有工作区内 L2 动作可以自动审查；其他风险等级已转人工。", "risk_requires_human", nil)
+	}
+	if reasonCode, reason := deterministicReviewerEscalation(input.ToolName, input.FrozenParams); reasonCode != "" {
+		return reviewerEscalation("", reason, reasonCode, nil)
 	}
 	reviewerModel := strings.TrimSpace(os.Getenv("OKTAPOD_REVIEWER_MODEL"))
 	if reviewerModel == "" {
-		return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: "未配置独立 Reviewer Model，已转人工审批。", Output: map[string]any{"decision": "escalate_to_user", "reason": "reviewer model is not configured"}}
+		return reviewerEscalation("", "未配置独立 Reviewer Model，已转人工审批。", "reviewer_not_configured", nil)
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"plan_item": input.Title, "tool": input.ToolName, "frozen_params": input.FrozenParams,
-		"risk_level": input.RiskLevel, "policy_reason": input.Reason,
+		"goal":      truncateReviewerText(run.Goal, 600),
+		"scope":     map[string]any{"organization_id": run.OrganizationID, "project_id": run.ProjectID, "run_id": run.RunID},
+		"plan_item": truncateReviewerText(input.Title, 200), "tool": input.ToolName, "frozen_params_summary": sanitizeReviewerValue(input.FrozenParams),
+		"risk_level": input.RiskLevel, "policy_reason": truncateReviewerText(input.Reason, 500),
+		"execution_authorization": map[string]any{"input_hash": input.InputHash, "policy_decision": input.PolicyDecision, "policy_version": core.ToolPolicyVersion},
 	})
-	result, err := w.completeModel(ctx, ModelRequest{
-		SystemPrompt: "你是独立安全审批器，没有工具权限。只输出严格 JSON：{\"decision\":\"approve|reject|escalate_to_user\",\"reason\":\"简短理由\"}。仅低中风险、参数明确、目标范围有限且可恢复的动作可以 approve；高风险、开放世界、破坏性或信息不足必须 escalate_to_user。",
+	reviewCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, err := w.completeModel(reviewCtx, ModelRequest{
+		SystemPrompt: "你是 Oktapod 独立安全 Reviewer，没有任何工具、凭据或完整工具输出。只审查 ExecutionPolicy 已判定为 ask 的一个冻结动作。检查数据外传、凭据探测、持久安全弱化、破坏性动作和用户授权充分性。只输出 reviewer-decision-v1 严格 JSON：{\"schema_version\":\"reviewer-decision-v1\",\"decision\":\"approve|reject|escalate_to_user\",\"risk_level\":\"L2\",\"authorization\":\"once|none|human_required\",\"reason_code\":\"短机器码\",\"reason\":\"简短理由\"}。approve 只能使用 authorization=once；任何信息不足、开放世界或超出当前目标 Scope 的动作必须 escalate_to_user。",
 		UserPrompt:   string(payload), Model: reviewerModel, MaxOutputTokens: 256, EnableTools: false,
 	})
 	if err != nil {
-		return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: "自动审查服务不可用，已转人工审批。", Output: map[string]any{"decision": "escalate_to_user", "reason": safeErrorSummary(err)}, Model: &result}
+		return reviewerEscalation("", "自动审查服务不可用，已转人工审批。", "reviewer_unavailable", &result)
 	}
 	var review struct {
-		Decision string `json:"decision"`
-		Reason   string `json:"reason"`
+		SchemaVersion string `json:"schema_version"`
+		Decision      string `json:"decision"`
+		RiskLevel     string `json:"risk_level"`
+		Authorization string `json:"authorization"`
+		ReasonCode    string `json:"reason_code"`
+		Reason        string `json:"reason"`
 	}
 	content := strings.TrimSpace(result.Content)
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimPrefix(content, "```")
 	content = strings.TrimSuffix(content, "```")
-	if json.Unmarshal([]byte(strings.TrimSpace(content)), &review) != nil || (review.Decision != "approve" && review.Decision != "reject" && review.Decision != "escalate_to_user") {
-		review.Decision = "escalate_to_user"
-		review.Reason = "Reviewer 输出无法按严格契约解析"
+	if json.Unmarshal([]byte(strings.TrimSpace(content)), &review) != nil || review.SchemaVersion != "reviewer-decision-v1" || review.RiskLevel != "L2" || strings.TrimSpace(review.ReasonCode) == "" || strings.TrimSpace(review.Reason) == "" || !validReviewerAuthorization(review.Decision, review.Authorization) {
+		return reviewerEscalation("", "Reviewer 输出无法按 reviewer-decision-v1 严格契约解析，已转人工。", "reviewer_output_invalid", &result)
 	}
-	if strings.EqualFold(input.RiskLevel, "L3") || strings.EqualFold(input.RiskLevel, "high") {
-		review.Decision = "escalate_to_user"
-		review.Reason = "高风险动作必须人工审批"
+	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: review.Reason, Output: map[string]any{"schema_version": review.SchemaVersion, "decision": review.Decision, "risk_level": review.RiskLevel, "authorization": review.Authorization, "reason_code": review.ReasonCode, "reason": review.Reason}, Model: &result}
+}
+
+func reviewerEscalation(errorCode, reason, reasonCode string, model *core.ModelResult) core.StepOutcome {
+	return core.StepOutcome{Status: core.StatusSucceeded, ErrorCode: errorCode, ResultSummary: reason, Output: map[string]any{"schema_version": "reviewer-decision-v1", "decision": "escalate_to_user", "risk_level": "L2", "authorization": "human_required", "reason_code": reasonCode, "reason": reason}, Model: model}
+}
+
+func validReviewerAuthorization(decision, authorization string) bool {
+	switch decision {
+	case "approve":
+		return authorization == "once"
+	case "reject":
+		return authorization == "none"
+	case "escalate_to_user":
+		return authorization == "human_required"
+	default:
+		return false
 	}
-	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: review.Reason, Output: map[string]any{"decision": review.Decision, "reason": review.Reason}, Model: &result}
+}
+
+func deterministicReviewerEscalation(toolName string, params map[string]any) (string, string) {
+	encoded, _ := json.Marshal(sanitizeReviewerValue(params))
+	probe := strings.ToLower(toolName + " " + string(encoded))
+	credentialSignals := []string{"password", "secret", "api_key", "apikey", "authorization", ".ssh", ".aws", "credentials"}
+	for _, signal := range credentialSignals {
+		if strings.Contains(probe, signal) {
+			return "credential_access", "动作涉及凭据或敏感身份材料，必须人工确认。"
+		}
+	}
+	destructiveSignals := []string{"rm -rf", "drop database", "drop table", "format ", "delete all", "chmod 777", "disable security", "git_push", "force push"}
+	for _, signal := range destructiveSignals {
+		if strings.Contains(probe, signal) {
+			return "destructive_or_persistent", "动作可能造成破坏或持久安全弱化，必须人工确认。"
+		}
+	}
+	return "", ""
+}
+
+func sanitizeReviewerValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, child := range typed {
+			lower := strings.ToLower(key)
+			if strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "authorization") {
+				result[key] = "[REDACTED]"
+				continue
+			}
+			result[key] = sanitizeReviewerValue(child)
+		}
+		return result
+	case []any:
+		limit := len(typed)
+		if limit > 24 {
+			limit = 24
+		}
+		result := make([]any, 0, limit)
+		for _, child := range typed[:limit] {
+			result = append(result, sanitizeReviewerValue(child))
+		}
+		return result
+	case string:
+		return truncateReviewerText(typed, 500)
+	default:
+		return value
+	}
+}
+
+func truncateReviewerText(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func normalizeLengthTruncatedModelResult(result core.ModelResult) (core.ModelResult, []core.ToolCall) {
@@ -900,6 +1025,7 @@ func modelStage(inputJSON string) string {
 func completionRecoveryHint(inputJSON string) string {
 	var input struct {
 		Reason             string `json:"completion_recovery_reason"`
+		DeliverableFormat  string `json:"completion_deliverable_format"`
 		RequiredCharacters int64  `json:"completion_required_characters"`
 		ActualCharacters   int64  `json:"completion_actual_characters"`
 	}
@@ -907,9 +1033,14 @@ func completionRecoveryHint(inputJSON string) string {
 		return ""
 	}
 	switch input.Reason {
+	case "ATTACHMENT_NOT_READ":
+		return "确定性完成检查未通过：本次任务包含尚未读取的二进制附件。请根据冻结的附件元数据调用 asset_stage(asset_id)，再使用返回的只读路径通过合适的脚本或命令解析真实内容；不得改查空的项目 Workspace，也不得在未读取附件时直接总结。"
 	case "WEB_EVIDENCE_MISSING":
 		return "确定性完成检查未通过：任务要求联网检索，但当前 Run 没有任何成功的 web_search 收据。不得用“无法联网”说明冒充交付；请继续调用 web_search 获取真实证据，或在受控恢复耗尽后请求用户决定。"
 	case "DELIVERABLE_MISSING":
+		if input.DeliverableFormat == "pdf" {
+			return "确定性完成检查未通过：任务要求 PDF，但当前 Run 没有新的、校验通过的 application/pdf Artifact。若脚本已经生成 PDF，不要重复转换；请先确认项目相对路径，再调用 artifact_capture(path, kind=deliverable) 登记现有文件。只有 %PDF- 签名、MIME、Hash 和大小校验全部通过后才能总结。"
+		}
 		return "确定性完成检查未通过：用户要求 Markdown/文档交付物，但当前 Run 与可追溯的续跑来源链中都没有最新交付 Artifact。请用 workspace_write_file 创建或 workspace_edit_file 更新真实内容，并验证文件存在，再给最终总结。"
 	case "DELIVERABLE_TOO_SHORT":
 		return fmt.Sprintf("确定性完成检查未通过：当前符合要求的单一主交付物为 %d 字，用户要求一份不少于 %d 字的完整报告。继续分段更新同一个主文件：保留稳定尾部锚点，读取最新 preimage_hash 后用 workspace_edit_file 将下一段正文插入锚点之前；过程分片的合计字数不计入主报告。达到要求、移除锚点并读取验证后才能总结。", input.ActualCharacters, input.RequiredCharacters)
@@ -1461,6 +1592,9 @@ func skillToolScope(plan map[string]any) ([]string, bool) {
 // advertised builtin-tool scope. This prevents the model from planning an
 // action that would inevitably be rejected only after an approval prompt.
 func applySceneToolPolicy(snapshot string, allowed []string, declared bool) ([]string, bool, map[string]any) {
+	if currentSnapshotSemantics(snapshot) {
+		return allowed, declared, map[string]any{"workspace_command": true, "filtered_tools": []string{}, "source": "execution_policy"}
+	}
 	if sceneAllowsWorkspaceCommand(snapshot) {
 		return allowed, declared, map[string]any{"workspace_command": true, "filtered_tools": []string{}}
 	}
@@ -1841,14 +1975,47 @@ func (w *Worker) executeWorkspaceTool(ctx context.Context, step core.ClaimedStep
 	if (input.Name == core.ToolWorkspaceRunCommand || input.Name == core.ToolWorkspaceShell) && !sceneAllowsWorkspaceCommand(run.ConfigSnapshotJSON) {
 		return core.StepOutcome{Status: core.StatusFailed, ErrorCode: "SCENE_POLICY_DENIED", ResultSummary: "当前 Work 场景不允许执行工作区命令，系统将保留已完成步骤并改用允许的工具重新规划。", Output: map[string]any{"retryable": true, "scene": "work", "recovery": "replan"}}
 	}
-	if w.workspace == nil {
+	if input.Name == core.ToolArtifactCapture && w.artifactCapture == nil {
+		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "ARTIFACT_CAPTURE_UNAVAILABLE", ResultSummary: "Artifact Capture is not configured.", Output: map[string]any{"retryable": false}}
+	}
+	if input.Name == core.ToolAssetStage && w.assetStager == nil {
+		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "ASSET_STAGER_UNAVAILABLE", ResultSummary: "Asset staging is not configured.", Output: map[string]any{"retryable": false}}
+	}
+	if input.Name != core.ToolArtifactCapture && input.Name != core.ToolAssetStage && w.workspace == nil {
 		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "WORKSPACE_EXECUTOR_UNAVAILABLE", ResultSummary: "The workspace executor is not configured.", Output: map[string]any{"retryable": false}}
 	}
 	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, input.Idempotent)
 	if err != nil {
 		return toolReceiptBeginFailure(err, "A previous non-idempotent execution has no final receipt; automatic retry was stopped.")
 	}
-	execution := w.workspace.Execute(ctx, run.ProjectID, call)
+	var execution core.ToolExecution
+	if input.Name == core.ToolArtifactCapture {
+		execution = w.captureArtifact(ctx, run.ProjectID, call, planned)
+	} else if input.Name == core.ToolAssetStage {
+		execution = w.stageAsset(ctx, run, call, planned)
+	} else {
+		execution = w.workspace.Execute(ctx, run.ProjectID, call)
+		if execution.Status == core.StatusSucceeded && (input.Name == core.ToolWorkspaceWriteFile || input.Name == core.ToolWorkspaceEditFile) {
+			path, _ := execution.Output["path"].(string)
+			if path == "" {
+				path, _ = input.Arguments["path"].(string)
+			}
+			kind := "deliverable"
+			if strings.HasPrefix(filepath.ToSlash(filepath.Clean(path)), ".research/") {
+				kind = "evidence"
+			}
+			captured := w.captureArtifact(ctx, run.ProjectID, core.ToolCall{ID: call.ID, Name: core.ToolArtifactCapture, Arguments: map[string]any{"path": path, "kind": kind}}, core.PlanTool(core.ToolCall{Name: core.ToolArtifactCapture, Arguments: map[string]any{"path": path, "kind": kind}}))
+			if captured.Status != core.StatusSucceeded {
+				execution.Status = core.StatusFailed
+				execution.ErrorCode = captured.ErrorCode
+				execution.Output["artifact_capture_error"] = captured.Output["reason"]
+			} else {
+				for key, value := range captured.Output {
+					execution.Output[key] = value
+				}
+			}
+		}
+	}
 	execution.InvocationID = invocationID
 	status := execution.Status
 	summary := "工具执行完成，并通过确定性校验。"
@@ -1859,7 +2026,88 @@ func (w *Worker) executeWorkspaceTool(ctx context.Context, step core.ClaimedStep
 	return core.StepOutcome{Status: status, ErrorCode: execution.ErrorCode, ResultSummary: summary, Output: execution.Output, ToolExecution: &execution}
 }
 
+type frozenAssetSnapshot struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	MediaType   string `json:"media_type"`
+	SizeBytes   int64  `json:"size_bytes"`
+	ContentHash string `json:"content_hash"`
+}
+
+func (w *Worker) stageAsset(ctx context.Context, run core.RunContext, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
+	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ErrorCode: "ASSET_STAGE_FAILED", ExitCode: -1, InputHash: planned.InputHash, Idempotent: true}
+	assetID, _ := call.Arguments["asset_id"].(string)
+	asset, ok := frozenAssetFromSnapshot(run.ConfigSnapshotJSON, assetID)
+	if !ok {
+		result.ErrorCode = "ASSET_NOT_FROZEN"
+		result.Output = map[string]any{"asset_id": assetID, "reason": "asset is not part of the immutable Run context"}
+		return result
+	}
+	scope := core.Scope{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}
+	live, reader, err := w.repository.OpenAssetContent(ctx, scope, assetID)
+	if err != nil {
+		result.Output = map[string]any{"asset_id": assetID, "reason": safeErrorSummary(err)}
+		return result
+	}
+	defer reader.Close()
+	if live.ProjectID != run.ProjectID || live.ContentHash != asset.ContentHash || live.SizeBytes != asset.SizeBytes || live.Name != asset.Name || live.MediaType != asset.MediaType {
+		result.ErrorCode = "ASSET_SNAPSHOT_MISMATCH"
+		result.Output = map[string]any{"asset_id": assetID, "reason": "asset metadata no longer matches the frozen Run snapshot"}
+		return result
+	}
+	staged, err := w.assetStager.StageAsset(ctx, run.ProjectID, run.RunID, asset.ID, asset.Name, reader, asset.SizeBytes, asset.ContentHash)
+	if err != nil {
+		result.Output = map[string]any{"asset_id": assetID, "reason": safeErrorSummary(err)}
+		return result
+	}
+	result.Status, result.ErrorCode, result.ExitCode = core.StatusSucceeded, "", 0
+	result.Output = map[string]any{"asset_id": asset.ID, "name": asset.Name, "path": staged.Path, "media_type": asset.MediaType, "content_hash": staged.ContentHash, "size_bytes": staged.SizeBytes, "read_only": true}
+	return result
+}
+
+func frozenAssetFromSnapshot(snapshot, assetID string) (frozenAssetSnapshot, bool) {
+	var config struct {
+		Assets []frozenAssetSnapshot `json:"context_asset_snapshots"`
+	}
+	if json.Unmarshal([]byte(snapshot), &config) != nil {
+		return frozenAssetSnapshot{}, false
+	}
+	for _, asset := range config.Assets {
+		if asset.ID == assetID {
+			return asset, true
+		}
+	}
+	return frozenAssetSnapshot{}, false
+}
+
+func (w *Worker) captureArtifact(ctx context.Context, projectID string, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
+	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ErrorCode: "ARTIFACT_CAPTURE_FAILED", ExitCode: -1, InputHash: planned.InputHash, Idempotent: true}
+	if w.artifactCapture == nil {
+		result.ErrorCode = "ARTIFACT_CAPTURE_UNAVAILABLE"
+		result.Output = map[string]any{"reason": "artifact capture is not configured"}
+		return result
+	}
+	path, _ := call.Arguments["path"].(string)
+	kind, _ := call.Arguments["kind"].(string)
+	captured, err := w.artifactCapture.Capture(ctx, projectID, path, kind)
+	if err != nil {
+		result.Output = map[string]any{"path": path, "kind": kind, "reason": safeErrorSummary(err)}
+		return result
+	}
+	result.Status = core.StatusSucceeded
+	result.ErrorCode = ""
+	result.ExitCode = 0
+	result.Output = map[string]any{
+		"path": captured.Path, "kind": captured.Kind, "media_type": captured.MediaType,
+		"content_hash": captured.ContentHash, "storage_key": captured.StorageKey, "size_bytes": captured.SizeBytes,
+	}
+	return result
+}
+
 func sceneAllowsWorkspaceCommand(snapshot string) bool {
+	if currentSnapshotSemantics(snapshot) {
+		return true
+	}
 	if core.FullAccessActive(snapshot, time.Now().UTC()) {
 		return true
 	}
@@ -1873,6 +2121,15 @@ func sceneAllowsWorkspaceCommand(snapshot string) bool {
 	}
 	allowed, ok := policy["workspace_command"].(bool)
 	return !ok || allowed
+}
+
+func currentSnapshotSemantics(snapshot string) bool {
+	var config map[string]any
+	if json.Unmarshal([]byte(snapshot), &config) != nil {
+		return false
+	}
+	version, ok := config["schema_version"].(float64)
+	return ok && version >= 2
 }
 
 func (w *Worker) executeSkillInvoke(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
@@ -2128,53 +2385,7 @@ func (w *Worker) heartbeat(ctx context.Context, step core.ClaimedStep, done chan
 }
 
 func prompts(run core.RunContext) (string, string) {
-	system := "# Identity\nYou are an autonomous agent operating inside an Oktapod project workspace. You complete the user's goal by using the available tools to read files, write files, run commands, search the web, and manage Git operations."
-	if run.Mode == core.ModeAnswer {
-		system = "# Identity\nYou are the question-answering agent in an Oktapod project. You answer the user's question accurately and concisely. Prefer looking up information with available tools over asking the user to provide it."
-	}
-	if run.Mode == core.ModeSingleAgent {
-		system += `
-
-# Available tools
-- workspace_read_file / workspace_list_files / workspace_find_files / workspace_grep: explore files
-- workspace_write_file / workspace_edit_file: create and modify files
-- workspace_run_command: run a single program (no shell)
-- workspace_shell: run shell commands with pipes, redirects, and chaining
-- workspace_extract_archive: extract ZIP archives
-- git_status / git_diff / git_log: inspect repository state
-- git_commit / git_branch: manage Git history (requires approval)
-- web_search: search the internet
-- update_plan: publish an execution plan
-- request_input: ask the user ONLY when genuinely stuck
-- request_permission: request capability escalation
-
-# How to work
-- Investigate before acting: read files, check state, understand context.
-- Be autonomous: choose sensible defaults for unspecified details (file names, paths, content). Do not pause to ask for things you can reasonably decide yourself.
-- When a tool fails: read the error, diagnose the root cause, fix it (edit scripts, install dependencies, correct paths), and retry. Do not give up after one failure.
-- Parallelize: call multiple independent tools in one response.
-- The first response that calls tools should briefly state the plan in one sentence; the system turns each tool call into an ordered step and updates status.
-- Internet search results must be summarized and cited; file edits must use the latest content hash to avoid overwriting external changes; Git changes and shell commands go through the deterministic policy and may require approval.
-
-# Reversibility
-Local, reversible actions (editing files, running tests) can be taken freely.
-Hard-to-reverse or destructive actions (deleting files, force-pushing, sending messages) require user confirmation.
-
-# Output
-Report outcomes faithfully. State what you did, what worked, what failed. Do not claim success without verification. Use file paths in results. For reports or deliverables, generate real files with file tools and list file paths in the final summary.
-`
-	}
-	if goruntime.GOOS == "windows" {
-		system += "\n\n# Host platform\nThe workspace host is Windows. workspace_shell runs through cmd.exe /c: use Windows commands such as `where`, and do not emit POSIX-only commands such as `which`, `/dev/null`, `bash`, or `sh`."
-	} else {
-		system += "\n\n# Host platform\nThe workspace host is " + goruntime.GOOS + ". workspace_shell runs through bash -c; use commands supported by this platform."
-	}
-	parts := []string{"目标：" + run.Goal}
-	if strings.TrimSpace(run.Acceptance) != "" {
-		parts = append(parts, "验收标准："+run.Acceptance)
-	}
-	parts = append(parts, "请输出用户可直接阅读的最终结果。")
-	return system, strings.Join(parts, "\n\n")
+	return (PromptAssembler{}).Base(run)
 }
 
 func continuationHistoryForPrompt(inputJSON string) []map[string]any {
@@ -2215,7 +2426,7 @@ func steeringInstructionForPrompt(inputJSON string) string {
 // normal task into an unbounded prompt or silently broaden project scope.
 func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (string, map[string]any) {
 	var config map[string]any
-	plan := map[string]any{"requested_assets": 0, "loaded_assets": 0, "requested_memories": 0, "loaded_memories": 0, "bytes_loaded": 0, "estimated_tokens": 0, "skipped": 0}
+	plan := map[string]any{"requested_assets": 0, "metadata_assets": 0, "loaded_assets": 0, "requested_memories": 0, "loaded_memories": 0, "bytes_loaded": 0, "estimated_tokens": 0, "skipped": 0}
 	if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &config) != nil {
 		return "", plan
 	}
@@ -2231,13 +2442,32 @@ func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (str
 	sections := make([]string, 0, len(assetIDs)+len(memoryIDs))
 	scope := core.Scope{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}
 	for _, assetID := range assetIDs {
+		frozen, frozenOK := frozenAssetFromSnapshot(run.ConfigSnapshotJSON, assetID)
+		if frozenOK {
+			metadata := fmt.Sprintf("[附件元数据] asset_id=%s | name=%s | media_type=%s | size_bytes=%d | content_hash=%s\n完整内容未内联时，调用 asset_stage(asset_id) 获取只读临时路径后再交给脚本处理。", frozen.ID, frozen.Name, frozen.MediaType, frozen.SizeBytes, frozen.ContentHash)
+			if len(metadata) <= remaining {
+				sections = append(sections, metadata)
+				remaining -= len(metadata)
+				plan["metadata_assets"] = plan["metadata_assets"].(int) + 1
+				plan["bytes_loaded"] = plan["bytes_loaded"].(int) + len(metadata)
+			}
+		}
 		if remaining <= 0 {
 			plan["skipped"] = plan["skipped"].(int) + 1
 			continue
 		}
 		asset, reader, err := w.repository.OpenAssetContent(ctx, scope, assetID)
-		if err != nil || asset.ProjectID != run.ProjectID || !isTextAsset(asset.MediaType, asset.Name) {
+		if err != nil || asset.ProjectID != run.ProjectID {
 			plan["skipped"] = plan["skipped"].(int) + 1
+			continue
+		}
+		if frozenOK && (asset.ContentHash != frozen.ContentHash || asset.SizeBytes != frozen.SizeBytes || asset.Name != frozen.Name || asset.MediaType != frozen.MediaType) {
+			_ = reader.Close()
+			plan["skipped"] = plan["skipped"].(int) + 1
+			continue
+		}
+		if !isTextAsset(asset.MediaType, asset.Name) {
+			_ = reader.Close()
 			continue
 		}
 		data, readErr := io.ReadAll(io.LimitReader(reader, int64(remaining)+1))

@@ -31,6 +31,13 @@ describe('task progress presentation', () => {
     })
   })
 
+  it('does not present a failed task as successful when a legacy tool summary contradicts the terminal state', () => {
+    const failure = taskFailureInfo({ error_code: 'TOOL_EXECUTION_FAILED', result_summary: '工具执行完成，并通过确定性校验。' })
+    expect(failure).toMatchObject({ title: '任务已停止', retryable: false })
+    expect(failure?.detail).toContain('任务整体终态为失败')
+    expect(failure?.detail).not.toContain('工具执行完成')
+  })
+
   it('offers checkpoint replanning for a scene-policy mismatch', () => {
     const failure = taskFailureInfo({ error_code: 'SCENE_POLICY_DENIED', result_summary: '' })
     expect(failure).toMatchObject({

@@ -49,6 +49,11 @@ export interface AuthenticatedUser {
 
 export interface ModelDescriptor {
   id: string
+  provider_id?: string
+  provider_name?: string
+  source?: 'catalog' | 'manual'
+  stale?: boolean
+  default?: boolean
   tool_calling?: boolean
   vision?: boolean
   structured_output?: boolean
@@ -84,6 +89,21 @@ export interface ProviderModelCatalogEntry {
   last_error?: string
 }
 
+export interface ProviderModelOption {
+  provider_id: string
+  model_id: string
+  source: 'catalog' | 'manual'
+  enabled: boolean
+  default: boolean
+  capabilities: Record<string, unknown>
+  context_window: number
+  max_output: number
+  fetched_at: string
+  expires_at: string
+  catalog_version: string
+  stale: boolean
+}
+
 export interface ProviderTestResult {
   provider_id: string
   stage: string
@@ -104,6 +124,8 @@ export interface Diagnostics {
   sse: { active_connections: number }
   logs: { available: boolean; redacted: boolean; detail: string }
   maintenance: { backup_endpoint_available: boolean; restore_endpoint_available: boolean; detail: string }
+  storage?: { data_root: string; workspace_root: string }
+  auto_review: { configured: boolean; available: boolean; reason: string }
 }
 
 export interface Project {
@@ -113,6 +135,7 @@ export interface Project {
   description?: string
   kind: ProjectKind
   scene: Scene
+  model_provider_id: string
   default_model: string
   fallback_model: string
   max_model_calls: number
@@ -326,6 +349,11 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   visibility: Visibility
   content: string
+  presentation: {
+    attachments?: Array<{ id: string; name: string; media_type: string; size_bytes: number; content_hash: string }>
+    skill?: { id: string; name: string; version: string; command: string; args: string }
+    queue_kind?: 'follow_up' | 'steering'
+  }
   created_at: string
 }
 
@@ -604,6 +632,20 @@ export interface RunPlanItem {
   updated_at: string
 }
 
+export interface WorkspaceFile {
+  path: string
+  kind: 'file' | 'directory' | 'symlink'
+  size_bytes: number
+  modified_at: string
+  git_status: string
+}
+
+export interface WorkspaceFilePage {
+  items: WorkspaceFile[]
+  has_more: boolean
+  next_cursor: number
+}
+
 export interface MCPDefinitionV1 {
   schema_version: 'oktapod.mcp/v1'
   source: { type: 'official' | 'registry' | 'npm' | 'pypi' | 'url' | 'local' | 'manual'; reference?: string; version?: string; publisher?: string }
@@ -854,17 +896,37 @@ export const api = {
     request<ProviderInstance>(providerId ? `/providers/${providerId}` : '/providers', { method: providerId ? 'PUT' : 'POST', body: JSON.stringify(input) }),
   deleteProvider: (providerId: string) => request<void>(`/providers/${providerId}`, { method: 'DELETE' }),
   testProvider: (providerId: string) => request<ProviderTestResult>(`/providers/${providerId}/test`, { method: 'POST' }),
-  providerModels: (providerId: string) => request<{ items: ProviderModelCatalogEntry[] }>(`/providers/${providerId}/models`),
+  providerModels: (providerId: string) => request<{ items: ProviderModelOption[] }>(`/providers/${providerId}/models`),
+  refreshProviderModels: (providerId: string) => request<{ items: ProviderModelOption[] }>(`/providers/${providerId}/models/refresh`, { method: 'POST' }),
+  saveProviderModels: (providerId: string, input: { model_ids: string[]; default_model_id: string; activate?: boolean }) => request<{ items: ProviderModelOption[] }>(`/providers/${providerId}/models`, { method: 'PUT', body: JSON.stringify(input) }),
   projects: () => request<{ items: Project[] }>('/projects'),
-  createProject: (input: { name: string; description: string; kind: ProjectKind; scene: Scene; default_model?: string; fallback_model?: string }) =>
+  createProject: (input: { name: string; description: string; kind: ProjectKind; scene: Scene; model_provider_id?: string; default_model?: string; fallback_model?: string }) =>
     request<Project>('/projects', {
       method: 'POST',
       headers: { 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify(input),
     }),
   project: (projectId: string) => request<Project>(`/projects/${projectId}`),
+  workspaceFiles: (projectId: string, cursor = 0, limit = 200) => request<WorkspaceFilePage>(`/projects/${projectId}/workspace/files?cursor=${cursor}&limit=${limit}`),
+  workspaceContentUrl: (projectId: string, path: string) => `/api/v1/projects/${projectId}/workspace/files/content?path=${encodeURIComponent(path)}`,
+  captureWorkspaceArtifact: (projectId: string, input: { run_id: string; path: string; kind: 'deliverable' | 'evidence' }) =>
+    request<Artifact>(`/projects/${projectId}/artifacts`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify(input),
+    }),
+  projectArtifacts: (projectId: string, options: { runId?: string; conversationId?: string; kind?: string; query?: string; limit?: number; includeHistory?: boolean } = {}) => {
+    const params = new URLSearchParams()
+    if (options.runId) params.set('run_id', options.runId)
+    if (options.conversationId) params.set('conversation_id', options.conversationId)
+    if (options.kind) params.set('kind', options.kind)
+    if (options.query) params.set('q', options.query)
+    if (options.includeHistory) params.set('include_history', 'true')
+    params.set('limit', String(options.limit ?? 200))
+    return request<{ items: Artifact[] }>(`/projects/${projectId}/artifacts?${params.toString()}`)
+  },
   projectUsage: (projectId: string, since?: string) => request<ProjectUsage>(`/projects/${projectId}/usage${since ? `?since=${encodeURIComponent(since)}` : ''}`),
-  updateProjectSettings: (projectId: string, input: { default_model?: string; fallback_model?: string; max_model_calls?: number; max_tokens?: number }) =>
+  updateProjectSettings: (projectId: string, input: { model_provider_id?: string; default_model?: string; fallback_model?: string; max_model_calls?: number; max_tokens?: number }) =>
     request<Project>(`/projects/${projectId}`, { method: 'PATCH', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   projectMembers: (projectId: string) => request<{ items: ProjectMember[] }>(`/projects/${projectId}/members`),
   projectInvitations: (projectId: string) => request<{ items: ProjectInvitation[] }>(`/projects/${projectId}/invitations`),
@@ -998,6 +1060,35 @@ export const api = {
     body.append('file', file, file.name)
     return request<Asset>(`/projects/${projectId}/assets`, { method: 'POST', body })
   },
+  uploadAssetWithProgress: (projectId: string, file: File, visibility: Visibility, onProgress: (percent: number) => void, parentId?: string) => new Promise<Asset>((resolve, reject) => {
+    const body = new FormData()
+    body.append('visibility', visibility)
+    if (parentId) body.append('parent_id', parentId)
+    body.append('file', file, file.name)
+    const csrf = document.cookie.split('; ').find((item) => item.startsWith('oktapod_csrf='))?.slice('oktapod_csrf='.length)
+    const request = new XMLHttpRequest()
+    request.open('POST', `/api/v1/projects/${projectId}/assets`)
+    request.withCredentials = true
+    request.setRequestHeader('Accept', 'application/json')
+    if (csrf) request.setRequestHeader('X-CSRF-Token', decodeURIComponent(csrf))
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)))
+    })
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(100)
+        resolve(JSON.parse(request.responseText) as Asset)
+        return
+      }
+      try {
+        reject(new ApiProblem(JSON.parse(request.responseText) as ProblemDetails))
+      } catch {
+        reject(new Error(`附件上传失败：HTTP ${request.status}`))
+      }
+    })
+    request.addEventListener('error', () => reject(new Error('附件上传失败：网络连接中断')))
+    request.send(body)
+  }),
   assetContentUrl: (assetId: string) => `/api/v1/assets/${assetId}/content`,
   assetPreviewUrl: (assetId: string) => `/api/v1/assets/${assetId}/preview`,
   artifactContentUrl: (artifactId: string) => `/api/v1/artifacts/${artifactId}/content`,
@@ -1007,8 +1098,8 @@ export const api = {
     if (!response.ok) throw new Error(`Failed to load artifact: ${response.status}`)
     return response.text()
   },
-  publishArtifact: (artifactId: string, input: { name: string; parent_id?: string; visibility: Visibility }) =>
-    request<Asset>(`/artifacts/${artifactId}/publish`, {
+  saveArtifactAsProjectFile: (artifactId: string, input: { name: string; parent_id?: string; visibility: Visibility }) =>
+    request<Asset>(`/artifacts/${artifactId}/project-files`, {
       method: 'POST',
       headers: { 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify(input),

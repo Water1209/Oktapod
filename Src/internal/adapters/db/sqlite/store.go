@@ -46,6 +46,17 @@ type Store struct {
 	identityMu       sync.Mutex
 }
 
+// Put and Open expose only the immutable BlobStore port used during adapter
+// composition. Workspace path resolution remains owned by the Workspace
+// adapter; SQLite never receives or reads an arbitrary workspace path.
+func (s *Store) Put(ctx context.Context, content io.Reader, mediaType string, maxBytes int64) (application.BlobDescriptor, error) {
+	return s.blobStore.Put(ctx, content, mediaType, maxBytes)
+}
+
+func (s *Store) Open(ctx context.Context, storageKey string, expectedSize int64) (io.ReadCloser, error) {
+	return s.blobStore.Open(ctx, storageKey, expectedSize)
+}
+
 func Open(ctx context.Context, databasePath, workspaceRoot string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create data root: %w", err)
@@ -373,6 +384,9 @@ func (s *Store) CreateProject(ctx context.Context, scope core.Scope, input core.
 	if err != nil {
 		return core.Project{}, fmt.Errorf("create project: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET model_provider_id = ? WHERE id = ? AND organization_id = ?`, input.ModelProviderID, projectID, scope.OrganizationID); err != nil {
+		return core.Project{}, fmt.Errorf("save project model provider: %w", err)
+	}
 	if err := q.CreateWorkspace(ctx, sqlitegen.CreateWorkspaceParams{ProjectID: projectID, WorkspaceKey: projectID, RelativePath: relativePath, CreatedAt: now}); err != nil {
 		return core.Project{}, fmt.Errorf("create workspace record: %w", err)
 	}
@@ -454,7 +468,7 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, scope core.Scope, pro
 		return core.Project{}, err
 	}
 	now := formatTime(time.Now())
-	if _, err := tx.ExecContext(ctx, `UPDATE projects SET default_model = ?, fallback_model = ?, updated_at = ? WHERE id = ? AND organization_id = ?`, *input.DefaultModel, *input.FallbackModel, now, projectID, scope.OrganizationID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET model_provider_id = ?, default_model = ?, fallback_model = ?, updated_at = ? WHERE id = ? AND organization_id = ?`, *input.ModelProviderID, *input.DefaultModel, *input.FallbackModel, now, projectID, scope.OrganizationID); err != nil {
 		return core.Project{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -477,6 +491,7 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, scope core.Scope, pro
 		return core.Project{}, err
 	}
 	project.MaxModelCalls, project.MaxTokens = *input.MaxModelCalls, *input.MaxTokens
+	project.ModelProviderID = *input.ModelProviderID
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'project.settings_updated', 'project', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, projectID, fmt.Sprintf(`{"default_model":%q,"fallback_model":%q,"max_model_calls":%d,"max_tokens":%d}`, project.DefaultModel, project.FallbackModel, project.MaxModelCalls, project.MaxTokens), auditID, now); err != nil {
 		return core.Project{}, err
 	}
@@ -877,31 +892,48 @@ func (s *Store) deleteConversationTx(ctx context.Context, scope core.Scope, conv
 }
 
 func (s *Store) ListMessages(ctx context.Context, scope core.Scope, conversationID string, after int64, limit int) ([]core.Message, error) {
-	rows, err := s.queries.ListMessagesForUser(ctx, sqlitegen.ListMessagesForUserParams{
-		ConversationID: conversationID,
-		OrganizationID: scope.OrganizationID,
-		UserID:         scope.UserID,
-		OwnerUserID:    scope.UserID,
-		ServerSeq:      after,
-		Limit:          int64(limit),
-	})
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT msg.id, msg.organization_id, msg.project_id, msg.conversation_id,
+		       msg.owner_user_id, msg.task_id, msg.server_seq, msg.role,
+		       msg.visibility, msg.content, msg.created_at,
+		       COALESCE(mp.presentation_json, '{}')
+		FROM messages msg
+		JOIN conversations c ON c.id = msg.conversation_id
+		JOIN memberships m ON m.organization_id = msg.organization_id
+		JOIN project_memberships pm ON pm.project_id = msg.project_id AND pm.user_id = m.user_id
+		LEFT JOIN message_presentations mp ON mp.message_id = msg.id
+		WHERE msg.conversation_id = ? AND msg.organization_id = ?
+		  AND m.user_id = ? AND m.status = 'active' AND pm.status = 'active'
+		  AND (msg.visibility = 'project' OR msg.owner_user_id = ?)
+		  AND msg.server_seq > ?
+		ORDER BY msg.server_seq ASC
+		LIMIT ?`, conversationID, scope.OrganizationID, scope.UserID, scope.UserID, after, limit)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]core.Message, 0, len(rows))
-	for _, row := range rows {
-		createdAt, parseErr := parseTime(row.CreatedAt)
+	defer rows.Close()
+	items := make([]core.Message, 0)
+	for rows.Next() {
+		var item core.Message
+		var createdAtText, presentationJSON string
+		if err := rows.Scan(
+			&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID,
+			&item.OwnerUserID, &item.TaskID, &item.ServerSeq, &item.Role,
+			&item.Visibility, &item.Content, &createdAtText, &presentationJSON,
+		); err != nil {
+			return nil, err
+		}
+		createdAt, parseErr := parseTime(createdAtText)
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		items = append(items, core.Message{
-			ID: row.ID, OrganizationID: row.OrganizationID, ProjectID: row.ProjectID,
-			ConversationID: row.ConversationID, OwnerUserID: row.OwnerUserID, TaskID: row.TaskID,
-			ServerSeq: row.ServerSeq, Role: row.Role, Visibility: row.Visibility,
-			Content: row.Content, CreatedAt: createdAt,
-		})
+		item.CreatedAt = createdAt
+		if err := json.Unmarshal([]byte(presentationJSON), &item.Presentation); err != nil {
+			return nil, fmt.Errorf("decode message presentation %s: %w", item.ID, err)
+		}
+		items = append(items, item)
 	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (s *Store) ListSessionEntries(ctx context.Context, scope core.Scope, conversationID string, afterEntrySeq int64, limit int) (core.SessionTreePage, error) {
@@ -2805,9 +2837,12 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 			return core.Task{}, err
 		}
 	}
-	messageID, err := newID()
-	if err != nil {
-		return core.Task{}, err
+	messageID := strings.TrimSpace(input.ExistingUserMessageID)
+	if messageID == "" {
+		messageID, err = newID()
+		if err != nil {
+			return core.Task{}, err
+		}
 	}
 	planItemID, err := newID()
 	if err != nil {
@@ -2872,19 +2907,41 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 			return core.Task{}, &core.ForbiddenError{Message: "conversation scope does not match task visibility"}
 		}
 	}
-	if _, _, err := s.appendSessionMessageTx(ctx, tx, q, sessionMessageInput{
-		MessageID:      messageID,
-		OrganizationID: scope.OrganizationID,
-		ProjectID:      projectID,
-		ConversationID: conversationID,
-		OwnerUserID:    scope.UserID,
-		TaskID:         taskID,
-		Role:           "user",
-		Visibility:     input.Visibility,
-		Content:        input.Goal,
-		Now:            now,
-	}); err != nil {
-		return core.Task{}, fmt.Errorf("append task user message: %w", err)
+	if input.ExistingUserMessageID != "" {
+		result, updateErr := tx.ExecContext(ctx, `
+			UPDATE messages SET task_id = ?
+			WHERE id = ? AND organization_id = ? AND project_id = ?
+			  AND conversation_id = ? AND owner_user_id = ? AND role = 'user'`,
+			taskID, messageID, scope.OrganizationID, projectID, conversationID, scope.UserID)
+		if updateErr != nil {
+			return core.Task{}, fmt.Errorf("bind queued user message: %w", updateErr)
+		}
+		if changed, changedErr := result.RowsAffected(); changedErr != nil || changed != 1 {
+			if changedErr != nil {
+				return core.Task{}, changedErr
+			}
+			return core.Task{}, &core.StateConflictError{Status: "message_unavailable", Command: "bind queued task"}
+		}
+	} else {
+		userContent := strings.TrimSpace(input.UserMessageContent)
+		if userContent == "" {
+			userContent = input.Goal
+		}
+		if _, _, err := s.appendSessionMessageTx(ctx, tx, q, sessionMessageInput{
+			MessageID:      messageID,
+			OrganizationID: scope.OrganizationID,
+			ProjectID:      projectID,
+			ConversationID: conversationID,
+			OwnerUserID:    scope.UserID,
+			TaskID:         taskID,
+			Role:           "user",
+			Visibility:     input.Visibility,
+			Content:        userContent,
+			Presentation:   input.MessagePresentation,
+			Now:            now,
+		}); err != nil {
+			return core.Task{}, fmt.Errorf("append task user message: %w", err)
+		}
 	}
 	row, err := q.CreateTask(ctx, sqlitegen.CreateTaskParams{
 		ID:             taskID,
@@ -3620,7 +3677,135 @@ func (s *Store) recoverCompletedToolBatchWithoutRunnableStep(ctx context.Context
 	return true, nil
 }
 
-// retryPlanControlFailure recovers older task-level plan failures whose model
+// recoverFailedSequentialToolBatch heals runs wedged by a sequential tool
+// batch whose failure left later items permanently queued: ClaimNextStep
+// refuses to dispatch further items of a failed sequential batch, while the
+// failure path deferred recovery until the batch turned terminal. Older builds
+// could therefore leave a Run marked running with no claimable step.
+func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.Time) (bool, error) {
+	var runID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT r.id
+		FROM runs r
+		JOIN tool_batches batch ON batch.run_id = r.id
+		WHERE r.status IN ('queued', 'running')
+		  AND batch.status IN ('planned', 'running')
+		  AND batch.execution_mode <> 'parallel'
+		  AND batch.continuation_claimed = 0
+		  AND EXISTS (
+		      SELECT 1 FROM steps batch_step
+		      WHERE batch_step.tool_batch_id = batch.id
+		        AND batch_step.status IN ('failed', 'blocked')
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM steps batch_step
+		      WHERE batch_step.tool_batch_id = batch.id
+		        AND batch_step.status IN ('queued', 'waiting_approval')
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM steps active
+		      WHERE active.run_id = r.id
+		        AND active.status IN ('running', 'waiting_input', 'paused')
+		  )
+		ORDER BY r.updated_at, r.id
+		LIMIT 1`).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.queries.WithTx(tx)
+	correlationID, err := newID()
+	if err != nil {
+		return false, err
+	}
+	nowText := formatTime(now)
+	var sourceStepID, sourceInput, sourceError, sourceOwner string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, input_json, error_code, owner_id
+		FROM steps
+		WHERE run_id = ? AND status IN ('failed', 'blocked')
+		  AND tool_batch_id IN (
+		      SELECT batch.id FROM tool_batches batch
+		      WHERE batch.run_id = ? AND batch.status IN ('planned', 'running')
+		        AND batch.execution_mode <> 'parallel' AND batch.continuation_claimed = 0
+		  )
+		ORDER BY position LIMIT 1`, runID, runID).Scan(&sourceStepID, &sourceInput, &sourceError, &sourceOwner); err != nil {
+		return false, err
+	}
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return false, err
+	}
+	sourceStep := core.ClaimedStep{ID: sourceStepID, RunID: runID, InputJSON: sourceInput, OwnerID: sourceOwner}
+	// completeToolBatchState cancels the not-yet-started sequential remainder,
+	// closes the batch, and claims its continuation exactly once.
+	ready, claimed, batchID, err := s.completeToolBatchState(ctx, tx, q, sourceStep, run, nowText, correlationID)
+	if err != nil {
+		return false, err
+	}
+	if !ready || !claimed {
+		return false, nil
+	}
+	taskStatus, taskSummary, taskErrorCode := core.StatusRunning, "", ""
+	if isRecoverableToolExecutionFailure(sourceError) {
+		recoveryStepID, recoveryCount, recoveryCallID, queued, recoveryErr := s.queueToolFailureRecovery(ctx, tx, q, sourceStep, run, sourceError, nowText, correlationID)
+		if recoveryErr != nil {
+			return false, recoveryErr
+		}
+		if queued {
+			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.recovery_queued", ActorType: "system", ActorID: "runtime", CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": recoveryStepID, "source_step_id": sourceStepID, "tool_call_id": recoveryCallID, "retry_count": recoveryCount, "max_retries": core.DefaultToolRetryLimit, "error_code": sourceError}}); err != nil {
+				return false, err
+			}
+		} else {
+			synthesized, synthErr := s.queueWebSearchSynthesis(ctx, tx, q, sourceStep, run, nowText, correlationID)
+			if synthErr != nil {
+				return false, synthErr
+			}
+			if !synthesized {
+				if actionErr := s.createToolRecoveryHumanAction(ctx, tx, q, sourceStep, run, sourceError, nowText, correlationID); actionErr != nil {
+					return false, actionErr
+				}
+				taskStatus, taskSummary = core.StatusWaitingInput, "自动恢复已用尽，需要你选择下一步。"
+			}
+		}
+	} else {
+		taskStatus, taskSummary, taskErrorCode = core.StatusFailed, "顺序工具批次中的步骤失败且不可自动恢复，剩余动作已取消。", sourceError
+	}
+	if err := s.syncRunPlanState(ctx, tx, q, run, taskStatus, taskSummary, nowText, correlationID); err != nil {
+		return false, err
+	}
+	if err := q.UpdateTaskResult(ctx, sqlitegen.UpdateTaskResultParams{Status: taskStatus, ResultSummary: taskSummary, ErrorCode: taskErrorCode, UpdatedAt: nowText, ID: run.TaskID}); err != nil {
+		return false, err
+	}
+	if err := q.UpdateRunStatus(ctx, sqlitegen.UpdateRunStatusParams{Status: taskStatus, UpdatedAt: nowText, ID: runID}); err != nil {
+		return false, err
+	}
+	if taskStatus == core.StatusFailed {
+		if err := s.appendConversationMessage(ctx, tx, q, run, "assistant", taskSummary+"（错误代码："+taskErrorCode+"）", nowText); err != nil {
+			return false, err
+		}
+	}
+	if err := s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: runID,
+		EventType: "tool.batch_recovered", ActorType: "system", ActorID: "runtime",
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{"batch_id": batchID, "reason": "failed_sequential_batch_with_queued_remainder"},
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+} // retryPlanControlFailure recovers older task-level plan failures whose model
 // step was persisted as succeeded before the plan update was rejected. Those
 // runs have no failed Step frontier, but the active plan plus continuation
 // history is still a valid durable checkpoint.
@@ -4090,6 +4275,41 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 	if err != nil {
 		return err
 	}
+	if action.Kind == core.HumanActionBudgetRequest && input.Decision == core.ApprovalRejected {
+		if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = 'canceled', error_code = 'USER_STOPPED_AT_BUDGET', updated_at = ? WHERE run_id = ? AND status IN ('queued', 'running', 'waiting_approval', 'waiting_input')`, now, action.RunID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'canceled', completed_at = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'canceled')`, now, now, action.RunID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'canceled', error_code = 'USER_STOPPED_AT_BUDGET', result_summary = '用户选择不再扩展预算；已保留现有文件、凭证和执行轨迹。', updated_at = ? WHERE id = ?`, now, action.TaskID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'canceled', updated_at = ? WHERE id = ?`, now, action.RunID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE conversation_message_queue SET status = 'canceled' WHERE active_task_id = ? AND status = 'pending'`, action.TaskID); err != nil {
+			return err
+		}
+		q := s.queries.WithTx(tx)
+		if err := s.appendEvent(ctx, q, eventInput{
+			OrganizationID: action.OrganizationID, ProjectID: action.ProjectID, RunID: action.RunID,
+			EventType: "human_action.resolved", ActorType: "user", ActorID: scope.UserID,
+			CorrelationID: correlationID, Visibility: run.Visibility,
+			Payload: map[string]any{"human_action_id": action.ID, "kind": action.Kind, "status": actionStatus, "decision": input.Decision, "resume": false},
+		}); err != nil {
+			return err
+		}
+		if err := s.appendEvent(ctx, q, eventInput{
+			OrganizationID: action.OrganizationID, ProjectID: action.ProjectID, RunID: action.RunID,
+			EventType: "run.canceled", ActorType: "user", ActorID: scope.UserID,
+			CorrelationID: correlationID, Visibility: run.Visibility,
+			Payload: map[string]any{"task_id": action.TaskID, "reason": "budget_extension_declined", "human_action_id": action.ID},
+		}); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	if action.Kind == core.HumanActionPermissionEscalation && input.Decision == core.ApprovalApproved {
 		var snapshot map[string]any
 		if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot) != nil {
@@ -4109,12 +4329,34 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 		run.ConfigSnapshotJSON = string(encoded)
 	}
 	if action.Kind == core.HumanActionBudgetRequest && input.Decision == core.ApprovalApproved {
-		maxCalls, _ := numericToolValue(action.Request["proposed_max_model_calls"])
-		maxTokens, _ := numericToolValue(action.Request["proposed_max_tokens"])
-		if maxCalls < 1 || maxTokens < 1 {
+		choice, _ := input.Answer.(string)
+		choice = strings.ToLower(strings.TrimSpace(choice))
+		maxCalls, _ := numericToolValue(action.Request["recommended_max_model_calls"])
+		maxTokens, _ := numericToolValue(action.Request["recommended_max_tokens"])
+		if maxCalls == 0 {
+			maxCalls, _ = numericToolValue(action.Request["proposed_max_model_calls"])
+		}
+		if maxTokens == 0 {
+			maxTokens, _ = numericToolValue(action.Request["proposed_max_tokens"])
+		}
+		switch choice {
+		case "finish_existing":
+			maxCalls, _ = numericToolValue(action.Request["finish_max_model_calls"])
+			maxTokens, _ = numericToolValue(action.Request["finish_max_tokens"])
+		case "unlimited":
+			maxCalls, maxTokens = 0, 0
+		case "", "recommended":
+		default:
+			return &core.ValidationError{Field: "answer", Message: "budget decision must be recommended, finish_existing, or unlimited"}
+		}
+		if maxCalls < 0 || maxTokens < 0 || (choice != "unlimited" && (maxCalls < 1 || maxTokens < 1)) {
 			return &core.ValidationError{Field: "answer", Message: "budget request has invalid proposed limits"}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE run_budgets SET max_model_calls = ?, max_tokens = ?, status = 'approved_exception', updated_at = ? WHERE run_id = ?`, maxCalls, maxTokens, now, action.RunID); err != nil {
+		budgetStatus := "approved_exception"
+		if choice == "unlimited" {
+			budgetStatus = "unlimited_exception"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE run_budgets SET max_model_calls = ?, max_tokens = ?, status = ?, updated_at = ? WHERE run_id = ?`, maxCalls, maxTokens, budgetStatus, now, action.RunID); err != nil {
 			return err
 		}
 	}
@@ -4142,6 +4384,12 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 	resumeStage := "human_action_resume"
 	if action.Kind == core.HumanActionPermissionEscalation && input.Decision == core.ApprovalApproved {
 		resumeStage = "permission_replan"
+	} else if action.Kind == core.HumanActionBudgetRequest && input.Decision == core.ApprovalApproved {
+		if choice, _ := input.Answer.(string); strings.EqualFold(strings.TrimSpace(choice), "finish_existing") {
+			resumeStage = "budget_finish"
+		} else {
+			resumeStage = "budget_resume"
+		}
 	}
 	resumeInput := map[string]any{
 		"stage": resumeStage, "human_action_id": action.ID,
@@ -4886,6 +5134,221 @@ func (s *Store) ListRunArtifacts(ctx context.Context, scope core.Scope, runID st
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, nil
+}
+
+func (s *Store) ListProjectArtifacts(ctx context.Context, scope core.Scope, projectID string, query application.ProjectArtifactQuery) ([]core.Artifact, error) {
+	statement := strings.Builder{}
+	statement.WriteString(`
+		WITH visible_artifacts AS (
+			SELECT a.id, a.project_id, a.task_id, a.run_id, a.step_id, a.name, a.kind,
+			       a.media_type, a.content_hash, a.size_bytes, a.visibility, a.source_type, a.created_at,
+			       ROW_NUMBER() OVER (PARTITION BY a.name, a.kind ORDER BY a.created_at DESC, a.id DESC) AS version_rank
+			FROM artifacts a
+			JOIN tasks t ON t.id = a.task_id
+			JOIN memberships m ON m.organization_id = a.organization_id
+			JOIN project_memberships pm ON pm.project_id = a.project_id AND pm.user_id = m.user_id
+			WHERE a.project_id = ? AND a.organization_id = ? AND m.user_id = ?
+			  AND m.status = 'active' AND pm.status = 'active'
+			  AND (a.visibility = 'project' OR t.owner_user_id = ?)`)
+	arguments := []any{projectID, scope.OrganizationID, scope.UserID, scope.UserID}
+	if query.RunID != "" {
+		statement.WriteString(" AND a.run_id = ?")
+		arguments = append(arguments, query.RunID)
+	}
+	if query.ConversationID != "" {
+		statement.WriteString(" AND t.conversation_id = ?")
+		arguments = append(arguments, query.ConversationID)
+	}
+	if query.Kind != "" {
+		statement.WriteString(" AND a.kind = ?")
+		arguments = append(arguments, query.Kind)
+	}
+	if query.Search != "" {
+		statement.WriteString(" AND LOWER(a.name) LIKE LOWER(?)")
+		arguments = append(arguments, "%"+query.Search+"%")
+	}
+	statement.WriteString(`
+		)
+		SELECT id, project_id, task_id, run_id, step_id, name, kind, media_type,
+		       content_hash, size_bytes, visibility, source_type, created_at
+		FROM visible_artifacts`)
+	if !query.IncludeHistory {
+		statement.WriteString(" WHERE version_rank = 1")
+	}
+	statement.WriteString(" ORDER BY created_at DESC, id DESC LIMIT ?")
+	arguments = append(arguments, query.Limit)
+	rows, err := s.db.QueryContext(ctx, statement.String(), arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	artifacts := make([]core.Artifact, 0, query.Limit)
+	for rows.Next() {
+		var artifact core.Artifact
+		var createdAt string
+		if err := rows.Scan(&artifact.ID, &artifact.ProjectID, &artifact.TaskID, &artifact.RunID, &artifact.StepID, &artifact.Name, &artifact.Kind, &artifact.MediaType, &artifact.ContentHash, &artifact.SizeBytes, &artifact.Visibility, &artifact.SourceType, &createdAt); err != nil {
+			return nil, err
+		}
+		artifact.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return artifacts, nil
+}
+
+func (s *Store) RegisterWorkspaceArtifact(ctx context.Context, scope core.Scope, projectID, runID string, capture application.ArtifactCaptureResult, correlationID string, idempotency core.Idempotency) (core.Artifact, error) {
+	route := "POST /projects/" + projectID + "/artifacts"
+	if idempotency.Key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		var replay core.Artifact
+		found, err := replayIdempotency(ctx, s.db, scope, route, idempotency, &replay)
+		if err != nil || found {
+			return replay, err
+		}
+	}
+	cleanPath := filepath.ToSlash(filepath.Clean(strings.TrimSpace(capture.Path)))
+	digest := strings.TrimPrefix(strings.TrimSpace(capture.ContentHash), "sha256:")
+	_, digestErr := hex.DecodeString(digest)
+	if cleanPath == "." || application.MaxArtifactCaptureBytes < capture.SizeBytes || capture.SizeBytes < 0 ||
+		strings.TrimSpace(capture.MediaType) == "" || (capture.Kind != "deliverable" && capture.Kind != "evidence") ||
+		len(digest) != 64 || digestErr != nil || capture.ContentHash != "sha256:"+digest ||
+		capture.StorageKey != filepath.ToSlash(filepath.Join("sha256", digest[:2], digest)) {
+		return core.Artifact{}, &core.ValidationError{Field: "capture", Message: "contains an invalid scoped blob descriptor"}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.queries.WithTx(tx)
+	if idempotency.Key != "" {
+		var replay core.Artifact
+		found, replayErr := replayIdempotency(ctx, tx, scope, route, idempotency, &replay)
+		if replayErr != nil || found {
+			return replay, replayErr
+		}
+	}
+	if _, err := q.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
+		return core.Artifact{}, err
+	}
+	var taskID, visibility string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT r.task_id, t.visibility
+		FROM runs r JOIN tasks t ON t.id = r.task_id AND t.project_id = r.project_id
+		WHERE r.id = ? AND r.project_id = ? AND r.organization_id = ?
+		  AND (t.visibility = 'project' OR t.owner_user_id = ?)`,
+		runID, projectID, scope.OrganizationID, scope.UserID,
+	).Scan(&taskID, &visibility); err != nil {
+		return core.Artifact{}, err
+	}
+	var existing core.Artifact
+	var existingCreatedAt string
+	existingErr := tx.QueryRowContext(ctx, `
+		SELECT id, project_id, task_id, run_id, step_id, name, kind, media_type,
+		       content_hash, size_bytes, visibility, source_type, created_at
+		FROM artifacts
+		WHERE organization_id = ? AND project_id = ? AND run_id = ? AND name = ? AND kind = ? AND content_hash = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1`,
+		scope.OrganizationID, projectID, runID, cleanPath, capture.Kind, capture.ContentHash,
+	).Scan(&existing.ID, &existing.ProjectID, &existing.TaskID, &existing.RunID, &existing.StepID, &existing.Name, &existing.Kind, &existing.MediaType, &existing.ContentHash, &existing.SizeBytes, &existing.Visibility, &existing.SourceType, &existingCreatedAt)
+	if existingErr == nil {
+		existing.CreatedAt, err = parseTime(existingCreatedAt)
+		if err != nil {
+			return core.Artifact{}, err
+		}
+		if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusCreated, existing); err != nil {
+			return core.Artifact{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return core.Artifact{}, err
+		}
+		return existing, nil
+	}
+	if !errors.Is(existingErr, sql.ErrNoRows) {
+		return core.Artifact{}, existingErr
+	}
+	now := formatTime(time.Now())
+	if err := ensureBlob(ctx, tx, persistedBlob{ContentHash: capture.ContentHash, StorageKey: capture.StorageKey, SizeBytes: capture.SizeBytes, MediaType: capture.MediaType}, now); err != nil {
+		return core.Artifact{}, err
+	}
+	newIDs := make([]string, 6)
+	for index := range newIDs {
+		newIDs[index], err = newID()
+		if err != nil {
+			return core.Artifact{}, err
+		}
+	}
+	stepID, toolCallID, receiptID, invocationID, validationID, artifactID := newIDs[0], newIDs[1], newIDs[2], newIDs[3], newIDs[4], newIDs[5]
+	argumentsJSON, _ := json.Marshal(map[string]any{"path": cleanPath, "kind": capture.Kind, "source": "files_inspector"})
+	inputDigest := sha256.Sum256(argumentsJSON)
+	inputHash := hex.EncodeToString(inputDigest[:])
+	outputJSON, _ := json.Marshal(map[string]any{"path": cleanPath, "kind": capture.Kind, "media_type": capture.MediaType, "content_hash": capture.ContentHash, "storage_key": capture.StorageKey, "size_bytes": capture.SizeBytes})
+	var position int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT MAX(
+			COALESCE((SELECT MAX(position) FROM steps WHERE run_id = ?), 0),
+			COALESCE((SELECT MAX(position) FROM tool_calls WHERE run_id = ?), 0)
+		) + 1`, runID, runID).Scan(&position); err != nil {
+		return core.Artifact{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO steps (id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, 1, ?, ?, ?)`,
+		stepID, scope.OrganizationID, projectID, runID, core.ToolArtifactCapture, position, string(argumentsJSON), string(outputJSON), scope.UserID, now, now,
+	); err != nil {
+		return core.Artifact{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO tool_calls (id, organization_id, project_id, task_id, run_id, step_id, position, tool_name, arguments_json, arguments_hash, risk_level, policy_decision, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'L1', 'allow', 'succeeded', ?, ?)`,
+		toolCallID, scope.OrganizationID, projectID, taskID, runID, stepID, position, core.ToolArtifactCapture, string(argumentsJSON), inputHash, now, now,
+	); err != nil {
+		return core.Artifact{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO side_effect_receipts (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, invocation_id, input_hash, idempotent, status, exit_code, output_json, started_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'succeeded', 0, ?, ?, ?)`,
+		receiptID, scope.OrganizationID, projectID, taskID, runID, stepID, toolCallID, invocationID, inputHash, string(outputJSON), now, now,
+	); err != nil {
+		return core.Artifact{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO validation_results (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, validator, status, input_hash, details_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'manual_artifact_scope_hash_size_and_media_signature', 'passed', ?, ?, ?)`,
+		validationID, scope.OrganizationID, projectID, taskID, runID, stepID, toolCallID, inputHash, string(outputJSON), now,
+	); err != nil {
+		return core.Artifact{}, err
+	}
+	row, err := q.CreateArtifact(ctx, sqlitegen.CreateArtifactParams{ID: artifactID, OrganizationID: scope.OrganizationID, ProjectID: projectID, TaskID: taskID, RunID: runID, StepID: stepID, Name: cleanPath, Kind: capture.Kind, MediaType: capture.MediaType, ContentHash: capture.ContentHash, SizeBytes: capture.SizeBytes, Visibility: visibility, SourceType: "manual_workspace_capture", CreatedAt: now})
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	artifact, err := artifactFromRow(row)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: scope.OrganizationID, ProjectID: projectID, RunID: runID, EventType: "tool.completed", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: visibility, Payload: map[string]any{"tool_call_id": toolCallID, "step_id": stepID, "tool_name": core.ToolArtifactCapture, "status": "succeeded", "input_hash": inputHash, "source": "files_inspector"}}); err != nil {
+		return core.Artifact{}, err
+	}
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: scope.OrganizationID, ProjectID: projectID, RunID: runID, EventType: "validation.completed", ActorType: "validator", ActorID: "manual_artifact_scope_hash_size_and_media_signature", CorrelationID: correlationID, Visibility: visibility, Payload: map[string]any{"validation_id": validationID, "tool_call_id": toolCallID, "status": "passed", "input_hash": inputHash}}); err != nil {
+		return core.Artifact{}, err
+	}
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: scope.OrganizationID, ProjectID: projectID, RunID: runID, EventType: "artifact.created", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: visibility, Payload: map[string]any{"artifact_id": artifact.ID, "step_id": stepID, "name": artifact.Name, "path": cleanPath, "kind": artifact.Kind, "source_type": artifact.SourceType, "content_hash": artifact.ContentHash, "size_bytes": artifact.SizeBytes, "media_type": artifact.MediaType}}); err != nil {
+		return core.Artifact{}, err
+	}
+	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusCreated, artifact); err != nil {
+		return core.Artifact{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.Artifact{}, err
+	}
+	return artifact, nil
 }
 
 func (s *Store) GetAgentTeamRoom(ctx context.Context, scope core.Scope, runID string) (core.AgentTeamRoom, error) {
@@ -6831,6 +7294,13 @@ func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUn
 		if recovered {
 			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
 		}
+		healed, healErr := s.recoverFailedSequentialToolBatch(ctx, now)
+		if healErr != nil {
+			return core.ClaimedStep{}, fmt.Errorf("recover failed sequential tool batch: %w", healErr)
+		}
+		if healed {
+			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
+		}
 		return core.ClaimedStep{}, core.ErrNoWork
 	} else if err != nil {
 		return core.ClaimedStep{}, err
@@ -7454,8 +7924,12 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 		if validation.Reason != "" {
 			if modelStageFromInput(step.InputJSON) == "completion_recovery" {
 				taskStatus, taskErrorCode = core.StatusBlocked, validation.Reason
-				if validation.Reason == "WEB_EVIDENCE_MISSING" {
+				if validation.Reason == "ATTACHMENT_NOT_READ" {
+					taskSummary = "任务包含二进制附件，但当前 Run 没有成功的 asset_stage 收据，不能在未读取附件时标记为完成。"
+				} else if validation.Reason == "WEB_EVIDENCE_MISSING" {
 					taskSummary = "任务要求联网检索，但当前 Run 没有成功的互联网检索收据，不能标记为完成。"
+				} else if validation.Reason == "DELIVERABLE_MISSING" && validation.DeliverableFormat == "pdf" {
+					taskSummary = "任务要求 PDF 交付物，但当前 Run 没有新的、签名与 MIME 校验通过的 PDF Artifact，不能标记为完成。"
 				} else if validation.Reason == "DELIVERABLE_TOO_SHORT" {
 					taskSummary = fmt.Sprintf("报告实际为 %d 字，未达到不少于 %d 字的验收要求，不能标记为完成。", validation.ActualCharacters, validation.RequiredCharacters)
 				} else if validation.Reason == "WORKSPACE_MUTATION_MISSING" {
@@ -7473,6 +7947,7 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 				nextStepID, queueErr := insertQueuedModelStep(ctx, tx, run, map[string]any{
 					"history": history, "stage": "completion_recovery",
 					"source_step_id": step.ID, "completion_recovery_reason": validation.Reason,
+					"completion_deliverable_format":  validation.DeliverableFormat,
 					"completion_required_characters": validation.RequiredCharacters,
 					"completion_actual_characters":   validation.ActualCharacters,
 				}, now)
@@ -7487,7 +7962,7 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
 					EventType: "completion.validation_failed", ActorType: "validator", ActorID: "runtime",
 					CorrelationID: correlationID, Visibility: run.Visibility,
-					Payload: map[string]any{"source_step_id": step.ID, "recovery_step_id": nextStepID, "reason": validation.Reason, "required_characters": validation.RequiredCharacters, "actual_characters": validation.ActualCharacters},
+					Payload: map[string]any{"source_step_id": step.ID, "recovery_step_id": nextStepID, "reason": validation.Reason, "deliverable_format": validation.DeliverableFormat, "required_characters": validation.RequiredCharacters, "actual_characters": validation.ActualCharacters},
 				}); err != nil {
 					return err
 				}
@@ -7495,6 +7970,7 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 			}
 		}
 	}
+	taskSummary, taskErrorCode = reconcileTerminalTaskResult(taskStatus, taskSummary, taskErrorCode)
 	if err := s.syncRunPlanState(ctx, tx, q, run, taskStatus, taskSummary, now, correlationID); err != nil {
 		return err
 	}
@@ -7556,6 +8032,19 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 	return tx.Commit()
 }
 
+// reconcileTerminalTaskResult is a final consistency barrier: a failed Task
+// must never persist the success summary of the last tool that happened to
+// finish. Individual tool receipts remain the source for per-action success.
+func reconcileTerminalTaskResult(status, summary, errorCode string) (string, string) {
+	if status != core.StatusFailed || !strings.Contains(summary, "通过确定性校验") {
+		return summary, errorCode
+	}
+	if strings.TrimSpace(errorCode) == "" {
+		errorCode = "TASK_EXECUTION_FAILED"
+	}
+	return "任务执行失败；已完成的工具收据和文件已保留，请查看失败步骤后重试。", errorCode
+}
+
 func (s *Store) applyAutoReviewOutcome(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, outcome core.StepOutcome, now, correlationID string) (string, string, string, error) {
 	var input struct {
 		ActionID   string `json:"human_action_id"`
@@ -7567,17 +8056,26 @@ func (s *Store) applyAutoReviewOutcome(ctx context.Context, tx *sql.Tx, q *sqlit
 		return core.StatusBlocked, "自动审批检查点无效。", "REVIEW_INPUT_INVALID", nil
 	}
 	decision, _ := outcome.Output["decision"].(string)
+	schemaVersion, _ := outcome.Output["schema_version"].(string)
+	riskLevel, _ := outcome.Output["risk_level"].(string)
+	authorization, _ := outcome.Output["authorization"].(string)
+	reasonCode, _ := outcome.Output["reason_code"].(string)
 	reason, _ := outcome.Output["reason"].(string)
+	if schemaVersion != "reviewer-decision-v1" || riskLevel != "L2" || strings.TrimSpace(reasonCode) == "" || (decision == "approve" && authorization != "once") || (decision == "reject" && authorization != "none") {
+		decision = "escalate_to_user"
+		authorization = "human_required"
+		reasonCode = "review_contract_invalid"
+	}
 	if decision != "approve" && decision != "reject" {
 		decision = "escalate_to_user"
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = outcome.ResultSummary
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.reviewed", ActorType: "reviewer", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": input.ActionID, "decision": decision, "reason": reason, "review_step_id": step.ID}}); err != nil {
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.reviewed", ActorType: "reviewer", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": input.ActionID, "schema_version": schemaVersion, "decision": decision, "risk_level": riskLevel, "authorization": authorization, "reason_code": reasonCode, "reason": reason, "review_step_id": step.ID}}); err != nil {
 		return "", "", "", err
 	}
-	responseJSON, _ := json.Marshal(map[string]any{"decision": decision, "reason": reason, "reviewer": "auto"})
+	responseJSON, _ := json.Marshal(map[string]any{"schema_version": schemaVersion, "decision": decision, "risk_level": riskLevel, "authorization": authorization, "reason_code": reasonCode, "reason": reason, "reviewer": "auto"})
 	switch decision {
 	case "approve":
 		if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = 'auto-reviewer', decision_note = ?, decided_at = ? WHERE id = ? AND status = 'pending'`, reason, now, input.ActionID); err != nil {
@@ -7652,13 +8150,31 @@ func (s *Store) createBudgetHumanAction(ctx context.Context, tx *sql.Tx, q *sqli
 	if estimated < 1 {
 		estimated = int64(core.DefaultModelOutputTokens)
 	}
+	var extensionCount int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM human_action_requests WHERE run_id = ? AND kind = 'budget_request' AND status = 'approved'`, run.RunID).Scan(&extensionCount); err != nil {
+		return err
+	}
+	callIncrement := maxInt64(8, maxCalls/10)
+	tokenIncrement := maxInt64(262144, maxInt64(maxTokens/4, estimated*4))
+	recommendedCalls := minInt64(1000, maxCalls+callIncrement)
+	recommendedTokens := minInt64(10000000, maxTokens+tokenIncrement)
+	finishCalls := minInt64(1000, maxCalls+2)
+	finishTokens := minInt64(10000000, maxTokens+maxInt64(131072, estimated*2))
 	request := map[string]any{
-		"current_max_model_calls":  maxCalls,
-		"current_max_tokens":       maxTokens,
-		"proposed_max_model_calls": maxCalls + 1,
-		"proposed_max_tokens":      maxTokens + estimated,
-		"estimated_tokens":         estimated,
-		"impact_scope":             "仅当前 Run",
+		"current_max_model_calls":     maxCalls,
+		"current_max_tokens":          maxTokens,
+		"recommended_max_model_calls": recommendedCalls,
+		"recommended_max_tokens":      recommendedTokens,
+		"recommended_add_model_calls": recommendedCalls - maxCalls,
+		"recommended_add_tokens":      recommendedTokens - maxTokens,
+		"finish_max_model_calls":      finishCalls,
+		"finish_max_tokens":           finishTokens,
+		"finish_add_model_calls":      finishCalls - maxCalls,
+		"finish_add_tokens":           finishTokens - maxTokens,
+		"estimated_tokens":            estimated,
+		"extension_count":             extensionCount,
+		"unlimited_available":         true,
+		"impact_scope":                "仅当前 Run",
 	}
 	requestJSON, err := json.Marshal(request)
 	if err != nil {
@@ -7695,6 +8211,20 @@ func (s *Store) createBudgetHumanAction(ctx context.Context, tx *sql.Tx, q *sqli
 		CorrelationID: correlationID, Visibility: run.Visibility,
 		Payload: map[string]any{"human_action_id": actionID, "kind": core.HumanActionBudgetRequest, "status": core.HumanActionWaitingUser, "plan_revision_id": planRevisionID, "run_plan_item_id": planItemID},
 	})
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (s *Store) createToolRecoveryHumanAction(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, reason, now, correlationID string) error {
@@ -7750,6 +8280,7 @@ func (s *Store) createToolRecoveryHumanAction(ctx context.Context, tx *sql.Tx, q
 
 type completionInvariantResult struct {
 	Reason             string
+	DeliverableFormat  string
 	RequiredCharacters int64
 	ActualCharacters   int64
 }
@@ -7757,6 +8288,18 @@ type completionInvariantResult struct {
 func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run core.RunContext) (completionInvariantResult, error) {
 	requirements := core.InferTaskCompletionRequirements(run.Goal, run.Acceptance)
 	evidenceRunIDs := completionEvidenceRunIDs(run)
+	requiredStagedAssets := binaryContextAssetIDs(run.ConfigSnapshotJSON)
+	if len(requiredStagedAssets) > 0 {
+		stagedAssets, err := successfulStagedAssetIDs(ctx, tx, evidenceRunIDs)
+		if err != nil {
+			return completionInvariantResult{}, err
+		}
+		for _, assetID := range requiredStagedAssets {
+			if !stagedAssets[assetID] {
+				return completionInvariantResult{Reason: "ATTACHMENT_NOT_READ"}, nil
+			}
+		}
+	}
 	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(evidenceRunIDs)), ",")
 	searchArgs := make([]any, 0, len(evidenceRunIDs)+1)
 	for _, id := range evidenceRunIDs {
@@ -7786,9 +8329,9 @@ func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run 
 			return completionInvariantResult{}, err
 		}
 		if metrics.Count == 0 {
-			return completionInvariantResult{Reason: "DELIVERABLE_MISSING"}, nil
+			return completionInvariantResult{Reason: "DELIVERABLE_MISSING", DeliverableFormat: requirements.DeliverableFormat}, nil
 		}
-		if requirements.MinimumCharacters > 0 {
+		if requirements.MinimumCharacters > 0 && requirements.DeliverableFormat != "pdf" {
 			characters := metrics.TotalCharacters
 			if requirements.RequiresSingleDeliverable {
 				characters = metrics.LargestCharacters
@@ -7826,6 +8369,68 @@ func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run 
 	return completionInvariantResult{}, nil
 }
 
+func binaryContextAssetIDs(snapshotJSON string) []string {
+	var snapshot struct {
+		Assets []struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			MediaType string `json:"media_type"`
+		} `json:"context_asset_snapshots"`
+	}
+	if json.Unmarshal([]byte(snapshotJSON), &snapshot) != nil {
+		return nil
+	}
+	result := make([]string, 0, len(snapshot.Assets))
+	for _, asset := range snapshot.Assets {
+		if strings.TrimSpace(asset.ID) != "" && contextAssetNeedsStaging(asset.MediaType, asset.Name) {
+			result = append(result, asset.ID)
+		}
+	}
+	return result
+}
+
+func contextAssetNeedsStaging(mediaType, name string) bool {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if strings.HasPrefix(mediaType, "text/") || strings.Contains(mediaType, "json") || strings.Contains(mediaType, "xml") || strings.Contains(mediaType, "javascript") {
+		return false
+	}
+	lowerName := strings.ToLower(strings.TrimSpace(name))
+	for _, suffix := range []string{".md", ".txt", ".csv", ".html", ".css", ".go", ".ts", ".tsx", ".js", ".json", ".yaml", ".yml", ".toml", ".sql", ".py", ".java", ".rs", ".sh"} {
+		if strings.HasSuffix(lowerName, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+func successfulStagedAssetIDs(ctx context.Context, tx *sql.Tx, runIDs []string) (map[string]bool, error) {
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, 0, len(runIDs)+1)
+	for _, runID := range runIDs {
+		args = append(args, runID)
+	}
+	args = append(args, core.ToolAssetStage)
+	rows, err := tx.QueryContext(ctx, `SELECT arguments_json FROM tool_calls WHERE run_id IN (`+runFilter+`) AND tool_name = ? AND status = 'succeeded'`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	staged := make(map[string]bool)
+	for rows.Next() {
+		var argumentsJSON string
+		if err := rows.Scan(&argumentsJSON); err != nil {
+			return nil, err
+		}
+		var arguments struct {
+			AssetID string `json:"asset_id"`
+		}
+		if json.Unmarshal([]byte(argumentsJSON), &arguments) == nil && strings.TrimSpace(arguments.AssetID) != "" {
+			staged[arguments.AssetID] = true
+		}
+	}
+	return staged, rows.Err()
+}
+
 func completionEvidenceRunIDs(run core.RunContext) []string {
 	ids := []string{run.RunID}
 	var snapshot map[string]any
@@ -7855,7 +8460,7 @@ func completionEvidenceRunIDs(run core.RunContext) []string {
 
 func successfulWorkspaceMutationEvidence(ctx context.Context, tx *sql.Tx, runID string, evidenceRunIDs []string) (int64, int64, int64, error) {
 	mutationTools := []string{
-		core.ToolWorkspaceWriteFile, core.ToolWorkspaceEditFile,
+		core.ToolWorkspaceWriteFile, core.ToolWorkspaceEditFile, core.ToolArtifactCapture,
 		core.ToolGitCommit, core.ToolGitCommitPaths,
 		core.ToolGitRestore, core.ToolGitRestoreHunk, core.ToolGitBranch,
 	}
@@ -7899,25 +8504,24 @@ func (s *Store) inspectLatestRunDeliverables(ctx context.Context, tx *sql.Tx, ru
 	mediaFilter := "%"
 	if format == "markdown" {
 		mediaFilter = "text/markdown%"
+	} else if format == "pdf" {
+		mediaFilter = "application/pdf"
 	}
 	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
-	args := make([]any, 0, len(runIDs)*2+1)
+	args := make([]any, 0, len(runIDs)+1)
 	for _, id := range runIDs {
 		args = append(args, id)
 	}
 	args = append(args, mediaFilter)
-	for _, id := range runIDs {
-		args = append(args, id)
-	}
 	query := `
-		SELECT a.size_bytes, b.storage_key FROM artifacts a
+		SELECT a.size_bytes, a.media_type, b.storage_key FROM (
+			SELECT content_hash, size_bytes, media_type,
+			       ROW_NUMBER() OVER (PARTITION BY name ORDER BY created_at DESC, id DESC) AS version_rank
+			FROM artifacts
+			WHERE run_id IN (` + runFilter + `) AND kind = 'deliverable'
+		) a
 		JOIN blobs b ON b.content_hash = a.content_hash
-		WHERE a.run_id IN (` + runFilter + `) AND a.kind = 'deliverable' AND a.media_type LIKE ?
-		  AND a.id = (
-			SELECT latest.id FROM artifacts latest
-			WHERE latest.run_id IN (` + runFilter + `) AND latest.name = a.name AND latest.kind = 'deliverable'
-			ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
-		  )`
+		WHERE a.version_rank = 1 AND a.media_type LIKE ?`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return deliverableMetrics{}, err
@@ -7926,13 +8530,26 @@ func (s *Store) inspectLatestRunDeliverables(ctx context.Context, tx *sql.Tx, ru
 	var metrics deliverableMetrics
 	for rows.Next() {
 		var size int64
-		var storageKey string
-		if err := rows.Scan(&size, &storageKey); err != nil {
+		var mediaType, storageKey string
+		if err := rows.Scan(&size, &mediaType, &storageKey); err != nil {
 			return deliverableMetrics{}, err
 		}
 		content, err := s.blobStore.Open(ctx, storageKey, size)
 		if err != nil {
 			return deliverableMetrics{}, err
+		}
+		if mediaType == "application/pdf" {
+			signature := make([]byte, len("%PDF-"))
+			_, readErr := io.ReadFull(content, signature)
+			closeErr := content.Close()
+			if readErr != nil || string(signature) != "%PDF-" {
+				return deliverableMetrics{}, fmt.Errorf("DELIVERABLE_PDF_INVALID: verified PDF artifact has no PDF signature")
+			}
+			if closeErr != nil {
+				return deliverableMetrics{}, closeErr
+			}
+			metrics.Count++
+			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(content, size+1))
 		closeErr := content.Close()
@@ -7942,10 +8559,16 @@ func (s *Store) inspectLatestRunDeliverables(ctx context.Context, tx *sql.Tx, ru
 		if closeErr != nil {
 			return deliverableMetrics{}, closeErr
 		}
-		if int64(len(body)) != size || !utf8.Valid(body) {
-			return deliverableMetrics{}, fmt.Errorf("DELIVERABLE_CONTENT_INVALID: verified text artifact cannot be read")
+		if int64(len(body)) != size {
+			return deliverableMetrics{}, fmt.Errorf("DELIVERABLE_CONTENT_INVALID: artifact size does not match its blob")
 		}
 		metrics.Count++
+		if !strings.HasPrefix(mediaType, "text/") && mediaType != "application/json" {
+			continue
+		}
+		if !utf8.Valid(body) {
+			return deliverableMetrics{}, fmt.Errorf("DELIVERABLE_CONTENT_INVALID: verified text artifact is not UTF-8")
+		}
 		characters := int64(utf8.RuneCount(body))
 		metrics.TotalCharacters += characters
 		if characters >= metrics.LargestCharacters {
@@ -7966,7 +8589,7 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 	err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM tool_calls
 		WHERE run_id = ? AND status = 'succeeded' AND position > ? AND (
-			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
+			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
 				tool_name LIKE 'mcp__%__%' AND (
 					lower(tool_name) LIKE '%playwright%' OR lower(tool_name) LIKE '%browser%' OR
 					lower(tool_name) LIKE '%test%' OR lower(tool_name) LIKE '%verify%' OR
@@ -7978,7 +8601,7 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 		core.ToolWebSearch,
 		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell,
 		core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
-		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog,
+		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolArtifactCapture,
 	).Scan(&count)
 	return count, err
 }
@@ -8814,7 +9437,8 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				reviewInput, err := json.Marshal(map[string]any{
 					"human_action_id": approvalID, "approval_id": approvalID, "tool_step_id": stepID,
 					"tool_call_id": toolCallID, "title": plan.Call.Name, "reason": plan.Reason,
-					"risk_level": plan.RiskLevel, "tool_name": plan.Call.Name, "frozen_params": plan.Call.Arguments,
+					"risk_level": plan.RiskLevel, "tool_name": plan.Call.Name, "frozen_params": redactToolValue(plan.Call.Arguments),
+					"input_hash": plan.InputHash, "policy_decision": plan.Decision,
 					"plan_revision_id": planRevisionID, "run_plan_item_id": executionPlanItemID,
 				})
 				if err != nil {
@@ -9496,7 +10120,10 @@ func permissionModeFromSnapshot(snapshot string) string {
 }
 
 func fullAccessAutoAllows(fullAccess bool, plan core.PlannedTool) bool {
-	return fullAccess && plan.Decision == core.PolicyAsk && plan.RiskLevel != "L3"
+	// L0 human-input checkpoints remain human checkpoints. L1 workspace writes
+	// already evaluate to allow, so Full Access only suppresses ordinary L2
+	// execution approvals and never widens L3 or deterministic denies.
+	return fullAccess && plan.Decision == core.PolicyAsk && plan.RiskLevel == "L2"
 }
 
 func mcpPolicyFromSnapshot(snapshot, fullToolName string) (string, bool, string) {
@@ -9815,12 +10442,8 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		toolStatus = "succeeded"
 		validationStatus = "passed"
 	}
-	var editedArtifactContent *string
 	if step.StepType == core.ToolWorkspaceEditFile && execution.Output != nil {
-		if content, ok := execution.Output["artifact_content"].(string); ok {
-			delete(execution.Output, "artifact_content")
-			editedArtifactContent = &content
-		}
+		delete(execution.Output, "artifact_content")
 	}
 	if step.StepType == core.ToolWorkspaceRunCommand && execution.Output != nil {
 		if content, _ := execution.Output["artifact_content"].(string); content != "" {
@@ -9862,6 +10485,10 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		validator = "workspace_scope_and_content_hash"
 	} else if step.StepType == core.ToolWorkspaceEditFile {
 		validator = "workspace_scope_preimage_hash_and_atomic_replace"
+	} else if step.StepType == core.ToolArtifactCapture {
+		validator = "artifact_scope_hash_size_and_media_signature"
+	} else if step.StepType == core.ToolAssetStage {
+		validator = "run_frozen_asset_scope_hash_and_read_only_stage"
 	} else if step.StepType == core.ToolWorkspaceReadFile || step.StepType == core.ToolWorkspaceListFiles ||
 		step.StepType == core.ToolWorkspaceFindFiles || step.StepType == core.ToolWorkspaceGrep {
 		validator = "workspace_scope_pagination_binary_and_redaction"
@@ -9895,8 +10522,8 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "validation.completed", ActorType: "validator", ActorID: validator, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"validation_id": validationID, "tool_call_id": execution.ToolCallID, "validator": validator, "status": validationStatus, "input_hash": execution.InputHash}}); err != nil {
 		return err
 	}
-	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile) && validationStatus == "passed" {
-		return s.persistWorkspaceFileArtifact(ctx, tx, q, step, run, execution, editedArtifactContent, now, correlationID)
+	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile || step.StepType == core.ToolArtifactCapture) && validationStatus == "passed" {
+		return s.persistCapturedArtifact(ctx, tx, q, step, run, execution, now, correlationID)
 	}
 	return nil
 }
@@ -9939,33 +10566,30 @@ func (s *Store) persistCommandOutputArtifact(ctx context.Context, tx *sql.Tx, q 
 	return artifact, nil
 }
 
-func (s *Store) persistWorkspaceFileArtifact(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, execution core.ToolExecution, editedContent *string, now, correlationID string) error {
-	var argumentsJSON string
-	if err := tx.QueryRowContext(ctx, `SELECT arguments_json FROM tool_calls WHERE id = ? AND run_id = ?`, execution.ToolCallID, run.RunID).Scan(&argumentsJSON); err != nil {
-		return err
-	}
-	var arguments struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if json.Unmarshal([]byte(argumentsJSON), &arguments) != nil || strings.TrimSpace(arguments.Path) == "" {
-		return fmt.Errorf("WORKSPACE_ARTIFACT_INPUT_INVALID: verified file call has no path")
-	}
-	path := filepath.ToSlash(filepath.Clean(arguments.Path))
-	if path == "." || strings.HasPrefix(path, ".oktapod/") {
+func (s *Store) persistCapturedArtifact(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, execution core.ToolExecution, now, correlationID string) error {
+	path, _ := execution.Output["path"].(string)
+	kind, _ := execution.Output["kind"].(string)
+	mediaType, _ := execution.Output["media_type"].(string)
+	contentHash, _ := execution.Output["content_hash"].(string)
+	storageKey, _ := execution.Output["storage_key"].(string)
+	sizeBytes, ok := integerOutput(execution.Output["size_bytes"])
+	// Rolling-upgrade and white-box test compatibility: older workers can
+	// finish a text write without the new capture descriptor. Do not fabricate
+	// an Artifact from arguments here; the completion contract will keep any
+	// deliverable-producing Run open until a real Artifact Capture succeeds.
+	if step.StepType != core.ToolArtifactCapture && strings.TrimSpace(storageKey) == "" {
 		return nil
 	}
-	content := arguments.Content
-	if editedContent != nil {
-		content = *editedContent
+	path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	if path == "." || path == ".oktapod" || strings.HasPrefix(path, ".oktapod/") || (kind != "deliverable" && kind != "evidence") || strings.TrimSpace(mediaType) == "" || !ok {
+		return fmt.Errorf("ARTIFACT_CAPTURE_OUTPUT_INVALID: capture receipt is incomplete")
 	}
-	persisted, err := s.persistBlob(ctx, []byte(content), workspaceArtifactMediaType(path))
-	if err != nil {
-		return fmt.Errorf("persist workspace artifact: %w", err)
+	digest := strings.TrimPrefix(contentHash, "sha256:")
+	_, digestErr := hex.DecodeString(digest)
+	if len(digest) != 64 || digestErr != nil || contentHash != "sha256:"+digest || storageKey != filepath.ToSlash(filepath.Join("sha256", digest[:2], digest)) || sizeBytes < 0 || sizeBytes > application.MaxArtifactCaptureBytes {
+		return fmt.Errorf("ARTIFACT_CAPTURE_OUTPUT_INVALID: blob descriptor is invalid")
 	}
-	if outputHash, _ := execution.Output["content_hash"].(string); outputHash == "" || outputHash != persisted.ContentHash {
-		return fmt.Errorf("WORKSPACE_ARTIFACT_HASH_MISMATCH: receipt and persisted content differ")
-	}
+	persisted := persistedBlob{ContentHash: contentHash, StorageKey: storageKey, SizeBytes: sizeBytes, MediaType: mediaType}
 	if err := ensureBlob(ctx, tx, persisted, now); err != nil {
 		return err
 	}
@@ -9973,31 +10597,27 @@ func (s *Store) persistWorkspaceFileArtifact(ctx context.Context, tx *sql.Tx, q 
 	if err != nil {
 		return err
 	}
-	kind := "deliverable"
-	if strings.HasPrefix(path, ".research/") {
-		kind = "evidence"
+	sourceType := "workspace_file"
+	if step.StepType == core.ToolArtifactCapture {
+		sourceType = "artifact_capture"
 	}
-	row, err := q.CreateArtifact(ctx, sqlitegen.CreateArtifactParams{ID: artifactID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, Name: path, Kind: kind, MediaType: persisted.MediaType, ContentHash: persisted.ContentHash, SizeBytes: persisted.SizeBytes, Visibility: run.Visibility, SourceType: "workspace_file", CreatedAt: now})
+	row, err := q.CreateArtifact(ctx, sqlitegen.CreateArtifactParams{ID: artifactID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, Name: path, Kind: kind, MediaType: persisted.MediaType, ContentHash: persisted.ContentHash, SizeBytes: persisted.SizeBytes, Visibility: run.Visibility, SourceType: sourceType, CreatedAt: now})
 	if err != nil {
 		return err
 	}
 	return s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "artifact.created", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"artifact_id": row.ID, "step_id": step.ID, "name": row.Name, "path": path, "kind": row.Kind, "source_type": row.SourceType, "content_hash": row.ContentHash, "size_bytes": row.SizeBytes, "media_type": row.MediaType}})
 }
 
-func workspaceArtifactMediaType(path string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".md", ".markdown":
-		return "text/markdown; charset=utf-8"
-	case ".json":
-		return "application/json"
-	case ".csv":
-		return "text/csv; charset=utf-8"
-	case ".html", ".htm":
-		return "text/html; charset=utf-8"
-	case ".txt", ".log":
-		return "text/plain; charset=utf-8"
+func integerOutput(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case float64:
+		return int64(typed), typed == float64(int64(typed))
 	default:
-		return "application/octet-stream"
+		return 0, false
 	}
 }
 
@@ -10006,7 +10626,8 @@ func deriveRunStatus(ctx context.Context, tx *sql.Tx, runID string) (string, str
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN status IN ('planned', 'queued', 'running') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN status = 'waiting_approval' THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN status = 'blocked' OR (status = 'rejected' AND error_code <> 'PLAN_SUPERSEDED') THEN 1 ELSE 0 END), 0),
+		       -- Batch-abort casualties (BATCH_CANCELED_AFTER_%) are not policy denials: the batch failure already drove recovery, so they must not hold the Run blocked after later tool steps succeed.
+		       COALESCE(SUM(CASE WHEN (status = 'blocked' AND error_code NOT LIKE 'BATCH_CANCELED_AFTER_%') OR (status = 'rejected' AND error_code <> 'PLAN_SUPERSEDED') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN status = 'failed' AND NOT EXISTS (
 		           SELECT 1
 		           FROM run_events recovery
@@ -10061,6 +10682,57 @@ func (s *Store) completeToolBatchState(ctx context.Context, tx *sql.Tx, q *sqlit
 	}
 	if total == 0 {
 		return false, false, batchID, fmt.Errorf("TOOL_BATCH_EMPTY: batch %s has no tool calls", batchID)
+	}
+	if active > 0 && (failed > 0 || blocked > 0) {
+		var executionMode string
+		if err = tx.QueryRowContext(ctx, `SELECT execution_mode FROM tool_batches WHERE id = ?`, batchID).Scan(&executionMode); err != nil {
+			return false, false, batchID, err
+		}
+		if executionMode != "parallel" {
+			// ClaimNextStep never dispatches the remaining items of a sequential
+			// batch once the batch contains a failed/blocked/canceled step, so a
+			// not-yet-started remainder would wait forever and deadlock the Run.
+			// Cancel it here so the batch reaches a terminal state and the failure
+			// path can queue recovery, mirroring blockToolBatchAfterApproval.
+			if _, err = tx.ExecContext(ctx, `
+				UPDATE approval_requests
+				SET status = 'rejected', decided_by = 'system', decision_note = '同一顺序工具批次中已有步骤失败，剩余动作已取消', decided_at = ?
+				WHERE status = 'pending'
+				  AND tool_call_id IN (SELECT id FROM tool_calls WHERE tool_batch_id = ?)`, now, batchID); err != nil {
+				return false, false, batchID, err
+			}
+			if _, err = tx.ExecContext(ctx, `
+				UPDATE human_action_requests
+				SET status = 'superseded',
+				    response_json = '{"reason":"tool_batch_canceled"}',
+				    decided_by = 'system', decided_at = ?, version = version + 1
+				WHERE status IN ('waiting_user', 'reviewing')
+				  AND id IN (
+				    SELECT ar.id FROM approval_requests ar
+				    JOIN tool_calls tc ON tc.id = ar.tool_call_id
+				    WHERE tc.tool_batch_id = ?
+				  )`, now, batchID); err != nil {
+				return false, false, batchID, err
+			}
+			if _, err = tx.ExecContext(ctx, `
+				UPDATE tool_calls
+				SET status = 'blocked', error_code = 'BATCH_CANCELED_AFTER_FAILURE', completed_at = ?, updated_at = ?
+				WHERE tool_batch_id = ? AND status IN ('planned', 'queued', 'waiting_approval')`, now, now, batchID); err != nil {
+				return false, false, batchID, err
+			}
+			if _, err = tx.ExecContext(ctx, `
+				UPDATE steps
+				SET status = 'canceled', error_code = 'BATCH_CANCELED_AFTER_FAILURE', owner_id = '', lease_until = '', updated_at = ?
+				WHERE tool_batch_id = ? AND status IN ('queued', 'waiting_approval')`, now, batchID); err != nil {
+				return false, false, batchID, err
+			}
+			if err = tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM tool_calls
+				WHERE tool_batch_id = ? AND status IN ('planned', 'queued', 'running', 'waiting_approval')`, batchID,
+			).Scan(&active); err != nil {
+				return false, false, batchID, err
+			}
+		}
 	}
 	if active > 0 {
 		if _, err = tx.ExecContext(ctx, `UPDATE tool_batches SET status = 'running', updated_at = ? WHERE id = ? AND status <> 'waiting_approval'`, now, batchID); err != nil {
@@ -10857,6 +11529,7 @@ type sessionMessageInput struct {
 	Role           string
 	Visibility     string
 	Content        string
+	Presentation   core.MessagePresentation
 	Now            string
 }
 
@@ -11024,6 +11697,15 @@ func (s *Store) appendSessionMessageTx(ctx context.Context, tx *sql.Tx, q *sqlit
 	}); err != nil {
 		return core.Message{}, core.SessionEntry{}, err
 	}
+	presentationJSON, err := json.Marshal(input.Presentation)
+	if err != nil {
+		return core.Message{}, core.SessionEntry{}, fmt.Errorf("encode message presentation: %w", err)
+	}
+	if string(presentationJSON) != "{}" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO message_presentations (message_id, presentation_json) VALUES (?, ?)`, messageID, string(presentationJSON)); err != nil {
+			return core.Message{}, core.SessionEntry{}, fmt.Errorf("save message presentation: %w", err)
+		}
+	}
 	var parent any
 	if activeLeaf.Valid && activeLeaf.String != "" {
 		parent = activeLeaf.String
@@ -11069,6 +11751,7 @@ func (s *Store) appendSessionMessageTx(ctx context.Context, tx *sql.Tx, q *sqlit
 		Role:           input.Role,
 		Visibility:     input.Visibility,
 		Content:        input.Content,
+		Presentation:   input.Presentation,
 		CreatedAt:      createdAt,
 	}
 	entry := core.SessionEntry{
@@ -11130,9 +11813,15 @@ func projectWithRuntimeSettings(ctx context.Context, queryer projectRuntimeSetti
 	project.MaxTokens = core.DefaultTaskMaxTokens
 	err := queryer.QueryRowContext(ctx, `SELECT max_model_calls, max_tokens FROM project_runtime_settings WHERE project_id = ?`, project.ID).Scan(&project.MaxModelCalls, &project.MaxTokens)
 	if errors.Is(err, sql.ErrNoRows) {
-		return project, nil
+		err = nil
 	}
-	return project, err
+	if err != nil {
+		return project, err
+	}
+	if err = queryer.QueryRowContext(ctx, `SELECT model_provider_id FROM projects WHERE id = ?`, project.ID).Scan(&project.ModelProviderID); err != nil {
+		return project, err
+	}
+	return project, nil
 }
 
 func projectMemberFromFields(userID, displayName, email, role, status, created, updated string) (core.ProjectMember, error) {
@@ -11640,22 +12329,61 @@ func (s *Store) HasActiveTask(ctx context.Context, scope core.Scope, conversatio
 	return true, taskID, nil
 }
 
-func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string) (core.ConversationQueueItem, error) {
+func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation) (core.ConversationQueueItem, error) {
 	id, err := newID()
 	if err != nil {
 		return core.ConversationQueueItem{}, err
 	}
+	messageID, err := newID()
+	if err != nil {
+		return core.ConversationQueueItem{}, err
+	}
 	now := formatTime(time.Now())
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO conversation_message_queue (id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', '')
-	`, id, scope.OrganizationID, projectID, conversationID, activeTaskID, content, inputJSON, kind, now); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.ConversationQueueItem{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.queries.WithTx(tx)
+	var conversationProjectID, visibility string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT c.project_id, c.visibility
+		FROM conversations c
+		JOIN project_memberships pm ON pm.project_id = c.project_id
+		WHERE c.id = ? AND c.organization_id = ?
+		  AND pm.user_id = ? AND pm.status = 'active'
+		  AND (c.visibility = 'project' OR c.owner_user_id = ?)`,
+		conversationID, scope.OrganizationID, scope.UserID, scope.UserID,
+	).Scan(&conversationProjectID, &visibility); err != nil {
+		return core.ConversationQueueItem{}, err
+	}
+	if conversationProjectID != projectID {
+		return core.ConversationQueueItem{}, &core.ForbiddenError{Message: "conversation is not in this project"}
+	}
+	messageTaskID := ""
+	if kind == "steering" {
+		messageTaskID = activeTaskID
+	}
+	if _, _, err := s.appendSessionMessageTx(ctx, tx, q, sessionMessageInput{
+		MessageID: messageID, OrganizationID: scope.OrganizationID, ProjectID: projectID,
+		ConversationID: conversationID, OwnerUserID: scope.UserID, TaskID: messageTaskID,
+		Role: "user", Visibility: visibility, Content: content, Presentation: presentation, Now: now,
+	}); err != nil {
+		return core.ConversationQueueItem{}, fmt.Errorf("append queued user message: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO conversation_message_queue (id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', '', ?)
+	`, id, scope.OrganizationID, projectID, conversationID, activeTaskID, content, inputJSON, kind, now, messageID); err != nil {
 		return core.ConversationQueueItem{}, fmt.Errorf("enqueue conversation turn: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return core.ConversationQueueItem{}, err
 	}
 	createdAt, _ := parseTime(now)
 	return core.ConversationQueueItem{
 		ID: id, OrganizationID: scope.OrganizationID, ProjectID: projectID,
-		ConversationID: conversationID, ActiveTaskID: activeTaskID,
+		ConversationID: conversationID, ActiveTaskID: activeTaskID, MessageID: messageID,
 		Content: content, InputJSON: inputJSON, Kind: kind, Status: "pending",
 		CreatedAt: createdAt,
 	}, nil
@@ -11663,7 +12391,7 @@ func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, p
 
 func (s *Store) ListConversationQueue(ctx context.Context, scope core.Scope, conversationID string, status string) ([]core.ConversationQueueItem, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
+		SELECT id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
 		FROM conversation_message_queue
 		WHERE conversation_id = ? AND organization_id = ? AND status = ?
 		ORDER BY created_at ASC
@@ -11676,7 +12404,7 @@ func (s *Store) ListConversationQueue(ctx context.Context, scope core.Scope, con
 	for rows.Next() {
 		var item core.ConversationQueueItem
 		var createdAt, claimedAt, consumedAt string
-		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = parseTime(createdAt)
@@ -11699,8 +12427,8 @@ func (s *Store) ClaimSteeringAfterStep(ctx context.Context, scope core.Scope, ta
 			WHERE conversation_id = ? AND active_task_id = ? AND kind = 'steering' AND status = 'pending'
 			ORDER BY created_at ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
-	`, now, conversationID, taskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt)
+		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+	`, now, conversationID, taskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -11793,8 +12521,8 @@ func (s *Store) ApplyConversationSteering(ctx context.Context, scope core.Scope,
 			WHERE conversation_id = ? AND active_task_id = ? AND kind = 'steering' AND status = 'pending'
 			ORDER BY created_at ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
-	`, now, run.ConversationID, run.TaskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt)
+		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+	`, now, run.ConversationID, run.TaskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, "", core.ErrNoWork
 	}
@@ -11897,8 +12625,8 @@ func (s *Store) ClaimNextFollowUp(ctx context.Context, scope core.Scope, convers
 			WHERE conversation_id = ? AND kind IN ('follow_up', 'steering') AND status = 'pending'
 			ORDER BY created_at ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
-	`, now, conversationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt)
+		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+	`, now, conversationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -11950,8 +12678,8 @@ func (s *Store) ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time
 			  )
 			ORDER BY q.created_at ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
-	`, now, stale).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt)
+		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+	`, now, stale).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -11986,8 +12714,8 @@ func (s *Store) PromoteConversationQueueItemToSteering(ctx context.Context, scop
 		UPDATE conversation_message_queue
 		SET kind = 'steering'
 		WHERE id = ? AND conversation_id = ? AND organization_id = ? AND status = 'pending' AND kind = 'follow_up'
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
-	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt)
+		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -12026,8 +12754,8 @@ func (s *Store) CancelConversationQueueItem(ctx context.Context, scope core.Scop
 		UPDATE conversation_message_queue
 		SET status = 'canceled'
 		WHERE id = ? AND conversation_id = ? AND organization_id = ? AND status = 'pending'
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at
-	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt)
+		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
