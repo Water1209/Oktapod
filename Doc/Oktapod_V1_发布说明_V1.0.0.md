@@ -1,7 +1,7 @@
 # Oktapod V1.0.0 发布说明
 
 > 状态：Release Candidate
-> 候选日期：2026-07-30
+> 候选日期：2026-08-13
 > 发布范围：个人私有项目 / SQLite / 单 Agent 主链路
 
 ## 1. 发布判断
@@ -14,7 +14,13 @@ V1.0.0 已具备形成 Release Candidate 的产品闭环。代码行数和目录
 
 - 注册、登录和 Owner-only 个人私有项目；
 - 在单一 Thread 内完成目标理解、持久计划、文件读改、命令验证和流式结果；
-- Composer 邻接审批、输入、阻塞恢复、Steering、Next Turn 与 Abort；
+- 用户发送内容先持久化为可见消息；附件、显式 Skill、Steering 与下一轮队列状态不会因模型错误或快速连发而丢失；
+- Composer 邻接审批、输入、阻塞恢复、Steering、Next Turn 与 Abort；同计划项动作可批量审批但保留逐项冻结参数、Hash 和审计；
+- 预算不足时可按明确增量扩展、使用现有结果收尾、将本 Run 设为不限额或停止并保留证据，不再按单次调用循环申请；
+- Work/Code 共用 Workspace、命令、Git、Skill、MCP 和 Artifact 执行内核，场景不改变审批风险；
+- “工作区 / 项目文件 / 任务输出”分层展示可变文件、可复用输入和不可变交付；附件可直接关联已有项目文件；PDF 交付必须通过签名、MIME、Hash 与 Artifact 完成门禁；
+- 首页工作台、项目库、项目切换器、账号菜单、中文设置与可最大化任务面板形成一致导航；
+- Provider API 目录与用户启用模型分离；未配置独立 Reviewer 时自动审查明确禁用并关闭式转人工；
 - Changes 的 Run 开始 / Git HEAD / Git Index 三基线，按文件和 Hunk 查看；
 - 接受成果、撤销所选文件、选择文件提交；撤销和提交会创建受治理任务，不由浏览器直接改写 Git；
 - Policy、ExecutionAuthorization、状态哈希、Receipt、Checkpoint 与重启恢复；
@@ -64,10 +70,10 @@ Build/oktapod-v1.0.0-<os>-<arch>[.exe].sha256
 
 ```text
 Build/oktapod-v1.0.0-windows-amd64.exe
-SHA256 749c8e705bf0b5829a4ac8bbfff49a90c5e09d16b7168352e08b09eacb322d31
+SHA256 ccb7a03e3eb5520da0e97f6226f0d2a68fc506e0901fc23ef206f6ff6df1315f
 ```
 
-2026-07-30 最终本地门禁：`pnpm verify` 通过（Web 20/20），Playwright foundation 1/1、success 23/23 通过；独立临时数据目录产品烟测完成注册、Session/CSRF、版本诊断和个人项目创建。
+2026-08-13 最终本地门禁：`pnpm verify` 通过（Web 26/26），Playwright foundation 1/1、turn 1/1、success 24/24 通过；发布构建与独立临时数据目录产品烟测完成健康、注册、Session/CSRF、版本诊断和个人项目创建。
 
 最终门禁证据与未运行项以《Oktapod V1 验收状态与追踪矩阵》为唯一真源。
 

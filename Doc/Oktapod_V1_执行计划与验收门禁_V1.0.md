@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.5
-> 更新日期：2026-08-11
+> 版本：V1.6
+> 更新日期：2026-08-13
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -37,17 +37,17 @@ V1 唯一交付目标：
 
 ## 2. 执行批次
 
-### 2.1 当前执行记录（2026-07-30）
+### 2.1 当前执行记录（2026-08-13）
 
 | 批次 | 状态 | 已落地证据 | 仍未关闭 |
 |---|---|---|---|
 | B0 | `PASS` | 架构、计划、README、发布说明、部署指南、归档说明和追踪矩阵已统一为 V1.0.0 范围 | 后续变更仍须同步事实 |
-| B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与 Inspector 组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
+| B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与任务面板组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
 | B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、版本注入、CI/OpenAPI/迁移门禁已落地 | 等待 Ubuntu/Windows 原生 CI 关闭 tag 门禁 |
 | B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
 | B4 | `PASS` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、OAuth Authorization Code/回调/取消/刷新、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
-| B6 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
+| B6 | `PARTIAL` | Windows `pnpm verify`（Web 26/26）、Playwright foundation 1/1 + turn 1/1 + success 24/24、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
 
 ### 2.2 场景、文件产物与审核体系收口（2026-08-11）
 
@@ -165,7 +165,7 @@ pnpm verify
 交付：
 
 - Composer 保留输入、附件、安全姿态、已启用模型选择、发送/停止；审批、输入和阻塞动作紧邻 Composer。模型选择必须同时携带 Provider，服务端拒绝未启用模型绕过。
-- Inspector 默认收起，文件与 Changes 只从 Inspector 进入；工作台与项目库为不同路由，会话树从 Thread 菜单进入并保留历史深链。
+- 任务面板默认收起、可最大化，文件与 Changes 只从任务面板进入；工作台与项目库为不同路由，会话树从 Thread 菜单进入并保留历史深链。
 - Changes 支持 Run 开始、Git HEAD、当前工作区三基线，以及文件/行/Hunk 定位、撤销、选择提交和冲突反馈。
 - Diff 修改动作创建受治理的确定性 Tool Task，不由 UI 直接写工作区。
 - 计划 UI 以持久化计划为真源；模型回退已完成项时自动修复，耗尽后再请求用户。

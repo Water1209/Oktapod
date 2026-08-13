@@ -1,11 +1,11 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.3（场景、文件产物与审核体系修订）
+> **文档版本**：V2.4（消息真源、预算决策与任务面板修订）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
-> **编制日期**：2026-08-11
+> **编制日期**：2026-08-13
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
-> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），`main@22b29bc` 及 V1.0.0 发布收口改动
+> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），2026-08-13 功能基线 `main@6b8c60e`
 
 > **阅读规则**：本文件同时保留目标架构和当前落地边界。发布完成度只以《Oktapod V1 验收状态与追踪矩阵》为准；目标目录、代码行数或尚未物理迁移的职责不得当作已完成事实。
 
@@ -49,7 +49,7 @@ Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以�
 | **MCP** | Registry（STDIO + Streamable HTTP）；`initialize`/`tools/list`/`tools/call`；Schema Hash 快照；健康状态 | 复用现有 Capability/MCP 数据与审核流程；内建搜索保留为无凭据能力，MCP 搜索为可选首选 |
 | **Skill** | 严格 `allowed-tools` + 新增 `required-capabilities` / `preferred-tools` / `fallback-policy`（仅 `strict` / `same-capability`） | 见第 6 章 |
 | **安全** | ExecutionAuthorization；宿主受控执行（隔离 HOME、禁宿主凭据、进程树终止）；Git 隔离；External Content Envelope | UI 明示宿主模式不是强沙箱；容器/OS 强隔离进入 V1.1 |
-| **体验** | 单一 Composer；可见执行状态；审批卡；Diff 文件/Hunk 查看、接受、撤销和选择提交；Inspector 默认收起 | 命令逐块 stdout/stderr 直播进入 V1.1；V1 保证完成事件与完整长输出 Artifact |
+| **体验** | 单一 Composer；可见执行状态；审批卡；Diff 文件/Hunk 查看、接受、撤销和选择提交；任务面板默认收起且可最大化 | 命令逐块 stdout/stderr 直播进入 V1.1；V1 保证完成事件与完整长输出 Artifact |
 | **工程** | Windows/Linux 原生构建；`go test` / `go vet` / Ubuntu `go test -race` / 前端 lint+test+build / Playwright 主链路 / 原生产品烟测 / OpenAPI drift / SQLite migration check | **V1 不做 SBOM、依赖扫描、PostgreSQL migration 和企业级完整安全矩阵**，这些进 V1.1 |
 
 ### 1.3 V1 明确不交付（比 GPT-5.6 更严格）
@@ -75,7 +75,7 @@ Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以�
 - 已保存主题在 React 首次绘制前应用，避免刷新时先出现相反主题；选择只保存在当前浏览器，不伪装为项目或服务端策略。
 - Light、Dark、System 均要求正文与状态文字可读，主要文本目标对比度不低于 WCAG AA 4.5:1；主题不能只改变容器背景而保留另一主题的文字、表格或表单颜色。
 - 全局导航保留 `#071454` 品牌深蓝，不视为内容区主题混用；其交互与文字仍需满足可读性和焦点要求。
-- 导航以用户目标分层：`/` 是工作台，`/projects` 是项目库；项目标题是带当前状态的真实项目切换器，不得使用无行为按钮；项目文件和 Git 变更只属于右侧 Inspector，会话树保留领域能力并从 Thread 菜单进入。头像只打开账号菜单，退出是菜单内的第二次明确操作。
+- 导航以用户目标分层：`/` 是工作台，`/projects` 是项目库；项目标题是带当前状态的真实项目切换器，不得使用无行为按钮；项目文件和 Git 变更只属于右侧任务面板，会话树保留领域能力并从 Thread 菜单进入。头像只打开账号菜单，退出是菜单内的第二次明确操作。
 - Provider 的 `model_catalog_entries` 是 API 发现缓存，`provider_enabled_models` 是用户选择真源；`GET /models` 只暴露活动 Provider 的启用模型。项目冻结 `model_provider_id + default_model + fallback_model`，新 Run 再冻结有效 ModelRef；历史 Run 不受后续启停影响，手动模型能力保持未知。
 - Provider 连接配置与模型启用列表是两个阶段；“测试连接”调用受控服务端探测并只展示脱敏错误、延迟和模型数量，不以保存配置或刷新目录替代显式反馈。
 
@@ -509,7 +509,7 @@ V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Ubuntu 与 Win
 | ADR-006 | 系统限定合法候选，模型负责选择 | 候选 1~3 个，系统过滤，模型决策 |
 | ADR-007 | 工具替代过程可见 | 不静默切换 Provider |
 | ADR-008 | 副作用执行必须持 ExecutionAuthorization | Ask 工具无有效审批授权 100% 拒绝 |
-| ADR-009 | 单一 Composer | 高级配置进入项目设置和 Inspector |
+| ADR-009 | 单一 Composer | 高级配置进入项目设置和任务面板 |
 | ADR-010 | 双平台原生 CI/恢复测试是发布前置 | V1 精简门禁，V1.1 补完整矩阵 |
 | ADR-011 | **内核端口先行** | 先拆 Repository/Principal/Policy/Artifact，再长功能 |
 | ADR-012 | **V1 最小沙箱** | 隔离 HOME/凭据/工作区/进程树，网络沙箱进 V1.1 |

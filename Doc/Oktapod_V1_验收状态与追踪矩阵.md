@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.4
-> 更新日期：2026-08-11
+> 版本：v1.5
+> 更新日期：2026-08-13
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`
 
@@ -20,8 +20,8 @@
 
 | 发布 | 状态 | 判断 |
 |---|---|---|
-| V1.0.0 本地 Release Candidate | `RC_READY` | V1 个人版必选能力已关闭；本地工件和全量门禁通过后可提交 RC |
-| V1.0.0 正式 tag | `BLOCKED` | 等待本提交进入 Ubuntu/Windows CI，完成双平台原生产品烟测与 Ubuntu race；不自动 push/tag |
+| V1.0.0 本地 Release Candidate | `RC_READY` | V1 个人版必选能力已关闭；Windows 全量门禁、带版本工件和独立数据目录产品烟测已通过 |
+| V1.0.0 正式 tag | `BLOCKED` | 等待当前 `main` 进入 Ubuntu/Windows CI，完成双平台原生产品烟测与 Ubuntu race；只在用户明确授权时 push/tag |
 | 历史 Release 1A/1B | `ARCHIVED` | 原 Release 1A/1B 范围已并入 V1 统一规划，不再单独追踪 |
 
 ## 2.1 V1 差距驱动批次总览
@@ -29,13 +29,13 @@
 | 批次 | 目标 | 状态 | 关键交付 |
 |---|---|---|---|
 | B0 | 基线与验收真源 | `PASS` | 执行计划、总体架构、README、部署指南和本矩阵已统一范围；后续按代码事实持续同步 |
-| B1 | 内核端口与运行时拆分 | `PASS` | Repository 窄端口、`agentloop`/`harness` 和独立 Inspector 已落地；剩余行数是维护指标，不影响行为闭环 |
+| B1 | 内核端口与运行时拆分 | `PASS` | Repository 窄端口、`agentloop`/`harness` 和独立任务面板已落地；剩余行数是维护指标，不影响行为闭环 |
 | B2 | 执行安全与工程门禁 | `PARTIAL` | `ExecutionAuthorization`、宿主 Git/Secret 隔离、CI/OpenAPI/迁移门禁已落地；双平台原生构建与产品烟测、Ubuntu race 仍待 CI 证据 |
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
 | B4 | MCP/Skill/搜索 | `PASS` | 通用 MCP 来源解析、官方 SDK、本地/远端传输、多 Secret、产品级 OAuth 回调/取消/刷新、Skill ZIP 与内置 Skill Creator 已落地并有确定性测试 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、文件/Hunk、接受及受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
-| B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`、Playwright foundation 1/1 + success 23/23、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
-| B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；Files 三分类；Composer 附件/asset_stage；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
+| B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`（Web 26/26）、Playwright foundation 1/1 + turn 1/1 + success 24/24、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
+| B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；工作区/项目文件/任务输出三分类；Composer 附件/`asset_stage`；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
 
 ## 2.2 V1 正式范围决策
 
@@ -57,8 +57,8 @@
 | ID | 验收项 | 状态 | 当前证据 |
 |---|---|---|---|
 | BASE-001 | `pnpm install --frozen-lockfile` 可复现依赖 | `PASS` | 2026-07-26 初始基线执行成功；随后为根目录 E2E import 补充 Playwright 依赖并更新锁文件，重新安装成功 |
-| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-07-30 最终执行通过：Go vet/test、ESLint、20 个 Vitest、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
-| BASE-003 | 默认 E2E foundation/success | `PASS` | 2026-07-30 最终执行 foundation 1/1、success 23/23 通过，覆盖核心工作流、受治理 Changes、Provider、Tree、1B 路由和五个响应式视口 |
+| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-13 最终执行通过：Go vet/test、ESLint、Web 26/26、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
+| BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-13 最终执行 foundation 1/1、turn 1/1、success 24/24 通过，覆盖核心工作流、连续发送与排队、受治理 Changes、Provider、Tree 和五个响应式视口 |
 | BASE-004 | auth/turn/approval E2E | `PASS` | auth desktop/mobile 2/2、turn 1/1、approval 1/1 通过 |
 | BASE-005 | Windows 与 Linux 构建边界 | `PASS` | Windows `pnpm verify`/浏览器套件通过；WSL Ubuntu Go 全量、Web 测试和生产构建已有证据。Linux 浏览器全视口已转后续加固 |
 | BASE-006 | 前端首包容量 | `PASS` | 主 JS 约 334KB；Terminal、Settings、Import/Export 已拆分为约 3.35KB、7.57KB、8.27KB 的懒加载路由块 |
@@ -102,7 +102,7 @@
 | R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出，品牌图形标/字标来自仓库唯一 Logo 源 |
 | R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效 |
 | R1A-012 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
-| R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；Inspector 文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
+| R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；任务面板支持文件/Hunk 查看、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环通过 |
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt 与真实子进程 kill 后 Lease 恢复自动化通过；`TestClaimNextStepRecoversCompletedBatchWithoutRunnableStep` 覆盖全部 Step 已终态但 Task/Run 仍运行的批次续接恢复 |
 | R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问和 Composer 邻接 UI 已实现；Reviewer 只审 L2 Ask，脱敏、超时/非法输出 fail-closed 与可用性 Diagnostics 有确定性测试；完全访问自动放行冻结风险 L0-L2，L3/硬拒绝仍强制人工或拒绝；暂停/取消/恢复仍由 Application 层处理 |
