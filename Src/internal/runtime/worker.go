@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 
-	mcpadapter "github.com/oktapod/oktapod/Src/internal/adapters/mcp"
 	"github.com/oktapod/oktapod/Src/internal/agentloop"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
@@ -198,36 +196,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-func (w *Worker) beginToolExecution(ctx context.Context, step core.ClaimedStep, run core.RunContext, call core.ToolCall, inputHash string, idempotent bool) (string, error) {
-	var invocationID string
-	err := durableharness.RetryBusy(ctx, func() error {
-		var beginErr error
-		invocationID, beginErr = w.repository.BeginToolExecution(ctx, step, run, call, inputHash, idempotent, newCorrelationID())
-		return beginErr
-	})
-	if err != nil {
-		w.logger.WarnContext(ctx, "tool execution authorization failed", "step_id", step.ID, "tool_name", call.Name, "error", safeErrorSummary(err))
-	}
-	return invocationID, err
-}
-
-func toolReceiptBeginFailure(err error, summary string) core.StepOutcome {
-	if err != nil && strings.Contains(err.Error(), "SIDE_EFFECT_STATUS_UNKNOWN") {
-		return core.StepOutcome{
-			Status:        core.StatusBlocked,
-			ErrorCode:     "SIDE_EFFECT_STATUS_UNKNOWN",
-			ResultSummary: summary,
-			Output:        map[string]any{"retryable": false},
-		}
-	}
-	return core.StepOutcome{
-		Status:        core.StatusFailed,
-		ErrorCode:     "TOOL_RECEIPT_BEGIN_FAILED",
-		ResultSummary: "工具执行收据暂时无法持久化，系统将从已提交检查点安全重试。",
-		Output:        map[string]any{"retryable": true},
-	}
-}
-
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	now := time.Now().UTC()
 	if expired, err := w.repository.ExpireApprovals(ctx, now); err != nil {
@@ -386,17 +354,8 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 	if step.StepType == core.StepModelSynthesis {
 		return w.executeModelSynthesis(ctx, step, run)
 	}
-	if step.StepType == core.ToolSkillInvoke {
-		return w.executeSkillInvoke(ctx, step, run)
-	}
-	if isWorkspaceTool(step.StepType) {
-		return w.executeWorkspaceTool(ctx, step, run)
-	}
-	if step.StepType == core.ToolWebSearch {
-		return w.executeWebSearchTool(ctx, step, run)
-	}
-	if isMCPTool(step.StepType) {
-		return w.executeMCPTool(ctx, step, run)
+	if isToolRuntimeStep(step.StepType) {
+		return w.toolRuntime().Execute(ctx, step, run)
 	}
 
 	assembly, assemblyFailure := NewAgentTurnAssembler(w.repository).Assemble(ctx, step, run)
@@ -1847,119 +1806,12 @@ func modelRefFromSnapshot(snapshot, fallbackModelID string) core.ModelRef {
 	return core.ModelRef{ProviderID: strings.TrimSpace(providerID), ModelID: strings.TrimSpace(modelID)}
 }
 
-func (w *Worker) executeWorkspaceTool(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
-	var input struct {
-		ToolCallID string         `json:"tool_call_id"`
-		Name       string         `json:"name"`
-		Arguments  map[string]any `json:"arguments"`
-		InputHash  string         `json:"input_hash"`
-		Idempotent bool           `json:"idempotent"`
-	}
-	if err := json.Unmarshal([]byte(step.InputJSON), &input); err != nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_INPUT_INVALID", ResultSummary: "Persisted tool input could not be decoded.", Output: map[string]any{"retryable": false}}
-	}
-	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
-	planned := core.PlanTool(call)
-	if planned.Decision == core.PolicyDeny || planned.InputHash == "" || planned.InputHash != input.InputHash {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_POLICY_DENIED", ResultSummary: "The frozen tool input failed deterministic policy validation.", Output: map[string]any{"reason": planned.Reason, "retryable": false}}
-	}
-	if (input.Name == core.ToolWorkspaceRunCommand || input.Name == core.ToolWorkspaceShell) && planned.Decision == core.PolicyAsk && core.FullAccessActive(run.ConfigSnapshotJSON, time.Now().UTC()) {
-		// Full access suppresses the per-command approval prompt only inside
-		// the explicitly selected Run. PlanTool's deterministic hard
-		// denies (shells, network tools, malformed paths/args) still win.
-		planned.Decision = core.PolicyAllow
-	}
-	if (input.Name == core.ToolWorkspaceRunCommand || input.Name == core.ToolWorkspaceShell) && !sceneAllowsWorkspaceCommand(run.ConfigSnapshotJSON) {
-		return core.StepOutcome{Status: core.StatusFailed, ErrorCode: "SCENE_POLICY_DENIED", ResultSummary: "当前 Work 场景不允许执行工作区命令，系统将保留已完成步骤并改用允许的工具重新规划。", Output: map[string]any{"retryable": true, "scene": "work", "recovery": "replan"}}
-	}
-	if input.Name == core.ToolArtifactCapture && w.artifactCapture == nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "ARTIFACT_CAPTURE_UNAVAILABLE", ResultSummary: "Artifact Capture is not configured.", Output: map[string]any{"retryable": false}}
-	}
-	if input.Name == core.ToolAssetStage && w.assetStager == nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "ASSET_STAGER_UNAVAILABLE", ResultSummary: "Asset staging is not configured.", Output: map[string]any{"retryable": false}}
-	}
-	if input.Name != core.ToolArtifactCapture && input.Name != core.ToolAssetStage && w.workspace == nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "WORKSPACE_EXECUTOR_UNAVAILABLE", ResultSummary: "The workspace executor is not configured.", Output: map[string]any{"retryable": false}}
-	}
-	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, input.Idempotent)
-	if err != nil {
-		return toolReceiptBeginFailure(err, "A previous non-idempotent execution has no final receipt; automatic retry was stopped.")
-	}
-	var execution core.ToolExecution
-	if input.Name == core.ToolArtifactCapture {
-		execution = w.captureArtifact(ctx, run.ProjectID, call, planned)
-	} else if input.Name == core.ToolAssetStage {
-		execution = w.stageAsset(ctx, run, call, planned)
-	} else {
-		execution = w.workspace.Execute(ctx, run.ProjectID, call)
-		if execution.Status == core.StatusSucceeded && (input.Name == core.ToolWorkspaceWriteFile || input.Name == core.ToolWorkspaceEditFile) {
-			path, _ := execution.Output["path"].(string)
-			if path == "" {
-				path, _ = input.Arguments["path"].(string)
-			}
-			kind := "deliverable"
-			if strings.HasPrefix(filepath.ToSlash(filepath.Clean(path)), ".research/") {
-				kind = "evidence"
-			}
-			captured := w.captureArtifact(ctx, run.ProjectID, core.ToolCall{ID: call.ID, Name: core.ToolArtifactCapture, Arguments: map[string]any{"path": path, "kind": kind}}, core.PlanTool(core.ToolCall{Name: core.ToolArtifactCapture, Arguments: map[string]any{"path": path, "kind": kind}}))
-			if captured.Status != core.StatusSucceeded {
-				execution.Status = core.StatusFailed
-				execution.ErrorCode = captured.ErrorCode
-				execution.Output["artifact_capture_error"] = captured.Output["reason"]
-			} else {
-				for key, value := range captured.Output {
-					execution.Output[key] = value
-				}
-			}
-		}
-	}
-	execution.InvocationID = invocationID
-	status := execution.Status
-	summary := "工具执行完成，并通过确定性校验。"
-	if status != core.StatusSucceeded {
-		status = core.StatusFailed
-		summary = "工具执行失败，确定性校验未通过。"
-	}
-	return core.StepOutcome{Status: status, ErrorCode: execution.ErrorCode, ResultSummary: summary, Output: execution.Output, ToolExecution: &execution}
-}
-
 type frozenAssetSnapshot struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	MediaType   string `json:"media_type"`
 	SizeBytes   int64  `json:"size_bytes"`
 	ContentHash string `json:"content_hash"`
-}
-
-func (w *Worker) stageAsset(ctx context.Context, run core.RunContext, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
-	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ErrorCode: "ASSET_STAGE_FAILED", ExitCode: -1, InputHash: planned.InputHash, Idempotent: true}
-	assetID, _ := call.Arguments["asset_id"].(string)
-	asset, ok := frozenAssetFromSnapshot(run.ConfigSnapshotJSON, assetID)
-	if !ok {
-		result.ErrorCode = "ASSET_NOT_FROZEN"
-		result.Output = map[string]any{"asset_id": assetID, "reason": "asset is not part of the immutable Run context"}
-		return result
-	}
-	scope := core.Scope{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}
-	live, reader, err := w.repository.OpenAssetContent(ctx, scope, assetID)
-	if err != nil {
-		result.Output = map[string]any{"asset_id": assetID, "reason": safeErrorSummary(err)}
-		return result
-	}
-	defer reader.Close()
-	if live.ProjectID != run.ProjectID || live.ContentHash != asset.ContentHash || live.SizeBytes != asset.SizeBytes || live.Name != asset.Name || live.MediaType != asset.MediaType {
-		result.ErrorCode = "ASSET_SNAPSHOT_MISMATCH"
-		result.Output = map[string]any{"asset_id": assetID, "reason": "asset metadata no longer matches the frozen Run snapshot"}
-		return result
-	}
-	staged, err := w.assetStager.StageAsset(ctx, run.ProjectID, run.RunID, asset.ID, asset.Name, reader, asset.SizeBytes, asset.ContentHash)
-	if err != nil {
-		result.Output = map[string]any{"asset_id": assetID, "reason": safeErrorSummary(err)}
-		return result
-	}
-	result.Status, result.ErrorCode, result.ExitCode = core.StatusSucceeded, "", 0
-	result.Output = map[string]any{"asset_id": asset.ID, "name": asset.Name, "path": staged.Path, "media_type": asset.MediaType, "content_hash": staged.ContentHash, "size_bytes": staged.SizeBytes, "read_only": true}
-	return result
 }
 
 func frozenAssetFromSnapshot(snapshot, assetID string) (frozenAssetSnapshot, bool) {
@@ -1975,30 +1827,6 @@ func frozenAssetFromSnapshot(snapshot, assetID string) (frozenAssetSnapshot, boo
 		}
 	}
 	return frozenAssetSnapshot{}, false
-}
-
-func (w *Worker) captureArtifact(ctx context.Context, projectID string, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
-	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ErrorCode: "ARTIFACT_CAPTURE_FAILED", ExitCode: -1, InputHash: planned.InputHash, Idempotent: true}
-	if w.artifactCapture == nil {
-		result.ErrorCode = "ARTIFACT_CAPTURE_UNAVAILABLE"
-		result.Output = map[string]any{"reason": "artifact capture is not configured"}
-		return result
-	}
-	path, _ := call.Arguments["path"].(string)
-	kind, _ := call.Arguments["kind"].(string)
-	captured, err := w.artifactCapture.Capture(ctx, projectID, path, kind)
-	if err != nil {
-		result.Output = map[string]any{"path": path, "kind": kind, "reason": safeErrorSummary(err)}
-		return result
-	}
-	result.Status = core.StatusSucceeded
-	result.ErrorCode = ""
-	result.ExitCode = 0
-	result.Output = map[string]any{
-		"path": captured.Path, "kind": captured.Kind, "media_type": captured.MediaType,
-		"content_hash": captured.ContentHash, "storage_key": captured.StorageKey, "size_bytes": captured.SizeBytes,
-	}
-	return result
 }
 
 func sceneAllowsWorkspaceCommand(snapshot string) bool {
@@ -2029,236 +1857,10 @@ func currentSnapshotSemantics(snapshot string) bool {
 	return ok && version >= 2
 }
 
-func (w *Worker) executeSkillInvoke(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
-	var input struct {
-		ToolCallID string         `json:"tool_call_id"`
-		Name       string         `json:"name"`
-		Arguments  map[string]any `json:"arguments"`
-		InputHash  string         `json:"input_hash"`
-		Idempotent bool           `json:"idempotent"`
-	}
-	if err := json.Unmarshal([]byte(step.InputJSON), &input); err != nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_INVOKE_INPUT_INVALID", ResultSummary: "Skill 调用输入无法解析。", Output: map[string]any{"retryable": false}}
-	}
-	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
-	planned := core.PlanTool(call)
-	if input.Name != core.ToolSkillInvoke || planned.Decision != core.PolicyAllow || !planned.Idempotent || planned.InputHash == "" || planned.InputHash != input.InputHash {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_POLICY_DENIED", ResultSummary: "Skill 调用未通过冻结策略校验。", Output: map[string]any{"reason": planned.Reason, "retryable": false}}
-	}
-	requested, _ := input.Arguments["skill"].(string)
-	requested = strings.TrimSpace(requested)
-	args, _ := input.Arguments["args"].(string)
-	matches := make([]skillSnapshot, 0, 1)
-	for _, skill := range skillSnapshotsFromConfig(run.ConfigSnapshotJSON) {
-		if skillReferenceMatches(skill, requested) {
-			matches = append(matches, skill)
-		}
-	}
-	if len(matches) == 0 {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_NOT_SNAPSHOTTED", ResultSummary: "模型请求的 Skill 不在当前 Run 的冻结快照中。", Output: map[string]any{"requested_skill": requested, "retryable": false}}
-	}
-	if len(matches) > 1 {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_NAME_AMBIGUOUS", ResultSummary: "多个 Skill 使用了相同名称，必须按 Skill id 调用。", Output: map[string]any{"requested_skill": requested, "retryable": false}}
-	}
-	selected := matches[0]
-	var manifest map[string]any
-	if json.Unmarshal([]byte(selected.ManifestJSON), &manifest) != nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_MANIFEST_INVALID", ResultSummary: "Run 快照中的 Skill manifest 无法解析。", Output: map[string]any{"skill_id": selected.ID, "retryable": false}}
-	}
-	if allowed, exists := manifest["model_invocable"].(bool); exists && !allowed {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_MODEL_INVOCATION_DENIED", ResultSummary: "该 Skill 只允许用户显式调用。", Output: map[string]any{"skill_id": selected.ID, "skill_name": selected.Name, "retryable": false}}
-	}
-	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, true)
-	if err != nil {
-		return toolReceiptBeginFailure(err, "Skill 加载收据状态未知，已停止自动重试。")
-	}
-	output := map[string]any{
-		"skill_id":      selected.ID,
-		"skill_name":    selected.Name,
-		"version":       selected.Version,
-		"content_hash":  selected.ContentHash,
-		"allowed_tools": manifestStringList(manifest["allowed_tools"]),
-		"skill_args":    strings.TrimSpace(args),
-		"has_args":      strings.TrimSpace(args) != "",
-	}
-	execution := core.ToolExecution{ToolCallID: input.ToolCallID, InvocationID: invocationID, Status: core.StatusSucceeded, ExitCode: 0, InputHash: input.InputHash, Idempotent: true, Output: output}
-	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: "Skill 已从 Run 快照加载，准备恢复 Agent Loop。", Output: output, ToolExecution: &execution}
-}
-
 func skillReferenceMatches(skill skillSnapshot, requested string) bool {
 	requested = strings.TrimSpace(requested)
 	return skill.ID == requested || strings.EqualFold(skill.Name, requested) ||
 		strings.EqualFold(skill.Name+"@"+skill.Version, requested)
-}
-
-func (w *Worker) executeWebSearchTool(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
-	var input struct {
-		ToolCallID string         `json:"tool_call_id"`
-		Name       string         `json:"name"`
-		Arguments  map[string]any `json:"arguments"`
-		InputHash  string         `json:"input_hash"`
-		Idempotent bool           `json:"idempotent"`
-	}
-	if err := json.Unmarshal([]byte(step.InputJSON), &input); err != nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "WEB_SEARCH_INPUT_INVALID", ResultSummary: "互联网搜索输入无法解析。", Output: map[string]any{"retryable": false}}
-	}
-	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
-	planned := core.PlanTool(call)
-	if input.Name != core.ToolWebSearch || planned.Decision != core.PolicyAllow || !planned.Idempotent || planned.InputHash == "" || planned.InputHash != input.InputHash {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_POLICY_DENIED", ResultSummary: "互联网搜索输入未通过冻结策略校验。", Output: map[string]any{"reason": planned.Reason, "retryable": false}}
-	}
-	if w.webSearch == nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "WEB_SEARCH_NOT_CONFIGURED", ResultSummary: "当前运行时未配置互联网搜索执行器。", Output: map[string]any{"retryable": false}}
-	}
-	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, true)
-	if err != nil {
-		return toolReceiptBeginFailure(err, "互联网搜索收据状态未知，已停止自动重试。")
-	}
-	execution := w.webSearch.Execute(ctx, call)
-	execution.InvocationID = invocationID
-	execution.InputHash = input.InputHash
-	execution.Idempotent = true
-	if execution.Output == nil {
-		execution.Output = map[string]any{}
-	}
-	execution.Output["_envelope"] = map[string]any{
-		"trust":      core.TrustExternalUntrusted,
-		"source":     "builtin:web_search",
-		"capability": "web.search",
-	}
-	status := core.StatusSucceeded
-	summary := "互联网搜索完成，结果已保存并进入来源综合。"
-	if execution.Status != core.StatusSucceeded {
-		status = core.StatusFailed
-		summary = "互联网搜索失败，已记录受控错误收据。"
-	}
-	return core.StepOutcome{Status: status, ErrorCode: execution.ErrorCode, ResultSummary: summary, Output: execution.Output, ToolExecution: &execution}
-}
-
-func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
-	var input struct {
-		ToolCallID string         `json:"tool_call_id"`
-		Name       string         `json:"name"`
-		Arguments  map[string]any `json:"arguments"`
-		InputHash  string         `json:"input_hash"`
-		Idempotent bool           `json:"idempotent"`
-	}
-	if err := json.Unmarshal([]byte(step.InputJSON), &input); err != nil {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_TOOL_INPUT_INVALID", ResultSummary: "MCP 工具输入无法解析。", Output: map[string]any{"retryable": false}}
-	}
-	capabilityID, toolName, ok := parseMCPToolName(input.Name)
-	if !ok {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_TOOL_NAME_INVALID", ResultSummary: "MCP 工具名称不符合固定 capability/tool 绑定格式。", Output: map[string]any{"retryable": false}}
-	}
-	planned := core.PlanTool(core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments})
-	if planned.Decision == core.PolicyDeny || planned.InputHash == "" || planned.InputHash != input.InputHash {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "TOOL_POLICY_DENIED", ResultSummary: "MCP 工具输入未通过冻结策略校验。", Output: map[string]any{"reason": planned.Reason, "retryable": false}}
-	}
-	var manifestJSON string
-	var credentialRef string
-	allowed := false
-	foundCapability := false
-	for _, capability := range mcpSnapshotsFromConfig(run.ConfigSnapshotJSON) {
-		if capability.ID != capabilityID {
-			continue
-		}
-		foundCapability = true
-		manifestJSON = capability.ManifestJSON
-		credentialRef = capability.CredentialRef
-		for _, tool := range capability.Tools {
-			if tool.Name == toolName {
-				allowed = true
-				break
-			}
-		}
-		break
-	}
-	if !foundCapability || strings.TrimSpace(manifestJSON) == "" {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CAPABILITY_NOT_SNAPSHOTTED", ResultSummary: "MCP capability 未在 Run 快照中获准，拒绝执行。", Output: map[string]any{"retryable": false, "capability_id": capabilityID, "tool_name": toolName}}
-	}
-	if !allowed {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_TOOL_NOT_ALLOWED", ResultSummary: "MCP 工具不在创建 Run 时的冻结工具清单中，拒绝执行。", Output: map[string]any{"retryable": false, "capability_id": capabilityID, "tool_name": toolName}}
-	}
-	credential := ""
-	if credentialRef != "" {
-		if w.mcpSecrets == nil {
-			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据存储不可用。", Output: map[string]any{"retryable": true}}
-		}
-		resolvedCredential, credentialErr := w.mcpSecrets.Get(ctx, credentialRef)
-		if credentialErr != nil {
-			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据不可用，请重新配置后重试。", Output: map[string]any{"retryable": true}}
-		}
-		credential = resolvedCredential
-	}
-	if err := mcpadapter.PreflightCall(manifestJSON, credential, toolName, input.Arguments); err != nil {
-		if errors.Is(err, mcpadapter.ErrNeedsAuth) {
-			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据不可用，请重新配置后重试。", Output: map[string]any{"retryable": true}}
-		}
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_PREFLIGHT_FAILED", ResultSummary: "MCP 调用未通过本地预检，未开始执行。", Output: map[string]any{"retryable": false, "reason": err.Error()}}
-	}
-	var credentialUpdater mcpadapter.CredentialUpdater
-	if credentialRef != "" && w.mcpSecrets != nil {
-		credentialUpdater = func(saveContext context.Context, payload string) error {
-			return w.mcpSecrets.Set(saveContext, credentialRef, payload)
-		}
-	}
-	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
-	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, input.Idempotent)
-	if err != nil {
-		return toolReceiptBeginFailure(err, "MCP 副作用状态未知，已停止自动重试。")
-	}
-	callContext := ctx
-	cancelCall := func() {}
-	if w.mcpCallTimeout > 0 {
-		callContext, cancelCall = context.WithTimeout(ctx, w.mcpCallTimeout)
-	}
-	defer cancelCall()
-	callResult, callErr := mcpadapter.CallWithCredentialUpdater(callContext, manifestJSON, credential, toolName, input.Arguments, credentialUpdater)
-	output := map[string]any{
-		"capability_id": capabilityID,
-		"tool_name":     toolName,
-		"is_error":      callResult.IsError,
-		"_envelope": map[string]any{
-			"trust":      core.TrustExternalUntrusted,
-			"source":     "mcp:" + capabilityID,
-			"capability": toolName,
-		},
-	}
-	content := make([]any, 0, len(callResult.Content))
-	for _, raw := range callResult.Content {
-		var item any
-		if json.Unmarshal(raw, &item) == nil {
-			content = append(content, item)
-		}
-	}
-	output["content"] = content
-	if len(callResult.StructuredResult) > 0 {
-		var structured any
-		if json.Unmarshal(callResult.StructuredResult, &structured) == nil {
-			output["structured_content"] = structured
-		}
-	}
-	execution := core.ToolExecution{ToolCallID: input.ToolCallID, InvocationID: invocationID, Status: core.StatusSucceeded, ExitCode: 0, InputHash: input.InputHash, Idempotent: input.Idempotent, Output: output}
-	if callErr != nil {
-		execution.Status = core.StatusFailed
-		execution.ErrorCode = "MCP_CALL_FAILED"
-		output["reason"] = callErr.Error()
-		if errors.Is(callErr, context.DeadlineExceeded) || errors.Is(callContext.Err(), context.DeadlineExceeded) {
-			execution.ErrorCode = "MCP_CALL_TIMEOUT"
-			output["reason"] = "MCP tool exceeded the configured execution deadline"
-			output["retryable"] = true
-		}
-	} else if callResult.IsError {
-		execution.Status = core.StatusFailed
-		execution.ErrorCode = "MCP_TOOL_ERROR"
-	}
-	summary := "MCP 工具执行完成，等待确定性收据验收。"
-	status := core.StatusSucceeded
-	if execution.Status != core.StatusSucceeded {
-		status = core.StatusFailed
-		summary = "MCP 工具执行失败，已记录错误收据。"
-	}
-	return core.StepOutcome{Status: status, ErrorCode: execution.ErrorCode, ResultSummary: summary, Output: output, ToolExecution: &execution}
 }
 
 func (w *Worker) heartbeat(ctx context.Context, step core.ClaimedStep, done chan<- struct{}, cancel context.CancelFunc) {

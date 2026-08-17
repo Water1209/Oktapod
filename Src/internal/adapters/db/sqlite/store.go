@@ -7552,9 +7552,12 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 	if err := tx.QueryRowContext(ctx, `SELECT tool_name, arguments_hash, risk_level, policy_decision, status FROM tool_calls WHERE id = ? AND step_id = ? AND run_id = ?`, call.ID, step.ID, run.RunID).Scan(&storedName, &storedHash, &storedRisk, &storedDecision, &toolStatus); err != nil {
 		return "", err
 	}
-	planned := core.PlanTool(call)
+	planned, policyErr := s.executionPolicy.EvaluateExecution(ctx, application.Principal{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}, application.ExecutionRequest{ProjectID: run.ProjectID, Call: call, ConfigSnapshot: run.ConfigSnapshotJSON})
+	if policyErr != nil {
+		return "", policyErr
+	}
 	if strings.HasPrefix(call.Name, "mcp__") {
-		risk, plannedIdempotent, reason := mcpPolicyFromSnapshot(run.ConfigSnapshotJSON, call.Name)
+		risk, plannedIdempotent, reason := application.MCPPolicyFromSnapshot(run.ConfigSnapshotJSON, call.Name)
 		planned.RiskLevel = risk
 		planned.Idempotent = plannedIdempotent
 		if reason != "" {
@@ -9231,7 +9234,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			return "", "", policyErr
 		}
 		if strings.HasPrefix(call.Name, "mcp__") {
-			risk, idempotent, reason := mcpPolicyFromSnapshot(run.ConfigSnapshotJSON, call.Name)
+			risk, idempotent, reason := application.MCPPolicyFromSnapshot(run.ConfigSnapshotJSON, call.Name)
 			plan.RiskLevel = risk
 			plan.Idempotent = idempotent
 			if reason != "" {
@@ -10120,58 +10123,6 @@ func fullAccessAutoAllows(fullAccess bool, plan core.PlannedTool) bool {
 	// already evaluate to allow, so Full Access only suppresses ordinary L2
 	// execution approvals and never widens L3 or deterministic denies.
 	return fullAccess && plan.Decision == core.PolicyAsk && plan.RiskLevel == "L2"
-}
-
-func mcpPolicyFromSnapshot(snapshot, fullToolName string) (string, bool, string) {
-	var config struct {
-		Capabilities []struct {
-			ID    string `json:"id"`
-			Tools []struct {
-				Name        string `json:"name"`
-				Annotations struct {
-					ReadOnlyHint    *bool `json:"readOnlyHint"`
-					DestructiveHint *bool `json:"destructiveHint"`
-					IdempotentHint  *bool `json:"idempotentHint"`
-					OpenWorldHint   *bool `json:"openWorldHint"`
-				} `json:"annotations"`
-			} `json:"tools"`
-		} `json:"mcp_capabilities"`
-	}
-	if json.Unmarshal([]byte(snapshot), &config) != nil {
-		return "L3", false, "MCP tool metadata is missing; high-risk manual approval is required"
-	}
-	for _, capability := range config.Capabilities {
-		for _, tool := range capability.Tools {
-			if "mcp__"+capability.ID+"__"+tool.Name != fullToolName {
-				continue
-			}
-			annotations := tool.Annotations
-			idempotent := annotations.IdempotentHint != nil && *annotations.IdempotentHint
-			if annotations.ReadOnlyHint != nil && !*annotations.ReadOnlyHint {
-				return "L3", idempotent, "MCP tool declares non-read-only behavior; one-time manual approval is required"
-			}
-			if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
-				return "L3", idempotent, "Destructive MCP execution always requires one-time manual approval"
-			}
-			if annotations.IdempotentHint != nil && !*annotations.IdempotentHint {
-				return "L3", false, "Non-idempotent MCP execution always requires one-time manual approval"
-			}
-			if annotations.ReadOnlyHint == nil || annotations.DestructiveHint == nil || annotations.IdempotentHint == nil || annotations.OpenWorldHint == nil {
-				if core.IsSearchEvidenceTool(fullToolName) {
-					return "L2", true, "Enabled frozen MCP search is treated as read-only and idempotent despite incomplete optional annotations"
-				}
-				return "L3", false, "MCP annotations are incomplete; high-risk manual approval is required"
-			}
-			if !*annotations.ReadOnlyHint || *annotations.DestructiveHint || !*annotations.IdempotentHint {
-				return "L3", idempotent, "MCP tool is not safely read-only and idempotent; one-time manual approval is required"
-			}
-			if *annotations.OpenWorldHint {
-				return "L2", true, "Read-only idempotent MCP access to external data uses a durable receipt"
-			}
-			return "L2", true, "Bounded read-only MCP execution uses a durable receipt"
-		}
-	}
-	return "L3", false, "MCP tool is absent from the frozen capability snapshot; high-risk manual approval is required"
 }
 
 func (s *Store) recordLengthTruncatedToolCalls(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, calls []core.ToolCall, now, correlationID string) error {
