@@ -9,6 +9,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -149,6 +150,30 @@ func TestWorkspaceShellPreservesQuotedArguments(t *testing.T) {
 	execution := executeWorkspaceTest(t, executor, core.ToolWorkspaceShell, map[string]any{"command": command})
 	if execution.Status != core.StatusSucceeded || !strings.Contains(execution.Output["stdout"].(string), `"quoted value"`) {
 		t.Fatalf("quoted shell execution=%+v", execution)
+	}
+}
+
+func TestWorkspaceCommandCancellationTerminatesProcessTree(t *testing.T) {
+	executor, projectRoot := newWorkspaceTestExecutor(t)
+	if err := os.WriteFile(filepath.Join(projectRoot, "wait.go"), []byte("package main\nimport \"time\"\nfunc main() { for { time.Sleep(time.Second) } }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan core.ToolExecution, 1)
+	go func() {
+		done <- executor.Execute(ctx, workspaceTestProjectID, core.ToolCall{ID: "cancel-command", Name: core.ToolWorkspaceRunCommand, Arguments: map[string]any{
+			"program": "go", "args": []any{"run", "wait.go"},
+		}})
+	}()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	select {
+	case execution := <-done:
+		if execution.Status != core.StatusFailed || execution.ErrorCode != "TOOL_CANCELED" {
+			t.Fatalf("canceled command=%#v", execution)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("canceled command process tree did not terminate")
 	}
 }
 

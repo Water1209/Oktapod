@@ -75,6 +75,9 @@ func isToolRuntimeStep(stepType string) bool {
 }
 
 func (runtime ToolRuntime) Execute(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
+	if ctx.Err() != nil {
+		return core.StepOutcome{Status: core.StatusFailed, ErrorCode: "TASK_CANCELED", ResultSummary: "任务已在工具派发前取消。", Output: map[string]any{"retryable": false}}
+	}
 	invocation, err := decodeFrozenToolInvocation(step.InputJSON)
 	if err != nil {
 		return toolInputFailure(step.StepType)
@@ -453,15 +456,22 @@ func (runtime ToolRuntime) dispatchMCP(ctx context.Context, invocation FrozenToo
 	}
 	execution := core.ToolExecution{Status: core.StatusSucceeded, ExitCode: 0, Output: output}
 	if callErr != nil {
-		execution.Status, execution.ErrorCode = core.StatusFailed, "MCP_CALL_FAILED"
-		output["reason"] = callErr.Error()
-		if errors.Is(callErr, context.DeadlineExceeded) || errors.Is(callContext.Err(), context.DeadlineExceeded) {
-			execution.ErrorCode, output["reason"], output["retryable"] = "MCP_CALL_TIMEOUT", "MCP tool exceeded the configured execution deadline", true
-		}
+		execution.Status = core.StatusFailed
+		execution.ErrorCode, output["reason"], output["retryable"] = classifyMCPCallError(callErr, callContext.Err())
 	} else if result.IsError {
 		execution.Status, execution.ErrorCode = core.StatusFailed, "MCP_TOOL_ERROR"
 	}
 	return execution
+}
+
+func classifyMCPCallError(callErr, contextErr error) (string, string, bool) {
+	if errors.Is(callErr, context.DeadlineExceeded) || errors.Is(contextErr, context.DeadlineExceeded) {
+		return "MCP_CALL_TIMEOUT", "MCP tool exceeded the configured execution deadline", true
+	}
+	if errors.Is(callErr, context.Canceled) || errors.Is(contextErr, context.Canceled) {
+		return "TOOL_CANCELED", "MCP tool was canceled after execution began", false
+	}
+	return "MCP_CALL_FAILED", callErr.Error(), false
 }
 
 func (invocation FrozenToolInvocation) String() string {

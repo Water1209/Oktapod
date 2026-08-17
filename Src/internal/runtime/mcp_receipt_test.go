@@ -59,3 +59,26 @@ func TestToolRuntimeStrictDecoderRejectsEveryToolFamilyBeforeReceipt(t *testing.
 		})
 	}
 }
+
+func TestToolRuntimeCanceledBeforeDispatchDoesNotBeginReceipt(t *testing.T) {
+	repository := &beginCountingRepository{}
+	runtime := ToolRuntime{ledger: repository}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outcome := runtime.Execute(ctx, core.ClaimedStep{ID: "canceled-before-dispatch", StepType: core.ToolWebSearch}, core.RunContext{})
+	if outcome.Status != core.StatusFailed || outcome.ErrorCode != "TASK_CANCELED" || repository.beginCalls != 0 {
+		t.Fatalf("outcome=%#v begin_calls=%d", outcome, repository.beginCalls)
+	}
+}
+
+func TestMCPCallErrorSeparatesCancelTimeoutAndFailure(t *testing.T) {
+	if code, _, retryable := classifyMCPCallError(context.Canceled, context.Canceled); code != "TOOL_CANCELED" || retryable {
+		t.Fatalf("cancel code=%s retryable=%v", code, retryable)
+	}
+	if code, _, retryable := classifyMCPCallError(context.DeadlineExceeded, context.DeadlineExceeded); code != "MCP_CALL_TIMEOUT" || !retryable {
+		t.Fatalf("timeout code=%s retryable=%v", code, retryable)
+	}
+	if code, reason, retryable := classifyMCPCallError(errors.New("remote failed"), nil); code != "MCP_CALL_FAILED" || reason != "remote failed" || retryable {
+		t.Fatalf("failure code=%s reason=%q retryable=%v", code, reason, retryable)
+	}
+}

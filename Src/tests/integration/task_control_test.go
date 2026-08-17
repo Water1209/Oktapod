@@ -532,6 +532,7 @@ func TestTaskCancelClosesPendingApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepID, toolCallID, approvalID := insertPendingApproval(t, databasePath, project.ID, task.ID, task.RunID)
+	receiptID := insertStartedReceipt(t, databasePath, project.ID, task.ID, task.RunID, stepID, toolCallID)
 	setTaskAndRunStatus(t, databasePath, task.ID, task.RunID, core.StatusWaitingApproval)
 	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "cancel-control", "cancel-control-key")
 	if err != nil || updated.Status != core.StatusCanceled {
@@ -539,7 +540,7 @@ func TestTaskCancelClosesPendingApproval(t *testing.T) {
 	}
 	db := openTaskControlDatabase(t, databasePath)
 	defer db.Close()
-	var stepStatus, toolStatus, approvalStatus, note string
+	var stepStatus, toolStatus, approvalStatus, note, receiptStatus, receiptError string
 	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, stepID).Scan(&stepStatus); err != nil {
 		t.Fatal(err)
 	}
@@ -549,8 +550,11 @@ func TestTaskCancelClosesPendingApproval(t *testing.T) {
 	if err := db.QueryRow(`SELECT status, decision_note FROM approval_requests WHERE id = ?`, approvalID).Scan(&approvalStatus, &note); err != nil {
 		t.Fatal(err)
 	}
-	if stepStatus != core.StatusCanceled || toolStatus != "rejected" || approvalStatus != core.ApprovalRejected || note != "任务已取消" {
-		t.Fatalf("cancel state step=%s tool=%s approval=%s note=%q", stepStatus, toolStatus, approvalStatus, note)
+	if err := db.QueryRow(`SELECT status, error_code FROM side_effect_receipts WHERE id = ?`, receiptID).Scan(&receiptStatus, &receiptError); err != nil {
+		t.Fatal(err)
+	}
+	if stepStatus != core.StatusCanceled || toolStatus != "rejected" || approvalStatus != core.ApprovalRejected || note != "任务已取消" || receiptStatus != core.SideEffectReceiptUnknown || receiptError != "SIDE_EFFECT_STATUS_UNKNOWN" {
+		t.Fatalf("cancel state step=%s tool=%s approval=%s note=%q receipt=%s/%s", stepStatus, toolStatus, approvalStatus, note, receiptStatus, receiptError)
 	}
 }
 
@@ -666,4 +670,16 @@ func insertUnknownReceipt(t *testing.T, databasePath, projectID, taskID, runID, 
 	if _, err := db.Exec(`INSERT INTO side_effect_receipts (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, invocation_id, input_hash, idempotent, status, exit_code, output_json, error_code, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hash:test', 0, 'unknown', -1, '{}', 'UNKNOWN', ?, '')`, receiptID, testOrgID, projectID, taskID, runID, stepID, toolCallID, uuid.NewString(), now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func insertStartedReceipt(t *testing.T, databasePath, projectID, taskID, runID, stepID, toolCallID string) string {
+	t.Helper()
+	db := openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	receiptID := uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO side_effect_receipts (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, invocation_id, input_hash, idempotent, status, exit_code, output_json, error_code, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hash:test', 0, 'started', -1, '{}', '', ?, '')`, receiptID, testOrgID, projectID, taskID, runID, stepID, toolCallID, uuid.NewString(), now); err != nil {
+		t.Fatal(err)
+	}
+	return receiptID
 }

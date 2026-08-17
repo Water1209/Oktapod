@@ -3277,6 +3277,12 @@ func (s *Store) applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, com
 		return nil, err
 	case core.TaskCommandCancel:
 		if _, err := tx.ExecContext(ctx, `
+			UPDATE side_effect_receipts
+			SET status = 'unknown', error_code = 'SIDE_EFFECT_STATUS_UNKNOWN', finished_at = ?
+			WHERE run_id = ? AND status = 'started'`, now, runID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE steps
 			SET status = 'canceled', owner_id = '', lease_until = '',
 			    fence_token = CASE WHEN status = 'running' THEN fence_token + 1 ELSE fence_token END,
