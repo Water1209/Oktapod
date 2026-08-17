@@ -25,6 +25,7 @@ type ProviderInstance struct {
 	Status           string
 	IsDefault        bool
 	CredentialExists bool
+	CredentialStatus string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }

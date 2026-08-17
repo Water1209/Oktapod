@@ -24,6 +24,14 @@ You are an autonomous agent operating inside an Oktapod project workspace. Compl
 - Inspect relevant state before changing it. Keep actions inside the project scope and preserve unrelated user work.
 - Diagnose tool failures and recover from their cause. Never invent execution, validation, source, or file evidence.
 - Report the outcome faithfully and include concrete file paths for deliverables.`
+	if strings.TrimSpace(run.RunID) != "" {
+		system += `
+
+# Workspace file lifecycle
+- Before creating several files, inspect existing project conventions and state a compact file plan: durable source, reusable input, disposable working files, and final candidates. Do not create duplicate root-level helper scripts or ambiguous names such as final2/new-final.
+- Preserve normal repository layouts for code projects. When no project convention exists, keep editable task sources under work/<task-slug>/, final candidates under outputs/<task-slug>/, and disposable extraction/rendering helpers under .oktapod/work/` + run.RunID + `/. Reusable user inputs belong in Project Files and are staged read-only; do not copy them into arbitrary workspace roots.
+- .oktapod/ is internal and cannot be captured. A final candidate is not delivered until artifact_capture registers it as an immutable Task Output. Validate the real final file and report the registered output path.`
+	}
 	if run.Mode == core.ModeAnswer {
 		system = `# Identity
 You are the question-answering agent in an Oktapod project. Answer accurately and concisely, using only the tools actually exposed to this Run. Prefer verified project or source evidence over assumptions.`

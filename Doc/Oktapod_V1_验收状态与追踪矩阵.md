@@ -34,8 +34,9 @@
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
 | B4 | MCP/Skill/搜索 | `PASS` | 通用 MCP 来源解析、官方 SDK、本地/远端传输、多 Secret、产品级 OAuth 回调/取消/刷新、Skill ZIP 与内置 Skill Creator 已落地并有确定性测试 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、文件/Hunk、接受及受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
-| B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`（Web 26/26）、Playwright foundation 1/1 + turn 1/1 + success 24/24、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
+| B6 | 发布收口 | `PARTIAL` | Windows `pnpm verify`（Web 28/28）、Playwright foundation 初始化 1/1 + 重启 1/1、turn 1/1、success 26/26、真实 Provider、进程 kill 恢复、带版本工件和产品烟测已有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 | B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；工作区/项目文件/任务输出三分类；Composer 附件/`asset_stage`；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
+| B8 | 统一配置与数据库密钥库 | `PASS` | 000058～000061、AES-256-GCM DatabaseSecretStore、两阶段恢复、严格 YAML、数据库设置、配置/Vault API+CLI+UI、Backup V2 和浏览器重启自动解锁闭环已落地；无旧 Keyring 迁移 |
 
 ## 2.2 V1 正式范围决策
 
@@ -46,7 +47,7 @@
 | 交互式 xterm | `N/A` | 命令在原 Thread 内以受治理 Task 执行，不恢复独立 Terminal |
 | Pi v1/v2/v3 精确导入 | `N/A` | V1 只保证 Oktapod 自有格式 round-trip；Pi 精确兼容进入 V1.1 |
 | 原生 Anthropic/Gemini 真实凭据 | `N/A` | V1 要求至少一个真实 Provider 主链路；原生协议保留合同测试 |
-| 完整设置服务端化 | `N/A` | V1 允许非敏感显示偏好保存在浏览器；安全和运行配置必须服务端持久化 |
+| 产品设置服务端化 | `PASS` | Reviewer、版本化价格、上下文和用户偏好进入数据库；启动参数进入严格 YAML；仅 Composer 草稿、侧栏/Inspector 页签保留当前设备，`full_access` 不跨设备持久化 |
 | Team/Agent Team/Schedule 主流程 | `N/A` | 代码保留兼容能力，但 V1 完成度只计算单 Agent 个人项目主链路，不删除已有入口 |
 | 强沙箱与网络默认拒绝 | `N/A` | V1 明示 `governed_host` 非强沙箱；容器/OS 隔离进入 V1.1 |
 | 命令逐块 stdout/stderr 直播 | `N/A` | V1 保证完成事件、截断摘要与完整 Artifact；逐块直播进入 V1.1 |
@@ -57,11 +58,12 @@
 | ID | 验收项 | 状态 | 当前证据 |
 |---|---|---|---|
 | BASE-001 | `pnpm install --frozen-lockfile` 可复现依赖 | `PASS` | 2026-07-26 初始基线执行成功；随后为根目录 E2E import 补充 Playwright 依赖并更新锁文件，重新安装成功 |
-| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-13 最终执行通过：Go vet/test、ESLint、Web 26/26、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
-| BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-13 最终执行 foundation 1/1、turn 1/1、success 24/24 通过，覆盖核心工作流、连续发送与排队、受治理 Changes、Provider、Tree 和五个响应式视口 |
+| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-13 最终执行通过：Go vet/test、ESLint、Web 28/28、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
+| BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-13 最终执行 foundation 初始化 1/1 + 服务重启自动解锁 1/1、turn 1/1、success 26/26 通过，覆盖 Vault、Reviewer、MCP 重录、核心工作流、连续发送与排队、受治理 Changes、Provider、Tree 和五个响应式视口 |
 | BASE-004 | auth/turn/approval E2E | `PASS` | auth desktop/mobile 2/2、turn 1/1、approval 1/1 通过 |
 | BASE-005 | Windows 与 Linux 构建边界 | `PASS` | Windows `pnpm verify`/浏览器套件通过；WSL Ubuntu Go 全量、Web 测试和生产构建已有证据。Linux 浏览器全视口已转后续加固 |
 | BASE-006 | 前端首包容量 | `PASS` | 主 JS 约 334KB；Terminal、Settings、Import/Export 已拆分为约 3.35KB、7.57KB、8.27KB 的懒加载路由块 |
+| BASE-007 | Vault 与可移植配置 | `PASS` | Crypto/SQLite 覆盖篡改、互换、错误口令、旋转、Provider/MCP/OAuth CRUD、重启、Locked 恢复和明文 Sentinel 扫描；Playwright foundation 两阶段覆盖 UI 初始化确认及服务重启自动解锁，Success 覆盖 Reviewer 与 MCP 重录 |
 
 ## 4. OHCS Golden Trace
 
@@ -106,7 +108,7 @@
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt 与真实子进程 kill 后 Lease 恢复自动化通过；`TestClaimNextStepRecoversCompletedBatchWithoutRunnableStep` 覆盖全部 Step 已终态但 Task/Run 仍运行的批次续接恢复 |
 | R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问和 Composer 邻接 UI 已实现；Reviewer 只审 L2 Ask，脱敏、超时/非法输出 fail-closed 与可用性 Diagnostics 有确定性测试；完全访问自动放行冻结风险 L0-L2，L3/硬拒绝仍强制人工或拒绝；暂停/取消/恢复仍由 Application 层处理 |
-| R1A-017 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作区/项目文件/任务输出/Changes 分层查询与 Scope 通过；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
+| R1A-017 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件 API 提供五类生命周期并在 UI 折叠过程/临时项，嵌套缓存、依赖和虚拟环境同样识别为临时；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
 | R1A-018 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；队列消费绑定原消息避免重复；Task/Auto 裸“继续”恢复当前会话而不新建无上下文任务；同计划项审批可批量决定但每项保留冻结 Hash；预算请求采用有意义增量，并支持现有结果收尾、本 Run 不限额或终止且保留证据 |
 
 ## 6. Release 1B 验收矩阵
@@ -118,7 +120,7 @@
 | R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；标准远端默认按 OAuth challenge 自动发现，Registry 声明的 Secret Header 则生成安全绑定。Authorization Code/PKCE、浏览器回调、取消、动态客户端注册与刷新令牌 SecretStore 回写均有确定性测试。Tavily 发现 5 个工具并真实搜索，Filesystem 完成受限目录写读与越界拒绝；OAuth fixture 覆盖首次授权、取消和过期令牌刷新，故障 fixture 覆盖超时、非法 Schema、超量输出、进程缺失、SSRF/重定向与活动 Run 删除阻止。GitHub/Notion 无外部账号时仍完整验证发现、配置、审批和失败恢复，真实数据调用标记为可选外部烟测。单 Skill ZIP 严格校验覆盖路径穿越、Unicode 冲突、符号链接、嵌套 Skill、隐藏载荷和压缩炸弹。 |
 | R1B-004 | Provider 协议与真实主链路 | `PASS` | 原生 Anthropic/Gemini 增量合同通过；OpenAI 兼容通道已经真实 MiniMax 端到端验证可见流式、工具、文件修改和回读哈希；更多原生真实凭据已按 V1 范围决策排除 |
 | R1B-005 | 高级 Git | `PASS` | `git_conflicts`、按 Hunk 恢复、选择路径提交具备状态 Hash、Policy、审批与 Receipt；Changes UI 通过原 Thread 创建受治理动作。远程 Git 不进入 V1 |
-| R1B-006 | V1 设置 | `PASS` | 设置只保留真实可改且生效的“模型服务、外观”；安全重定向审批中心，数据维护重定向导入与导出，其余旧设置深链回到外观。设置页只按自身冻结的 `section` 参数处理旧深链，不会在离开设置时用全局待跳转路径把用户重定向回来；主题在首次绘制前恢复；运行时 Context/Retry/Shell 和固定快捷键不再伪装成设置 |
+| R1B-006 | V1 设置 | `PASS` | 配置中心按模型服务、治理与审批、运行与上下文、费用与用量、凭据与密钥库、数据与备份、外观与偏好七类职责拆分；Provider 的连接、API Key、启用模型和默认模型一次保存并自动验证，Reviewer 不再混入模型连接。系统 Backup 与单项目交换明确分界；诊断列出具体项目/资源并直达 MCP 凭据录入。设置页只按自身冻结的 `section` 参数处理深链，主题在首次绘制前恢复 |
 | R1B-007 | 项目级审批规则 | `PASS` | 000049；API 强制二次确认；Tool + 确定性窄键；30 天 TTL；Owner 查看/撤销；撤销后恢复审批；Policy 静态拒绝不被绕过；Go 与 Playwright 验收通过 |
 
 ## 7. 前端验收
@@ -195,3 +197,6 @@
 | 2026-08-11 | 设置页跨路由卡死修复 | 修复外观设置页读取全局待跳转路径并误触发自身重定向、导致“设置 → 首页/项目”等所有离开设置的 Link 被取消的问题；改为读取当前 `/settings/$section` 路由参数。新增“外观 → 项目库 → 外观”浏览器回归；Web lint、25/25 单测、production build、定向 Playwright 1/1 和真实 `127.0.0.1:8787` 浏览器点击链路通过。 |
 | 2026-08-11 | 项目切换、附件读取与 Provider 探测修复 | 项目标题由无行为按钮改为可键盘关闭的真实项目切换器；Composer 只要选择附件，Auto 就确定性创建 Task 并冻结附件，非文本附件未产生成功 `asset_stage` Receipt 时完成门禁自动修复或阻塞；模型服务恢复“测试连接”并显示脱敏结果、延迟和模型数。新增附件路由/冻结快照、二进制完成门禁、恢复提示及项目切换/Provider 探测回归；`pnpm verify` 全绿，真实浏览器完成跨项目切换、Provider 连接正常和 2.2 MiB PDF 暂存、32 页正文提取、4/4 总结及任务输出登记闭环。 |
 | 2026-08-13 | 消息真源、预算决策与任务面板收口 | 用户消息在进入 Steering/下一轮队列时先事务化持久化，附件、`/Skill` 和队列类型作为展示快照随消息保留；修复运行中快速连发被 `submit.isPending` 静默丢弃。预算扩展改为显示当前额度与明确增量，并提供“现有结果收尾 / 本次不限额 / 停止任务”；同一计划项的冻结动作支持批量批准但保持逐项审计。旧故障 Run 复核为 112 次成功续写、72 次预算阻塞、72 次预算批准和 47 次工具批准，终态 `failed` 且没有继续运行；终态失败不再制造“待我处理”红点，局部工具成功也不会覆盖整体失败摘要，历史矛盾摘要仅在技术追踪保留原文。右侧统一为可最大化“任务面板”，文件操作使用带无障碍提示的图标，附件可直接关联已有项目文件。`pnpm verify`、foundation 1/1、turn 1/1、success 24/24、Windows 发行构建及独立数据目录 smoke 全部通过；工件 SHA256 `ccb7a03e3eb5520da0e97f6226f0d2a68fc506e0901fc23ef206f6ff6df1315f`。 |
+| 2026-08-13 | 统一配置与数据库密钥库 | 000058～000061 建立 AES-256-GCM 数据库 Vault、Reviewer/价格/偏好真源并删除 `model_provider_configs`；Provider、MCP 多字段 Secret 和 OAuth Token 全部切换到 DatabaseSecretStore，移除 `go-keyring` 和系统 Keyring 运行路径。严格 YAML、配置/Vault API+CLI、七类职责设置页、诊断 `attention`、Backup V2 与跨机器恢复闭环完成。Crypto/SQLite 覆盖错误口令、Nonce/AAD 篡改、密文互换、旋转、CRUD、重启、Locked 恢复和 SQLite/WAL/日志/导出明文扫描；Playwright foundation 两阶段完成 UI 初始化确认与服务重启自动解锁，Success 定向覆盖准确 Reviewer 和 MCP 凭据重录。旧系统 Secret 不迁移，现有资源自然显示 missing。 |
+| 2026-08-13 | 配置中心信息架构与真实 Provider 闭环 | 设置中心重构为七类职责页，Reviewer 移入独立治理边界，Provider 采用一次保存并自动测试；修复模型价格 PUT 误要求响应字段 `updated_at`、保存后脏状态和内部 Provider ID 泄漏。诊断把缺失凭据细化到 Provider 或具体项目中的 MCP，并直达凭据表单；数据页明确系统 Backup 与单项目交换边界。浏览器使用数据库 Vault 中的真实火山方舟凭据完成目录测试、`kimi-k3` Composer 生成与会话落库，Secret 未回填页面。 |
+| 2026-08-13 | 资源 Scope、任务状态与工作文件生命周期收口 | 资源中心拆分“项目资源/系统能力”，类型筛选只作用于项目资源，稳定显示总数与各类型计数，并为无 MCP 等场景给出可行动空状态；诊断 MCP 清单改为当前 Principal 可访问项目 Scope，深链固定项目、类型与资源。任务流摘要穷举持久化 Task 状态，暂停不再因事件流停止被误报为完成。工作文件 API 增加五类生命周期，UI 将过程/临时项折叠并仅对待登记输出显示 Capture，嵌套缓存/依赖/虚拟环境同样归入临时；Prompt 与 ToolSpec 要求多文件任务先规划目录，普通代码项目仍遵循仓库约定，旧文件不搬移不删除。 |

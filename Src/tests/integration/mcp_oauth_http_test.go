@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
+	"github.com/oktapod/oktapod/Src/internal/adapters/secretstore"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -74,9 +76,20 @@ func (coordinator *oauthHTTPCoordinator) Cancel(context.Context, string) (core.M
 }
 
 func TestMCPOAuthHTTPFlowDoesNotExposeCredentialsOrProtocolState(t *testing.T) {
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
+	vault, err := secretstore.NewVaultKeyManager(context.Background(), repository, testOrgID, filepath.Dir(databasePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryCode, _, err := vault.Initialize(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vault.Confirm(context.Background(), recoveryCode); err != nil {
+		t.Fatal(err)
+	}
 	secrets := &oauthHTTPSecretStore{values: map[string]string{}}
 	now := time.Now().UTC()
 	coordinator := &oauthHTTPCoordinator{state: "fixture-state-1234567890", session: core.MCPOAuthSession{
@@ -86,6 +99,7 @@ func TestMCPOAuthHTTPFlowDoesNotExposeCredentialsOrProtocolState(t *testing.T) {
 	}}
 	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" }).
 		WithProviderRegistry(secrets, nil).
+		WithVault(vault).
 		WithMCPOAuthCoordinator(coordinator)
 	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "OAuth MCP", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "oauth-mcp-project")
 	if err != nil {

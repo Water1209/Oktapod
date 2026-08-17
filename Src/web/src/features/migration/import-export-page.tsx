@@ -100,7 +100,7 @@ export function ImportExportPage() {
   }
 
   return <main className="migration-page">
-    <header className="management-heading"><div><span className="eyebrow">Data / Portable archive</span><h1>导入与导出</h1><p>先预览、再写入；Provider 凭据、登录会话和 SecretStore 引用永不进入浏览器导出包。</p></div></header>
+    <header className="management-heading"><div><span className="eyebrow">Project / Portable exchange</span><h1>项目交换</h1><p>这里只迁移单个项目的脱敏会话内容，不是系统备份；Provider、MCP、登录会话和 Secret 永不进入浏览器导出包。</p></div></header>
     <div className="migration-grid">
       <section>
         <header><Download size={19}/><div><h2>导出 Oktapod 项目</h2><p>生成可检查 JSON，包含会话消息但不含 Secret。</p></div></header>

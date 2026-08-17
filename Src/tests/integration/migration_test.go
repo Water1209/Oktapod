@@ -32,6 +32,13 @@ func TestProjectArchiveMigratesPersonalProjectIntoTeamScope(t *testing.T) {
 	if err := os.WriteFile(secretFile, []byte("SHOULD_NOT_MOVE=1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := sourceService.CreateCapability(ctx, project.ID, core.CreateCapabilityInput{
+		Kind: core.CapabilityKindMCP, Name: "portable-mcp", Version: "1.0.0", ScopeType: core.CapabilityScopeProject,
+		ManifestJSON:  "{\"schema_version\":\"oktapod.mcp/v1\",\"source\":{\"type\":\"manual\"},\"transport\":{\"type\":\"streamable_http\",\"url\":\"https://mcp.example.test\"},\"auth\":{\"type\":\"bearer\"},\"secret_bindings\":[{\"name\":\"credential\",\"target\":\"header:Authorization\",\"required\":true}]}",
+		CredentialRef: "mcp-capability/source/secret-must-not-export",
+	}, "migration-mcp"); err != nil {
+		t.Fatal(err)
+	}
 
 	archiveDir := filepath.Join(t.TempDir(), "project-archive")
 	archive, err := source.ExportProject(ctx, core.Scope{OrganizationID: testOrgID, UserID: testUserID}, project.ID, archiveDir)
@@ -40,6 +47,9 @@ func TestProjectArchiveMigratesPersonalProjectIntoTeamScope(t *testing.T) {
 	}
 	if len(archive.Files) != 1 || len(archive.SkippedSecrets) != 1 {
 		t.Fatalf("archive files=%#v skipped=%#v", archive.Files, archive.SkippedSecrets)
+	}
+	if rows := archive.Tables["capabilities"]; len(rows) != 1 || rows[0]["credential_ref"] != "" || rows[0]["status"] != core.CapabilityStatusDisabled {
+		t.Fatalf("exported capability must require a new Secret: %#v", rows)
 	}
 
 	targetRoot := t.TempDir()
@@ -69,5 +79,9 @@ func TestProjectArchiveMigratesPersonalProjectIntoTeamScope(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(targetRoot, "workspaces", imported.ID, ".env")); !os.IsNotExist(err) {
 		t.Fatalf("secret file should not be imported, err=%v", err)
+	}
+	capabilities, err := target.ListCapabilities(ctx, core.Scope{OrganizationID: targetOrg, UserID: targetUser}, imported.ID, 10)
+	if err != nil || len(capabilities) != 1 || capabilities[0].CredentialRef != "" || capabilities[0].Status != core.CapabilityStatusDisabled {
+		t.Fatalf("imported MCP must be disconnected and require a new Secret: items=%#v err=%v", capabilities, err)
 	}
 }

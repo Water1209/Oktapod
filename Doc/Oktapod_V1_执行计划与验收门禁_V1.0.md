@@ -47,7 +47,8 @@ V1 唯一交付目标：
 | B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
 | B4 | `PASS` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、OAuth Authorization Code/回调/取消/刷新、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
-| B6 | `PARTIAL` | Windows `pnpm verify`（Web 26/26）、Playwright foundation 1/1 + turn 1/1 + success 24/24、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
+| B6 | `PARTIAL` | Windows `pnpm verify`（Web 28/28）、Playwright foundation 初始化 1/1 + 重启 1/1、turn 1/1、success 26/26、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
+| B8 | `PASS` | 000058～000061、DatabaseSecretStore、VaultKeyManager、严格 config.yaml、设置/API/CLI、Backup V2 和两阶段 Browser E2E 已落地 | DEK 轮换 UI、Team/PostgreSQL Vault 与外部 KMS 延期 |
 
 ### 2.2 场景、文件产物与审核体系收口（2026-08-11）
 
@@ -55,10 +56,20 @@ V1 唯一交付目标：
 |---|---|---|---|
 | F1 | `PASS` | Work/Code 共用工具内核；新 Run 冻结 `scene`、`permission_mode`、Prompt Profile 和项目指令 Hash；历史 `scene_policy` 仍可恢复 | 不新增第三种场景 |
 | F2 | `PASS` | `ArtifactCapture` 统一 Workspace 写入与脚本产物登记；100 MiB、路径/symlink、MIME、Hash 和 PDF 签名校验；PDF 无 Artifact 不得成功；旧 Run 遗漏文件可在明确选择当前任务后保存为任务输出 | 不自动扫描或猜测历史产物归属 |
-| F3 | `PASS` | 文件页固定为“工作区 / 项目文件 / 任务输出”，用“范围/版本”明确筛选；“保存到项目文件”仅表示项目内复用；Changes 仍只是 Git 差异；Personal Diagnostics 显示存储根 | Team 不返回宿主绝对路径 |
+| F3 | `PASS` | 文件页固定为“工作文件 / 项目资料 / 任务输出”，工作文件按五类生命周期归组，嵌套缓存/依赖/虚拟环境归入默认收起的临时辅助；Agent 多文件生成先规划路径，内部临时目录隐藏且不可 Capture；“保存到项目资料”仅表示项目内复用；Changes 仍只是 Git 差异；Personal Diagnostics 显示存储根 | 旧工作区不自动搬移；Team 不返回宿主绝对路径 |
 | F4 | `PASS` | Composer 多附件、上传进度/重试/移除、Run 附件快照、`asset_stage` 延迟物化与终态/24h 清理 | 更多 Office 格式深度验收进 V1.1 |
 | F5 | `PASS` | Reviewer 仅处理 L2 `Ask`；`reviewer-decision-v1`、脱敏输入、fail-closed 和 Diagnostics 可用性；未配置时 UI 禁用自动审查 | L3 和静态拒绝永不交给 Reviewer 放行 |
 | F6 | `PASS` | 每次用户发送先持久化可见消息，并冻结附件、Skill 与排队展示；后继任务绑定原消息 ID；同计划项审批聚合但逐项审计；预算扩展展示明确增量、收尾、不限额和终止语义 | 不把历史消息展示元数据反推回填到旧 Run |
+
+### 2.3 统一配置与数据库密钥库（2026-08-13）
+
+| 子批次 | 状态 | 已落地范围 | 验收边界 |
+|---|---|---|---|
+| V1 | `PASS` | `secret_vaults` / `secret_records`、每组织 DEK、每记录 Nonce/AAD、HKDF 恢复 KEK、本地 `bootstrap.key`、pending/confirm/recover/rotate 和重启自动解锁 | 不读取、不迁移、不删除旧系统 Keyring；现有凭据自然显示 missing |
+| V2 | `PASS` | 严格 `config.yaml`、配置来源 API/doctor、Reviewer Provider+Model、版本化 Decimal 价格、上下文和用户偏好；删除 Reviewer/价格环境变量与 `model_provider_configs` 第二真源 | 数据库连接凭据仍是 Bootstrap Secret 例外；`full_access` 不跨设备持久化 |
+| V3 | `PASS` | 七类职责设置页、Provider 单页一次保存、独立治理与费用页、Vault 初始化/恢复/旋转、Provider/MCP 重录、可定位到项目资源的诊断 `attention`、Backup Manifest V2、逻辑导出清 Secret/断开 Capability | Personal/SQLite 完整落地；PostgreSQL 只保留 Repository 边界 |
+
+自动化覆盖正确/错误恢复口令、Nonce/AAD 篡改、密文互换、损坏、恢复口令旋转、Provider/MCP/OAuth CRUD、WAL/日志/导出明文扫描、无本地 KEK 的备份恢复，以及浏览器初始化、重新输入确认、Reviewer、MCP 重录和服务重启自动解锁。最终发布门禁仍以验收矩阵中的实际命令结果为准。
 
 ### B0：统一基线和验收真源
 

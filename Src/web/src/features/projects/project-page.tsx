@@ -652,14 +652,40 @@ function FilesInspector({ projectId, task, section, onSectionChange }: { project
   const currentArtifactNames = new Set(((section === 'workspace' || allOutputs) ? currentOutputs.data?.items : outputs.data?.items)?.map((artifact) => artifact.name) ?? [])
   const savedArtifactIds = new Set((rootProjectFiles.data?.items ?? []).filter((asset) => asset.source_type === 'artifact').map((asset) => asset.source_artifact_id))
   const uncapturedPDFs = (workspace.data?.items ?? []).filter((file) => file.kind === 'file' && file.path.toLowerCase().endsWith('.pdf') && !currentArtifactNames.has(file.path))
+  const workspaceGroups = groupWorkspaceFiles(workspace.data?.items ?? [])
   return <div className="files-inspector">
     <nav className="files-inspector-tabs" aria-label="文件类型">
-      {([['workspace', '工作区'], ['project', '项目文件'], ['outputs', '任务输出']] as const).map(([value, label]) => <button type="button" className={section === value ? 'active' : ''} key={value} onClick={() => onSectionChange(value)}>{label}</button>)}
+      {([['workspace', '工作文件'], ['project', '项目资料'], ['outputs', '任务输出']] as const).map(([value, label]) => <button type="button" className={section === value ? 'active' : ''} key={value} onClick={() => onSectionChange(value)}>{label}</button>)}
     </nav>
-    {section === 'workspace' ? <section className="files-inspector-section workspace"><header><div><span className="file-lifecycle-label">可编辑</span><strong>工作区文件</strong><small>脚本和命令直接读写这里；任务输出只会保存经过明确登记的文件。</small></div><button type="button" aria-label="刷新工作区" title="刷新工作区" onClick={() => workspace.refetch()}><RefreshCw size={14} /></button></header>{workspace.error ? <div className="panel-error">{workspace.error.message}</div> : null}<div className="files-inspector-list">{workspace.data?.items.map((file) => <WorkspaceFileRow currentArtifactNames={currentArtifactNames} file={file} key={file.path} projectId={projectId} runId={task?.run_id} />)}</div>{workspace.isLoading ? <div className="inspector-empty compact"><Folder size={16} /><strong>正在读取工作区…</strong></div> : null}{!workspace.isLoading && workspace.data?.items.length === 0 ? <div className="inspector-empty compact"><Folder size={16} /><strong>工作区暂无文件</strong></div> : null}</section> : null}
-    {section === 'project' ? <section className="files-inspector-section project"><header><div><span className="file-lifecycle-label">可复用</span><strong>项目文件</strong><small>上传文件，或从任务输出保存；供本项目后续任务作为附件使用，不会发布到项目外。</small></div></header><AssetsView projectId={projectId} compact /></section> : null}
+    {section === 'workspace' ? <section className="files-inspector-section workspace"><header><div><span className="file-lifecycle-label">可编辑 · 按生命周期归类</span><strong>工作文件</strong><small>保留项目原有目录约定；Agent 的过程与临时文件单独折叠，最终文件登记后才成为不可变任务输出。</small></div><button type="button" aria-label="刷新工作文件" title="刷新工作文件" onClick={() => workspace.refetch()}><RefreshCw size={14} /></button></header>{workspace.error ? <div className="panel-error">{workspace.error.message}</div> : null}<div className="workspace-lifecycle-groups">{workspaceLifecycleOrder.map((role) => <WorkspaceLifecycleGroup currentArtifactNames={currentArtifactNames} files={workspaceGroups[role]} key={role} projectId={projectId} role={role} runId={task?.run_id} />)}</div>{workspace.isLoading ? <div className="inspector-empty compact"><Folder size={16} /><strong>正在读取工作文件…</strong></div> : null}{!workspace.isLoading && workspace.data?.items.length === 0 ? <div className="inspector-empty compact"><Folder size={16} /><strong>工作文件暂无内容</strong></div> : null}</section> : null}
+    {section === 'project' ? <section className="files-inspector-section project"><header><div><span className="file-lifecycle-label">可复用输入</span><strong>项目资料</strong><small>上传的资料，或从任务输出明确保存的成果；供后续任务作为附件使用，不等于任务交付。</small></div></header><AssetsView projectId={projectId} compact /></section> : null}
     {section === 'outputs' ? <section className="files-inspector-section outputs"><header><div><span className="file-lifecycle-label">不可变</span><strong>任务输出</strong><small>{allOutputs ? '查看这个项目所有任务登记的输出' : task ? `本次任务 · Run ${task.run_id.slice(0, 12)}` : '当前会话尚无任务'}</small></div></header><div className="files-output-filters" aria-label="任务输出筛选"><label><span>范围</span><select aria-label="任务输出范围" value={outputScope} onChange={(event) => setOutputScope(event.target.value as 'current' | 'project')}><option value="current">本次任务</option><option value="project">项目全部任务</option></select></label><label><span>版本</span><select aria-label="任务输出版本" value={outputVersions} onChange={(event) => setOutputVersions(event.target.value as 'latest' | 'all')}><option value="latest">仅最新版本</option><option value="all">包含旧版本</option></select></label></div>{!allOutputs && task?.run_id && uncapturedPDFs.length ? <div className="files-recovery-card"><div><strong>发现尚未保存的 PDF</strong><small>文件已生成在工作区，但这个旧任务没有登记为输出。确认后会归属到本次任务。</small></div>{uncapturedPDFs.map((file) => <WorkspaceCaptureAction file={file} key={file.path} projectId={projectId} runId={task.run_id} />)}</div> : null}{outputs.error ? <div className="panel-error">{outputs.error.message}</div> : null}<div className="files-inspector-list">{outputs.data?.items.map((artifact) => <TaskOutputRow artifact={artifact} key={artifact.id} saved={savedArtifactIds.has(artifact.id)} />)}</div>{outputs.isLoading ? <div className="inspector-empty compact"><FileBox size={16} /><strong>正在读取任务输出…</strong></div> : null}{!outputs.isLoading && outputs.data?.items.length === 0 ? <div className="inspector-empty compact"><FileBox size={16} /><strong>这个范围还没有任务输出</strong><span>{uncapturedPDFs.length ? '上方检测到工作区 PDF，可以明确保存到本次任务。' : '脚本生成的文件需要登记后才会成为不可变任务输出。'}</span></div> : null}</section> : null}
   </div>
+}
+
+type WorkspaceLifecycleRole = WorkspaceFile['lifecycle_role']
+
+const workspaceLifecycleOrder: WorkspaceLifecycleRole[] = ['source', 'input', 'candidate_output', 'working', 'temporary']
+const workspaceLifecycleMeta: Record<WorkspaceLifecycleRole, { label: string; copy: string; collapsed: boolean }> = {
+  source: { label: '项目内容', copy: '跟随项目目录约定的源码与可编辑内容', collapsed: false },
+  input: { label: '输入与下载', copy: '任务读取的外部资料；长期复用建议保存到项目资料', collapsed: false },
+  candidate_output: { label: '待登记输出', copy: '仍可变；保存后才进入本次任务的不可变输出', collapsed: false },
+  working: { label: '过程文件', copy: '研究、图表与生成脚本，默认收起以减少干扰', collapsed: true },
+  temporary: { label: '临时辅助', copy: '兼容识别的提取脚本、日志与缓存，不作为交付物', collapsed: true },
+}
+
+function groupWorkspaceFiles(files: WorkspaceFile[]) {
+  const grouped: Record<WorkspaceLifecycleRole, WorkspaceFile[]> = { source: [], input: [], working: [], temporary: [], candidate_output: [] }
+  files.forEach((file) => grouped[file.lifecycle_role ?? 'source'].push(file))
+  return grouped
+}
+
+function WorkspaceLifecycleGroup({ currentArtifactNames, files, projectId, role, runId }: { currentArtifactNames: Set<string>; files: WorkspaceFile[]; projectId: string; role: WorkspaceLifecycleRole; runId?: string }) {
+  if (files.length === 0) return null
+  const meta = workspaceLifecycleMeta[role]
+  const rows = <div className="files-inspector-list">{files.map((file) => <WorkspaceFileRow currentArtifactNames={currentArtifactNames} file={file} key={file.path} projectId={projectId} runId={runId} />)}</div>
+  if (meta.collapsed) return <details className={`workspace-lifecycle-group ${role}`}><summary><span><strong>{meta.label}</strong><small>{meta.copy}</small></span><em>{files.length}</em><ChevronDown size={14} /></summary>{rows}</details>
+  return <section className={`workspace-lifecycle-group ${role}`}><header><span><strong>{meta.label}</strong><small>{meta.copy}</small></span><em>{files.length}</em></header>{rows}</section>
 }
 
 function legacySafeMessageContent(message: ConversationMessage, linkedTaskStatus?: string) {
@@ -681,7 +707,7 @@ function MessagePresentation({ presentation }: { presentation?: ConversationMess
 }
 
 function WorkspaceFileRow({ currentArtifactNames, file, projectId, runId }: { currentArtifactNames: Set<string>; file: WorkspaceFile; projectId: string; runId?: string }) {
-  return <div><span>{file.kind === 'directory' ? <Folder size={15} /> : <FileIcon size={15} />}<span>{file.kind === 'file' ? <a href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer">{file.path}</a> : <strong>{file.path}</strong>}<small>{file.git_status || '未变更'} · {formatBytes(file.size_bytes)} · {new Date(file.modified_at).toLocaleString('zh-CN')}</small></span></span><span className="files-row-actions">{file.kind === 'file' && runId && !currentArtifactNames.has(file.path) ? <WorkspaceCaptureAction compact file={file} projectId={projectId} runId={runId} /> : null}{file.kind === 'file' ? <a aria-label={`打开 ${file.path}`} href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer"><ChevronRight size={14} /></a> : null}</span></div>
+  return <div><span>{file.kind === 'directory' ? <Folder size={15} /> : <FileIcon size={15} />}<span>{file.kind === 'file' ? <a href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer">{file.path}</a> : <strong>{file.path}</strong>}<small>{file.git_status || '未变更'} · {formatBytes(file.size_bytes)} · {new Date(file.modified_at).toLocaleString('zh-CN')}</small></span></span><span className="files-row-actions">{file.kind === 'file' && file.lifecycle_role === 'candidate_output' && runId && !currentArtifactNames.has(file.path) ? <WorkspaceCaptureAction compact file={file} projectId={projectId} runId={runId} /> : null}{file.kind === 'file' ? <a aria-label={`打开 ${file.path}`} href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer"><ChevronRight size={14} /></a> : null}</span></div>
 }
 
 function WorkspaceCaptureAction({ compact = false, file, projectId, runId }: { compact?: boolean; file: WorkspaceFile; projectId: string; runId: string }) {
@@ -695,7 +721,7 @@ function TaskOutputRow({ artifact, saved }: { artifact: Artifact; saved: boolean
   const queryClient = useQueryClient()
   const save = useMutation({ mutationFn: () => api.saveArtifactAsProjectFile(artifact.id, { name: artifact.name, visibility: 'private' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['assets', artifact.project_id] }) })
   const alreadySaved = saved || save.isSuccess
-  const saveLabel = alreadySaved ? '已保存到项目文件' : save.isPending ? '正在保存到项目文件' : '保存到项目文件'
+  const saveLabel = alreadySaved ? '已保存到项目资料' : save.isPending ? '正在保存到项目资料' : '保存到项目资料'
   return <div><span><FileIcon size={15} /><span><a href={api.artifactPreviewUrl(artifact.id)} target="_blank" rel="noreferrer">{artifact.name}</a><small>{artifact.kind === 'evidence' ? '过程证据' : '交付物'} · {artifact.media_type} · {formatBytes(artifact.size_bytes)}</small></span></span><span className="files-row-actions"><button className="file-icon-action" type="button" aria-label={`${saveLabel}：${artifact.name}`} title={`${saveLabel}；供本项目后续任务复用，不会发布到项目外`} disabled={save.isPending || alreadySaved} onClick={() => save.mutate()}><FolderInput size={15} /></button><a aria-label={`下载 ${artifact.name}`} title={`下载 ${artifact.name}`} href={api.artifactContentUrl(artifact.id)}><Download size={14} /></a></span></div>
 }
 
@@ -753,7 +779,7 @@ function AssetsView({ projectId, compact = false }: { projectId: string; compact
         <span>{asset.kind === 'folder' ? '—' : formatBytes(asset.size_bytes)}</span>
         <span>{asset.kind === 'file' ? <a aria-label={`下载 ${asset.name}`} href={api.assetContentUrl(asset.id)}><Download size={16} /></a> : <button aria-label={`打开 ${asset.name}`} type="button" onClick={() => setFolderStack((current) => [...current, asset])}><ChevronRight size={16} /></button>}</span>
       </div>)}
-      {!assets.isLoading && assets.data?.items.length === 0 ? <div className="asset-empty"><FileBox size={26} /><strong>{search ? '没有匹配的项目文件' : '当前目录为空'}</strong><small>{search ? '调整搜索词或类型筛选。' : '上传文件，或从任务输出保存可复用文件。'}</small></div> : null}
+      {!assets.isLoading && assets.data?.items.length === 0 ? <div className="asset-empty"><FileBox size={26} /><strong>{search ? '没有匹配的项目资料' : '当前目录为空'}</strong><small>{search ? '调整搜索词或类型筛选。' : '上传资料，或从任务输出保存可复用成果。'}</small></div> : null}
     </div>
   </div>
 }
@@ -837,12 +863,10 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     return value
   })
   const [mode, setMode] = useState<TaskMode>(initialValue ? 'single_agent' : 'auto')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(() => {
     const saved = window.localStorage.getItem(permissionStorageKey)
-    return saved === 'ask' || saved === 'auto_review' || saved === 'full_access' ? saved : 'ask'
+    return saved === 'ask' || saved === 'auto_review' || saved === 'full_access' ? saved : undefined
   })
-
-  const effectivePermissionMode = autoReviewAvailable === false && permissionMode === 'auto_review' ? 'ask' : permissionMode
   const [fullAccessOpen, setFullAccessOpen] = useState(false)
   const [scene, setScene] = useState<Scene>(projectScene)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -858,6 +882,9 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
+  const preferences = useQuery({ queryKey: ['preferences'], queryFn: api.preferences, staleTime: 60_000 })
+  const resolvedPermissionMode = permissionMode ?? preferences.data?.default_permission ?? 'ask'
+  const effectivePermissionMode = autoReviewAvailable === false && resolvedPermissionMode === 'auto_review' ? 'ask' : resolvedPermissionMode
   const projectAssets = useQuery({ queryKey: ['assets', projectId, 'composer'], queryFn: () => api.assets(projectId, { kind: 'file' }), enabled: attachmentPickerOpen, staleTime: 5_000 })
   const providerModels = useQuery({ queryKey: ['provider-models', providerId], queryFn: () => api.providerModels(providerId), enabled: providerId !== 'default', retry: false, staleTime: 60_000 })
   const submit = useMutation({
@@ -1023,11 +1050,21 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
     setProviderId(value)
     setModel('')
     window.localStorage.setItem(modelStorageKey, JSON.stringify({ providerId: value, model: '' }))
+    persistRecentSelection(value === 'default' ? '' : value, '')
   }
   const selectModel = (value: string) => {
     const selected = value === 'default' ? '' : value
     setModel(selected)
     window.localStorage.setItem(modelStorageKey, JSON.stringify({ providerId, model: selected }))
+    persistRecentSelection(providerId === 'default' ? '' : providerId, selected)
+  }
+  const persistRecentSelection = (recentProviderID: string, recentModelID: string) => {
+    if (!preferences.data) return
+    void api.updatePreferences({
+      theme: preferences.data.theme, density: preferences.data.density,
+      default_permission: preferences.data.default_permission,
+      recent_provider_id: recentProviderID, recent_model_id: recentModelID,
+    }).then(() => queryClient.invalidateQueries({ queryKey: ['preferences'] })).catch(() => undefined)
   }
   const selectPermissionMode = (value: PermissionMode) => {
     setPermissionMode(value)
@@ -1044,7 +1081,7 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         : <button type="button" role="option" aria-selected={activeSkillIndex === index} className={activeSkillIndex === index ? 'active' : ''} key={suggestion.skill.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(suggestion)}><span className="skill-command-icon"><Puzzle size={15} /></span><span><strong>/{skillCommandName(suggestion.skill.name)}</strong><small>{skillDescription(suggestion.skill) || `Skill v${suggestion.skill.version}`}</small></span><em>v{suggestion.skill.version}</em></button>)}
     </div> : null}
     <form className="conversation-composer" noValidate onSubmit={(event) => { event.preventDefault(); send() }}>
-      {attachments.length > 0 ? <div className="composer-attachments" aria-label="已选附件">{attachments.map((attachment) => <div className={`composer-attachment ${attachment.status}`} key={attachment.key}><FileIcon size={15} /><span><strong>{attachment.name}</strong><small>{attachment.status === 'uploading' ? `上传中 ${attachment.progress}%` : attachment.status === 'failed' ? attachment.error || '附件上传失败，可改为关联已有项目文件' : `${formatBytes(attachment.size)} · ${attachment.source === 'project' ? '项目文件' : '已上传'}`}</small></span>{attachment.status === 'failed' ? <button type="button" aria-label={`重试 ${attachment.name}`} title="重试上传" onClick={() => uploadAttachment(attachment)}><RefreshCw size={13} /></button> : null}{attachment.status === 'failed' ? <button type="button" aria-label="选择已有项目文件" title="关联已有项目文件" onClick={() => setAttachmentPickerOpen(true)}><FolderInput size={13} /></button> : null}<button type="button" aria-label={`移除 ${attachment.name}`} title="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.key !== attachment.key))}><X size={13} /></button></div>)}</div> : null}
+      {attachments.length > 0 ? <div className="composer-attachments" aria-label="已选附件">{attachments.map((attachment) => <div className={`composer-attachment ${attachment.status}`} key={attachment.key}><FileIcon size={15} /><span><strong>{attachment.name}</strong><small>{attachment.status === 'uploading' ? `上传中 ${attachment.progress}%` : attachment.status === 'failed' ? attachment.error || '附件上传失败，可改为关联已有项目资料' : `${formatBytes(attachment.size)} · ${attachment.source === 'project' ? '项目资料' : '已上传'}`}</small></span>{attachment.status === 'failed' ? <button type="button" aria-label={`重试 ${attachment.name}`} title="重试上传" onClick={() => uploadAttachment(attachment)}><RefreshCw size={13} /></button> : null}{attachment.status === 'failed' ? <button type="button" aria-label="选择已有项目资料" title="关联已有项目资料" onClick={() => setAttachmentPickerOpen(true)}><FolderInput size={13} /></button> : null}<button type="button" aria-label={`移除 ${attachment.name}`} title="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.key !== attachment.key))}><X size={13} /></button></div>)}</div> : null}
       <textarea ref={textareaRef} aria-label="消息" value={goal} onChange={(event) => { setGoal(event.target.value); setSelectedSkillIndex(0); setSkillCommandError('') }} onKeyDown={(event) => {
         if (commandSuggestions.length > 0 && event.key === 'ArrowDown') { event.preventDefault(); setSelectedSkillIndex((current) => (current + 1) % commandSuggestions.length); return }
         if (commandSuggestions.length > 0 && event.key === 'ArrowUp') { event.preventDefault(); setSelectedSkillIndex((current) => (current - 1 + commandSuggestions.length) % commandSuggestions.length); return }
@@ -1056,21 +1093,21 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
       {advancedOpen ? <div className="composer-advanced">
         <div className="composer-advanced-row"><InlineSelect value={scene} onValueChange={(value) => setScene(value as Scene)} items={[["work", "通用场景"], ["code", "代码场景"]]} /><InlineSelect value={providerId} onValueChange={selectProvider} items={providerItems} /><InlineSelect value={thinking} onValueChange={(value) => setThinking(value as typeof thinking)} items={[["auto", "Thinking · Auto"], ["off", "Thinking · Off"], ["low", "Thinking · Low"], ["medium", "Thinking · Medium"], ["high", "Thinking · High"]]} />{mode !== 'answer' && enabledAgents.length > 0 ? <InlineSelect value={agentId} onValueChange={setAgentId} items={executorItems} ariaLabel="执行 Agent" /> : null}</div>
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
-        {autoReviewAvailable === false ? <p className="composer-governance-notice"><ShieldAlert size={13} />自动审查当前不可用。启动服务前设置 <code>OKTAPOD_REVIEWER_MODEL</code> 为已启用的独立模型；<Link to="/diagnostics">查看诊断原因</Link>。未可用时系统会关闭式转为人工审批。</p> : null}
+        {autoReviewAvailable === false ? <p className="composer-governance-notice"><ShieldAlert size={13} />自动审查当前不可用。请在<Link to="/settings/$section" params={{ section: 'governance' }}>治理与审批</Link>中选择已启用的独立 Provider 和 Model；<Link to="/diagnostics">查看诊断原因</Link>。未可用时系统会关闭式转为人工审批。</p> : null}
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="添加附件" title="上传新文件或关联项目文件（最多 8 个）" disabled={attachments.length >= 8} onClick={() => setAttachmentPickerOpen(true)}><Paperclip size={16} /></button><input ref={attachmentInputRef} className="sr-only" type="file" multiple onChange={(event) => { addAttachments(event.target.files); event.target.value = ''; setAttachmentPickerOpen(false) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={effectivePermissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", autoReviewAvailable === false ? "自动审查（未配置）" : "自动审查", autoReviewAvailable === false], ["full_access", "完全访问"]]} ariaLabel="权限模式" title={autoReviewAvailable === false ? `${autoReviewReason ?? ''} 在服务启动环境设置 OKTAPOD_REVIEWER_MODEL。` : undefined} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、模型服务与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={(submit.isPending && !activeTask) || !goal.trim() || attachments.some((item) => item.status === 'uploading')} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="添加附件" title="上传新文件或关联项目资料（最多 8 个）" disabled={attachments.length >= 8} onClick={() => setAttachmentPickerOpen(true)}><Paperclip size={16} /></button><input ref={attachmentInputRef} className="sr-only" type="file" multiple onChange={(event) => { addAttachments(event.target.files); event.target.value = ''; setAttachmentPickerOpen(false) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={effectivePermissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", autoReviewAvailable === false ? "自动审查（未配置）" : "自动审查", autoReviewAvailable === false], ["full_access", "完全访问"]]} ariaLabel="权限模式" title={autoReviewAvailable === false ? `${autoReviewReason ?? ''} 请在“设置 → 治理与审批”中配置。` : undefined} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、模型服务与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={(submit.isPending && !activeTask) || !goal.trim() || attachments.some((item) => item.status === 'uploading')} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
       {providerModels.error || (model && !selectedModel) ? <p className="composer-model-notice" role="status">{providerModels.error ? '模型目录暂时不可用，将使用该 Provider 的默认模型。' : '之前选择的模型已失效，已自动使用默认模型。'}</p> : null}
     </form>
     <Dialog.Root open={attachmentPickerOpen} onOpenChange={setAttachmentPickerOpen}>
       <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content composer-asset-picker" aria-describedby="composer-asset-picker-description">
         <Dialog.Title>添加附件</Dialog.Title>
-        <Dialog.Description id="composer-asset-picker-description">上传新文件，或直接关联已经存在的项目文件。关联不会复制文件，也不会因同名冲突失败。</Dialog.Description>
+        <Dialog.Description id="composer-asset-picker-description">上传新文件，或直接关联已经存在的项目资料。关联不会复制文件，也不会因同名冲突失败。</Dialog.Description>
         <div className="composer-asset-picker-actions"><button className="primary" type="button" onClick={() => attachmentInputRef.current?.click()}><Upload size={15} />上传新文件</button><span>最多 8 个附件</span></div>
-        <label className="composer-asset-search"><Search size={14} /><input value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} placeholder="搜索项目文件" /></label>
+        <label className="composer-asset-search"><Search size={14} /><input value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} placeholder="搜索项目资料" /></label>
         <div className="composer-asset-list">
-          {projectAssets.isLoading ? <span>正在读取项目文件…</span> : null}
+          {projectAssets.isLoading ? <span>正在读取项目资料…</span> : null}
           {availableProjectAssets.map((asset) => <button type="button" key={asset.id} onClick={() => attachProjectAsset(asset)}><FileIcon size={15} /><span><strong>{asset.name}</strong><small>{formatBytes(asset.size_bytes)} · {asset.media_type || '文件'}</small></span><Plus size={14} /></button>)}
-          {!projectAssets.isLoading && availableProjectAssets.length === 0 ? <span>没有匹配的项目文件，可上传新文件。</span> : null}
+          {!projectAssets.isLoading && availableProjectAssets.length === 0 ? <span>没有匹配的项目资料，可上传新文件。</span> : null}
         </div>
         <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close></div>
       </Dialog.Content></Dialog.Portal>

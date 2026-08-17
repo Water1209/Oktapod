@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -65,6 +64,7 @@ type Worker struct {
 	mcpSecrets        application.ProviderSecretStore
 	mcpCallTimeout    time.Duration
 	queuedTurnStarter QueuedTurnStarter
+	reviewerSettings  func(context.Context, string) (core.AIGovernanceSettings, error)
 }
 
 func (w *Worker) WithWorkspaceExecutor(executor WorkspaceExecutor) *Worker {
@@ -128,7 +128,7 @@ func (w *Worker) WithLease(lease time.Duration) *Worker {
 }
 
 func NewWorker(id string, repository WorkerRepository, model ModelGateway, logger *slog.Logger) *Worker {
-	return &Worker{
+	worker := &Worker{
 		id:             id,
 		repository:     repository,
 		model:          model,
@@ -139,6 +139,12 @@ func NewWorker(id string, repository WorkerRepository, model ModelGateway, logge
 		pollInterval:   250 * time.Millisecond,
 		mcpCallTimeout: 10 * time.Minute,
 	}
+	if settingsRepository, ok := repository.(interface {
+		GetAIGovernanceSettings(context.Context, string) (core.AIGovernanceSettings, error)
+	}); ok {
+		worker.reviewerSettings = settingsRepository.GetAIGovernanceSettings
+	}
+	return worker
 }
 
 func (w *Worker) completeModel(ctx context.Context, request ModelRequest) (core.ModelResult, error) {
@@ -626,8 +632,11 @@ func (w *Worker) executeHumanActionReview(ctx context.Context, step core.Claimed
 	if reasonCode, reason := deterministicReviewerEscalation(input.ToolName, input.FrozenParams); reasonCode != "" {
 		return reviewerEscalation("", reason, reasonCode, nil)
 	}
-	reviewerModel := strings.TrimSpace(os.Getenv("OKTAPOD_REVIEWER_MODEL"))
-	if reviewerModel == "" {
+	if w.reviewerSettings == nil {
+		return reviewerEscalation("", "未配置独立 Reviewer Model，已转人工审批。", "reviewer_not_configured", nil)
+	}
+	settings, err := w.reviewerSettings(ctx, run.OrganizationID)
+	if err != nil || !settings.Enabled || strings.TrimSpace(settings.ReviewerProviderID) == "" || strings.TrimSpace(settings.ReviewerModelID) == "" {
 		return reviewerEscalation("", "未配置独立 Reviewer Model，已转人工审批。", "reviewer_not_configured", nil)
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -636,15 +645,21 @@ func (w *Worker) executeHumanActionReview(ctx context.Context, step core.Claimed
 		"plan_item": truncateReviewerText(input.Title, 200), "tool": input.ToolName, "frozen_params_summary": sanitizeReviewerValue(input.FrozenParams),
 		"risk_level": input.RiskLevel, "policy_reason": truncateReviewerText(input.Reason, 500),
 		"execution_authorization": map[string]any{"input_hash": input.InputHash, "policy_decision": input.PolicyDecision, "policy_version": core.ToolPolicyVersion},
+		"reviewer_configuration":  map[string]any{"provider_id": settings.ReviewerProviderID, "model_id": settings.ReviewerModelID, "policy_version": settings.PolicyVersion},
 	})
-	reviewCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	timeout := time.Duration(settings.TimeoutSeconds) * time.Second
+	if timeout < 5*time.Second || timeout > 120*time.Second {
+		timeout = 30 * time.Second
+	}
+	reviewCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result, err := w.completeModel(reviewCtx, ModelRequest{
 		SystemPrompt: "你是 Oktapod 独立安全 Reviewer，没有任何工具、凭据或完整工具输出。只审查 ExecutionPolicy 已判定为 ask 的一个冻结动作。检查数据外传、凭据探测、持久安全弱化、破坏性动作和用户授权充分性。只输出 reviewer-decision-v1 严格 JSON：{\"schema_version\":\"reviewer-decision-v1\",\"decision\":\"approve|reject|escalate_to_user\",\"risk_level\":\"L2\",\"authorization\":\"once|none|human_required\",\"reason_code\":\"短机器码\",\"reason\":\"简短理由\"}。approve 只能使用 authorization=once；任何信息不足、开放世界或超出当前目标 Scope 的动作必须 escalate_to_user。",
-		UserPrompt:   string(payload), Model: reviewerModel, MaxOutputTokens: 256, EnableTools: false,
+		UserPrompt:   string(payload), RequestedModel: core.ModelRef{ProviderID: settings.ReviewerProviderID, ModelID: settings.ReviewerModelID},
+		Model: settings.ReviewerModelID, MaxOutputTokens: 256, EnableTools: false,
 	})
 	if err != nil {
-		return reviewerEscalation("", "自动审查服务不可用，已转人工审批。", "reviewer_unavailable", &result)
+		return reviewerEscalationWithConfiguration("", "自动审查服务不可用，已转人工审批。", "reviewer_unavailable", &result, settings)
 	}
 	var review struct {
 		SchemaVersion string `json:"schema_version"`
@@ -659,9 +674,17 @@ func (w *Worker) executeHumanActionReview(ctx context.Context, step core.Claimed
 	content = strings.TrimPrefix(content, "```")
 	content = strings.TrimSuffix(content, "```")
 	if json.Unmarshal([]byte(strings.TrimSpace(content)), &review) != nil || review.SchemaVersion != "reviewer-decision-v1" || review.RiskLevel != "L2" || strings.TrimSpace(review.ReasonCode) == "" || strings.TrimSpace(review.Reason) == "" || !validReviewerAuthorization(review.Decision, review.Authorization) {
-		return reviewerEscalation("", "Reviewer 输出无法按 reviewer-decision-v1 严格契约解析，已转人工。", "reviewer_output_invalid", &result)
+		return reviewerEscalationWithConfiguration("", "Reviewer 输出无法按 reviewer-decision-v1 严格契约解析，已转人工。", "reviewer_output_invalid", &result, settings)
 	}
-	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: review.Reason, Output: map[string]any{"schema_version": review.SchemaVersion, "decision": review.Decision, "risk_level": review.RiskLevel, "authorization": review.Authorization, "reason_code": review.ReasonCode, "reason": review.Reason}, Model: &result}
+	return core.StepOutcome{Status: core.StatusSucceeded, ResultSummary: review.Reason, Output: map[string]any{"schema_version": review.SchemaVersion, "decision": review.Decision, "risk_level": review.RiskLevel, "authorization": review.Authorization, "reason_code": review.ReasonCode, "reason": review.Reason, "reviewer_provider_id": settings.ReviewerProviderID, "reviewer_model_id": settings.ReviewerModelID, "reviewer_policy_version": settings.PolicyVersion}, Model: &result}
+}
+
+func reviewerEscalationWithConfiguration(errorCode, reason, reasonCode string, model *core.ModelResult, settings core.AIGovernanceSettings) core.StepOutcome {
+	outcome := reviewerEscalation(errorCode, reason, reasonCode, model)
+	outcome.Output["reviewer_provider_id"] = settings.ReviewerProviderID
+	outcome.Output["reviewer_model_id"] = settings.ReviewerModelID
+	outcome.Output["reviewer_policy_version"] = settings.PolicyVersion
+	return outcome
 }
 
 func reviewerEscalation(errorCode, reason, reasonCode string, model *core.ModelResult) core.StepOutcome {

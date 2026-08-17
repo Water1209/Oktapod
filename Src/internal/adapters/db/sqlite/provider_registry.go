@@ -135,15 +135,6 @@ func (s *Store) DeleteProviderInstance(ctx context.Context, organizationID, prov
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `
-DELETE FROM model_provider_configs
-WHERE organization_id = ?
-  AND secret_ref = (
-      SELECT credential_ref FROM provider_instances
-      WHERE organization_id = ? AND provider_id = ?
-  )`, organizationID, organizationID, providerID); err != nil {
-		return err
-	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM provider_instances WHERE organization_id = ? AND provider_id = ?`,
 		organizationID, providerID)
 	if err != nil {

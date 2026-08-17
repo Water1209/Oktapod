@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -88,9 +87,6 @@ func manifestCredential(spec manifest, supplied string) (string, error) {
 			}
 		}
 		return credential, nil
-	}
-	if credential == "" && strings.TrimSpace(spec.AuthEnv) != "" {
-		credential = strings.TrimSpace(os.Getenv(spec.AuthEnv))
 	}
 	if len(spec.SecretBindings) > 1 {
 		return "", ErrNeedsAuth

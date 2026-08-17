@@ -29,27 +29,29 @@ const (
 )
 
 type Service struct {
-	repository       Repository
-	profile          string
-	endpoint         string
-	actor            core.Actor
-	org              core.Organization
-	modelKey         func() string
-	advisor          AdvisorModel
-	catalog          ModelCatalog
-	capabilityKeys   map[string]ed25519.PublicKey
-	database         string
-	authorizer       Authorizer
-	localPrincipal   LocalPrincipalResolver
-	providerSecrets  ProviderSecretStore
-	providerCatalogs ProviderCatalogFactory
-	chatToolExec     ChatToolExecutor
-	workspaceReader  WorkspaceReader
-	workspaceFiles   WorkspaceCaptureReader
-	artifactCapture  ArtifactCapture
-	workspaceRoot    string
-	mcpRegistry      MCPRegistry
-	mcpOAuth         MCPOAuthCoordinator
+	repository             Repository
+	profile                string
+	endpoint               string
+	actor                  core.Actor
+	org                    core.Organization
+	modelKey               func() string
+	advisor                AdvisorModel
+	catalog                ModelCatalog
+	capabilityKeys         map[string]ed25519.PublicKey
+	database               string
+	authorizer             Authorizer
+	localPrincipal         LocalPrincipalResolver
+	providerSecrets        ProviderSecretStore
+	providerCatalogs       ProviderCatalogFactory
+	chatToolExec           ChatToolExecutor
+	workspaceReader        WorkspaceReader
+	workspaceFiles         WorkspaceCaptureReader
+	artifactCapture        ArtifactCapture
+	workspaceRoot          string
+	mcpRegistry            MCPRegistry
+	mcpOAuth               MCPOAuthCoordinator
+	vault                  VaultController
+	bootstrapConfiguration BootstrapConfigurationManager
 }
 
 const (
@@ -2313,11 +2315,78 @@ func (s *Service) decorateCapabilityAvailability(ctx context.Context, capability
 }
 
 func (s *Service) decorateCapabilityCredential(ctx context.Context, capability core.Capability) core.Capability {
-	if capability.CredentialRef != "" && s.providerSecrets != nil {
-		_, err := s.providerSecrets.Get(ctx, capability.CredentialRef)
-		capability.CredentialExists = err == nil
+	capability.CredentialStatus = core.CredentialReady
+	if capability.CredentialRef != "" {
+		capability.CredentialStatus = s.providerCredentialStatus(ctx, capability.CredentialRef)
+		capability.CredentialExists = capability.CredentialStatus == core.CredentialReady
+		return capability
+	}
+	if capability.Kind == core.CapabilityKindMCP {
+		if definition, err := core.ParseMCPDefinition(capability.ManifestJSON); err == nil {
+			requiresCredential := definition.Auth.Type == "oauth"
+			for _, binding := range definition.SecretBindings {
+				requiresCredential = requiresCredential || binding.Required
+			}
+			if requiresCredential {
+				capability.CredentialStatus = core.CredentialMissing
+			}
+		}
 	}
 	return capability
+}
+
+func (s *Service) UpdateMCPCredential(ctx context.Context, capabilityID string, credentials map[string]string) (core.Capability, error) {
+	if len(credentials) == 0 {
+		return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "must not be empty"}
+	}
+	capability, err := s.repository.GetCapability(ctx, s.ScopeFor(ctx), capabilityID)
+	if err != nil {
+		return core.Capability{}, err
+	}
+	if capability.Kind != core.CapabilityKindMCP {
+		return core.Capability{}, &core.ValidationError{Field: "capability_id", Message: "must identify an MCP capability"}
+	}
+	definition, err := core.ParseMCPDefinition(capability.ManifestJSON)
+	if err != nil {
+		return core.Capability{}, err
+	}
+	bindings := make(map[string]core.MCPSecretBinding, len(definition.SecretBindings))
+	for _, binding := range definition.SecretBindings {
+		bindings[binding.Name] = binding
+	}
+	for name := range credentials {
+		if _, ok := bindings[name]; !ok {
+			return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "contains a name not declared by MCPDefinition v1"}
+		}
+	}
+	for _, binding := range definition.SecretBindings {
+		if binding.Required && strings.TrimSpace(credentials[binding.Name]) == "" {
+			return core.Capability{}, &core.ValidationError{Field: "credentials", Message: "is missing required Secret " + binding.Name}
+		}
+	}
+	payload, err := encodeMCPSecretSet(credentials)
+	if err != nil {
+		return core.Capability{}, &core.ValidationError{Field: "credentials", Message: err.Error()}
+	}
+	if capability.CredentialRef == "" {
+		scopeID := capability.ScopeID
+		if scopeID == "" {
+			scopeID = capability.ProjectID
+		}
+		capability.CredentialRef = mcpCapabilityCredentialRef(capability.OrganizationID, capability.ScopeType, scopeID, capability.Name, capability.Version)
+		if err := s.repository.SetCapabilityCredentialRef(ctx, s.ScopeFor(ctx), capability.ID, capability.CredentialRef); err != nil {
+			return core.Capability{}, err
+		}
+	}
+	if s.providerSecrets == nil {
+		return core.Capability{}, fmt.Errorf("MCP secret store is unavailable")
+	}
+	if err := s.providerSecrets.Set(ctx, capability.CredentialRef, payload); err != nil {
+		return core.Capability{}, fmt.Errorf("store MCP credential: %w", err)
+	}
+	capability = s.decorateCapabilityCredential(ctx, capability)
+	capability = s.decorateCapabilityAvailability(ctx, capability)
+	return capability, nil
 }
 
 func (s *Service) SetCapabilityStatus(ctx context.Context, capabilityID, status, idempotencyKey string) (core.Capability, error) {

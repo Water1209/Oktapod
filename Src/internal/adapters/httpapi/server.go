@@ -24,6 +24,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi/generated"
+	"github.com/oktapod/oktapod/Src/internal/adapters/secretstore"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -218,7 +219,7 @@ func (r sessionPrincipalResolver) ResolvePrincipal(ctx context.Context, credenti
 	if err != nil || session.OrganizationID != r.service.Scope().OrganizationID {
 		return application.Principal{}, application.ErrPrincipalRequired
 	}
-	return application.Principal{OrganizationID: session.OrganizationID, UserID: session.UserID, AuthenticationMethod: credential.Method}, nil
+	return application.Principal{OrganizationID: session.OrganizationID, UserID: session.UserID, AuthenticationMethod: credential.Method, Administrator: r.service.Profile() == core.ProfilePersonal}, nil
 }
 
 func sessionAuthenticationMiddleware(service *application.Service, resolver application.PrincipalResolver, enforceSession bool) func(http.Handler) http.Handler {
@@ -363,10 +364,7 @@ func (s *Server) GetDiagnostics(ctx context.Context, _ generated.GetDiagnosticsR
 	if err != nil {
 		return nil, err
 	}
-	status := generated.DiagnosticsStatusOk
-	if diagnostics.DatabaseStatus != "ok" {
-		status = generated.DiagnosticsStatusDegraded
-	}
+	status := generated.DiagnosticsStatus(diagnostics.OverallStatus)
 	response := generated.GetDiagnostics200JSONResponse{
 		Status:   status,
 		Version:  diagnostics.Version,
@@ -377,6 +375,7 @@ func (s *Server) GetDiagnostics(ctx context.Context, _ generated.GetDiagnosticsR
 			Active:       diagnostics.ActiveProviderCount,
 			StaleCatalog: diagnostics.StaleCatalogCount,
 		},
+		Pricing: generated.PricingDiagnostics{VersionCount: diagnostics.Pricing.VersionCount, UncoveredModels: diagnostics.Pricing.UncoveredModels},
 		Worker: generated.WorkerDiagnostics{
 			QueuedRuns:       diagnostics.Worker.QueuedRuns,
 			RunningRuns:      diagnostics.Worker.RunningRuns,
@@ -395,11 +394,218 @@ func (s *Server) GetDiagnostics(ctx context.Context, _ generated.GetDiagnosticsR
 			Detail:                   "Backup and restore remain separate privileged operator workflows.",
 		},
 		AutoReview: generated.AutoReviewDiagnostics{Configured: diagnostics.AutoReview.Configured, Available: diagnostics.AutoReview.Available, Reason: diagnostics.AutoReview.Reason},
+		Vault:      vaultStatusResponse(diagnostics.Vault),
+	}
+	response.CredentialStates.Ready = diagnostics.CredentialStates[core.CredentialReady]
+	response.CredentialStates.Locked = diagnostics.CredentialStates[core.CredentialLocked]
+	response.CredentialStates.Missing = diagnostics.CredentialStates[core.CredentialMissing]
+	response.CredentialStates.Corrupt = diagnostics.CredentialStates[core.CredentialCorrupt]
+	response.CredentialIssues = make([]generated.CredentialIssue, 0, len(diagnostics.CredentialIssues))
+	for _, issue := range diagnostics.CredentialIssues {
+		response.CredentialIssues = append(response.CredentialIssues, generated.CredentialIssue{
+			Kind: generated.CredentialIssueKind(issue.Kind), State: generated.CredentialIssueState(issue.State),
+			ResourceId: issue.ResourceID, Name: issue.Name, ActionPath: issue.ActionPath,
+		})
 	}
 	if diagnostics.Storage != nil {
 		response.Storage = &generated.StorageDiagnostics{DataRoot: diagnostics.Storage.DataRoot, WorkspaceRoot: diagnostics.Storage.WorkspaceRoot}
 	}
 	return response, nil
+}
+
+func (s *Server) GetConfiguration(ctx context.Context, _ generated.GetConfigurationRequestObject) (generated.GetConfigurationResponseObject, error) {
+	item, err := s.service.Configuration(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetConfiguration200JSONResponse(bootstrapConfigurationResponse(item)), nil
+}
+
+func (s *Server) UpdateBootstrapConfiguration(ctx context.Context, request generated.UpdateBootstrapConfigurationRequestObject) (generated.UpdateBootstrapConfigurationResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	input := core.UpdateBootstrapConfiguration{
+		ListenAddress: request.Body.ListenAddress, DataRoot: request.Body.DataRoot,
+		RunConcurrency: request.Body.RunConcurrency, TrustedKeysFile: request.Body.TrustedKeysFile,
+	}
+	if request.Body.Profile != nil {
+		value := string(*request.Body.Profile)
+		input.Profile = &value
+	}
+	if request.Body.DatabaseDriver != nil {
+		value := string(*request.Body.DatabaseDriver)
+		input.DatabaseDriver = &value
+	}
+	item, err := s.service.UpdateBootstrapConfiguration(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return generated.UpdateBootstrapConfiguration200JSONResponse(bootstrapConfigurationResponse(item)), nil
+}
+
+func (s *Server) GetAIGovernanceSettings(ctx context.Context, _ generated.GetAIGovernanceSettingsRequestObject) (generated.GetAIGovernanceSettingsResponseObject, error) {
+	item, err := s.service.AIGovernanceSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetAIGovernanceSettings200JSONResponse(aiGovernanceResponse(item)), nil
+}
+
+func (s *Server) UpdateAIGovernanceSettings(ctx context.Context, request generated.UpdateAIGovernanceSettingsRequestObject) (generated.UpdateAIGovernanceSettingsResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	item, err := s.service.UpdateAIGovernanceSettings(ctx, core.AIGovernanceSettings{
+		ReviewerProviderID: request.Body.ReviewerProviderId, ReviewerModelID: request.Body.ReviewerModelId,
+		Enabled: request.Body.Enabled, TimeoutSeconds: request.Body.TimeoutSeconds, FailClosed: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return generated.UpdateAIGovernanceSettings200JSONResponse(aiGovernanceResponse(item)), nil
+}
+
+func (s *Server) GetModelPricing(ctx context.Context, _ generated.GetModelPricingRequestObject) (generated.GetModelPricingResponseObject, error) {
+	items, err := s.service.ModelPricing(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetModelPricing200JSONResponse(modelPricingResponse(items)), nil
+}
+
+func (s *Server) UpdateModelPricing(ctx context.Context, request generated.UpdateModelPricingRequestObject) (generated.UpdateModelPricingResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	items := make([]core.ModelPricingVersion, 0, len(request.Body.Items))
+	for _, item := range request.Body.Items {
+		items = append(items, core.ModelPricingVersion{ProviderID: item.ProviderId, ModelID: item.ModelId, Currency: item.Currency, InputPer1K: item.InputPer1k, OutputPer1K: item.OutputPer1k, EffectiveAt: item.EffectiveAt, Version: item.Version})
+	}
+	saved, err := s.service.UpdateModelPricing(ctx, items)
+	if err != nil {
+		return nil, err
+	}
+	return generated.UpdateModelPricing200JSONResponse(modelPricingResponse(saved)), nil
+}
+
+func (s *Server) GetContextSettings(ctx context.Context, _ generated.GetContextSettingsRequestObject) (generated.GetContextSettingsResponseObject, error) {
+	item, err := s.service.GetConversationContextSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetContextSettings200JSONResponse(contextSettingsResponse(item)), nil
+}
+
+func (s *Server) UpdateContextSettings(ctx context.Context, request generated.UpdateContextSettingsRequestObject) (generated.UpdateContextSettingsResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	item, err := s.service.UpdateConversationContextSettings(ctx, core.UpdateConversationContextSettingsInput{AutoCompact: request.Body.AutoCompact, TriggerTokens: request.Body.TriggerTokens, RetainTokens: request.Body.RetainTokens, SummaryMaxTokens: request.Body.SummaryMaxTokens})
+	if err != nil {
+		return nil, err
+	}
+	return generated.UpdateContextSettings200JSONResponse(contextSettingsResponse(item)), nil
+}
+
+func (s *Server) GetPreferences(ctx context.Context, _ generated.GetPreferencesRequestObject) (generated.GetPreferencesResponseObject, error) {
+	item, err := s.service.Preferences(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetPreferences200JSONResponse(userPreferencesResponse(item)), nil
+}
+
+func (s *Server) UpdatePreferences(ctx context.Context, request generated.UpdatePreferencesRequestObject) (generated.UpdatePreferencesResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	item, err := s.service.UpdatePreferences(ctx, core.UserPreferences{Theme: string(request.Body.Theme), Density: string(request.Body.Density), DefaultPermission: string(request.Body.DefaultPermission), RecentProviderID: request.Body.RecentProviderId, RecentModelID: request.Body.RecentModelId})
+	if err != nil {
+		return nil, err
+	}
+	return generated.UpdatePreferences200JSONResponse(userPreferencesResponse(item)), nil
+}
+
+func (s *Server) GetVaultStatus(ctx context.Context, _ generated.GetVaultStatusRequestObject) (generated.GetVaultStatusResponseObject, error) {
+	status, err := s.service.VaultStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.GetVaultStatus200JSONResponse{Body: vaultStatusResponse(status), Headers: generated.GetVaultStatus200ResponseHeaders{CacheControl: "no-store"}}, nil
+}
+
+func (s *Server) InitializeVault(ctx context.Context, _ generated.InitializeVaultRequestObject) (generated.InitializeVaultResponseObject, error) {
+	code, status, err := s.service.InitializeVault(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.InitializeVault200JSONResponse{Body: generated.VaultSecretResponse{RecoveryCode: code, Status: vaultStatusResponse(status)}, Headers: generated.InitializeVault200ResponseHeaders{CacheControl: "no-store"}}, nil
+}
+
+func (s *Server) ConfirmVault(ctx context.Context, request generated.ConfirmVaultRequestObject) (generated.ConfirmVaultResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	status, err := s.service.ConfirmVault(ctx, request.Body.RecoveryCode)
+	if err != nil {
+		return nil, err
+	}
+	return generated.ConfirmVault200JSONResponse(vaultStatusResponse(status)), nil
+}
+
+func (s *Server) RecoverVault(ctx context.Context, request generated.RecoverVaultRequestObject) (generated.RecoverVaultResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	status, err := s.service.RecoverVault(ctx, request.Body.RecoveryCode)
+	if err != nil {
+		return nil, err
+	}
+	return generated.RecoverVault200JSONResponse(vaultStatusResponse(status)), nil
+}
+
+func (s *Server) RotateVaultRecovery(ctx context.Context, _ generated.RotateVaultRecoveryRequestObject) (generated.RotateVaultRecoveryResponseObject, error) {
+	code, status, err := s.service.RotateVaultRecovery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return generated.RotateVaultRecovery200JSONResponse{RecoveryCode: code, Status: vaultStatusResponse(status)}, nil
+}
+
+func (s *Server) ResetPendingVault(ctx context.Context, _ generated.ResetPendingVaultRequestObject) (generated.ResetPendingVaultResponseObject, error) {
+	if err := s.service.ResetPendingVault(ctx); err != nil {
+		return nil, err
+	}
+	return generated.ResetPendingVault204Response{}, nil
+}
+
+func bootstrapConfigurationResponse(item core.BootstrapConfiguration) generated.BootstrapConfiguration {
+	return generated.BootstrapConfiguration{Profile: generated.BootstrapConfigurationProfile(item.Profile), ListenAddress: item.ListenAddress, DataRoot: item.DataRoot, RunConcurrency: item.RunConcurrency, DatabaseDriver: generated.BootstrapConfigurationDatabaseDriver(item.DatabaseDriver), TrustedKeysFile: item.TrustedKeysFile, ConfigPath: item.ConfigPath, Source: item.Source, RestartRequired: item.RestartRequired}
+}
+
+func aiGovernanceResponse(item core.AIGovernanceSettings) generated.AIGovernanceSettings {
+	return generated.AIGovernanceSettings{ReviewerProviderId: item.ReviewerProviderID, ReviewerModelId: item.ReviewerModelID, Enabled: item.Enabled, TimeoutSeconds: item.TimeoutSeconds, FailClosed: generated.AIGovernanceSettingsFailClosed(true), PolicyVersion: item.PolicyVersion, UpdatedAt: item.UpdatedAt}
+}
+
+func modelPricingResponse(items []core.ModelPricingVersion) generated.ModelPricingCollection {
+	result := generated.ModelPricingCollection{Items: make([]generated.ModelPricingVersion, 0, len(items))}
+	for _, item := range items {
+		result.Items = append(result.Items, generated.ModelPricingVersion{ProviderId: item.ProviderID, ModelId: item.ModelID, Currency: item.Currency, InputPer1k: item.InputPer1K, OutputPer1k: item.OutputPer1K, EffectiveAt: item.EffectiveAt, Version: item.Version, UpdatedAt: item.UpdatedAt})
+	}
+	return result
+}
+
+func contextSettingsResponse(item core.ConversationContextSettings) generated.ContextSettings {
+	return generated.ContextSettings{AutoCompact: item.AutoCompact, TriggerTokens: item.TriggerTokens, RetainTokens: item.RetainTokens, SummaryMaxTokens: item.SummaryMaxTokens, UpdatedAt: item.UpdatedAt}
+}
+
+func userPreferencesResponse(item core.UserPreferences) generated.UserPreferences {
+	return generated.UserPreferences{Theme: generated.UserPreferencesTheme(item.Theme), Density: generated.UserPreferencesDensity(item.Density), DefaultPermission: generated.UserPreferencesDefaultPermission(item.DefaultPermission), RecentProviderId: item.RecentProviderID, RecentModelId: item.RecentModelID, UpdatedAt: item.UpdatedAt}
+}
+
+func vaultStatusResponse(item core.VaultStatus) generated.VaultStatus {
+	return generated.VaultStatus{State: generated.VaultStatusState(item.State), Algorithm: item.Algorithm, KeyVersion: item.KeyVersion, RecoveryConfigured: item.RecoveryConfigured, SecretCount: item.SecretCount, Detail: item.Detail, UpdatedAt: item.UpdatedAt}
 }
 
 func (s *Server) GetBootstrap(ctx context.Context, _ generated.GetBootstrapRequestObject) (generated.GetBootstrapResponseObject, error) {
@@ -559,6 +765,21 @@ func (s *Server) SaveProviderModels(ctx context.Context, request generated.SaveP
 	return generated.SaveProviderModels200JSONResponse{Items: providerModelOptionResponses(models)}, nil
 }
 
+func (s *Server) UpdateMCPCredential(ctx context.Context, request generated.UpdateMCPCredentialRequestObject) (generated.UpdateMCPCredentialResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	capability, err := s.service.UpdateMCPCredential(ctx, request.CapabilityId.String(), request.Body.Credentials)
+	if err != nil {
+		return nil, err
+	}
+	response, err := capabilityResponse(capability)
+	if err != nil {
+		return nil, err
+	}
+	return generated.UpdateMCPCredential200JSONResponse(response), nil
+}
+
 func providerModelOptionResponses(models []core.ProviderModelOption) []generated.ProviderModelOption {
 	items := make([]generated.ProviderModelOption, 0, len(models))
 	for _, model := range models {
@@ -588,6 +809,7 @@ func providerInstanceResponse(provider core.ProviderInstance) generated.Provider
 		Endpoint:       provider.Endpoint, DefaultModelId: provider.DefaultModelID,
 		Status: generated.ProviderInstanceStatus(provider.Status), IsDefault: provider.IsDefault,
 		CredentialConfigured: provider.CredentialExists,
+		CredentialState:      generated.ProviderInstanceCredentialState(provider.CredentialStatus),
 		CreatedAt:            provider.CreatedAt, UpdatedAt: provider.UpdatedAt,
 	}
 }
@@ -2548,7 +2770,7 @@ func (s *Server) ListWorkspaceFiles(ctx context.Context, request generated.ListW
 	}
 	items := make([]generated.WorkspaceFile, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, generated.WorkspaceFile{Path: item.Path, Kind: generated.WorkspaceFileKind(item.Kind), SizeBytes: item.SizeBytes, ModifiedAt: item.ModifiedAt, GitStatus: item.GitStatus})
+		items = append(items, generated.WorkspaceFile{Path: item.Path, Kind: generated.WorkspaceFileKind(item.Kind), LifecycleRole: generated.WorkspaceFileLifecycleRole(item.LifecycleRole), SizeBytes: item.SizeBytes, ModifiedAt: item.ModifiedAt, GitStatus: item.GitStatus})
 	}
 	return generated.ListWorkspaceFiles200JSONResponse{Items: items, HasMore: page.HasMore, NextCursor: page.NextCursor}, nil
 }
@@ -3239,7 +3461,14 @@ func capabilityResponse(capability core.Capability) (generated.Capability, error
 			availability = core.ResourceAvailabilityDegraded
 		}
 	}
-	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), Availability: generated.ResourceAvailability(availability), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CredentialConfigured: capability.CredentialExists, CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
+	credentialStatus := capability.CredentialStatus
+	if credentialStatus == "" {
+		credentialStatus = core.CredentialReady
+		if capability.CredentialRef != "" && !capability.CredentialExists {
+			credentialStatus = core.CredentialMissing
+		}
+	}
+	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), Availability: generated.ResourceAvailability(availability), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CredentialConfigured: capability.CredentialExists, CredentialState: generated.CapabilityCredentialState(credentialStatus), CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
 }
 
 func resourceInstallDraftResponse(draft core.ResourceInstallDraft) (generated.ResourceInstallDraft, error) {
@@ -3891,6 +4120,10 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		if strings.HasPrefix(r.URL.Path, "/api/v1/security/vault") {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Pragma", "no-cache")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -3945,6 +4178,18 @@ func (s *Server) writeMappedProblem(w http.ResponseWriter, r *http.Request, err 
 		s.writeProblem(w, r, http.StatusServiceUnavailable, "MODEL_TURN_UNAVAILABLE", "Model unavailable", detail)
 	case errors.As(err, &maxBytes):
 		s.writeProblem(w, r, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Request too large", fmt.Sprintf("request body must not exceed %d bytes", maxBytes.Limit))
+	case errors.Is(err, secretstore.ErrRecoveryInvalid):
+		s.writeProblem(w, r, http.StatusBadRequest, "SECRET_RECOVERY_INVALID", "Recovery code is invalid", "the recovery code could not unlock this vault")
+	case errors.Is(err, secretstore.ErrCiphertextInvalid):
+		s.writeProblem(w, r, http.StatusUnprocessableEntity, "SECRET_CIPHERTEXT_INVALID", "Secret ciphertext is invalid", "the encrypted record failed integrity validation and no fallback was used")
+	case errors.Is(err, secretstore.ErrVaultPending):
+		s.writeProblem(w, r, http.StatusConflict, "SECRET_VAULT_PENDING", "Vault confirmation required", "confirm or reset the pending vault before storing credentials")
+	case errors.Is(err, secretstore.ErrVaultUninitialized):
+		s.writeProblem(w, r, http.StatusConflict, "SECRET_VAULT_UNINITIALIZED", "Vault is not initialized", "initialize and confirm the database vault before storing credentials")
+	case errors.Is(err, secretstore.ErrVaultLocked):
+		s.writeProblem(w, r, http.StatusLocked, "SECRET_VAULT_LOCKED", "Vault is locked", "recover the database vault before using credentials")
+	case errors.Is(err, secretstore.ErrSecretMissing):
+		s.writeProblem(w, r, http.StatusConflict, "SECRET_MISSING", "Credential is missing", "re-enter the credential in settings")
 	case errors.Is(err, sql.ErrNoRows):
 		s.writeProblem(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "Resource not found", "the resource does not exist or is not visible")
 	default:

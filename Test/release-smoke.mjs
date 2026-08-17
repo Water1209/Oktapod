@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync } from 'node:fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { arch, platform } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -30,12 +30,13 @@ const port = await new Promise((resolve, reject) => {
   })
 })
 const baseURL = `http://127.0.0.1:${port}/api/v1`
+const configPath = join(dataRoot, 'config.yaml')
+writeFileSync(configPath, `profile: personal\nlisten_address: 127.0.0.1:${port}\ndata_root: ${JSON.stringify(dataRoot)}\nrun_concurrency: 4\ndatabase:\n  driver: sqlite\ncapabilities:\n  trusted_keys_file: trusted-keys.json\n`)
 const child = spawn(binary, ['serve'], {
   cwd: root,
   env: {
     ...process.env,
-    OKTAPOD_LISTEN_ADDRESS: `127.0.0.1:${port}`,
-    OKTAPOD_DATA_ROOT: dataRoot,
+    OKTAPOD_CONFIG_FILE: configPath,
   },
   stdio: ['ignore', stdout, stderr],
   windowsHide: true,

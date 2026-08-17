@@ -1088,6 +1088,7 @@ type Capability struct {
 	InstallJobID     string
 	CredentialRef    string
 	CredentialExists bool
+	CredentialStatus string
 	Availability     string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

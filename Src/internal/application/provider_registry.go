@@ -27,6 +27,10 @@ type ProviderSecretStore interface {
 	Delete(context.Context, string) error
 }
 
+type CredentialStatusStore interface {
+	CredentialStatus(context.Context, string) string
+}
+
 type ProviderCatalogFactory func(core.ProviderInstance, string) ModelCatalog
 
 type SaveProviderInput struct {
@@ -60,7 +64,8 @@ func (s *Service) ListProviders(ctx context.Context) ([]core.ProviderInstance, e
 		return nil, err
 	}
 	for index := range items {
-		items[index].CredentialExists = s.providerCredentialExists(ctx, items[index].CredentialRef)
+		items[index].CredentialStatus = s.providerCredentialStatus(ctx, items[index].CredentialRef)
+		items[index].CredentialExists = items[index].CredentialStatus == core.CredentialReady
 	}
 	return items, nil
 }
@@ -73,7 +78,8 @@ func (s *Service) GetProvider(ctx context.Context, providerID string) (core.Prov
 	if err != nil {
 		return core.ProviderInstance{}, err
 	}
-	item.CredentialExists = s.providerCredentialExists(ctx, item.CredentialRef)
+	item.CredentialStatus = s.providerCredentialStatus(ctx, item.CredentialRef)
+	item.CredentialExists = item.CredentialStatus == core.CredentialReady
 	return item, nil
 }
 
@@ -169,7 +175,8 @@ func (s *Service) SaveProvider(ctx context.Context, providerID string, input Sav
 		}
 		return core.ProviderInstance{}, err
 	}
-	saved.CredentialExists = s.providerCredentialExists(ctx, credentialRef)
+	saved.CredentialStatus = s.providerCredentialStatus(ctx, credentialRef)
+	saved.CredentialExists = saved.CredentialStatus == core.CredentialReady
 	if saved.DefaultModelID != "" {
 		options, listErr := s.repository.ListProviderModelOptions(ctx, organizationID, saved.ProviderID)
 		if listErr == nil {
@@ -353,11 +360,20 @@ func (s *Service) refreshProviderCatalog(ctx context.Context, provider core.Prov
 }
 
 func (s *Service) providerCredentialExists(ctx context.Context, ref string) bool {
+	return s.providerCredentialStatus(ctx, ref) == core.CredentialReady
+}
+
+func (s *Service) providerCredentialStatus(ctx context.Context, ref string) string {
 	if s.providerSecrets == nil || strings.TrimSpace(ref) == "" {
-		return false
+		return core.CredentialMissing
 	}
-	_, err := s.providerSecrets.Get(ctx, ref)
-	return err == nil
+	if statusStore, ok := s.providerSecrets.(CredentialStatusStore); ok {
+		return statusStore.CredentialStatus(ctx, ref)
+	}
+	if _, err := s.providerSecrets.Get(ctx, ref); err == nil {
+		return core.CredentialReady
+	}
+	return core.CredentialMissing
 }
 
 func validateProviderEndpoint(raw string) (string, error) {

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 
@@ -18,14 +19,18 @@ const success = ['success', 'approval', 'turn'].includes(mode)
 const apiPort = mode === 'auth' ? 18789 : success ? 18788 : 18787
 const webPort = mode === 'auth' ? 15175 : success ? 15174 : 15173
 const dataRoot = resolve(tmpdir(), 'oktapod-e2e', `${mode}-${process.pid}-${Date.now().toString(36)}`)
+mkdirSync(dataRoot, { recursive: true })
+const configPath = resolve(dataRoot, 'config.yaml')
+const browserStatePath = resolve(dataRoot, 'browser-state.json')
+writeFileSync(configPath, `profile: personal\nlisten_address: 127.0.0.1:${apiPort}\ndata_root: ${JSON.stringify(dataRoot)}\nrun_concurrency: 4\ndatabase:\n  driver: sqlite\ncapabilities:\n  trusted_keys_file: trusted-keys.json\n`)
 const children = []
 let activeTest
 let cleaning = false
 let modelConfigured = false
+let apiProcess
 const apiEnvironment = {
   ...process.env,
-  OKTAPOD_DATA_ROOT: dataRoot,
-  OKTAPOD_LISTEN_ADDRESS: `127.0.0.1:${apiPort}`,
+  OKTAPOD_CONFIG_FILE: configPath,
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -39,10 +44,14 @@ try {
   if (success) {
     children.push(start(process.execPath, [resolve(repositoryRoot, 'Test/e2e', 'mock-provider.mjs')], webRoot, process.env, process.env.OKTAPOD_E2E_DEBUG === '1' ? 'inherit' : 'ignore'))
     await waitForURL('http://127.0.0.1:19090/health')
+    const recoveryPath = resolve(dataRoot, 'recovery-code.txt')
+    await run(apiBinary, ['vault', 'initialize', '--recovery-output', recoveryPath], repositoryRoot, apiEnvironment)
+    await run(apiBinary, ['vault', 'confirm', '--recovery-file', recoveryPath], repositoryRoot, apiEnvironment)
     await run(apiBinary, ['model', 'configure', '--endpoint', 'http://127.0.0.1:19090/v1', '--model', 'model-e2e'], repositoryRoot, apiEnvironment, 'fake-e2e-key\n')
     modelConfigured = true
   }
-  children.push(start(apiBinary, ['serve'], repositoryRoot, apiEnvironment, process.env.OKTAPOD_E2E_DEBUG === '1' ? 'inherit' : 'ignore'))
+  apiProcess = start(apiBinary, ['serve'], repositoryRoot, apiEnvironment, process.env.OKTAPOD_E2E_DEBUG === '1' ? 'inherit' : 'ignore')
+  children.push(apiProcess)
   await waitForURL(`http://127.0.0.1:${apiPort}/api/v1/health`)
   children.push(start(process.execPath, [viteCLI, '--host', '127.0.0.1', '--port', String(webPort)], webRoot, {
     ...process.env,
@@ -57,8 +66,17 @@ try {
   if (mode === 'auth') args.push('--config', 'playwright.auth.config.ts')
   if (mode === 'approval') args.push('--grep', 'L2 命令')
   args.push(...process.argv.slice(3))
-  activeTest = start(process.execPath, [playwrightCLI, ...args], webRoot, process.env, 'inherit')
-  const code = await waitForExit(activeTest)
+  const playwrightEnvironment = mode === 'foundation' ? { ...process.env, OKTAPOD_E2E_STATE_PATH: browserStatePath } : process.env
+  activeTest = start(process.execPath, [playwrightCLI, ...args], webRoot, playwrightEnvironment, 'inherit')
+  let code = await waitForExit(activeTest)
+  if (mode === 'foundation' && code === 0) {
+    await stop(apiProcess)
+    apiProcess = start(apiBinary, ['serve'], repositoryRoot, apiEnvironment, process.env.OKTAPOD_E2E_DEBUG === '1' ? 'inherit' : 'ignore')
+    children.push(apiProcess)
+    await waitForURL(`http://127.0.0.1:${apiPort}/api/v1/health`)
+    activeTest = start(process.execPath, [playwrightCLI, 'test', '--grep', 'Vault 在服务重启后'], webRoot, { ...playwrightEnvironment, OKTAPOD_E2E_RESTART_CHECK: '1' }, 'inherit')
+    code = await waitForExit(activeTest)
+  }
   process.exitCode = code ?? 1
 } finally {
   await cleanup()

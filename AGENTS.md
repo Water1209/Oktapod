@@ -40,7 +40,7 @@ Oktapod 是一套面向个人与企业团队的多用户 Agent OS，不按个人
 - 后端以 Go 预研，前后端分离，优先采用成熟开源组件并记录采用理由与替代方案。
 - Windows 与 Linux 均为一等平台；密钥、Token、密码不得进入仓库或文档示例。
 - 涉及命令、文件、网络、模型调用和外部工具时，默认采用最小权限、可审批、可审计、可恢复设计。
-- Provider 地址可以进入非敏感默认配置；API key 只允许通过 SecretStore 或 `OKTAPOD_MODEL_API_KEY` 等环境变量注入，不得出现在源码、测试夹具、日志、截图或文档示例中。
+- Provider 地址可以进入非敏感配置；Provider、MCP 与 OAuth 凭据只允许进入数据库加密 SecretStore，不得出现在环境变量、源码、测试夹具、日志、截图或文档示例中。Team/PostgreSQL 的数据库连接凭据属于数据库打开前的 Bootstrap Secret 例外，由部署系统注入。
 
 ## 验证与清理
 

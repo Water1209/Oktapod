@@ -1,68 +1,52 @@
 package integration_test
 
 import (
-	"context"
-	"errors"
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
+	"github.com/oktapod/oktapod/Src/internal/adapters/secretstore"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
-type httpProviderSecrets struct {
-	mu     sync.Mutex
-	values map[string]string
-}
-
-func (s *httpProviderSecrets) Get(_ context.Context, ref string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	value, ok := s.values[ref]
-	if !ok {
-		return "", errors.New("not found")
-	}
-	return value, nil
-}
-
-func (s *httpProviderSecrets) Set(_ context.Context, ref, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.values[ref] = value
-	return nil
-}
-
-func (s *httpProviderSecrets) Delete(_ context.Context, ref string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.values, ref)
-	return nil
-}
-
 func TestHTTPProviderRegistryNeverEchoesCredentialAndListsModels(t *testing.T) {
 	providerServer := newMockProvider(t)
 	defer providerServer.Close()
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
-	secrets := &httpProviderSecrets{values: map[string]string{}}
+	vault, err := secretstore.NewVaultKeyManager(t.Context(), repository, testOrgID, filepath.Dir(databasePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryCode, _, err := vault.Initialize(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vault.Confirm(t.Context(), recoveryCode); err != nil {
+		t.Fatal(err)
+	}
+	secrets := secretstore.NewDatabase(repository, vault, testOrgID)
 	service := application.NewService(repository, core.ProfilePersonal, providerServer.URL+"/v1",
 		core.Actor{ID: testUserID, DisplayName: "Test User"},
 		core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" }).
+		WithVault(vault).
 		WithProviderRegistry(secrets, func(provider core.ProviderInstance, credential string) application.ModelCatalog {
 			return openaicompat.New(provider.Endpoint, provider.DefaultModelID, func() string { return credential })
 		})
-	server := httptest.NewServer(httpapi.NewTrustedHandler(service, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	var logs bytes.Buffer
+	server := httptest.NewServer(httpapi.NewTrustedHandler(service, slog.New(slog.NewJSONHandler(&logs, nil))))
 	defer server.Close()
 
-	const credential = "fake-test-key"
+	const credential = "OKTAPOD-PLAINTEXT-SENTINEL-http-log-9f6fe990"
 	created := postJSON[map[string]any](t, server.URL+"/api/v1/providers", map[string]any{
 		"display_name": "Mock", "protocol_family": "openai_compatible",
 		"endpoint": providerServer.URL + "/v1", "default_model_id": "mock-model",
@@ -88,5 +72,8 @@ func TestHTTPProviderRegistryNeverEchoesCredentialAndListsModels(t *testing.T) {
 	}
 	if strings.Contains(string(body), credential) {
 		t.Fatalf("credential leaked in list response: %s", body)
+	}
+	if strings.Contains(logs.String(), credential) {
+		t.Fatalf("credential leaked in HTTP logs: %s", logs.String())
 	}
 }

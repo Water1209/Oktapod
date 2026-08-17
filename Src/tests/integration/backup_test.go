@@ -28,6 +28,13 @@ func TestSQLiteBackupManifestVerifiesAndRestores(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "evidence.txt"), []byte("immutable evidence"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	cacheDir := filepath.Join(workspaceRoot, ".oktapod", "runtime-cache")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "transient.bin"), []byte("rebuild me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	backupDir := filepath.Join(root, "backup")
 	manifest, err := store.Backup(context.Background(), backupDir)
 	if err != nil {
@@ -35,6 +42,9 @@ func TestSQLiteBackupManifestVerifiesAndRestores(t *testing.T) {
 	}
 	if manifest.Database.ContentHash == "" || len(manifest.Workspaces) != 1 {
 		t.Fatalf("manifest=%#v", manifest)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "workspaces", ".oktapod", "runtime-cache", "transient.bin")); !os.IsNotExist(err) {
+		t.Fatalf("runtime cache was included in the backup: %v", err)
 	}
 	restoreRoot := filepath.Join(root, "restored")
 	if _, err := sqlite.Restore(context.Background(), backupDir, filepath.Join(restoreRoot, "oktapod.db"), filepath.Join(restoreRoot, "workspaces")); err != nil {

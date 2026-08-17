@@ -24,6 +24,9 @@ func (s *Service) WithMCPOAuthCoordinator(coordinator MCPOAuthCoordinator) *Serv
 }
 
 func (s *Service) StartMCPOAuth(ctx context.Context, capabilityID string) (core.MCPOAuthSession, error) {
+	if s.vault == nil || s.vault.Status(ctx).State != core.VaultRuntimeActive {
+		return core.MCPOAuthSession{}, &core.ResourceConflictError{Resource: "MCP OAuth", Reason: "database vault must be active before starting authorization"}
+	}
 	capability, err := s.oauthCapability(ctx, capabilityID)
 	if err != nil {
 		return core.MCPOAuthSession{}, err

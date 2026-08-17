@@ -87,6 +87,14 @@ const approvalsRoute = createRoute({
 const resourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/resources',
+  validateSearch: (search: Record<string, unknown>): { project?: string; resource?: string; view?: 'project' | 'system'; kind?: 'all' | 'skill' | 'mcp' | 'agent' } => {
+    const parsed: { project?: string; resource?: string; view?: 'project' | 'system'; kind?: 'all' | 'skill' | 'mcp' | 'agent' } = {}
+    if (typeof search.project === 'string') parsed.project = search.project
+    if (typeof search.resource === 'string') parsed.resource = search.resource
+    if (search.view === 'project' || search.view === 'system') parsed.view = search.view
+    if (search.kind === 'all' || search.kind === 'skill' || search.kind === 'mcp' || search.kind === 'agent') parsed.kind = search.kind
+    return parsed
+  },
   component: suspend(ResourcesPage),
 })
 
@@ -99,19 +107,13 @@ const providersRoute = createRoute({
 const settingsIndexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
-  component: () => <Navigate to="/settings/$section" params={{ section: 'appearance' }} />,
+  component: () => <Navigate to="/settings/providers" />,
 })
 
 const legacySecuritySettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/security',
   component: () => <Navigate to="/approvals" />,
-})
-
-const legacyDataSettingsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/settings/data',
-  component: () => <Navigate to="/import-export" />,
 })
 
 const settingsRoute = createRoute({
@@ -146,7 +148,7 @@ const invitationAcceptRoute = createRoute({
   component: () => <Navigate to="/" />,
 })
 
-const routeTree = rootRoute.addChildren([projectsRoute, projectLibraryRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, legacySecuritySettingsRoute, legacyDataSettingsRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
+const routeTree = rootRoute.addChildren([projectsRoute, projectLibraryRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, legacySecuritySettingsRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
 
 export const router = createRouter({ routeTree })
 

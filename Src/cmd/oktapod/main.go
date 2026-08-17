@@ -53,40 +53,46 @@ func main() {
 }
 
 func run() error {
-	command := "serve"
-	if len(os.Args) > 1 {
-		command = os.Args[1]
+	command, commandArgs, err := parseCommandLine(os.Args[1:])
+	if err != nil {
+		return err
 	}
 	if command == "backup" {
-		return runBackup(os.Args[2:])
+		return runBackup(commandArgs)
 	}
 	if command == "preflight" {
-		return runPreflight(os.Args[2:])
+		return runPreflight(commandArgs)
 	}
 	if command == "cleanup" {
-		return runCleanup(os.Args[2:])
+		return runCleanup(commandArgs)
 	}
 	if command == "restore" {
-		return runRestore(os.Args[2:])
+		return runRestore(commandArgs)
 	}
 	if command == "export" {
-		return runProjectExport(os.Args[2:])
+		return runProjectExport(commandArgs)
 	}
 	if command == "import" {
-		return runProjectImport(os.Args[2:])
+		return runProjectImport(commandArgs)
 	}
 	if command == "model" {
-		return runModel(os.Args[2:])
+		return runModel(commandArgs)
 	}
 	if command == "context" {
-		return runContext(os.Args[2:])
+		return runContext(commandArgs)
+	}
+	if command == "config" {
+		return runConfig(commandArgs)
+	}
+	if command == "vault" {
+		return runVault(commandArgs)
 	}
 	if command == "version" {
 		fmt.Fprintln(os.Stdout, application.RuntimeVersion)
 		return nil
 	}
 	if command != "serve" {
-		return fmt.Errorf("unsupported command %q; use serve, model, context, preflight, backup, restore, export, import, or version", command)
+		return fmt.Errorf("unsupported command %q; use serve, model, context, config, vault, preflight, backup, restore, export, import, or version", command)
 	}
 
 	config, err := bootstrap.LoadConfig()
@@ -102,6 +108,7 @@ func run() error {
 
 	var store interface {
 		application.Repository
+		secretstore.VaultRepository
 		io.Closer
 	}
 	if config.Profile == core.ProfileTeam && strings.TrimSpace(config.DatabaseURL) != "" {
@@ -123,9 +130,14 @@ func run() error {
 	if err := store.Bootstrap(ctx, actor, organization); err != nil {
 		return err
 	}
+	configManager := bootstrap.NewConfigManager(config)
+	vaultKeys, err := secretstore.NewVaultKeyManager(ctx, store, organization.ID, config.DataRoot)
+	if err != nil {
+		return err
+	}
+	credentials := secretstore.NewDatabase(store, vaultKeys, organization.ID)
 	modelEndpoint := bootstrap.DefaultModelEndpoint
 	modelConfigured := false
-	credentials := secretstore.NewKeyring()
 	providerConfig, providerErr := store.GetModelProviderConfig(ctx, organization.ID)
 	if providerErr == nil {
 		modelEndpoint = providerConfig.Endpoint
@@ -146,6 +158,7 @@ func run() error {
 		}
 		return value
 	})
+	service.WithVault(vaultKeys).WithBootstrapConfiguration(configManager)
 	service.WithMCPRegistry(mcpregistry.New(nil))
 	trustedCapabilityKeys, keyErr := bootstrap.CapabilityTrustedKeys(config.CapabilityTrustedKeysJSON)
 	if keyErr != nil {
@@ -262,6 +275,34 @@ func run() error {
 		logger.Warn("worker shutdown timed out; durable leases will recover unfinished work")
 	}
 	return shutdownErr
+}
+
+// parseCommandLine removes the global --config option before subcommand flag
+// parsing. LoadConfig still reads it from os.Args, so the option has the same
+// precedence whether it appears before or after the subcommand.
+func parseCommandLine(args []string) (string, []string, error) {
+	filtered := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if argument == "--config" {
+			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+				return "", nil, fmt.Errorf("--config requires a path")
+			}
+			index++
+			continue
+		}
+		if strings.HasPrefix(argument, "--config=") {
+			if strings.TrimSpace(strings.TrimPrefix(argument, "--config=")) == "" {
+				return "", nil, fmt.Errorf("--config requires a path")
+			}
+			continue
+		}
+		filtered = append(filtered, argument)
+	}
+	if len(filtered) == 0 {
+		return "serve", nil, nil
+	}
+	return filtered[0], filtered[1:], nil
 }
 
 func mcpOAuthRedirectURL(listenAddress string) string {

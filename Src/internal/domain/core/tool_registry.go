@@ -126,9 +126,10 @@ func applyBuiltinToolMetadata(spec *ToolSpec) {
 		spec.Aliases, spec.Capabilities = []string{"edit"}, []string{"repository.write"}
 	case ToolWorkspaceWriteFile:
 		spec.Aliases, spec.Capabilities = []string{"write"}, []string{"repository.write"}
+		spec.Guidelines = []string{"Inspect existing conventions and plan paths before creating several files. Keep disposable helpers under the current Run's .oktapod/work directory and convention-free final candidates under outputs/<task-slug>; do not create duplicate root-level helper scripts."}
 	case ToolArtifactCapture:
 		spec.Capabilities = []string{"artifact.capture"}
-		spec.Guidelines = []string{"Call after a command or script creates the final file; PDF capture validates the %PDF- signature."}
+		spec.Guidelines = []string{"Call after a command or script creates and validates the final file; this is the only transition from a mutable candidate to an immutable Task Output. PDF capture validates the %PDF- signature."}
 	case ToolAssetStage:
 		spec.Capabilities = []string{"asset.stage"}
 		spec.Guidelines = []string{"Only asset ids frozen into the current Run are accepted; staged copies are read-only and temporary."}

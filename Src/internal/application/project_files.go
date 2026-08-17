@@ -16,12 +16,21 @@ import (
 const MaxWorkspaceFilePage = 200
 
 type WorkspaceFile struct {
-	Path       string
-	Kind       string
-	SizeBytes  int64
-	ModifiedAt time.Time
-	GitStatus  string
+	Path          string
+	Kind          string
+	LifecycleRole string
+	SizeBytes     int64
+	ModifiedAt    time.Time
+	GitStatus     string
 }
+
+const (
+	WorkspaceLifecycleSource          = "source"
+	WorkspaceLifecycleInput           = "input"
+	WorkspaceLifecycleWorking         = "working"
+	WorkspaceLifecycleTemporary       = "temporary"
+	WorkspaceLifecycleCandidateOutput = "candidate_output"
+)
 
 type WorkspaceFilePage struct {
 	Items      []WorkspaceFile
@@ -101,7 +110,8 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, projectID string, curs
 		if path == "" || isInternalWorkspacePath(path) {
 			continue
 		}
-		item := WorkspaceFile{Path: path, Kind: stringValueFromOutput(raw, "kind"), SizeBytes: int64ValueFromOutput(raw, "size_bytes"), GitStatus: gitStatuses[path]}
+		kind := stringValueFromOutput(raw, "kind")
+		item := WorkspaceFile{Path: path, Kind: kind, LifecycleRole: workspaceLifecycleRole(path, kind), SizeBytes: int64ValueFromOutput(raw, "size_bytes"), GitStatus: gitStatuses[path]}
 		if value := stringValueFromOutput(raw, "modified_at"); value != "" {
 			item.ModifiedAt, _ = time.Parse(time.RFC3339Nano, value)
 		}
@@ -119,6 +129,54 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, projectID string, curs
 		page.NextCursor = 0
 	}
 	return page, nil
+}
+
+// workspaceLifecycleRole is a presentation contract, not a storage router.
+// Explicit managed directories win; conservative legacy-name inference keeps
+// existing workspaces understandable without moving or deleting user files.
+func workspaceLifecycleRole(path, kind string) string {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	lower := strings.ToLower(clean)
+	parts := strings.Split(lower, "/")
+	first, base := parts[0], filepath.Base(lower)
+	for _, segment := range parts {
+		switch segment {
+		case "cache", ".cache", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv", ".tox", ".nox", "coverage", ".coverage":
+			return WorkspaceLifecycleTemporary
+		}
+	}
+	switch first {
+	case "input", "inputs", "download", "downloads", "import", "imports", "reference", "references", "source-materials":
+		return WorkspaceLifecycleInput
+	case "output", "outputs", "deliverable", "deliverables", "export", "exports":
+		return WorkspaceLifecycleCandidateOutput
+	case "work", "working", "research", ".research", "img", "images", "chart", "charts", "figure", "figures":
+		return WorkspaceLifecycleWorking
+	case "tmp", "temp", ".tmp", ".temp", "pip":
+		return WorkspaceLifecycleTemporary
+	}
+	if strings.HasPrefix(base, ".extract_") || strings.HasPrefix(base, ".generate_") || strings.HasPrefix(base, ".render_") || strings.HasSuffix(base, ".tmp") || strings.HasSuffix(base, ".log") {
+		return WorkspaceLifecycleTemporary
+	}
+	if strings.HasPrefix(base, "extract_") || strings.HasPrefix(base, "pdf_extract") || strings.HasPrefix(base, "pdf_text") || strings.HasPrefix(base, "generate_") || strings.HasPrefix(base, "render_") || strings.HasPrefix(base, "convert_") {
+		return WorkspaceLifecycleWorking
+	}
+	if kind == "file" {
+		extension := strings.ToLower(filepath.Ext(base))
+		switch extension {
+		case ".pdf", ".docx", ".pptx", ".xlsx":
+			return WorkspaceLifecycleCandidateOutput
+		case ".html":
+			if strings.Contains(base, "demo") || strings.Contains(base, "report") || strings.Contains(base, "报告") {
+				return WorkspaceLifecycleCandidateOutput
+			}
+		case ".md":
+			if strings.Contains(base, "report") || strings.Contains(base, "brief") || strings.Contains(base, "报告") || strings.Contains(base, "方案") || strings.Contains(base, "总结") || strings.Contains(base, "结果") || strings.Contains(base, "摘要") {
+				return WorkspaceLifecycleCandidateOutput
+			}
+		}
+	}
+	return WorkspaceLifecycleSource
 }
 
 func (s *Service) OpenWorkspaceFile(ctx context.Context, projectID, path string) (WorkspaceFileContent, error) {

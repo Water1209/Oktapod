@@ -115,9 +115,7 @@ func (c *Client) resolveConfig(ctx context.Context, requested core.ModelRef) (re
 				DefaultModel: modelID, SecretRef: provider.CredentialRef, UpdatedAt: provider.UpdatedAt,
 			}, nil
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return resolvedConfig{}, err
-		}
+		return resolvedConfig{}, err
 	}
 	legacy, err := c.repository.GetModelProviderConfig(ctx, c.organizationID)
 	if err != nil {

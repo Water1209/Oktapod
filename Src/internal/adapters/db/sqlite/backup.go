@@ -35,6 +35,14 @@ type BackupManifest struct {
 	Database      BackupEntry   `json:"database"`
 	Workspaces    []BackupEntry `json:"workspaces"`
 	Blobs         []BackupEntry `json:"blobs"`
+	Vault         *BackupVault  `json:"vault,omitempty"`
+}
+
+type BackupVault struct {
+	State              string `json:"state"`
+	KeyVersion         int    `json:"key_version"`
+	RecoveryConfigured bool   `json:"recovery_configured"`
+	SecretCount        int64  `json:"secret_count"`
 }
 
 // UpgradePreflight is a read-only compatibility check intended to run before
@@ -158,8 +166,15 @@ func (s *Store) Backup(ctx context.Context, targetDir string) (BackupManifest, e
 	if err := copyTree(s.blobRoot, blobTarget); err != nil {
 		return BackupManifest{}, fmt.Errorf("copy blobs: %w", err)
 	}
-	manifest := BackupManifest{FormatVersion: 1, CreatedAt: time.Now().UTC(), DatabaseType: "sqlite"}
+	manifest := BackupManifest{FormatVersion: 2, CreatedAt: time.Now().UTC(), DatabaseType: "sqlite"}
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_versions`).Scan(&manifest.SchemaVersion)
+	var vault BackupVault
+	var recoveryWrapped string
+	if err := s.db.QueryRowContext(ctx, `SELECT state, key_version, recovery_wrapped_dek FROM secret_vaults ORDER BY updated_at DESC LIMIT 1`).Scan(&vault.State, &vault.KeyVersion, &recoveryWrapped); err == nil {
+		vault.RecoveryConfigured = strings.TrimSpace(recoveryWrapped) != ""
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secret_records`).Scan(&vault.SecretCount)
+		manifest.Vault = &vault
+	}
 	manifest.Database, err = fileEntry(databasePath, "database.sqlite")
 	if err != nil {
 		return BackupManifest{}, err
@@ -195,7 +210,7 @@ func Restore(ctx context.Context, backupDir, databasePath, workspaceRoot string)
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
-	if manifest.FormatVersion != 1 {
+	if manifest.FormatVersion != 1 && manifest.FormatVersion != 2 {
 		return BackupManifest{}, fmt.Errorf("unsupported backup format %d", manifest.FormatVersion)
 	}
 	if manifest.DatabaseType != "" && manifest.DatabaseType != "sqlite" {
@@ -258,12 +273,23 @@ func copyTree(source, target string) error {
 		if rel == "." {
 			return nil
 		}
+		if isRuntimeCachePath(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		destination := filepath.Join(target, rel)
 		if info.IsDir() {
 			return os.MkdirAll(destination, 0o700)
 		}
 		return copyFile(path, destination, 0o600)
 	})
+}
+
+func isRuntimeCachePath(path string) bool {
+	clean := strings.ToLower(filepath.ToSlash(path))
+	return clean == ".oktapod/runtime-cache" || strings.HasPrefix(clean, ".oktapod/runtime-cache/") || strings.Contains(clean, "/.oktapod/runtime-cache/")
 }
 
 func copyFile(source, target string, mode os.FileMode) error {

@@ -1,0 +1,9 @@
+profile: personal
+listen_address: 127.0.0.1:8787
+# 留空时使用当前系统的用户配置目录/Oktapod，迁移配置文件时不会绑定原机器路径。
+data_root: ""
+run_concurrency: 4
+database:
+  driver: sqlite
+capabilities:
+  trusted_keys_file: trusted-keys.json

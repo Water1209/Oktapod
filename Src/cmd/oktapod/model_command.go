@@ -53,14 +53,19 @@ func runModel(args []string) error {
 	if err := store.Bootstrap(ctx, actor, organization); err != nil {
 		return err
 	}
+	vaultKeys, err := secretstore.NewVaultKeyManager(ctx, store, organization.ID, config.DataRoot)
+	if err != nil {
+		return err
+	}
+	secrets := secretstore.NewDatabase(store, vaultKeys, organization.ID)
 
 	switch args[0] {
 	case "configure":
-		return runModelConfigure(ctx, store, secretstore.NewKeyring(), organization.ID, args[1:])
+		return runModelConfigure(ctx, store, secrets, organization.ID, args[1:])
 	case "status":
-		return runModelStatus(ctx, store, secretstore.NewKeyring(), organization.ID, args[1:])
+		return runModelStatus(ctx, store, secrets, organization.ID, args[1:])
 	case "reset":
-		return runModelReset(ctx, store, secretstore.NewKeyring(), organization.ID, args[1:])
+		return runModelReset(ctx, store, secrets, organization.ID, args[1:])
 	default:
 		return fmt.Errorf("unsupported model subcommand %q; use configure, status, or reset", args[0])
 	}
@@ -68,6 +73,7 @@ func runModel(args []string) error {
 
 func openModelConfigStore(ctx context.Context, config bootstrap.Config) (interface {
 	application.Repository
+	secretstore.VaultRepository
 	io.Closer
 }, core.Actor, core.Organization, error) {
 	actor := core.Actor{ID: personalUserID, DisplayName: "本地用户"}
@@ -78,6 +84,7 @@ func openModelConfigStore(ctx context.Context, config bootstrap.Config) (interfa
 	}
 	var store interface {
 		application.Repository
+		secretstore.VaultRepository
 		io.Closer
 	}
 	var err error
@@ -121,14 +128,14 @@ func runModelConfigure(ctx context.Context, repository modelConfigRepository, se
 	if err := saveModelConfig(ctx, repository, secrets, organizationID, secretRef, validatedEndpoint, modelID, apiKey); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "模型配置已保存到数据库，凭据已保存到系统凭据库；重启服务后生效。")
+	fmt.Fprintln(os.Stdout, "模型配置和加密凭据已保存到数据库；后续模型调用立即生效。")
 	return nil
 }
 
 func saveModelConfig(ctx context.Context, repository modelConfigRepository, secrets modelSecretStore, organizationID, ref, endpoint, modelID, apiKey string) error {
 	oldSecret, oldSecretErr := secrets.Get(ctx, ref)
 	if err := secrets.Set(ctx, ref, apiKey); err != nil {
-		return fmt.Errorf("store model credential in the operating-system credential store: %w", err)
+		return fmt.Errorf("store model credential in the database vault: %w", err)
 	}
 	_, err := repository.UpsertModelProviderConfig(ctx, organizationID, core.UpsertModelProviderConfigInput{
 		Endpoint: endpoint, DefaultModel: modelID, SecretRef: ref,
@@ -166,7 +173,7 @@ func runModelReset(ctx context.Context, repository modelConfigRepository, secret
 	if err := secrets.Delete(ctx, config.SecretRef); err != nil {
 		return fmt.Errorf("database config removed, but credential cleanup failed: %w", err)
 	}
-	fmt.Fprintln(os.Stdout, "模型配置和系统凭据已删除。")
+	fmt.Fprintln(os.Stdout, "模型配置和数据库密钥库凭据已删除。")
 	return nil
 }
 

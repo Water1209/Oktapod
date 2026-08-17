@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, FileText, ListTree, LoaderCircle, Puzzle, Search, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, CirclePause, FileText, ListTree, LoaderCircle, Puzzle, Search, X } from 'lucide-react'
 import type { Artifact, Task } from '../../shared/api/client'
 import { api } from '../../shared/api/client'
 import { buildTaskTimeline, taskFailureInfo, type TaskTimelineItem } from '../tasks/task-progress-model'
 import { useRunEvents } from '../runs/use-run-events'
 import { latestDeliverableArtifacts } from './artifact-versions'
+import { taskStreamPresentation } from './task-stream-presentation'
 
 // StepLine 是消息流内的可折叠单行步骤，关闭时仅显示一行标题。
 function StepLine({ step }: { step: TaskTimelineItem }) {
@@ -62,9 +63,8 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
   const failure = taskFailureInfo(taskQuery.data)
   const artifacts = latestDeliverableArtifacts(artifactsQuery.data?.items ?? [])
   const runningStep = timeline.find((step) => step.state === 'running')
-  const taskActive = active && ['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'].includes(taskQuery.data.status)
-  const taskFailed = taskQuery.data.status === 'failed' || taskQuery.data.status === 'blocked'
-  const taskCanceled = taskQuery.data.status === 'canceled'
+  const taskOngoing = ['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'].includes(taskQuery.data.status)
+  const presentation = taskStreamPresentation(taskQuery.data.status, runningStep?.label, failure?.title)
   const skillNames = Array.from(new Set(liveEvents.flatMap((event) => {
     if (event.event_type !== 'skill.loaded' || !Array.isArray(event.payload.skill_names)) return []
     return event.payload.skill_names.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
@@ -78,16 +78,16 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
     ? timeline.filter((step) => [step.label, step.detail, step.tool?.input, step.tool?.result, step.tool?.output]
       .some((value) => value?.toLocaleLowerCase('zh-CN').includes(normalizedQuery)))
     : timeline
-  const hasExecutionEvidence = taskActive || Boolean(failure) || artifacts.length > 0 || timeline.some((step) => Boolean(step.tool))
+  const hasExecutionEvidence = taskOngoing || Boolean(failure) || artifacts.length > 0 || timeline.some((step) => Boolean(step.tool))
   if (!hasExecutionEvidence) return null
 
   return <>
     <div className="thread-task-agent"><span aria-hidden="true">{agentName.slice(0, 1).toUpperCase()}</span><strong>{agentName}</strong></div>
-    <div className={`message-task-stream${taskActive ? ' active' : ''}`}>
+    <div className={`message-task-stream${taskOngoing ? ' active' : ''}`}>
       <div className="message-task-stream-head">
-      <span className={`task-stream-status${taskActive ? ' running' : ''}${taskFailed ? ' failed' : ''}`}>
-        {taskActive ? <LoaderCircle className="spin" size={12} /> : taskFailed ? <AlertTriangle size={12} /> : taskCanceled ? <X size={12} /> : <Check size={12} />}
-        {taskActive ? (runningStep?.label ?? '任务执行中') : failure ? failure.title : taskCanceled ? '任务已取消' : '任务已完成'}
+      <span className={`task-stream-status ${presentation.tone}`}>
+        {presentation.spinning ? <LoaderCircle className="spin" size={12} /> : presentation.tone === 'failed' ? <AlertTriangle size={12} /> : presentation.tone === 'canceled' ? <X size={12} /> : presentation.tone === 'paused' ? <CirclePause size={12} /> : <Check size={12} />}
+        {presentation.label}
       </span>
       <span className={`task-skill-summary${skillNames.length ? ' loaded' : ''}`} title={skillNames.length ? `已显式加载：${skillNames.join('、')}` : '本次 Run 未显式指定 Skill；系统仍可按目标自动加载匹配 Skill'}>
         <Puzzle size={11} />{skillNames.length ? skillNames.join('、') : '自动匹配 Skill'}

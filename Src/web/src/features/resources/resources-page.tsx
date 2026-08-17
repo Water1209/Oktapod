@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearch } from '@tanstack/react-router'
 import { ArrowLeft, Bot, Braces, Cable, Check, CheckCircle2, ChevronDown, CircleAlert, Code2, KeyRound, MoreHorizontal, PackageOpen, Plus, Search, ShieldCheck, Trash2, Upload, Wrench, X } from 'lucide-react'
 import { api, type Capability, type CapabilityScope, type MCPDefinitionV1, type MCPInstallCandidate, type MCPOAuthSession, type ResourceInstallDraft } from '../../shared/api/client'
+import { mcpSecretBindings } from './mcp-secret-bindings'
+import { filterProjectResources, filterSystemResources, resourceEmptyCopy, resourceKindCounts, type ResourceKind, type ResourceView } from './resource-filter'
 
-type ResourceView = 'installed' | 'system'
-type ResourceFilter = 'all' | 'skill' | 'mcp' | 'agent'
 type InstallType = 'skill' | 'mcp'
 
 const systemResources = [
@@ -16,29 +17,35 @@ const availabilityText = { available: '可用', degraded: '需要修复', disabl
 
 export function ResourcesPage() {
   const queryClient = useQueryClient()
+  const search = useSearch({ from: '/resources' })
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
   const [projectId, setProjectId] = useState('')
-  const resolvedProjectId = projectId || projects.data?.items[0]?.id || ''
+  const resolvedProjectId = projectId || search.project || projects.data?.items[0]?.id || ''
   const capabilities = useQuery({ queryKey: ['capabilities', resolvedProjectId], queryFn: () => api.capabilities(resolvedProjectId), enabled: Boolean(resolvedProjectId) })
   const agents = useQuery({ queryKey: ['agents', resolvedProjectId], queryFn: () => api.agents(resolvedProjectId), enabled: Boolean(resolvedProjectId) })
   const installed = useMemo(() => [
     ...(capabilities.data?.items ?? []),
     ...(agents.data?.items ?? []).map((agent) => ({ ...agent, kind: 'agent', availability: agent.status === 'enabled' ? 'available' : agent.status, risk_level: 'L0', source_filename: '项目 Agent 定义', scope_type: 'project', manifest_json: agent.config_json, permission_diff: [], content_hash: `agent:${agent.id}` } as unknown as Capability)),
   ], [agents.data, capabilities.data])
-  const [view, setView] = useState<ResourceView>('installed')
-  const [kind, setKind] = useState<ResourceFilter>('all')
+  const [view, setView] = useState<ResourceView>(search.view ?? 'project')
+  const [kind, setKind] = useState<ResourceKind>(search.kind ?? (search.resource ? 'mcp' : 'all'))
   const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<string>()
+  const [selectedId, setSelectedId] = useState<string | undefined>(search.resource)
   const [installType, setInstallType] = useState<InstallType>()
   const [addOpen, setAddOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [oauthSession, setOAuthSession] = useState<MCPOAuthSession>()
+  const [credentialEditorId, setCredentialEditorId] = useState(search.resource ?? '')
+  const repairCredentialInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const repairCredentialBuffer = useRef<Record<string, string>>({})
   const oauthPopup = useRef<Window | null>(null)
-  const source = view === 'installed' ? installed : systemResources
-  const filtered = source.filter((item) => (kind === 'all' || item.kind === kind) && (!query.trim() || `${item.name} ${item.source_filename}`.toLowerCase().includes(query.trim().toLowerCase())))
+  const counts = useMemo(() => resourceKindCounts(installed), [installed])
+  const filtered = view === 'project' ? filterProjectResources(installed, kind, query) : filterSystemResources(systemResources, query)
   const selected = filtered.find((item) => item.id === selectedId) ?? filtered[0]
+  const emptyCopy = resourceEmptyCopy(view, kind, Boolean(query.trim()))
   const selectedUsesOAuth = isOAuthMCP(selected)
+  const selectedSecretBindings = mcpSecretBindings(selected)
   const health = useQuery({ queryKey: ['mcp-health', selected?.id], queryFn: () => api.mcpHealth(selected!.id), enabled: Boolean(selected?.kind === 'mcp' && selected.status === 'enabled'), retry: false })
   const oauthStatus = useQuery({
     queryKey: ['mcp-oauth', selected?.id, oauthSession?.id],
@@ -61,6 +68,23 @@ export function ResourcesPage() {
     return approved
   }, onSettled: async () => { await refresh(); await queryClient.invalidateQueries({ queryKey: ['mcp-health', selected?.id] }) } })
   const repair = useMutation({ mutationFn: (item: Capability) => api.connectMCP(item.id), onSettled: async () => { await refresh(); await queryClient.invalidateQueries({ queryKey: ['mcp-health', selected?.id] }) } })
+  const saveCredential = useMutation({ mutationFn: async (item: Capability) => {
+    const credentials = Object.fromEntries(selectedSecretBindings.map((binding) => [binding.name, repairCredentialBuffer.current[binding.name] ?? '']))
+    const updated = await api.updateMCPCredential(item.id, credentials)
+    try {
+      await api.connectMCP(item.id)
+      return { updated, connected: true }
+    } catch (error) {
+      return { updated, connected: false, error: error instanceof Error ? error.message : '连接验证失败' }
+    }
+  }, onSuccess: async (result) => {
+    repairCredentialBuffer.current = {}
+    Object.values(repairCredentialInputRefs.current).forEach((input) => { if (input) input.value = '' })
+    setCredentialEditorId('')
+    setNotice(result.connected ? 'MCP 凭据已写入数据库密钥库，连接验证通过。' : `MCP 凭据已安全保存；连接仍不可用：${result.error}`)
+    await refresh()
+    await queryClient.invalidateQueries({ queryKey: ['mcp-health', selected?.id] })
+  } })
   const toggle = useMutation({ mutationFn: async (item: Capability) => {
     const next = item.status === 'enabled' ? 'disabled' : 'enabled'
     if (item.kind === 'agent') return api.setAgentStatus(item.id, next)
@@ -112,28 +136,29 @@ export function ResourcesPage() {
     </header>
     {notice ? <div className="resource-install-notice" role="status"><CheckCircle2 size={16} />{notice}<button type="button" aria-label="关闭提示" onClick={() => setNotice('')}><X size={14} /></button></div> : null}
     <div className="resource-toolbar">
-      <div className="resource-view-tabs"><button className={view === 'installed' ? 'active' : ''} onClick={() => { setView('installed'); setSelectedId(undefined) }}>已安装 <em>{installed.length}</em></button><button className={view === 'system' ? 'active' : ''} onClick={() => { setView('system'); setSelectedId(undefined) }}>系统内置</button></div>
-      <div className="resource-kind-tabs">{(['all', 'skill', 'mcp', 'agent'] as ResourceFilter[]).map((value) => <button className={kind === value ? 'active' : ''} key={value} onClick={() => { setKind(value); setSelectedId(undefined) }}>{value === 'all' ? '全部' : value === 'skill' ? 'Skill' : value.toUpperCase()}</button>)}</div>
+      <div className="resource-view-tabs"><button className={view === 'project' ? 'active' : ''} onClick={() => { setView('project'); setSelectedId(undefined) }}>项目资源 <em>{installed.length}</em></button><button className={view === 'system' ? 'active' : ''} onClick={() => { setView('system'); setKind('all'); setSelectedId(undefined) }}>系统能力 <em>{systemResources.length}</em></button></div>
+      {view === 'project' ? <div className="resource-kind-tabs">{(['all', 'skill', 'mcp', 'agent'] as ResourceKind[]).map((value) => <button className={kind === value ? 'active' : ''} key={value} onClick={() => { setKind(value); setSelectedId(undefined) }}>{value === 'all' ? '全部' : value === 'skill' ? 'Skill' : value.toUpperCase()} <em>{counts[value]}</em></button>)}</div> : <div className="resource-scope-note">Oktapod 随版本提供</div>}
       <label className="resource-search"><Search size={14} /><input aria-label="搜索资源" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" /></label>
     </div>
     <div className={`resource-layout-v2 ${selectedId ? 'has-selection' : ''}`}>
       <section className="resource-list-v2" aria-label="资源列表">
         {filtered.map((item) => <button type="button" className={item.id === selected?.id ? 'active' : ''} key={item.id} onClick={() => { if (item.id !== selected?.id) { oauthPopup.current?.close(); oauthPopup.current = null; setOAuthSession(undefined) } setSelectedId(item.id) }}><ResourceIcon item={item} /><span><strong>{item.name}</strong><small>{item.kind === 'plugin' ? '内置 Tool' : item.kind} · {item.source_filename || '项目定义'}</small></span><em className={item.availability ?? item.status}><i />{availabilityText[(item.availability ?? (item.status === 'enabled' ? 'available' : item.status)) as keyof typeof availabilityText] ?? item.status}</em></button>)}
-        {!filtered.length ? <div className="master-empty"><PackageOpen size={22} /><strong>没有匹配资源</strong><span>{view === 'installed' ? '使用“添加资源”安装能力。' : '调整筛选查看系统资源。'}</span></div> : null}
+        {!filtered.length ? <div className="master-empty"><PackageOpen size={22} /><strong>{emptyCopy.title}</strong><span>{emptyCopy.detail}</span>{view === 'project' && kind !== 'all' && !query.trim() ? <button type="button" onClick={() => setKind('all')}>显示全部项目资源</button> : null}</div> : null}
       </section>
       <section className="resource-detail-v2">{selected ? <>
         <button className="resource-mobile-back" type="button" onClick={() => setSelectedId(undefined)}><ArrowLeft size={16} />返回列表</button>
-        <header><ResourceIcon item={selected} /><div><span>{selected.kind === 'plugin' ? '系统 Tool' : selected.kind.toUpperCase()}</span><h2>{selected.name}</h2><p>{selected.source_filename || '项目定义'} · v{selected.version}</p></div>{view === 'installed' ? <div className="resource-detail-actions"><label className="resource-toggle"><input type="checkbox" checked={selected.status === 'enabled'} disabled={selected.status === 'quarantined' || toggle.isPending} onChange={() => toggle.mutate(selected)} /><span /></label><button aria-label="更多操作" onClick={() => setConfirmDelete((value) => !value)}><MoreHorizontal size={17} /></button></div> : null}</header>
+        <header><ResourceIcon item={selected} /><div><span>{selected.kind === 'plugin' ? '系统 Tool' : selected.kind.toUpperCase()}</span><h2>{selected.name}</h2><p>{selected.source_filename || '项目定义'} · v{selected.version}</p></div>{view === 'project' ? <div className="resource-detail-actions"><label className="resource-toggle"><input type="checkbox" checked={selected.status === 'enabled'} disabled={selected.status === 'quarantined' || toggle.isPending} onChange={() => toggle.mutate(selected)} /><span /></label><button aria-label="更多操作" onClick={() => setConfirmDelete((value) => !value)}><MoreHorizontal size={17} /></button></div> : null}</header>
         <Lifecycle availability={selected.availability ?? (selected.status === 'enabled' ? 'available' : selected.status)} />
         {confirmDelete ? <div className="resource-delete-confirm" role="alert"><Trash2 size={17} /><span><strong>永久删除此资源？</strong><small>活动任务正在引用时会被阻止；历史快照和脱敏审计不会删除。</small></span><button type="button" onClick={() => setConfirmDelete(false)}>取消</button><button className="danger" type="button" disabled={remove.isPending} onClick={() => remove.mutate(selected)}>确认删除</button></div> : null}
-        {selected.availability === 'degraded' || health.error ? <div className="resource-repair"><CircleAlert size={17} /><span><strong>{selectedUsesOAuth ? '需要连接账号' : '需要修复'}</strong><small>{selectedUsesOAuth ? (activeOAuthSession?.last_error || '通过服务商授权页连接账号；令牌只保存在 SecretStore。') : health.error?.message || health.data?.last_error || (selected.credential_configured ? '连接或健康检查未通过。' : '缺少安全凭据。')}</small></span>{selected.kind === 'mcp' ? selectedUsesOAuth ? <button className="primary-button" disabled={oauthStart.isPending || activeOAuthSession?.status === 'waiting'} onClick={() => beginOAuth(selected)}><KeyRound size={14} />连接账号</button> : <button className="primary-button" disabled={repair.isPending} onClick={() => repair.mutate(selected)}><Wrench size={14} />重新验证</button> : null}</div> : null}
+        {selected.availability === 'degraded' || health.error ? <div className="resource-repair"><CircleAlert size={17} /><span><strong>{selectedUsesOAuth ? '需要连接账号' : selected.credential_state === 'missing' ? '凭据缺失' : selected.credential_state === 'locked' ? '密钥库已锁定' : selected.credential_state === 'corrupt' ? '凭据密文损坏' : '需要修复'}</strong><small>{selectedUsesOAuth ? (activeOAuthSession?.last_error || '通过服务商授权页连接账号；令牌只保存在数据库密钥库。') : health.error?.message || health.data?.last_error || credentialStateText(selected)}</small></span>{selected.kind === 'mcp' ? selectedUsesOAuth ? <button className="primary-button" disabled={oauthStart.isPending || activeOAuthSession?.status === 'waiting'} onClick={() => beginOAuth(selected)}><KeyRound size={14} />连接账号</button> : selected.credential_state === 'missing' || selected.credential_state === 'corrupt' ? <button className="primary-button" onClick={() => setCredentialEditorId(selected.id)}><KeyRound size={14} />重新录入</button> : selected.credential_state === 'locked' ? <a className="primary-button" href="/settings/vault"><KeyRound size={14} />恢复 Vault</a> : <button className="primary-button" disabled={repair.isPending} onClick={() => repair.mutate(selected)}><Wrench size={14} />重新验证</button> : null}</div> : null}
+        {selected.kind === 'mcp' && !selectedUsesOAuth && credentialEditorId === selected.id ? <form className="resource-credential-reentry" onSubmit={(event) => { event.preventDefault(); saveCredential.mutate(selected) }}><header><div><strong>重新录入 MCP 凭据</strong><small>值只发送到数据库密钥库，不会写入 manifest、页面存储或日志。</small></div><button type="button" aria-label="关闭凭据录入" onClick={() => setCredentialEditorId('')}><X size={14} /></button></header>{selectedSecretBindings.map((binding) => <label className="resource-credential-field" key={`${binding.name}:${binding.target}`}><span>{binding.name}{binding.required ? <b>必需</b> : <em>可选</em>}<small>{binding.target.startsWith('env:') ? '注入本地 MCP 进程' : '注入远端请求 Header'}</small></span><input ref={(input) => { repairCredentialInputRefs.current[binding.name] = input }} required={binding.required} type="password" autoComplete="new-password" placeholder="输入新凭据" onChange={(event) => { repairCredentialBuffer.current[binding.name] = event.target.value }} /></label>)}<footer><button className="secondary-button compact" type="button" onClick={() => setCredentialEditorId('')}>取消</button><button className="primary-button compact" type="submit" disabled={saveCredential.isPending || selectedSecretBindings.length === 0}>{saveCredential.isPending ? '保存并验证中…' : '保存并测试连接'}</button></footer></form> : null}
         {selectedUsesOAuth && activeOAuthSession?.capability_id === selected.id && (activeOAuthSession.status === 'preparing' || activeOAuthSession.status === 'waiting') ? <div className="resource-oauth-session" role="status"><span><strong>等待浏览器授权</strong><small>授权完成后此处会自动验证 MCP；关闭授权页不会删除资源。</small></span>{activeOAuthSession.authorization_url ? <a href={activeOAuthSession.authorization_url} target="_blank" rel="noreferrer">打开授权页</a> : null}<button type="button" disabled={oauthCancel.isPending} onClick={() => oauthCancel.mutate({ item: selected, session: activeOAuthSession })}>取消授权</button></div> : null}
-        <div className="resource-detail-grid"><section><h3>工具与权限</h3><div className="trust-note"><ShieldCheck size={17} /><span><strong>{selected.risk_level || 'L0'} 风险级别</strong><small>{selected.permission_diff?.length ? selected.permission_diff.join('、') : '未声明额外扩权；运行时策略仍逐次检查。'}</small></span></div>{health.data ? <p className="resource-tool-summary">发现 <strong>{health.data.tool_count}</strong> 个工具 · 协议 {health.data.transport}</p> : null}</section><section><h3>配置与凭据</h3><dl><div><dt>范围</dt><dd>{selected.scope_type === 'global' ? '全局' : '当前项目'}</dd></div><div><dt>{selectedUsesOAuth ? '账号' : '凭据'}</dt><dd>{selected.kind === 'mcp' ? selected.credential_configured ? selectedUsesOAuth ? '已安全连接' : 'SecretStore 已配置' : selectedUsesOAuth ? '待连接' : '未配置' : '不需要'}</dd></div><div><dt>内容</dt><dd><code>{selected.content_hash}</code></dd></div></dl></section></div>
-        {selected.status === 'quarantined' && view === 'installed' ? <button className="primary-button resource-primary-action" disabled={review.isPending} onClick={() => review.mutate(selected)}><Check size={15} />审核并启用</button> : null}
-        {review.error || repair.error || oauthStart.error || oauthStatus.error || oauthCancel.error || toggle.error || remove.error ? <p className="form-error">{review.error?.message ?? repair.error?.message ?? oauthStart.error?.message ?? oauthStatus.error?.message ?? oauthCancel.error?.message ?? toggle.error?.message ?? remove.error?.message}</p> : null}
+        <div className="resource-detail-grid"><section><h3>工具与权限</h3><div className="trust-note"><ShieldCheck size={17} /><span><strong>{selected.risk_level || 'L0'} 风险级别</strong><small>{selected.permission_diff?.length ? selected.permission_diff.join('、') : '未声明额外扩权；运行时策略仍逐次检查。'}</small></span></div>{health.data ? <p className="resource-tool-summary">发现 <strong>{health.data.tool_count}</strong> 个工具 · 协议 {health.data.transport}</p> : null}</section><section><h3>配置与凭据</h3><dl><div><dt>范围</dt><dd>{selected.scope_type === 'global' ? '全局' : '当前项目'}</dd></div><div><dt>{selectedUsesOAuth ? '账号' : '凭据'}</dt><dd>{selected.kind === 'mcp' ? selectedUsesOAuth && selected.credential_state === 'ready' ? 'OAuth 令牌可用' : credentialStateLabel[selected.credential_state] : '不需要'}</dd></div><div><dt>内容</dt><dd><code>{selected.content_hash}</code></dd></div></dl>{selected.kind === 'mcp' ? <div className="resource-credential-actions">{selectedUsesOAuth ? <button className="secondary-button compact" type="button" disabled={oauthStart.isPending} onClick={() => beginOAuth(selected)}><KeyRound size={14} />{selected.credential_state === 'ready' ? '重新连接账号' : '连接账号'}</button> : selectedSecretBindings.length ? <button className="secondary-button compact" type="button" onClick={() => setCredentialEditorId(selected.id)}><KeyRound size={14} />{selected.credential_state === 'ready' ? '更新 MCP 凭据' : '录入 MCP 凭据'}</button> : <small>此 MCP 未声明 Secret 字段，不需要录入凭据。</small>}</div> : null}</section></div>
+        {selected.status === 'quarantined' && view === 'project' ? <button className="primary-button resource-primary-action" disabled={review.isPending} onClick={() => review.mutate(selected)}><Check size={15} />审核并启用</button> : null}
+        {review.error || repair.error || saveCredential.error || oauthStart.error || oauthStatus.error || oauthCancel.error || toggle.error || remove.error ? <p className="form-error">{review.error?.message ?? repair.error?.message ?? saveCredential.error?.message ?? oauthStart.error?.message ?? oauthStatus.error?.message ?? oauthCancel.error?.message ?? toggle.error?.message ?? remove.error?.message}</p> : null}
       </> : <div className="detail-empty"><PackageOpen size={28} /><h2>选择资源查看详情</h2></div>}</section>
     </div>
-    {installType ? <ResourceInstallDialog projectId={resolvedProjectId} initialType={installType} onClose={() => setInstallType(undefined)} onInstalled={async (item, message) => { await refresh(); setView('installed'); setKind(item.kind === 'skill' ? 'skill' : 'mcp'); setSelectedId(item.id); setNotice(message); setInstallType(undefined) }} /> : null}
+    {installType ? <ResourceInstallDialog projectId={resolvedProjectId} initialType={installType} onClose={() => setInstallType(undefined)} onInstalled={async (item, message) => { await refresh(); setView('project'); setKind(item.kind === 'skill' ? 'skill' : 'mcp'); setSelectedId(item.id); setNotice(message); setInstallType(undefined) }} /> : null}
   </main>
 }
 
@@ -231,6 +256,15 @@ function isOAuthMCP(item?: Capability) {
   if (!item || item.kind !== 'mcp') return false
   try { return (JSON.parse(item.manifest_json) as MCPDefinitionV1).auth?.type === 'oauth' } catch { return false }
 }
+
+function credentialStateText(item: Capability) {
+  if (item.credential_state === 'missing') return '数据库中找不到该 credential_ref，请重新录入。'
+  if (item.credential_state === 'locked') return '先使用恢复口令解锁数据库密钥库。'
+  if (item.credential_state === 'corrupt') return '密文校验失败，禁止空值回退，请重新录入凭据。'
+  return item.credential_configured ? '连接或健康检查未通过。' : '该资源没有可用凭据。'
+}
+
+const credentialStateLabel = { ready: '数据库密钥库 · 可用', locked: '密钥库锁定', missing: '凭据缺失', corrupt: '密文损坏' } as const
 
 function fileToBase64(file: File) {
   return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('无法读取所选 ZIP。')); reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || ''); reader.readAsDataURL(file) })

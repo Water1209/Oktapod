@@ -129,6 +129,14 @@ func (s *Store) ExportProject(ctx context.Context, scope core.Scope, projectID, 
 		if err != nil {
 			return ProjectArchive{}, fmt.Errorf("export %s: %w", table.Name, err)
 		}
+		if table.Name == "capabilities" {
+			for _, row := range rows {
+				row["credential_ref"] = ""
+				if migrationStringValue(row["kind"]) == core.CapabilityKindMCP {
+					row["status"] = core.CapabilityStatusDisabled
+				}
+			}
+		}
 		archive.Tables[table.Name] = rows
 	}
 	users, err := queryArchiveRows(ctx, s.db, `
@@ -158,12 +166,15 @@ func (s *Store) ExportProject(ctx context.Context, scope core.Scope, projectID, 
 		if walkErr != nil {
 			return walkErr
 		}
-		if info.IsDir() {
-			return nil
-		}
 		rel, err := filepath.Rel(workspacePath, path)
 		if err != nil {
 			return err
+		}
+		if info.IsDir() {
+			if isRuntimeCachePath(rel) {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if isSecretMigrationPath(rel) {
 			archive.SkippedSecrets = append(archive.SkippedSecrets, filepath.ToSlash(rel))
@@ -183,13 +194,15 @@ func (s *Store) ExportProject(ctx context.Context, scope core.Scope, projectID, 
 		return ProjectArchive{}, fmt.Errorf("export workspace: %w", err)
 	}
 
+	// Only artifacts and file assets reference the blob store. Other tables
+	// (capabilities, checkpoints, agent messages) also expose a content_hash,
+	// but those values are integrity digests rather than blob foreign keys.
 	blobHashes := make(map[string]struct{})
-	for _, rows := range archive.Tables {
+	for _, tableName := range []string{"artifacts", "assets"} {
+		rows := archive.Tables[tableName]
 		for _, row := range rows {
-			for _, key := range []string{"content_hash"} {
-				if value, ok := row[key].(string); ok && strings.HasPrefix(value, "sha256:") {
-					blobHashes[value] = struct{}{}
-				}
+			if value, ok := row["content_hash"].(string); ok && strings.HasPrefix(value, "sha256:") {
+				blobHashes[value] = struct{}{}
 			}
 		}
 	}

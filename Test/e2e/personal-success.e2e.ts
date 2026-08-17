@@ -34,6 +34,26 @@ async function openLinkedTask(page: Page) {
   const openInspector = page.getByRole('button', { name: '打开任务面板', exact: true })
   if (await openInspector.isVisible()) await openInspector.click()
 }
+
+test('Reviewer 使用数据库中的准确 Provider 与 Model 配置', async ({ page }) => {
+  await page.goto('/settings/governance')
+  await expect(page.getByRole('heading', { name: '治理与审批' })).toBeVisible()
+  const reviewer = page.locator('.governance-form')
+  const provider = reviewer.getByRole('combobox', { name: 'Reviewer Provider' })
+  const model = reviewer.getByRole('combobox', { name: 'Reviewer Model' })
+  await provider.selectOption({ index: 1 })
+  await expect(model.locator('option')).toHaveCount(2)
+  await model.selectOption({ index: 1 })
+  await reviewer.getByRole('checkbox', { name: '启用自动审查' }).check()
+  await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/v1/settings/ai-governance' && response.ok()),
+    page.getByRole('button', { name: '保存治理策略' }).click(),
+  ])
+  await page.goto('/diagnostics')
+  const autoReview = page.locator('.diagnostic-list > div').filter({ hasText: '自动审查' })
+  await expect(autoReview.getByText('正常', { exact: true })).toBeVisible()
+})
+
 test('Personal 成功结果需要用户独立接受', async ({ page }) => {
   test.setTimeout(90_000)
   const suffix = Date.now().toString(36)
@@ -81,19 +101,23 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
   await resultArtifact.getByRole('combobox', { name: '执行结果.md 保存范围' }).selectOption('project')
   await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/v1\/artifacts\/[^/]+\/project-files$/.test(new URL(response.url()).pathname) && response.ok()),
-    resultArtifact.getByRole('button', { name: '保存到项目文件' }).click(),
+    resultArtifact.getByRole('button', { name: '保存到项目资料' }).click(),
   ])
-  await expect(resultArtifact.getByRole('button', { name: '已保存到项目文件' })).toBeVisible()
+  await expect(resultArtifact.getByRole('button', { name: '已保存到项目资料' })).toBeVisible()
   await page.getByRole('button', { name: '文件', exact: true }).click()
-  await page.getByRole('button', { name: '项目文件', exact: true }).click()
+  await page.getByRole('button', { name: '工作文件', exact: true }).click()
+  const candidateOutputs = page.locator('.workspace-lifecycle-group.candidate_output')
+  await expect(candidateOutputs).toContainText('待登记输出')
+  await expect(candidateOutputs).toContainText('执行结果.md')
+  await page.getByRole('button', { name: '项目资料', exact: true }).click()
   const markdownLink = page.locator('.asset-row .asset-name').getByRole('link', { name: '执行结果.md' })
   await expect(markdownLink).toHaveAttribute('href', /\/api\/v1\/assets\/.+\/preview/)
   const [previewPage] = await Promise.all([page.waitForEvent('popup'), markdownLink.click()])
   await expect(previewPage.locator('body')).toContainText('E2E 模型执行成功。')
   await previewPage.close()
   await page.getByRole('button', { name: '任务输出', exact: true }).click()
-  await expect(page.locator('.files-inspector-list > div').filter({ hasText: '执行结果.md' }).getByRole('button', { name: '已保存到项目文件' })).toBeVisible()
-  await page.getByRole('button', { name: '项目文件', exact: true }).click()
+  await expect(page.locator('.files-inspector-list > div').filter({ hasText: '执行结果.md' }).getByRole('button', { name: '已保存到项目资料' })).toBeVisible()
+  await page.getByRole('button', { name: '项目资料', exact: true }).click()
   const projectFiles = page.locator('.files-inspector .asset-surface')
   await projectFiles.getByTestId('asset-file-input').setInputFiles({ name: '验收资产.txt', mimeType: 'text/plain', buffer: Buffer.from('asset e2e content') })
   await expect(projectFiles.locator('.asset-row .asset-name').getByText('验收资产.txt')).toBeVisible()
@@ -282,6 +306,13 @@ test('资源中心统一提供 Skill 与 MCP 安装入口', async ({ page }) => 
   await page.getByRole('button', { name: '建立工作空间' }).click()
   await page.getByRole('link', { name: '资源', exact: true }).click()
   await expect(page.getByRole('heading', { name: '资源中心' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '项目资源 0' })).toBeVisible()
+  await page.getByRole('button', { name: 'MCP 0' }).click()
+  await expect(page.getByText('当前项目没有 MCP', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '项目资源 0' })).toBeVisible()
+  await page.getByRole('button', { name: /系统能力/ }).click()
+  await expect(page.getByRole('button', { name: /^MCP/ })).toHaveCount(0)
+  await page.getByRole('button', { name: '项目资源 0' }).click()
   await page.getByRole('button', { name: /添加资源/ }).click()
   const menu = page.getByRole('menu')
   await expect(menu.getByRole('button', { name: /通过对话创建 Skill/ })).toBeVisible()
@@ -290,6 +321,43 @@ test('资源中心统一提供 Skill 与 MCP 安装入口', async ({ page }) => 
   await menu.getByRole('button', { name: /导入 Skill ZIP/ }).click()
   await expect(page.getByRole('dialog').getByRole('heading', { name: '导入 Skill' })).toBeVisible()
   await expect(page.locator('input[type="file"][accept="application/zip,.zip"]')).toHaveCount(1)
+})
+
+test('MCP 缺失凭据可在资源中心重新写入数据库密钥库', async ({ page }) => {
+  test.setTimeout(60_000)
+  const suffix = Date.now().toString(36)
+  await page.goto('/')
+  await page.getByRole('link', { name: '查看项目' }).click()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('textbox', { name: '项目名称' }).fill(`MCP Vault ${suffix}`)
+  await page.getByRole('textbox', { name: '目标说明' }).fill('验证 MCP 凭据缺失和重新录入')
+  await page.getByRole('button', { name: '建立工作空间' }).click()
+  await page.getByRole('link', { name: '资源', exact: true }).click()
+  await page.getByRole('button', { name: /添加资源/ }).click()
+  await page.getByRole('menu').getByRole('button', { name: /添加 MCP/ }).click()
+  const dialog = page.getByRole('dialog')
+  const endpoint = 'http://127.0.0.1:9/mcp'
+  await dialog.getByPlaceholder(/例如 Tavily/).fill(endpoint)
+  await dialog.getByRole('button', { name: '解析' }).click()
+  await expect(dialog.getByText('已解析')).toBeVisible()
+  await dialog.locator('summary').getByText('高级配置', { exact: true }).click()
+  const manifestEditor = dialog.locator('textarea')
+  const definition = JSON.parse(await manifestEditor.inputValue())
+  definition.auth = { type: 'bearer' }
+  definition.secret_bindings = [{ name: 'credential', target: 'header:Authorization', required: true }]
+  await manifestEditor.fill(JSON.stringify(definition, null, 2))
+  await dialog.getByRole('button', { name: '校验配置' }).click()
+  await dialog.getByRole('button', { name: '确认安装' }).click()
+  await expect(page.getByRole('button', { name: '审核并启用' })).toBeVisible()
+  await page.getByRole('button', { name: '审核并启用' }).click()
+  await expect(page.getByText('凭据缺失', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '重新录入' }).click()
+  const secret = `mcp-e2e-${suffix}-secret`
+  await page.getByPlaceholder('输入新凭据').fill(secret)
+  await page.getByRole('button', { name: '保存并测试连接' }).click()
+  await expect(page.getByRole('status')).toContainText('MCP 凭据已安全保存')
+  await expect(page.getByText('数据库密钥库 · 可用')).toBeVisible()
+  await expect(page.locator('body')).not.toContainText(secret)
 })
 
 test('V1 Composer 只暴露 Auto、Ask 和 Task 运行模式', async ({ page }) => {

@@ -18,6 +18,11 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AIGovernanceSettingsFailClosed.
+const (
+	True AIGovernanceSettingsFailClosed = true
+)
+
 // Defines values for AddProjectMemberRequestRole.
 const (
 	AddProjectMemberRequestRoleApprover AddProjectMemberRequestRole = "approver"
@@ -154,6 +159,26 @@ const (
 const (
 	BootstrapProfilePersonal BootstrapProfile = "personal"
 	BootstrapProfileTeam     BootstrapProfile = "team"
+)
+
+// Defines values for BootstrapConfigurationDatabaseDriver.
+const (
+	BootstrapConfigurationDatabaseDriverPostgresql BootstrapConfigurationDatabaseDriver = "postgresql"
+	BootstrapConfigurationDatabaseDriverSqlite     BootstrapConfigurationDatabaseDriver = "sqlite"
+)
+
+// Defines values for BootstrapConfigurationProfile.
+const (
+	BootstrapConfigurationProfilePersonal BootstrapConfigurationProfile = "personal"
+	BootstrapConfigurationProfileTeam     BootstrapConfigurationProfile = "team"
+)
+
+// Defines values for CapabilityCredentialState.
+const (
+	CapabilityCredentialStateCorrupt CapabilityCredentialState = "corrupt"
+	CapabilityCredentialStateLocked  CapabilityCredentialState = "locked"
+	CapabilityCredentialStateMissing CapabilityCredentialState = "missing"
+	CapabilityCredentialStateReady   CapabilityCredentialState = "ready"
 )
 
 // Defines values for CapabilityKind.
@@ -332,6 +357,20 @@ const (
 	CreateTaskRequestVisibilitySelected CreateTaskRequestVisibility = "selected"
 )
 
+// Defines values for CredentialIssueKind.
+const (
+	CredentialIssueKindMcp      CredentialIssueKind = "mcp"
+	CredentialIssueKindMcpOauth CredentialIssueKind = "mcp_oauth"
+	CredentialIssueKindProvider CredentialIssueKind = "provider"
+)
+
+// Defines values for CredentialIssueState.
+const (
+	CredentialIssueStateCorrupt CredentialIssueState = "corrupt"
+	CredentialIssueStateLocked  CredentialIssueState = "locked"
+	CredentialIssueStateMissing CredentialIssueState = "missing"
+)
+
 // Defines values for DatabaseDiagnosticsStatus.
 const (
 	DatabaseDiagnosticsStatusDegraded DatabaseDiagnosticsStatus = "degraded"
@@ -369,8 +408,9 @@ const (
 
 // Defines values for DiagnosticsStatus.
 const (
-	DiagnosticsStatusDegraded DiagnosticsStatus = "degraded"
-	DiagnosticsStatusOk       DiagnosticsStatus = "ok"
+	DiagnosticsStatusAttention DiagnosticsStatus = "attention"
+	DiagnosticsStatusDegraded  DiagnosticsStatus = "degraded"
+	DiagnosticsStatusOk        DiagnosticsStatus = "ok"
 )
 
 // Defines values for HealthProfile.
@@ -700,6 +740,14 @@ const (
 	ProjectUsageCostStatusUnpriced  ProjectUsageCostStatus = "unpriced"
 )
 
+// Defines values for ProviderInstanceCredentialState.
+const (
+	ProviderInstanceCredentialStateCorrupt ProviderInstanceCredentialState = "corrupt"
+	ProviderInstanceCredentialStateLocked  ProviderInstanceCredentialState = "locked"
+	ProviderInstanceCredentialStateMissing ProviderInstanceCredentialState = "missing"
+	ProviderInstanceCredentialStateReady   ProviderInstanceCredentialState = "ready"
+)
+
 // Defines values for ProviderInstanceProtocolFamily.
 const (
 	ProviderInstanceProtocolFamilyAnthropic        ProviderInstanceProtocolFamily = "anthropic"
@@ -744,9 +792,9 @@ const (
 
 // Defines values for ResourceInstallDraftKind.
 const (
-	Agent ResourceInstallDraftKind = "agent"
-	Mcp   ResourceInstallDraftKind = "mcp"
-	Skill ResourceInstallDraftKind = "skill"
+	ResourceInstallDraftKindAgent ResourceInstallDraftKind = "agent"
+	ResourceInstallDraftKindMcp   ResourceInstallDraftKind = "mcp"
+	ResourceInstallDraftKindSkill ResourceInstallDraftKind = "skill"
 )
 
 // Defines values for ResourceInstallDraftStatus.
@@ -836,9 +884,9 @@ const (
 
 // Defines values for ScheduleMisfirePolicy.
 const (
-	Ask    ScheduleMisfirePolicy = "ask"
-	RunNow ScheduleMisfirePolicy = "run_now"
-	Skip   ScheduleMisfirePolicy = "skip"
+	ScheduleMisfirePolicyAsk    ScheduleMisfirePolicy = "ask"
+	ScheduleMisfirePolicyRunNow ScheduleMisfirePolicy = "run_now"
+	ScheduleMisfirePolicySkip   ScheduleMisfirePolicy = "skip"
 )
 
 // Defines values for ScheduleMode.
@@ -933,11 +981,42 @@ const (
 	TeamDefinitionStatusQuarantined TeamDefinitionStatus = "quarantined"
 )
 
+// Defines values for UpdateBootstrapConfigurationDatabaseDriver.
+const (
+	UpdateBootstrapConfigurationDatabaseDriverPostgresql UpdateBootstrapConfigurationDatabaseDriver = "postgresql"
+	UpdateBootstrapConfigurationDatabaseDriverSqlite     UpdateBootstrapConfigurationDatabaseDriver = "sqlite"
+)
+
+// Defines values for UpdateBootstrapConfigurationProfile.
+const (
+	UpdateBootstrapConfigurationProfilePersonal UpdateBootstrapConfigurationProfile = "personal"
+	UpdateBootstrapConfigurationProfileTeam     UpdateBootstrapConfigurationProfile = "team"
+)
+
 // Defines values for UpdateMemoryRequestVisibility.
 const (
 	UpdateMemoryRequestVisibilityPrivate  UpdateMemoryRequestVisibility = "private"
 	UpdateMemoryRequestVisibilityProject  UpdateMemoryRequestVisibility = "project"
 	UpdateMemoryRequestVisibilitySelected UpdateMemoryRequestVisibility = "selected"
+)
+
+// Defines values for UpdateUserPreferencesDefaultPermission.
+const (
+	UpdateUserPreferencesDefaultPermissionAsk        UpdateUserPreferencesDefaultPermission = "ask"
+	UpdateUserPreferencesDefaultPermissionAutoReview UpdateUserPreferencesDefaultPermission = "auto_review"
+)
+
+// Defines values for UpdateUserPreferencesDensity.
+const (
+	UpdateUserPreferencesDensityComfortable UpdateUserPreferencesDensity = "comfortable"
+	UpdateUserPreferencesDensityCompact     UpdateUserPreferencesDensity = "compact"
+)
+
+// Defines values for UpdateUserPreferencesTheme.
+const (
+	UpdateUserPreferencesThemeDark   UpdateUserPreferencesTheme = "dark"
+	UpdateUserPreferencesThemeLight  UpdateUserPreferencesTheme = "light"
+	UpdateUserPreferencesThemeSystem UpdateUserPreferencesTheme = "system"
 )
 
 // Defines values for UploadAssetRequestVisibility.
@@ -947,11 +1026,48 @@ const (
 	UploadAssetRequestVisibilitySelected UploadAssetRequestVisibility = "selected"
 )
 
+// Defines values for UserPreferencesDefaultPermission.
+const (
+	Ask        UserPreferencesDefaultPermission = "ask"
+	AutoReview UserPreferencesDefaultPermission = "auto_review"
+)
+
+// Defines values for UserPreferencesDensity.
+const (
+	UserPreferencesDensityComfortable UserPreferencesDensity = "comfortable"
+	UserPreferencesDensityCompact     UserPreferencesDensity = "compact"
+)
+
+// Defines values for UserPreferencesTheme.
+const (
+	UserPreferencesThemeDark   UserPreferencesTheme = "dark"
+	UserPreferencesThemeLight  UserPreferencesTheme = "light"
+	UserPreferencesThemeSystem UserPreferencesTheme = "system"
+)
+
+// Defines values for VaultStatusState.
+const (
+	VaultStatusStateActive        VaultStatusState = "active"
+	VaultStatusStateCorrupt       VaultStatusState = "corrupt"
+	VaultStatusStateLocked        VaultStatusState = "locked"
+	VaultStatusStatePending       VaultStatusState = "pending"
+	VaultStatusStateUninitialized VaultStatusState = "uninitialized"
+)
+
 // Defines values for WorkspaceFileKind.
 const (
 	WorkspaceFileKindDirectory WorkspaceFileKind = "directory"
 	WorkspaceFileKindFile      WorkspaceFileKind = "file"
 	WorkspaceFileKindSymlink   WorkspaceFileKind = "symlink"
+)
+
+// Defines values for WorkspaceFileLifecycleRole.
+const (
+	CandidateOutput WorkspaceFileLifecycleRole = "candidate_output"
+	Input           WorkspaceFileLifecycleRole = "input"
+	Source          WorkspaceFileLifecycleRole = "source"
+	Temporary       WorkspaceFileLifecycleRole = "temporary"
+	Working         WorkspaceFileLifecycleRole = "working"
 )
 
 // Defines values for SetAgentDefinitionStatusJSONBodyStatus.
@@ -1030,6 +1146,20 @@ const (
 	SetTeamDefinitionStatusJSONBodyStatusEnabled     SetTeamDefinitionStatusJSONBodyStatus = "enabled"
 	SetTeamDefinitionStatusJSONBodyStatusQuarantined SetTeamDefinitionStatusJSONBodyStatus = "quarantined"
 )
+
+// AIGovernanceSettings defines model for AIGovernanceSettings.
+type AIGovernanceSettings struct {
+	Enabled            bool                           `json:"enabled"`
+	FailClosed         AIGovernanceSettingsFailClosed `json:"fail_closed"`
+	PolicyVersion      int                            `json:"policy_version"`
+	ReviewerModelId    string                         `json:"reviewer_model_id"`
+	ReviewerProviderId string                         `json:"reviewer_provider_id"`
+	TimeoutSeconds     int                            `json:"timeout_seconds"`
+	UpdatedAt          time.Time                      `json:"updated_at"`
+}
+
+// AIGovernanceSettingsFailClosed defines model for AIGovernanceSettings.FailClosed.
+type AIGovernanceSettingsFailClosed bool
 
 // AcceptProjectInvitationRequest defines model for AcceptProjectInvitationRequest.
 type AcceptProjectInvitationRequest struct {
@@ -1331,6 +1461,25 @@ type Bootstrap struct {
 // BootstrapProfile defines model for Bootstrap.Profile.
 type BootstrapProfile string
 
+// BootstrapConfiguration defines model for BootstrapConfiguration.
+type BootstrapConfiguration struct {
+	ConfigPath      string                               `json:"config_path"`
+	DataRoot        string                               `json:"data_root"`
+	DatabaseDriver  BootstrapConfigurationDatabaseDriver `json:"database_driver"`
+	ListenAddress   string                               `json:"listen_address"`
+	Profile         BootstrapConfigurationProfile        `json:"profile"`
+	RestartRequired bool                                 `json:"restart_required"`
+	RunConcurrency  int                                  `json:"run_concurrency"`
+	Source          string                               `json:"source"`
+	TrustedKeysFile string                               `json:"trusted_keys_file"`
+}
+
+// BootstrapConfigurationDatabaseDriver defines model for BootstrapConfiguration.DatabaseDriver.
+type BootstrapConfigurationDatabaseDriver string
+
+// BootstrapConfigurationProfile defines model for BootstrapConfiguration.Profile.
+type BootstrapConfigurationProfile string
+
 // BranchSummaryRequest defines model for BranchSummaryRequest.
 type BranchSummaryRequest struct {
 	ExpectedLeafEntryId string  `json:"expected_leaf_entry_id"`
@@ -1346,24 +1495,28 @@ type Capability struct {
 	CreatedAt    time.Time            `json:"created_at"`
 
 	// CredentialConfigured Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
-	CredentialConfigured bool                `json:"credential_configured"`
-	Id                   openapi_types.UUID  `json:"id"`
-	InstallJobId         openapi_types.UUID  `json:"install_job_id"`
-	Kind                 CapabilityKind      `json:"kind"`
-	ManifestJson         string              `json:"manifest_json"`
-	Name                 string              `json:"name"`
-	OrganizationId       openapi_types.UUID  `json:"organization_id"`
-	OwnerUserId          openapi_types.UUID  `json:"owner_user_id"`
-	PermissionDiff       []string            `json:"permission_diff"`
-	ProjectId            openapi_types.UUID  `json:"project_id"`
-	RiskLevel            string              `json:"risk_level"`
-	ScopeId              openapi_types.UUID  `json:"scope_id"`
-	ScopeType            CapabilityScopeType `json:"scope_type"`
-	SourceFilename       string              `json:"source_filename"`
-	Status               CapabilityStatus    `json:"status"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	Version              string              `json:"version"`
+	CredentialConfigured bool                      `json:"credential_configured"`
+	CredentialState      CapabilityCredentialState `json:"credential_state"`
+	Id                   openapi_types.UUID        `json:"id"`
+	InstallJobId         openapi_types.UUID        `json:"install_job_id"`
+	Kind                 CapabilityKind            `json:"kind"`
+	ManifestJson         string                    `json:"manifest_json"`
+	Name                 string                    `json:"name"`
+	OrganizationId       openapi_types.UUID        `json:"organization_id"`
+	OwnerUserId          openapi_types.UUID        `json:"owner_user_id"`
+	PermissionDiff       []string                  `json:"permission_diff"`
+	ProjectId            openapi_types.UUID        `json:"project_id"`
+	RiskLevel            string                    `json:"risk_level"`
+	ScopeId              openapi_types.UUID        `json:"scope_id"`
+	ScopeType            CapabilityScopeType       `json:"scope_type"`
+	SourceFilename       string                    `json:"source_filename"`
+	Status               CapabilityStatus          `json:"status"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
+	Version              string                    `json:"version"`
 }
+
+// CapabilityCredentialState defines model for Capability.CredentialState.
+type CapabilityCredentialState string
 
 // CapabilityKind defines model for Capability.Kind.
 type CapabilityKind string
@@ -1387,6 +1540,15 @@ type CaptureWorkspaceArtifactRequestKind string
 // CloneSessionRequest defines model for CloneSessionRequest.
 type CloneSessionRequest struct {
 	Title *string `json:"title,omitempty"`
+}
+
+// ContextSettings defines model for ContextSettings.
+type ContextSettings struct {
+	AutoCompact      bool      `json:"auto_compact"`
+	RetainTokens     int64     `json:"retain_tokens"`
+	SummaryMaxTokens int64     `json:"summary_max_tokens"`
+	TriggerTokens    int64     `json:"trigger_tokens"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // ControlTaskRequest defines model for ControlTaskRequest.
@@ -1633,6 +1795,21 @@ type CreateTeamDefinitionRequest struct {
 	Version    string     `json:"version"`
 }
 
+// CredentialIssue defines model for CredentialIssue.
+type CredentialIssue struct {
+	ActionPath string               `json:"action_path"`
+	Kind       CredentialIssueKind  `json:"kind"`
+	Name       string               `json:"name"`
+	ResourceId string               `json:"resource_id"`
+	State      CredentialIssueState `json:"state"`
+}
+
+// CredentialIssueKind defines model for CredentialIssue.Kind.
+type CredentialIssueKind string
+
+// CredentialIssueState defines model for CredentialIssue.State.
+type CredentialIssueState string
+
 // DatabaseDiagnostics defines model for DatabaseDiagnostics.
 type DatabaseDiagnostics struct {
 	Name   string                    `json:"name"`
@@ -1684,15 +1861,24 @@ type DiagnosticLogPolicy struct {
 
 // Diagnostics defines model for Diagnostics.
 type Diagnostics struct {
-	AutoReview  AutoReviewDiagnostics  `json:"auto_review"`
+	AutoReview       AutoReviewDiagnostics `json:"auto_review"`
+	CredentialIssues []CredentialIssue     `json:"credential_issues"`
+	CredentialStates struct {
+		Corrupt int `json:"corrupt"`
+		Locked  int `json:"locked"`
+		Missing int `json:"missing"`
+		Ready   int `json:"ready"`
+	} `json:"credential_states"`
 	Database    DatabaseDiagnostics    `json:"database"`
 	Logs        DiagnosticLogPolicy    `json:"logs"`
 	Maintenance MaintenanceDiagnostics `json:"maintenance"`
+	Pricing     PricingDiagnostics     `json:"pricing"`
 	Profile     string                 `json:"profile"`
 	Providers   ProviderDiagnostics    `json:"providers"`
 	Sse         SseDiagnostics         `json:"sse"`
 	Status      DiagnosticsStatus      `json:"status"`
 	Storage     *StorageDiagnostics    `json:"storage,omitempty"`
+	Vault       VaultStatus            `json:"vault"`
 	Version     string                 `json:"version"`
 	Worker      WorkerDiagnostics      `json:"worker"`
 }
@@ -1914,6 +2100,11 @@ type MCPOAuthSession struct {
 // MCPOAuthSessionStatus defines model for MCPOAuthSession.Status.
 type MCPOAuthSessionStatus string
 
+// MCPSecretUpdateRequest defines model for MCPSecretUpdateRequest.
+type MCPSecretUpdateRequest struct {
+	Credentials map[string]string `json:"credentials"`
+}
+
 // MaintenanceDiagnostics defines model for MaintenanceDiagnostics.
 type MaintenanceDiagnostics struct {
 	BackupEndpointAvailable  bool   `json:"backup_endpoint_available"`
@@ -2010,6 +2201,23 @@ type ModelDescriptor struct {
 // ModelDescriptorSource defines model for ModelDescriptor.Source.
 type ModelDescriptorSource string
 
+// ModelPricingCollection defines model for ModelPricingCollection.
+type ModelPricingCollection struct {
+	Items []ModelPricingVersion `json:"items"`
+}
+
+// ModelPricingVersion defines model for ModelPricingVersion.
+type ModelPricingVersion struct {
+	Currency    string    `json:"currency"`
+	EffectiveAt time.Time `json:"effective_at"`
+	InputPer1k  string    `json:"input_per_1k"`
+	ModelId     string    `json:"model_id"`
+	OutputPer1k string    `json:"output_per_1k"`
+	ProviderId  string    `json:"provider_id"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Version     int       `json:"version"`
+}
+
 // MovePlanItemRequest defines model for MovePlanItemRequest.
 type MovePlanItemRequest struct {
 	Status MovePlanItemRequestStatus `json:"status"`
@@ -2076,6 +2284,12 @@ type PortableTranscriptMessage struct {
 
 // PortableTranscriptMessageRole defines model for PortableTranscriptMessage.Role.
 type PortableTranscriptMessageRole string
+
+// PricingDiagnostics defines model for PricingDiagnostics.
+type PricingDiagnostics struct {
+	UncoveredModels int `json:"uncovered_models"`
+	VersionCount    int `json:"version_count"`
+}
 
 // Problem defines model for Problem.
 type Problem struct {
@@ -2278,17 +2492,21 @@ type ProviderDiagnostics struct {
 
 // ProviderInstance defines model for ProviderInstance.
 type ProviderInstance struct {
-	CreatedAt            time.Time                      `json:"created_at"`
-	CredentialConfigured bool                           `json:"credential_configured"`
-	DefaultModelId       string                         `json:"default_model_id"`
-	DisplayName          string                         `json:"display_name"`
-	Endpoint             string                         `json:"endpoint"`
-	IsDefault            bool                           `json:"is_default"`
-	ProtocolFamily       ProviderInstanceProtocolFamily `json:"protocol_family"`
-	ProviderId           string                         `json:"provider_id"`
-	Status               ProviderInstanceStatus         `json:"status"`
-	UpdatedAt            time.Time                      `json:"updated_at"`
+	CreatedAt            time.Time                       `json:"created_at"`
+	CredentialConfigured bool                            `json:"credential_configured"`
+	CredentialState      ProviderInstanceCredentialState `json:"credential_state"`
+	DefaultModelId       string                          `json:"default_model_id"`
+	DisplayName          string                          `json:"display_name"`
+	Endpoint             string                          `json:"endpoint"`
+	IsDefault            bool                            `json:"is_default"`
+	ProtocolFamily       ProviderInstanceProtocolFamily  `json:"protocol_family"`
+	ProviderId           string                          `json:"provider_id"`
+	Status               ProviderInstanceStatus          `json:"status"`
+	UpdatedAt            time.Time                       `json:"updated_at"`
 }
+
+// ProviderInstanceCredentialState defines model for ProviderInstance.CredentialState.
+type ProviderInstanceCredentialState string
 
 // ProviderInstanceProtocolFamily defines model for ProviderInstance.ProtocolFamily.
 type ProviderInstanceProtocolFamily string
@@ -2688,6 +2906,38 @@ type TeamRole struct {
 	Role string `json:"role"`
 }
 
+// UpdateAIGovernanceSettings defines model for UpdateAIGovernanceSettings.
+type UpdateAIGovernanceSettings struct {
+	Enabled            bool   `json:"enabled"`
+	ReviewerModelId    string `json:"reviewer_model_id"`
+	ReviewerProviderId string `json:"reviewer_provider_id"`
+	TimeoutSeconds     int    `json:"timeout_seconds"`
+}
+
+// UpdateBootstrapConfiguration defines model for UpdateBootstrapConfiguration.
+type UpdateBootstrapConfiguration struct {
+	DataRoot        *string                                     `json:"data_root,omitempty"`
+	DatabaseDriver  *UpdateBootstrapConfigurationDatabaseDriver `json:"database_driver,omitempty"`
+	ListenAddress   *string                                     `json:"listen_address,omitempty"`
+	Profile         *UpdateBootstrapConfigurationProfile        `json:"profile,omitempty"`
+	RunConcurrency  *int                                        `json:"run_concurrency,omitempty"`
+	TrustedKeysFile *string                                     `json:"trusted_keys_file,omitempty"`
+}
+
+// UpdateBootstrapConfigurationDatabaseDriver defines model for UpdateBootstrapConfiguration.DatabaseDriver.
+type UpdateBootstrapConfigurationDatabaseDriver string
+
+// UpdateBootstrapConfigurationProfile defines model for UpdateBootstrapConfiguration.Profile.
+type UpdateBootstrapConfigurationProfile string
+
+// UpdateContextSettings defines model for UpdateContextSettings.
+type UpdateContextSettings struct {
+	AutoCompact      bool  `json:"auto_compact"`
+	RetainTokens     int64 `json:"retain_tokens"`
+	SummaryMaxTokens int64 `json:"summary_max_tokens"`
+	TriggerTokens    int64 `json:"trigger_tokens"`
+}
+
 // UpdateMemoryRequest defines model for UpdateMemoryRequest.
 type UpdateMemoryRequest struct {
 	Content    string                        `json:"content"`
@@ -2698,6 +2948,22 @@ type UpdateMemoryRequest struct {
 
 // UpdateMemoryRequestVisibility defines model for UpdateMemoryRequest.Visibility.
 type UpdateMemoryRequestVisibility string
+
+// UpdateModelPricingCollection defines model for UpdateModelPricingCollection.
+type UpdateModelPricingCollection struct {
+	Items []UpdateModelPricingVersion `json:"items"`
+}
+
+// UpdateModelPricingVersion defines model for UpdateModelPricingVersion.
+type UpdateModelPricingVersion struct {
+	Currency    string    `json:"currency"`
+	EffectiveAt time.Time `json:"effective_at"`
+	InputPer1k  string    `json:"input_per_1k"`
+	ModelId     string    `json:"model_id"`
+	OutputPer1k string    `json:"output_per_1k"`
+	ProviderId  string    `json:"provider_id"`
+	Version     int       `json:"version"`
+}
 
 // UpdateProjectSettingsRequest defines model for UpdateProjectSettingsRequest.
 type UpdateProjectSettingsRequest struct {
@@ -2718,6 +2984,24 @@ type UpdateRunBudgetRequest struct {
 	// MaxTokens Zero means unlimited.
 	MaxTokens int64 `json:"max_tokens"`
 }
+
+// UpdateUserPreferences defines model for UpdateUserPreferences.
+type UpdateUserPreferences struct {
+	DefaultPermission UpdateUserPreferencesDefaultPermission `json:"default_permission"`
+	Density           UpdateUserPreferencesDensity           `json:"density"`
+	RecentModelId     string                                 `json:"recent_model_id"`
+	RecentProviderId  string                                 `json:"recent_provider_id"`
+	Theme             UpdateUserPreferencesTheme             `json:"theme"`
+}
+
+// UpdateUserPreferencesDefaultPermission defines model for UpdateUserPreferences.DefaultPermission.
+type UpdateUserPreferencesDefaultPermission string
+
+// UpdateUserPreferencesDensity defines model for UpdateUserPreferences.Density.
+type UpdateUserPreferencesDensity string
+
+// UpdateUserPreferencesTheme defines model for UpdateUserPreferences.Theme.
+type UpdateUserPreferencesTheme string
 
 // UploadAssetRequest defines model for UploadAssetRequest.
 type UploadAssetRequest struct {
@@ -2743,6 +3027,51 @@ type UsageBucket struct {
 	ReasoningTokens int64  `json:"reasoning_tokens"`
 }
 
+// UserPreferences defines model for UserPreferences.
+type UserPreferences struct {
+	DefaultPermission UserPreferencesDefaultPermission `json:"default_permission"`
+	Density           UserPreferencesDensity           `json:"density"`
+	RecentModelId     string                           `json:"recent_model_id"`
+	RecentProviderId  string                           `json:"recent_provider_id"`
+	Theme             UserPreferencesTheme             `json:"theme"`
+	UpdatedAt         time.Time                        `json:"updated_at"`
+}
+
+// UserPreferencesDefaultPermission defines model for UserPreferences.DefaultPermission.
+type UserPreferencesDefaultPermission string
+
+// UserPreferencesDensity defines model for UserPreferences.Density.
+type UserPreferencesDensity string
+
+// UserPreferencesTheme defines model for UserPreferences.Theme.
+type UserPreferencesTheme string
+
+// VaultRecoveryRequest defines model for VaultRecoveryRequest.
+type VaultRecoveryRequest struct {
+	RecoveryCode string `json:"recovery_code"`
+}
+
+// VaultSecretResponse defines model for VaultSecretResponse.
+type VaultSecretResponse struct {
+	// RecoveryCode One-time response; never persisted or logged.
+	RecoveryCode string      `json:"recovery_code"`
+	Status       VaultStatus `json:"status"`
+}
+
+// VaultStatus defines model for VaultStatus.
+type VaultStatus struct {
+	Algorithm          string           `json:"algorithm"`
+	Detail             string           `json:"detail"`
+	KeyVersion         int              `json:"key_version"`
+	RecoveryConfigured bool             `json:"recovery_configured"`
+	SecretCount        int64            `json:"secret_count"`
+	State              VaultStatusState `json:"state"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+}
+
+// VaultStatusState defines model for VaultStatus.State.
+type VaultStatusState string
+
 // WorkerDiagnostics defines model for WorkerDiagnostics.
 type WorkerDiagnostics struct {
 	ActiveLeases     int64 `json:"active_leases"`
@@ -2753,15 +3082,19 @@ type WorkerDiagnostics struct {
 
 // WorkspaceFile defines model for WorkspaceFile.
 type WorkspaceFile struct {
-	GitStatus  string            `json:"git_status"`
-	Kind       WorkspaceFileKind `json:"kind"`
-	ModifiedAt time.Time         `json:"modified_at"`
-	Path       string            `json:"path"`
-	SizeBytes  int64             `json:"size_bytes"`
+	GitStatus     string                     `json:"git_status"`
+	Kind          WorkspaceFileKind          `json:"kind"`
+	LifecycleRole WorkspaceFileLifecycleRole `json:"lifecycle_role"`
+	ModifiedAt    time.Time                  `json:"modified_at"`
+	Path          string                     `json:"path"`
+	SizeBytes     int64                      `json:"size_bytes"`
 }
 
 // WorkspaceFileKind defines model for WorkspaceFile.Kind.
 type WorkspaceFileKind string
+
+// WorkspaceFileLifecycleRole defines model for WorkspaceFile.LifecycleRole.
+type WorkspaceFileLifecycleRole string
 
 // WorkspaceFilePage defines model for WorkspaceFilePage.
 type WorkspaceFilePage struct {
@@ -3147,11 +3480,17 @@ type PublishArtifactJSONRequestBody = PublishArtifactRequest
 // CreateAuthSessionJSONRequestBody defines body for CreateAuthSession for application/json ContentType.
 type CreateAuthSessionJSONRequestBody = CreateAuthSessionRequest
 
+// UpdateMCPCredentialJSONRequestBody defines body for UpdateMCPCredential for application/json ContentType.
+type UpdateMCPCredentialJSONRequestBody = MCPSecretUpdateRequest
+
 // ReviewCapabilityJSONRequestBody defines body for ReviewCapability for application/json ContentType.
 type ReviewCapabilityJSONRequestBody = ReviewCapabilityRequest
 
 // SetCapabilityStatusJSONRequestBody defines body for SetCapabilityStatus for application/json ContentType.
 type SetCapabilityStatusJSONRequestBody SetCapabilityStatusJSONBody
+
+// UpdateBootstrapConfigurationJSONRequestBody defines body for UpdateBootstrapConfiguration for application/json ContentType.
+type UpdateBootstrapConfigurationJSONRequestBody = UpdateBootstrapConfiguration
 
 // RenameConversationJSONRequestBody defines body for RenameConversation for application/json ContentType.
 type RenameConversationJSONRequestBody RenameConversationJSONBody
@@ -3191,6 +3530,9 @@ type SetMemoryStatusJSONRequestBody = SetMemoryStatusRequest
 
 // MovePlanItemJSONRequestBody defines body for MovePlanItem for application/json ContentType.
 type MovePlanItemJSONRequestBody = MovePlanItemRequest
+
+// UpdatePreferencesJSONRequestBody defines body for UpdatePreferences for application/json ContentType.
+type UpdatePreferencesJSONRequestBody = UpdateUserPreferences
 
 // CreateProjectJSONRequestBody defines body for CreateProject for application/json ContentType.
 type CreateProjectJSONRequestBody = CreateProjectRequest
@@ -3260,6 +3602,21 @@ type UpdateRunBudgetJSONRequestBody = UpdateRunBudgetRequest
 
 // SetScheduleStatusJSONRequestBody defines body for SetScheduleStatus for application/json ContentType.
 type SetScheduleStatusJSONRequestBody SetScheduleStatusJSONBody
+
+// ConfirmVaultJSONRequestBody defines body for ConfirmVault for application/json ContentType.
+type ConfirmVaultJSONRequestBody = VaultRecoveryRequest
+
+// RecoverVaultJSONRequestBody defines body for RecoverVault for application/json ContentType.
+type RecoverVaultJSONRequestBody = VaultRecoveryRequest
+
+// UpdateAIGovernanceSettingsJSONRequestBody defines body for UpdateAIGovernanceSettings for application/json ContentType.
+type UpdateAIGovernanceSettingsJSONRequestBody = UpdateAIGovernanceSettings
+
+// UpdateContextSettingsJSONRequestBody defines body for UpdateContextSettings for application/json ContentType.
+type UpdateContextSettingsJSONRequestBody = UpdateContextSettings
+
+// UpdateModelPricingJSONRequestBody defines body for UpdateModelPricing for application/json ContentType.
+type UpdateModelPricingJSONRequestBody = UpdateModelPricingCollection
 
 // ResolveSideEffectJSONRequestBody defines body for ResolveSideEffect for application/json ContentType.
 type ResolveSideEffectJSONRequestBody = ResolveSideEffectRequest
@@ -3377,6 +3734,9 @@ type ServerInterface interface {
 	// (POST /capabilities/{capability_id}/mcp/connect)
 	ConnectMCP(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
 
+	// (PUT /capabilities/{capability_id}/mcp/credential)
+	UpdateMCPCredential(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
+
 	// (POST /capabilities/{capability_id}/mcp/disconnect)
 	DisconnectMCP(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
 
@@ -3397,6 +3757,12 @@ type ServerInterface interface {
 
 	// (POST /capabilities/{capability_id}/status)
 	SetCapabilityStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params SetCapabilityStatusParams)
+
+	// (GET /configuration)
+	GetConfiguration(w http.ResponseWriter, r *http.Request)
+
+	// (PATCH /configuration/bootstrap)
+	UpdateBootstrapConfiguration(w http.ResponseWriter, r *http.Request)
 	// Delete an owner-only conversation and its completed task history
 	// (DELETE /conversations/{conversation_id})
 	DeleteConversation(w http.ResponseWriter, r *http.Request, conversationId openapi_types.UUID)
@@ -3478,6 +3844,12 @@ type ServerInterface interface {
 
 	// (POST /plan-items/{plan_item_id}/status)
 	MovePlanItem(w http.ResponseWriter, r *http.Request, planItemId openapi_types.UUID, params MovePlanItemParams)
+
+	// (GET /preferences)
+	GetPreferences(w http.ResponseWriter, r *http.Request)
+
+	// (PUT /preferences)
+	UpdatePreferences(w http.ResponseWriter, r *http.Request)
 
 	// (GET /projects)
 	ListProjects(w http.ResponseWriter, r *http.Request)
@@ -3650,8 +4022,44 @@ type ServerInterface interface {
 	// (POST /schedules/{schedule_id}/status)
 	SetScheduleStatus(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID, params SetScheduleStatusParams)
 
+	// (GET /security/vault)
+	GetVaultStatus(w http.ResponseWriter, r *http.Request)
+
+	// (POST /security/vault/confirm)
+	ConfirmVault(w http.ResponseWriter, r *http.Request)
+
+	// (POST /security/vault/initialize)
+	InitializeVault(w http.ResponseWriter, r *http.Request)
+
+	// (POST /security/vault/recover)
+	RecoverVault(w http.ResponseWriter, r *http.Request)
+
+	// (POST /security/vault/reset-pending)
+	ResetPendingVault(w http.ResponseWriter, r *http.Request)
+
+	// (POST /security/vault/rotate-recovery)
+	RotateVaultRecovery(w http.ResponseWriter, r *http.Request)
+
 	// (GET /session-entries/{entry_id}/path)
 	GetSessionEntryPath(w http.ResponseWriter, r *http.Request, entryId string)
+
+	// (GET /settings/ai-governance)
+	GetAIGovernanceSettings(w http.ResponseWriter, r *http.Request)
+
+	// (PUT /settings/ai-governance)
+	UpdateAIGovernanceSettings(w http.ResponseWriter, r *http.Request)
+
+	// (GET /settings/context)
+	GetContextSettings(w http.ResponseWriter, r *http.Request)
+
+	// (PUT /settings/context)
+	UpdateContextSettings(w http.ResponseWriter, r *http.Request)
+
+	// (GET /settings/model-pricing)
+	GetModelPricing(w http.ResponseWriter, r *http.Request)
+
+	// (PUT /settings/model-pricing)
+	UpdateModelPricing(w http.ResponseWriter, r *http.Request)
 
 	// (GET /side-effect-receipts)
 	ListSideEffectReceipts(w http.ResponseWriter, r *http.Request, params ListSideEffectReceiptsParams)
@@ -3744,6 +4152,11 @@ func (_ Unimplemented) ConnectMCP(w http.ResponseWriter, r *http.Request, capabi
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (PUT /capabilities/{capability_id}/mcp/credential)
+func (_ Unimplemented) UpdateMCPCredential(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (POST /capabilities/{capability_id}/mcp/disconnect)
 func (_ Unimplemented) DisconnectMCP(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -3776,6 +4189,16 @@ func (_ Unimplemented) ReviewCapability(w http.ResponseWriter, r *http.Request, 
 
 // (POST /capabilities/{capability_id}/status)
 func (_ Unimplemented) SetCapabilityStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params SetCapabilityStatusParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /configuration)
+func (_ Unimplemented) GetConfiguration(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PATCH /configuration/bootstrap)
+func (_ Unimplemented) UpdateBootstrapConfiguration(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3916,6 +4339,16 @@ func (_ Unimplemented) ListModels(w http.ResponseWriter, r *http.Request) {
 
 // (POST /plan-items/{plan_item_id}/status)
 func (_ Unimplemented) MovePlanItem(w http.ResponseWriter, r *http.Request, planItemId openapi_types.UUID, params MovePlanItemParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /preferences)
+func (_ Unimplemented) GetPreferences(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PUT /preferences)
+func (_ Unimplemented) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4206,8 +4639,68 @@ func (_ Unimplemented) SetScheduleStatus(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (GET /security/vault)
+func (_ Unimplemented) GetVaultStatus(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /security/vault/confirm)
+func (_ Unimplemented) ConfirmVault(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /security/vault/initialize)
+func (_ Unimplemented) InitializeVault(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /security/vault/recover)
+func (_ Unimplemented) RecoverVault(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /security/vault/reset-pending)
+func (_ Unimplemented) ResetPendingVault(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /security/vault/rotate-recovery)
+func (_ Unimplemented) RotateVaultRecovery(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (GET /session-entries/{entry_id}/path)
 func (_ Unimplemented) GetSessionEntryPath(w http.ResponseWriter, r *http.Request, entryId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /settings/ai-governance)
+func (_ Unimplemented) GetAIGovernanceSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PUT /settings/ai-governance)
+func (_ Unimplemented) UpdateAIGovernanceSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /settings/context)
+func (_ Unimplemented) GetContextSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PUT /settings/context)
+func (_ Unimplemented) UpdateContextSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /settings/model-pricing)
+func (_ Unimplemented) GetModelPricing(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PUT /settings/model-pricing)
+func (_ Unimplemented) UpdateModelPricing(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4656,6 +5149,31 @@ func (siw *ServerInterfaceWrapper) ConnectMCP(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// UpdateMCPCredential operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMCPCredential(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateMCPCredential(w, r, capabilityId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DisconnectMCP operation middleware
 func (siw *ServerInterfaceWrapper) DisconnectMCP(w http.ResponseWriter, r *http.Request) {
 
@@ -4888,6 +5406,34 @@ func (siw *ServerInterfaceWrapper) SetCapabilityStatus(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetCapabilityStatus(w, r, capabilityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetConfiguration operation middleware
+func (siw *ServerInterfaceWrapper) GetConfiguration(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetConfiguration(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateBootstrapConfiguration operation middleware
+func (siw *ServerInterfaceWrapper) UpdateBootstrapConfiguration(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateBootstrapConfiguration(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5844,6 +6390,34 @@ func (siw *ServerInterfaceWrapper) MovePlanItem(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.MovePlanItem(w, r, planItemId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPreferences operation middleware
+func (siw *ServerInterfaceWrapper) GetPreferences(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPreferences(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdatePreferences operation middleware
+func (siw *ServerInterfaceWrapper) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdatePreferences(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7856,6 +8430,90 @@ func (siw *ServerInterfaceWrapper) SetScheduleStatus(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// GetVaultStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetVaultStatus(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetVaultStatus(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ConfirmVault operation middleware
+func (siw *ServerInterfaceWrapper) ConfirmVault(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConfirmVault(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InitializeVault operation middleware
+func (siw *ServerInterfaceWrapper) InitializeVault(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InitializeVault(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RecoverVault operation middleware
+func (siw *ServerInterfaceWrapper) RecoverVault(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RecoverVault(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResetPendingVault operation middleware
+func (siw *ServerInterfaceWrapper) ResetPendingVault(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResetPendingVault(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RotateVaultRecovery operation middleware
+func (siw *ServerInterfaceWrapper) RotateVaultRecovery(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateVaultRecovery(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSessionEntryPath operation middleware
 func (siw *ServerInterfaceWrapper) GetSessionEntryPath(w http.ResponseWriter, r *http.Request) {
 
@@ -7872,6 +8530,90 @@ func (siw *ServerInterfaceWrapper) GetSessionEntryPath(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetSessionEntryPath(w, r, entryId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAIGovernanceSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetAIGovernanceSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAIGovernanceSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateAIGovernanceSettings operation middleware
+func (siw *ServerInterfaceWrapper) UpdateAIGovernanceSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateAIGovernanceSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetContextSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetContextSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetContextSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateContextSettings operation middleware
+func (siw *ServerInterfaceWrapper) UpdateContextSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateContextSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetModelPricing operation middleware
+func (siw *ServerInterfaceWrapper) GetModelPricing(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetModelPricing(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateModelPricing operation middleware
+func (siw *ServerInterfaceWrapper) UpdateModelPricing(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateModelPricing(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8331,6 +9073,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/mcp/connect", wrapper.ConnectMCP)
 	})
 	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/capabilities/{capability_id}/mcp/credential", wrapper.UpdateMCPCredential)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/mcp/disconnect", wrapper.DisconnectMCP)
 	})
 	r.Group(func(r chi.Router) {
@@ -8350,6 +9095,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/status", wrapper.SetCapabilityStatus)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/configuration", wrapper.GetConfiguration)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/configuration/bootstrap", wrapper.UpdateBootstrapConfiguration)
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/conversations/{conversation_id}", wrapper.DeleteConversation)
@@ -8431,6 +9182,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/plan-items/{plan_item_id}/status", wrapper.MovePlanItem)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/preferences", wrapper.GetPreferences)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/preferences", wrapper.UpdatePreferences)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/projects", wrapper.ListProjects)
@@ -8604,7 +9361,43 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/schedules/{schedule_id}/status", wrapper.SetScheduleStatus)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/security/vault", wrapper.GetVaultStatus)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/security/vault/confirm", wrapper.ConfirmVault)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/security/vault/initialize", wrapper.InitializeVault)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/security/vault/recover", wrapper.RecoverVault)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/security/vault/reset-pending", wrapper.ResetPendingVault)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/security/vault/rotate-recovery", wrapper.RotateVaultRecovery)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/session-entries/{entry_id}/path", wrapper.GetSessionEntryPath)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/settings/ai-governance", wrapper.GetAIGovernanceSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/settings/ai-governance", wrapper.UpdateAIGovernanceSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/settings/context", wrapper.GetContextSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/settings/context", wrapper.UpdateContextSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/settings/model-pricing", wrapper.GetModelPricing)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/settings/model-pricing", wrapper.UpdateModelPricing)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/side-effect-receipts", wrapper.ListSideEffectReceipts)
@@ -9044,6 +9837,36 @@ func (response ConnectMCPdefaultApplicationProblemPlusJSONResponse) VisitConnect
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type UpdateMCPCredentialRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+	Body         *UpdateMCPCredentialJSONRequestBody
+}
+
+type UpdateMCPCredentialResponseObject interface {
+	VisitUpdateMCPCredentialResponse(w http.ResponseWriter) error
+}
+
+type UpdateMCPCredential200JSONResponse Capability
+
+func (response UpdateMCPCredential200JSONResponse) VisitUpdateMCPCredentialResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateMCPCredentialdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateMCPCredentialdefaultApplicationProblemPlusJSONResponse) VisitUpdateMCPCredentialResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type DisconnectMCPRequestObject struct {
 	CapabilityId openapi_types.UUID `json:"capability_id"`
 }
@@ -9247,6 +10070,63 @@ type SetCapabilityStatusdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response SetCapabilityStatusdefaultApplicationProblemPlusJSONResponse) VisitSetCapabilityStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetConfigurationRequestObject struct {
+}
+
+type GetConfigurationResponseObject interface {
+	VisitGetConfigurationResponse(w http.ResponseWriter) error
+}
+
+type GetConfiguration200JSONResponse BootstrapConfiguration
+
+func (response GetConfiguration200JSONResponse) VisitGetConfigurationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetConfigurationdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetConfigurationdefaultApplicationProblemPlusJSONResponse) VisitGetConfigurationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateBootstrapConfigurationRequestObject struct {
+	Body *UpdateBootstrapConfigurationJSONRequestBody
+}
+
+type UpdateBootstrapConfigurationResponseObject interface {
+	VisitUpdateBootstrapConfigurationResponse(w http.ResponseWriter) error
+}
+
+type UpdateBootstrapConfiguration200JSONResponse BootstrapConfiguration
+
+func (response UpdateBootstrapConfiguration200JSONResponse) VisitUpdateBootstrapConfigurationResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateBootstrapConfigurationdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateBootstrapConfigurationdefaultApplicationProblemPlusJSONResponse) VisitUpdateBootstrapConfigurationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -10085,6 +10965,63 @@ type MovePlanItemdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response MovePlanItemdefaultApplicationProblemPlusJSONResponse) VisitMovePlanItemResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetPreferencesRequestObject struct {
+}
+
+type GetPreferencesResponseObject interface {
+	VisitGetPreferencesResponse(w http.ResponseWriter) error
+}
+
+type GetPreferences200JSONResponse UserPreferences
+
+func (response GetPreferences200JSONResponse) VisitGetPreferencesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPreferencesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetPreferencesdefaultApplicationProblemPlusJSONResponse) VisitGetPreferencesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdatePreferencesRequestObject struct {
+	Body *UpdatePreferencesJSONRequestBody
+}
+
+type UpdatePreferencesResponseObject interface {
+	VisitUpdatePreferencesResponse(w http.ResponseWriter) error
+}
+
+type UpdatePreferences200JSONResponse UserPreferences
+
+func (response UpdatePreferences200JSONResponse) VisitUpdatePreferencesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdatePreferencesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdatePreferencesdefaultApplicationProblemPlusJSONResponse) VisitUpdatePreferencesResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -11814,6 +12751,191 @@ func (response SetScheduleStatusdefaultApplicationProblemPlusJSONResponse) Visit
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type GetVaultStatusRequestObject struct {
+}
+
+type GetVaultStatusResponseObject interface {
+	VisitGetVaultStatusResponse(w http.ResponseWriter) error
+}
+
+type GetVaultStatus200ResponseHeaders struct {
+	CacheControl string
+}
+
+type GetVaultStatus200JSONResponse struct {
+	Body    VaultStatus
+	Headers GetVaultStatus200ResponseHeaders
+}
+
+func (response GetVaultStatus200JSONResponse) VisitGetVaultStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetVaultStatusdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetVaultStatusdefaultApplicationProblemPlusJSONResponse) VisitGetVaultStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ConfirmVaultRequestObject struct {
+	Body *ConfirmVaultJSONRequestBody
+}
+
+type ConfirmVaultResponseObject interface {
+	VisitConfirmVaultResponse(w http.ResponseWriter) error
+}
+
+type ConfirmVault200JSONResponse VaultStatus
+
+func (response ConfirmVault200JSONResponse) VisitConfirmVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmVaultdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ConfirmVaultdefaultApplicationProblemPlusJSONResponse) VisitConfirmVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type InitializeVaultRequestObject struct {
+}
+
+type InitializeVaultResponseObject interface {
+	VisitInitializeVaultResponse(w http.ResponseWriter) error
+}
+
+type InitializeVault200ResponseHeaders struct {
+	CacheControl string
+}
+
+type InitializeVault200JSONResponse struct {
+	Body    VaultSecretResponse
+	Headers InitializeVault200ResponseHeaders
+}
+
+func (response InitializeVault200JSONResponse) VisitInitializeVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type InitializeVaultdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response InitializeVaultdefaultApplicationProblemPlusJSONResponse) VisitInitializeVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type RecoverVaultRequestObject struct {
+	Body *RecoverVaultJSONRequestBody
+}
+
+type RecoverVaultResponseObject interface {
+	VisitRecoverVaultResponse(w http.ResponseWriter) error
+}
+
+type RecoverVault200JSONResponse VaultStatus
+
+func (response RecoverVault200JSONResponse) VisitRecoverVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RecoverVaultdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RecoverVaultdefaultApplicationProblemPlusJSONResponse) VisitRecoverVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetPendingVaultRequestObject struct {
+}
+
+type ResetPendingVaultResponseObject interface {
+	VisitResetPendingVaultResponse(w http.ResponseWriter) error
+}
+
+type ResetPendingVault204Response struct {
+}
+
+func (response ResetPendingVault204Response) VisitResetPendingVaultResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ResetPendingVaultdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ResetPendingVaultdefaultApplicationProblemPlusJSONResponse) VisitResetPendingVaultResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type RotateVaultRecoveryRequestObject struct {
+}
+
+type RotateVaultRecoveryResponseObject interface {
+	VisitRotateVaultRecoveryResponse(w http.ResponseWriter) error
+}
+
+type RotateVaultRecovery200JSONResponse VaultSecretResponse
+
+func (response RotateVaultRecovery200JSONResponse) VisitRotateVaultRecoveryResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RotateVaultRecoverydefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RotateVaultRecoverydefaultApplicationProblemPlusJSONResponse) VisitRotateVaultRecoveryResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type GetSessionEntryPathRequestObject struct {
 	EntryId string `json:"entry_id"`
 }
@@ -11839,6 +12961,177 @@ type GetSessionEntryPathdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetSessionEntryPathdefaultApplicationProblemPlusJSONResponse) VisitGetSessionEntryPathResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetAIGovernanceSettingsRequestObject struct {
+}
+
+type GetAIGovernanceSettingsResponseObject interface {
+	VisitGetAIGovernanceSettingsResponse(w http.ResponseWriter) error
+}
+
+type GetAIGovernanceSettings200JSONResponse AIGovernanceSettings
+
+func (response GetAIGovernanceSettings200JSONResponse) VisitGetAIGovernanceSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetAIGovernanceSettingsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetAIGovernanceSettingsdefaultApplicationProblemPlusJSONResponse) VisitGetAIGovernanceSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateAIGovernanceSettingsRequestObject struct {
+	Body *UpdateAIGovernanceSettingsJSONRequestBody
+}
+
+type UpdateAIGovernanceSettingsResponseObject interface {
+	VisitUpdateAIGovernanceSettingsResponse(w http.ResponseWriter) error
+}
+
+type UpdateAIGovernanceSettings200JSONResponse AIGovernanceSettings
+
+func (response UpdateAIGovernanceSettings200JSONResponse) VisitUpdateAIGovernanceSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateAIGovernanceSettingsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateAIGovernanceSettingsdefaultApplicationProblemPlusJSONResponse) VisitUpdateAIGovernanceSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetContextSettingsRequestObject struct {
+}
+
+type GetContextSettingsResponseObject interface {
+	VisitGetContextSettingsResponse(w http.ResponseWriter) error
+}
+
+type GetContextSettings200JSONResponse ContextSettings
+
+func (response GetContextSettings200JSONResponse) VisitGetContextSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetContextSettingsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetContextSettingsdefaultApplicationProblemPlusJSONResponse) VisitGetContextSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateContextSettingsRequestObject struct {
+	Body *UpdateContextSettingsJSONRequestBody
+}
+
+type UpdateContextSettingsResponseObject interface {
+	VisitUpdateContextSettingsResponse(w http.ResponseWriter) error
+}
+
+type UpdateContextSettings200JSONResponse ContextSettings
+
+func (response UpdateContextSettings200JSONResponse) VisitUpdateContextSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateContextSettingsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateContextSettingsdefaultApplicationProblemPlusJSONResponse) VisitUpdateContextSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetModelPricingRequestObject struct {
+}
+
+type GetModelPricingResponseObject interface {
+	VisitGetModelPricingResponse(w http.ResponseWriter) error
+}
+
+type GetModelPricing200JSONResponse ModelPricingCollection
+
+func (response GetModelPricing200JSONResponse) VisitGetModelPricingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetModelPricingdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetModelPricingdefaultApplicationProblemPlusJSONResponse) VisitGetModelPricingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateModelPricingRequestObject struct {
+	Body *UpdateModelPricingJSONRequestBody
+}
+
+type UpdateModelPricingResponseObject interface {
+	VisitUpdateModelPricingResponse(w http.ResponseWriter) error
+}
+
+type UpdateModelPricing200JSONResponse ModelPricingCollection
+
+func (response UpdateModelPricing200JSONResponse) VisitUpdateModelPricingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateModelPricingdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateModelPricingdefaultApplicationProblemPlusJSONResponse) VisitUpdateModelPricingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -12101,6 +13394,9 @@ type StrictServerInterface interface {
 	// (POST /capabilities/{capability_id}/mcp/connect)
 	ConnectMCP(ctx context.Context, request ConnectMCPRequestObject) (ConnectMCPResponseObject, error)
 
+	// (PUT /capabilities/{capability_id}/mcp/credential)
+	UpdateMCPCredential(ctx context.Context, request UpdateMCPCredentialRequestObject) (UpdateMCPCredentialResponseObject, error)
+
 	// (POST /capabilities/{capability_id}/mcp/disconnect)
 	DisconnectMCP(ctx context.Context, request DisconnectMCPRequestObject) (DisconnectMCPResponseObject, error)
 
@@ -12121,6 +13417,12 @@ type StrictServerInterface interface {
 
 	// (POST /capabilities/{capability_id}/status)
 	SetCapabilityStatus(ctx context.Context, request SetCapabilityStatusRequestObject) (SetCapabilityStatusResponseObject, error)
+
+	// (GET /configuration)
+	GetConfiguration(ctx context.Context, request GetConfigurationRequestObject) (GetConfigurationResponseObject, error)
+
+	// (PATCH /configuration/bootstrap)
+	UpdateBootstrapConfiguration(ctx context.Context, request UpdateBootstrapConfigurationRequestObject) (UpdateBootstrapConfigurationResponseObject, error)
 	// Delete an owner-only conversation and its completed task history
 	// (DELETE /conversations/{conversation_id})
 	DeleteConversation(ctx context.Context, request DeleteConversationRequestObject) (DeleteConversationResponseObject, error)
@@ -12202,6 +13504,12 @@ type StrictServerInterface interface {
 
 	// (POST /plan-items/{plan_item_id}/status)
 	MovePlanItem(ctx context.Context, request MovePlanItemRequestObject) (MovePlanItemResponseObject, error)
+
+	// (GET /preferences)
+	GetPreferences(ctx context.Context, request GetPreferencesRequestObject) (GetPreferencesResponseObject, error)
+
+	// (PUT /preferences)
+	UpdatePreferences(ctx context.Context, request UpdatePreferencesRequestObject) (UpdatePreferencesResponseObject, error)
 
 	// (GET /projects)
 	ListProjects(ctx context.Context, request ListProjectsRequestObject) (ListProjectsResponseObject, error)
@@ -12374,8 +13682,44 @@ type StrictServerInterface interface {
 	// (POST /schedules/{schedule_id}/status)
 	SetScheduleStatus(ctx context.Context, request SetScheduleStatusRequestObject) (SetScheduleStatusResponseObject, error)
 
+	// (GET /security/vault)
+	GetVaultStatus(ctx context.Context, request GetVaultStatusRequestObject) (GetVaultStatusResponseObject, error)
+
+	// (POST /security/vault/confirm)
+	ConfirmVault(ctx context.Context, request ConfirmVaultRequestObject) (ConfirmVaultResponseObject, error)
+
+	// (POST /security/vault/initialize)
+	InitializeVault(ctx context.Context, request InitializeVaultRequestObject) (InitializeVaultResponseObject, error)
+
+	// (POST /security/vault/recover)
+	RecoverVault(ctx context.Context, request RecoverVaultRequestObject) (RecoverVaultResponseObject, error)
+
+	// (POST /security/vault/reset-pending)
+	ResetPendingVault(ctx context.Context, request ResetPendingVaultRequestObject) (ResetPendingVaultResponseObject, error)
+
+	// (POST /security/vault/rotate-recovery)
+	RotateVaultRecovery(ctx context.Context, request RotateVaultRecoveryRequestObject) (RotateVaultRecoveryResponseObject, error)
+
 	// (GET /session-entries/{entry_id}/path)
 	GetSessionEntryPath(ctx context.Context, request GetSessionEntryPathRequestObject) (GetSessionEntryPathResponseObject, error)
+
+	// (GET /settings/ai-governance)
+	GetAIGovernanceSettings(ctx context.Context, request GetAIGovernanceSettingsRequestObject) (GetAIGovernanceSettingsResponseObject, error)
+
+	// (PUT /settings/ai-governance)
+	UpdateAIGovernanceSettings(ctx context.Context, request UpdateAIGovernanceSettingsRequestObject) (UpdateAIGovernanceSettingsResponseObject, error)
+
+	// (GET /settings/context)
+	GetContextSettings(ctx context.Context, request GetContextSettingsRequestObject) (GetContextSettingsResponseObject, error)
+
+	// (PUT /settings/context)
+	UpdateContextSettings(ctx context.Context, request UpdateContextSettingsRequestObject) (UpdateContextSettingsResponseObject, error)
+
+	// (GET /settings/model-pricing)
+	GetModelPricing(ctx context.Context, request GetModelPricingRequestObject) (GetModelPricingResponseObject, error)
+
+	// (PUT /settings/model-pricing)
+	UpdateModelPricing(ctx context.Context, request UpdateModelPricingRequestObject) (UpdateModelPricingResponseObject, error)
 
 	// (GET /side-effect-receipts)
 	ListSideEffectReceipts(ctx context.Context, request ListSideEffectReceiptsRequestObject) (ListSideEffectReceiptsResponseObject, error)
@@ -12801,6 +14145,39 @@ func (sh *strictHandler) ConnectMCP(w http.ResponseWriter, r *http.Request, capa
 	}
 }
 
+// UpdateMCPCredential operation middleware
+func (sh *strictHandler) UpdateMCPCredential(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	var request UpdateMCPCredentialRequestObject
+
+	request.CapabilityId = capabilityId
+
+	var body UpdateMCPCredentialJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateMCPCredential(ctx, request.(UpdateMCPCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateMCPCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateMCPCredentialResponseObject); ok {
+		if err := validResponse.VisitUpdateMCPCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // DisconnectMCP operation middleware
 func (sh *strictHandler) DisconnectMCP(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
 	var request DisconnectMCPRequestObject
@@ -12994,6 +14371,61 @@ func (sh *strictHandler) SetCapabilityStatus(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetCapabilityStatusResponseObject); ok {
 		if err := validResponse.VisitSetCapabilityStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetConfiguration operation middleware
+func (sh *strictHandler) GetConfiguration(w http.ResponseWriter, r *http.Request) {
+	var request GetConfigurationRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetConfiguration(ctx, request.(GetConfigurationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetConfiguration")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetConfigurationResponseObject); ok {
+		if err := validResponse.VisitGetConfigurationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateBootstrapConfiguration operation middleware
+func (sh *strictHandler) UpdateBootstrapConfiguration(w http.ResponseWriter, r *http.Request) {
+	var request UpdateBootstrapConfigurationRequestObject
+
+	var body UpdateBootstrapConfigurationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateBootstrapConfiguration(ctx, request.(UpdateBootstrapConfigurationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateBootstrapConfiguration")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateBootstrapConfigurationResponseObject); ok {
+		if err := validResponse.VisitUpdateBootstrapConfigurationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -13792,6 +15224,61 @@ func (sh *strictHandler) MovePlanItem(w http.ResponseWriter, r *http.Request, pl
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(MovePlanItemResponseObject); ok {
 		if err := validResponse.VisitMovePlanItemResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPreferences operation middleware
+func (sh *strictHandler) GetPreferences(w http.ResponseWriter, r *http.Request) {
+	var request GetPreferencesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPreferences(ctx, request.(GetPreferencesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPreferences")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPreferencesResponseObject); ok {
+		if err := validResponse.VisitGetPreferencesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdatePreferences operation middleware
+func (sh *strictHandler) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
+	var request UpdatePreferencesRequestObject
+
+	var body UpdatePreferencesJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdatePreferences(ctx, request.(UpdatePreferencesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdatePreferences")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdatePreferencesResponseObject); ok {
+		if err := validResponse.VisitUpdatePreferencesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -15464,6 +16951,164 @@ func (sh *strictHandler) SetScheduleStatus(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// GetVaultStatus operation middleware
+func (sh *strictHandler) GetVaultStatus(w http.ResponseWriter, r *http.Request) {
+	var request GetVaultStatusRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetVaultStatus(ctx, request.(GetVaultStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetVaultStatus")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetVaultStatusResponseObject); ok {
+		if err := validResponse.VisitGetVaultStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ConfirmVault operation middleware
+func (sh *strictHandler) ConfirmVault(w http.ResponseWriter, r *http.Request) {
+	var request ConfirmVaultRequestObject
+
+	var body ConfirmVaultJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConfirmVault(ctx, request.(ConfirmVaultRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConfirmVault")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConfirmVaultResponseObject); ok {
+		if err := validResponse.VisitConfirmVaultResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InitializeVault operation middleware
+func (sh *strictHandler) InitializeVault(w http.ResponseWriter, r *http.Request) {
+	var request InitializeVaultRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InitializeVault(ctx, request.(InitializeVaultRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InitializeVault")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InitializeVaultResponseObject); ok {
+		if err := validResponse.VisitInitializeVaultResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RecoverVault operation middleware
+func (sh *strictHandler) RecoverVault(w http.ResponseWriter, r *http.Request) {
+	var request RecoverVaultRequestObject
+
+	var body RecoverVaultJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RecoverVault(ctx, request.(RecoverVaultRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RecoverVault")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RecoverVaultResponseObject); ok {
+		if err := validResponse.VisitRecoverVaultResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetPendingVault operation middleware
+func (sh *strictHandler) ResetPendingVault(w http.ResponseWriter, r *http.Request) {
+	var request ResetPendingVaultRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetPendingVault(ctx, request.(ResetPendingVaultRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetPendingVault")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResetPendingVaultResponseObject); ok {
+		if err := validResponse.VisitResetPendingVaultResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RotateVaultRecovery operation middleware
+func (sh *strictHandler) RotateVaultRecovery(w http.ResponseWriter, r *http.Request) {
+	var request RotateVaultRecoveryRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RotateVaultRecovery(ctx, request.(RotateVaultRecoveryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RotateVaultRecovery")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RotateVaultRecoveryResponseObject); ok {
+		if err := validResponse.VisitRotateVaultRecoveryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetSessionEntryPath operation middleware
 func (sh *strictHandler) GetSessionEntryPath(w http.ResponseWriter, r *http.Request, entryId string) {
 	var request GetSessionEntryPathRequestObject
@@ -15483,6 +17128,171 @@ func (sh *strictHandler) GetSessionEntryPath(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetSessionEntryPathResponseObject); ok {
 		if err := validResponse.VisitGetSessionEntryPathResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetAIGovernanceSettings operation middleware
+func (sh *strictHandler) GetAIGovernanceSettings(w http.ResponseWriter, r *http.Request) {
+	var request GetAIGovernanceSettingsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetAIGovernanceSettings(ctx, request.(GetAIGovernanceSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetAIGovernanceSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetAIGovernanceSettingsResponseObject); ok {
+		if err := validResponse.VisitGetAIGovernanceSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateAIGovernanceSettings operation middleware
+func (sh *strictHandler) UpdateAIGovernanceSettings(w http.ResponseWriter, r *http.Request) {
+	var request UpdateAIGovernanceSettingsRequestObject
+
+	var body UpdateAIGovernanceSettingsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateAIGovernanceSettings(ctx, request.(UpdateAIGovernanceSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateAIGovernanceSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateAIGovernanceSettingsResponseObject); ok {
+		if err := validResponse.VisitUpdateAIGovernanceSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetContextSettings operation middleware
+func (sh *strictHandler) GetContextSettings(w http.ResponseWriter, r *http.Request) {
+	var request GetContextSettingsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetContextSettings(ctx, request.(GetContextSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetContextSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetContextSettingsResponseObject); ok {
+		if err := validResponse.VisitGetContextSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateContextSettings operation middleware
+func (sh *strictHandler) UpdateContextSettings(w http.ResponseWriter, r *http.Request) {
+	var request UpdateContextSettingsRequestObject
+
+	var body UpdateContextSettingsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateContextSettings(ctx, request.(UpdateContextSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateContextSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateContextSettingsResponseObject); ok {
+		if err := validResponse.VisitUpdateContextSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetModelPricing operation middleware
+func (sh *strictHandler) GetModelPricing(w http.ResponseWriter, r *http.Request) {
+	var request GetModelPricingRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetModelPricing(ctx, request.(GetModelPricingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetModelPricing")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetModelPricingResponseObject); ok {
+		if err := validResponse.VisitGetModelPricingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateModelPricing operation middleware
+func (sh *strictHandler) UpdateModelPricing(w http.ResponseWriter, r *http.Request) {
+	var request UpdateModelPricingRequestObject
+
+	var body UpdateModelPricingJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateModelPricing(ctx, request.(UpdateModelPricingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateModelPricing")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateModelPricingResponseObject); ok {
+		if err := validResponse.VisitUpdateModelPricingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

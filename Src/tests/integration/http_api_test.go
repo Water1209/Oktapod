@@ -40,9 +40,21 @@ func TestHTTPProjectTaskAndEventContract(t *testing.T) {
 	if healthResponse.Header.Get("Content-Security-Policy") == "" || healthResponse.Header.Get("X-Content-Type-Options") != "nosniff" || healthResponse.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("security headers missing: %#v", healthResponse.Header)
 	}
+	vaultResponse, err := http.Get(server.URL + "/api/v1/security/vault")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = vaultResponse.Body.Close()
+	if vaultResponse.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("vault response must not be cached: %#v", vaultResponse.Header)
+	}
 	diagnostics := getJSON[map[string]any](t, server.URL+"/api/v1/diagnostics")
-	if diagnostics["status"] != "ok" || diagnostics["version"] == "" {
+	if diagnostics["status"] != "attention" || diagnostics["version"] == "" {
 		t.Fatalf("diagnostics missing runtime status: %#v", diagnostics)
+	}
+	vault, ok := diagnostics["vault"].(map[string]any)
+	if !ok || vault["state"] != "uninitialized" {
+		t.Fatalf("diagnostics did not surface the uninitialized vault: %#v", diagnostics["vault"])
 	}
 	logPolicy, ok := diagnostics["logs"].(map[string]any)
 	if !ok || logPolicy["available"] != false || logPolicy["redacted"] != true {
@@ -368,6 +380,47 @@ func TestHTTPModelCatalogContract(t *testing.T) {
 	}
 }
 
+func TestHTTPConfigurationDiagnosticsAndPricingWriteContract(t *testing.T) {
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	if _, err := repository.UpsertProviderInstance(context.Background(), testOrgID, core.UpsertProviderInstanceInput{
+		ProviderID: "provider-pricing", DisplayName: "Pricing Provider", ProtocolFamily: core.ProviderProtocolOpenAICompatible,
+		Endpoint: "https://provider.invalid/v1", CredentialRef: "model-provider/test/pricing", DefaultModelID: "model-pricing",
+		Status: core.ProviderStatusActive, IsDefault: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
+	server := httptest.NewServer(httpapi.NewTrustedHandler(service, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	defer server.Close()
+
+	pricing := putJSON[struct {
+		Items []struct {
+			ProviderID string `json:"provider_id"`
+			ModelID    string `json:"model_id"`
+			UpdatedAt  string `json:"updated_at"`
+		} `json:"items"`
+	}](t, server.URL+"/api/v1/settings/model-pricing", map[string]any{"items": []map[string]any{{
+		"provider_id": "provider-pricing", "model_id": "model-pricing", "currency": "USD",
+		"input_per_1k": "0.001", "output_per_1k": "0.002", "effective_at": time.Now().UTC(), "version": 1,
+	}}})
+	if len(pricing.Items) != 1 || pricing.Items[0].ProviderID != "provider-pricing" || pricing.Items[0].ModelID != "model-pricing" || pricing.Items[0].UpdatedAt == "" {
+		t.Fatalf("pricing response=%#v", pricing.Items)
+	}
+	diagnostics := getJSON[struct {
+		CredentialIssues []struct {
+			Kind       string `json:"kind"`
+			Name       string `json:"name"`
+			State      string `json:"state"`
+			ActionPath string `json:"action_path"`
+		} `json:"credential_issues"`
+	}](t, server.URL+"/api/v1/diagnostics")
+	if len(diagnostics.CredentialIssues) != 1 || diagnostics.CredentialIssues[0].Name != "Pricing Provider" || diagnostics.CredentialIssues[0].State != core.CredentialMissing || diagnostics.CredentialIssues[0].ActionPath != "/settings/providers" {
+		t.Fatalf("credential issues=%#v", diagnostics.CredentialIssues)
+	}
+}
+
 func getJSON[T any](t *testing.T, url string) T {
 	t.Helper()
 	response, err := http.Get(url)
@@ -414,6 +467,33 @@ func postJSONWithKey[T any](t *testing.T, url string, value any, idempotencyKey 
 	var decoded T
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
 		t.Fatalf("decode POST %s: %v", url, err)
+	}
+	return decoded
+}
+
+func putJSON[T any](t *testing.T, url string, value any) T {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", url, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(response.Body)
+		t.Fatalf("PUT %s status=%d body=%s", url, response.StatusCode, responseBody)
+	}
+	var decoded T
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode PUT %s: %v", url, err)
 	}
 	return decoded
 }

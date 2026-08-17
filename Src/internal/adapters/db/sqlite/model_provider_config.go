@@ -3,45 +3,28 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
+// GetModelProviderConfig remains as a narrow compatibility port for the model
+// gateway. provider_instances is the only durable source of truth.
 func (s *Store) GetModelProviderConfig(ctx context.Context, organizationID string) (core.ModelProviderConfig, error) {
-	if provider, err := s.GetDefaultProviderInstance(ctx, organizationID); err == nil {
-		return core.ModelProviderConfig{
-			OrganizationID: provider.OrganizationID,
-			ProviderKind:   provider.ProtocolFamily,
-			Endpoint:       provider.Endpoint,
-			DefaultModel:   provider.DefaultModelID,
-			SecretRef:      provider.CredentialRef,
-			CreatedAt:      provider.CreatedAt,
-			UpdatedAt:      provider.UpdatedAt,
-		}, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return core.ModelProviderConfig{}, err
-	}
-	var config core.ModelProviderConfig
-	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx, `
-SELECT organization_id, provider_kind, endpoint, default_model, secret_ref, created_at, updated_at
-FROM model_provider_configs
-WHERE organization_id = ?`, strings.TrimSpace(organizationID)).Scan(
-		&config.OrganizationID, &config.ProviderKind, &config.Endpoint, &config.DefaultModel,
-		&config.SecretRef, &createdAt, &updatedAt,
-	)
+	provider, err := s.GetDefaultProviderInstance(ctx, organizationID)
 	if err != nil {
 		return core.ModelProviderConfig{}, err
 	}
-	config.CreatedAt = mustParseTime(createdAt)
-	config.UpdatedAt = mustParseTime(updatedAt)
-	return config, nil
+	return core.ModelProviderConfig{
+		OrganizationID: provider.OrganizationID, ProviderKind: provider.ProtocolFamily,
+		Endpoint: provider.Endpoint, DefaultModel: provider.DefaultModelID,
+		SecretRef: provider.CredentialRef, CreatedAt: provider.CreatedAt, UpdatedAt: provider.UpdatedAt,
+	}, nil
 }
 
+// UpsertModelProviderConfig maps the legacy CLI port directly onto the
+// provider registry; it never recreates model_provider_configs.
 func (s *Store) UpsertModelProviderConfig(ctx context.Context, organizationID string, input core.UpsertModelProviderConfigInput) (core.ModelProviderConfig, error) {
 	organizationID = strings.TrimSpace(organizationID)
 	input.Endpoint = strings.TrimRight(strings.TrimSpace(input.Endpoint), "/")
@@ -50,64 +33,32 @@ func (s *Store) UpsertModelProviderConfig(ctx context.Context, organizationID st
 	if organizationID == "" || input.Endpoint == "" || input.DefaultModel == "" || input.SecretRef == "" {
 		return core.ModelProviderConfig{}, fmt.Errorf("model provider organization, endpoint, model, and secret reference are required")
 	}
-	now := formatTime(time.Now().UTC())
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO model_provider_configs (
-    organization_id, provider_kind, endpoint, default_model, secret_ref, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(organization_id) DO UPDATE SET
-    provider_kind = excluded.provider_kind,
-    endpoint = excluded.endpoint,
-    default_model = excluded.default_model,
-    secret_ref = excluded.secret_ref,
-    updated_at = excluded.updated_at`,
-		organizationID, core.ModelProviderOpenAICompatible, input.Endpoint, input.DefaultModel, input.SecretRef, now, now,
-	)
-	if err != nil {
-		return core.ModelProviderConfig{}, fmt.Errorf("save model provider config: %w", err)
+	providerID := "default-" + organizationID
+	displayName := "Default Provider"
+	if existing, err := s.GetDefaultProviderInstance(ctx, organizationID); err == nil {
+		providerID, displayName = existing.ProviderID, existing.DisplayName
+	} else if err != nil && err != sql.ErrNoRows {
+		return core.ModelProviderConfig{}, err
 	}
 	provider, err := s.UpsertProviderInstance(ctx, organizationID, core.UpsertProviderInstanceInput{
-		ProviderID:     "legacy-default-" + organizationID,
-		DisplayName:    "Default Provider",
+		ProviderID: providerID, DisplayName: displayName,
 		ProtocolFamily: core.ProviderProtocolOpenAICompatible,
-		Endpoint:       input.Endpoint,
-		CredentialRef:  input.SecretRef,
-		DefaultModelID: input.DefaultModel,
-		Status:         core.ProviderStatusActive,
-		IsDefault:      true,
+		Endpoint:       input.Endpoint, CredentialRef: input.SecretRef, DefaultModelID: input.DefaultModel,
+		Status: core.ProviderStatusActive, IsDefault: true,
 	})
 	if err != nil {
-		return core.ModelProviderConfig{}, fmt.Errorf("sync default provider registry: %w", err)
+		return core.ModelProviderConfig{}, fmt.Errorf("save default provider: %w", err)
 	}
-	if err = s.ReplaceEnabledModels(ctx, organizationID, provider.ProviderID, []string{input.DefaultModel}, input.DefaultModel); err != nil {
-		return core.ModelProviderConfig{}, fmt.Errorf("sync default provider enabled model: %w", err)
+	if err := s.ReplaceEnabledModels(ctx, organizationID, provider.ProviderID, []string{input.DefaultModel}, input.DefaultModel); err != nil {
+		return core.ModelProviderConfig{}, fmt.Errorf("save default provider model: %w", err)
 	}
 	return s.GetModelProviderConfig(ctx, organizationID)
 }
 
 func (s *Store) DeleteModelProviderConfig(ctx context.Context, organizationID string) error {
-	providerDeleted := false
-	if provider, providerErr := s.GetDefaultProviderInstance(ctx, organizationID); providerErr == nil {
-		if deleteErr := s.DeleteProviderInstance(ctx, organizationID, provider.ProviderID); deleteErr != nil {
-			return deleteErr
-		}
-		providerDeleted = true
-	} else if !errors.Is(providerErr, sql.ErrNoRows) {
-		return providerErr
-	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM model_provider_configs WHERE organization_id = ?`, strings.TrimSpace(organizationID))
-	if err != nil {
-		return fmt.Errorf("delete model provider config: %w", err)
-	}
-	count, err := result.RowsAffected()
+	provider, err := s.GetDefaultProviderInstance(ctx, organizationID)
 	if err != nil {
 		return err
 	}
-	if count == 0 {
-		if providerDeleted {
-			return nil
-		}
-		return sql.ErrNoRows
-	}
-	return nil
+	return s.DeleteProviderInstance(ctx, organizationID, provider.ProviderID)
 }

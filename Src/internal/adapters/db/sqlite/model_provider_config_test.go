@@ -32,18 +32,18 @@ func TestModelProviderConfigPersistsNonSecretSettings(t *testing.T) {
 	if got.Endpoint != "https://api.example.test/v1" || got.DefaultModel != want.DefaultModel || got.SecretRef != want.SecretRef {
 		t.Fatalf("config=%+v", got)
 	}
-	models, err := store.ListProviderModelOptions(ctx, organization.ID, "legacy-default-"+organization.ID)
+	models, err := store.ListProviderModelOptions(ctx, organization.ID, "default-"+organization.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(models) != 1 || !models[0].Enabled || !models[0].Default || models[0].ModelID != want.DefaultModel {
 		t.Fatalf("enabled models=%+v", models)
 	}
-	var columns int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('model_provider_configs') WHERE name IN ('api_key', 'credential', 'secret_value')`).Scan(&columns); err != nil {
+	var tables int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'model_provider_configs'`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if columns != 0 {
-		t.Fatal("model provider table must not contain plaintext credential columns")
+	if tables != 0 {
+		t.Fatal("model_provider_configs must be removed as a second source of truth")
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1749,7 +1750,7 @@ func (s *Store) AppendChatTurn(ctx context.Context, scope core.Scope, projectID 
 		}
 		created = append(created, message)
 	}
-	if err := recordConversationCalls(ctx, tx, scope, projectID, conversationID, calls, now); err != nil {
+	if err := s.recordConversationCalls(ctx, tx, scope, projectID, conversationID, calls, now); err != nil {
 		return core.ProjectTurnResult{}, err
 	}
 	var title, createdAtText, updatedAtText, activeLeafEntryID, parentSessionID, forkedFromEntryID string
@@ -1866,7 +1867,7 @@ func (s *Store) RecordConversationModelCalls(ctx context.Context, scope core.Sco
 	if visibleProjectID != projectID {
 		return &core.ForbiddenError{Message: "conversation is not in this project"}
 	}
-	if err := recordConversationCalls(ctx, tx, scope, projectID, conversationID, calls, formatTime(time.Now())); err != nil {
+	if err := s.recordConversationCalls(ctx, tx, scope, projectID, conversationID, calls, formatTime(time.Now())); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1995,7 +1996,7 @@ func (s *Store) ConversationFileContext(ctx context.Context, scope core.Scope, c
 	return result, nil
 }
 
-func recordConversationCalls(ctx context.Context, tx *sql.Tx, scope core.Scope, projectID, conversationID string, calls []core.ConversationModelCall, now string) error {
+func (s *Store) recordConversationCalls(ctx context.Context, tx *sql.Tx, scope core.Scope, projectID, conversationID string, calls []core.ConversationModelCall, now string) error {
 	for _, call := range calls {
 		id := strings.TrimSpace(call.Model.CallID)
 		if id == "" {
@@ -2009,8 +2010,8 @@ func recordConversationCalls(ctx context.Context, tx *sql.Tx, scope core.Scope, 
 		if call.Model.Usage.Estimated {
 			estimated = 1
 		}
-		cost := estimateModelCost(call.Model.Model, call.Model.Usage)
 		requested, effective := persistedModelRefs(call.Model)
+		_, cost, currency := resolveModelPricing(ctx, tx, scope.OrganizationID, effective.ProviderID, effective.ModelID, call.Model.Usage, time.Now().UTC())
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO conversation_model_calls (
 			id, organization_id, project_id, conversation_id, owner_user_id, purpose,
 			provider, endpoint, model, routing_reason, provider_request_id,
@@ -2019,11 +2020,11 @@ func recordConversationCalls(ctx context.Context, tx *sql.Tx, scope core.Scope, 
 			through_entry_id, requested_provider_id, requested_model_id,
 			effective_provider_id, effective_model_id, stop_reason, context_tokens,
 			cache_read_tokens, cache_write_tokens, usage_semantics_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, scope.OrganizationID, projectID, conversationID, scope.UserID, call.Purpose,
 			call.Model.Provider, call.Model.Endpoint, call.Model.Model, call.Model.RoutingReason, call.Model.ProviderRequestID,
 			call.Model.Usage.InputTokens, call.Model.Usage.OutputTokens, call.Model.Usage.CachedTokens, call.Model.Usage.ReasoningTokens, estimated,
-			call.Model.Latency.Milliseconds(), call.Model.ErrorCode, cost, now,
+			call.Model.Latency.Milliseconds(), call.Model.ErrorCode, cost, currency, now,
 			call.ThroughEntryID, requested.ProviderID, requested.ModelID,
 			effective.ProviderID, effective.ModelID, call.Model.StopReason, call.Model.Usage.ContextTokens,
 			persistedCacheReadTokens(call.Model.Usage), call.Model.Usage.CacheWriteTokens, persistedUsageVersion(call.Model.Usage)); err != nil {
@@ -5069,7 +5070,8 @@ func (s *Store) FinalizeAdvisorReport(ctx context.Context, scope core.Scope, rep
 		report.Evidence = append(report.Evidence, fmt.Sprintf("advisor:model=%s provider=%s input_tokens=%d output_tokens=%d", model.Model, model.Provider, model.Usage.InputTokens, model.Usage.OutputTokens))
 		report.EstimatedModelCalls = 1
 		report.EstimatedTokens = model.Usage.InputTokens + model.Usage.OutputTokens
-		_, report.EstimatedCostDecimal = resolveModelPricing(model.Model, model.Usage)
+		_, effective := persistedModelRefs(model)
+		_, report.EstimatedCostDecimal, _ = resolveModelPricing(ctx, tx, report.OrganizationID, effective.ProviderID, effective.ModelID, model.Usage, time.Now().UTC())
 		if model.CallID == "" {
 			modelID, idErr := newID()
 			if idErr != nil {
@@ -5080,7 +5082,7 @@ func (s *Store) FinalizeAdvisorReport(ctx context.Context, scope core.Scope, rep
 		var stepID string
 		_ = tx.QueryRowContext(ctx, `SELECT id FROM steps WHERE run_id = ? ORDER BY position DESC, id DESC LIMIT 1`, report.RunID).Scan(&stepID)
 		if stepID != "" {
-			pricingSnapshot, costDecimal := resolveModelPricing(model.Model, model.Usage)
+			pricingSnapshot, costDecimal, pricingCurrency := resolveModelPricing(ctx, tx, report.OrganizationID, effective.ProviderID, effective.ModelID, model.Usage, time.Now().UTC())
 			estimated := 0
 			confirmed := 1
 			if model.Usage.Estimated {
@@ -5098,7 +5100,7 @@ func (s *Store) FinalizeAdvisorReport(ctx context.Context, scope core.Scope, rep
 			if idErr != nil {
 				return core.AdvisorReport{}, idErr
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO usage_ledger(id, organization_id, project_id, task_id, run_id, step_id, call_id, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_decimal, currency, confirmed, created_at, pricing_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?)`, ledgerID, report.OrganizationID, report.ProjectID, report.TaskID, report.RunID, stepID, model.CallID, model.Usage.InputTokens, model.Usage.OutputTokens, model.Usage.CachedTokens, model.Usage.ReasoningTokens, costDecimal, confirmed, now, pricingSnapshot); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO usage_ledger(id, organization_id, project_id, task_id, run_id, step_id, call_id, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_decimal, currency, confirmed, created_at, pricing_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ledgerID, report.OrganizationID, report.ProjectID, report.TaskID, report.RunID, stepID, model.CallID, model.Usage.InputTokens, model.Usage.OutputTokens, model.Usage.CachedTokens, model.Usage.ReasoningTokens, costDecimal, pricingCurrency, confirmed, now, pricingSnapshot); err != nil {
 				return core.AdvisorReport{}, err
 			}
 		}
@@ -8966,7 +8968,8 @@ func persistModelUsage(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, st
 		estimated = 1
 		confirmed = 0
 	}
-	pricingSnapshot, costDecimal := resolveModelPricing(model.Model, model.Usage)
+	_, effectiveForPricing := persistedModelRefs(model)
+	pricingSnapshot, costDecimal, pricingCurrency := resolveModelPricing(ctx, tx, run.OrganizationID, effectiveForPricing.ProviderID, effectiveForPricing.ModelID, model.Usage, time.Now().UTC())
 	if err := q.CreateModelCall(ctx, sqlitegen.CreateModelCallParams{ID: model.CallID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, Provider: model.Provider, Endpoint: model.Endpoint, Model: model.Model, RoutingReason: model.RoutingReason, Status: modelStatus, ProviderRequestID: model.ProviderRequestID, InputTokens: model.Usage.InputTokens, OutputTokens: model.Usage.OutputTokens, CachedTokens: model.Usage.CachedTokens, ReasoningTokens: model.Usage.ReasoningTokens, UsageEstimated: estimated, LatencyMs: model.Latency.Milliseconds(), ErrorCode: model.ErrorCode, CreatedAt: now, PricingSnapshotJson: pricingSnapshot}); err != nil {
 		return err
 	}
@@ -9001,7 +9004,7 @@ WHERE id = ?`,
 	if err != nil {
 		return err
 	}
-	return q.CreateUsageLedger(ctx, sqlitegen.CreateUsageLedgerParams{ID: ledgerID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, CallID: model.CallID, InputTokens: model.Usage.InputTokens, OutputTokens: model.Usage.OutputTokens, CachedTokens: model.Usage.CachedTokens, CostDecimal: costDecimal, Currency: "USD", Confirmed: confirmed, CreatedAt: now, PricingSnapshotJson: pricingSnapshot})
+	return q.CreateUsageLedger(ctx, sqlitegen.CreateUsageLedgerParams{ID: ledgerID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, CallID: model.CallID, InputTokens: model.Usage.InputTokens, OutputTokens: model.Usage.OutputTokens, CachedTokens: model.Usage.CachedTokens, CostDecimal: costDecimal, Currency: pricingCurrency, Confirmed: confirmed, CreatedAt: now, PricingSnapshotJson: pricingSnapshot})
 }
 
 func persistedModelRefs(model core.ModelResult) (core.ModelRef, core.ModelRef) {
@@ -9036,48 +9039,41 @@ func persistedUsageVersion(usage core.ModelUsage) string {
 	return "v1"
 }
 
-type modelPricing struct {
-	InputPer1K  float64 `json:"input_per_1k"`
-	OutputPer1K float64 `json:"output_per_1k"`
+type pricingQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func resolveModelPricing(model string, usage core.ModelUsage) (string, string) {
-	config := strings.TrimSpace(os.Getenv("OKTAPOD_MODEL_PRICING_JSON"))
-	if config == "" {
-		return pricingSnapshotJSON(model, "unpriced", 0, 0, ""), "0"
+func resolveModelPricing(ctx context.Context, queryer pricingQueryer, organizationID, providerID, modelID string, usage core.ModelUsage, at time.Time) (string, string, string) {
+	var currency, inputText, outputText, effectiveAt string
+	var version int
+	err := queryer.QueryRowContext(ctx, `
+SELECT currency, input_per_1k, output_per_1k, effective_at, version
+FROM model_pricing_versions
+WHERE organization_id = ? AND provider_id = ? AND model_id = ? AND effective_at <= ?
+ORDER BY effective_at DESC, version DESC LIMIT 1`, organizationID, providerID, modelID, formatTime(at.UTC())).Scan(&currency, &inputText, &outputText, &effectiveAt, &version)
+	if err != nil {
+		return pricingSnapshotJSON(providerID, modelID, "unpriced", "USD", "0", "0", "", 0), "0", "USD"
 	}
-	var prices map[string]modelPricing
-	if json.Unmarshal([]byte(config), &prices) != nil {
-		return pricingSnapshotJSON(model, "invalid", 0, 0, ""), "0"
+	inputRate, inputOK := new(big.Rat).SetString(inputText)
+	outputRate, outputOK := new(big.Rat).SetString(outputText)
+	if !inputOK || !outputOK || inputRate.Sign() < 0 || outputRate.Sign() < 0 {
+		return pricingSnapshotJSON(providerID, modelID, "invalid", currency, "0", "0", effectiveAt, version), "0", currency
 	}
-	rate, ok := prices[model]
-	if !ok {
-		rate, ok = prices["default"]
-	}
-	if !ok {
-		return pricingSnapshotJSON(model, "unpriced", 0, 0, ""), "0"
-	}
-	cost := (float64(usage.InputTokens)/1000)*rate.InputPer1K + (float64(usage.OutputTokens)/1000)*rate.OutputPer1K
-	return pricingSnapshotJSON(model, "priced", rate.InputPer1K, rate.OutputPer1K, pricingVersion(config)), strconv.FormatFloat(cost, 'f', 8, 64)
+	inputCost := new(big.Rat).Mul(inputRate, new(big.Rat).SetInt64(usage.InputTokens))
+	inputCost.Quo(inputCost, big.NewRat(1000, 1))
+	outputCost := new(big.Rat).Mul(outputRate, new(big.Rat).SetInt64(usage.OutputTokens))
+	outputCost.Quo(outputCost, big.NewRat(1000, 1))
+	cost := new(big.Rat).Add(inputCost, outputCost)
+	return pricingSnapshotJSON(providerID, modelID, "priced", currency, inputText, outputText, effectiveAt, version), cost.FloatString(8), currency
 }
 
-func estimateModelCost(model string, usage core.ModelUsage) string {
-	_, cost := resolveModelPricing(model, usage)
-	return cost
-}
-
-func pricingSnapshotJSON(model, status string, inputPer1K, outputPer1K float64, version string) string {
-	payload := map[string]any{"model": model, "status": status, "currency": "USD", "input_per_1k": inputPer1K, "output_per_1k": outputPer1K, "version": version}
+func pricingSnapshotJSON(providerID, modelID, status, currency, inputPer1K, outputPer1K, effectiveAt string, version int) string {
+	payload := map[string]any{"provider_id": providerID, "model": modelID, "status": status, "currency": currency, "input_per_1k": inputPer1K, "output_per_1k": outputPer1K, "effective_at": effectiveAt, "version": version}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return `{"model":"","status":"invalid","currency":"USD"}`
 	}
 	return string(data)
-}
-
-func pricingVersion(config string) string {
-	sum := sha256.Sum256([]byte(config))
-	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func modelStepSummary(ctx context.Context, tx *sql.Tx, stepID string) string {

@@ -28,6 +28,197 @@ paths:
                 $ref: "#/components/schemas/Diagnostics"
         default:
           $ref: "#/components/responses/Problem"
+  /configuration:
+    get:
+      operationId: getConfiguration
+      responses:
+        "200":
+          description: Effective non-secret bootstrap configuration and source
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootstrapConfiguration" }
+        default: { $ref: "#/components/responses/Problem" }
+  /configuration/bootstrap:
+    patch:
+      operationId: updateBootstrapConfiguration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateBootstrapConfiguration" }
+      responses:
+        "200":
+          description: Saved bootstrap configuration; restart_required is true
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootstrapConfiguration" }
+        default: { $ref: "#/components/responses/Problem" }
+  /settings/ai-governance:
+    get:
+      operationId: getAIGovernanceSettings
+      responses:
+        "200":
+          description: Reviewer configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIGovernanceSettings" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      operationId: updateAIGovernanceSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateAIGovernanceSettings" }
+      responses:
+        "200":
+          description: Updated Reviewer configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIGovernanceSettings" }
+        default: { $ref: "#/components/responses/Problem" }
+  /settings/model-pricing:
+    get:
+      operationId: getModelPricing
+      responses:
+        "200":
+          description: Versioned model pricing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelPricingCollection" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      operationId: updateModelPricing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateModelPricingCollection" }
+      responses:
+        "200":
+          description: Updated versioned model pricing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelPricingCollection" }
+        default: { $ref: "#/components/responses/Problem" }
+  /settings/context:
+    get:
+      operationId: getContextSettings
+      responses:
+        "200":
+          description: Conversation context settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextSettings" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      operationId: updateContextSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateContextSettings" }
+      responses:
+        "200":
+          description: Updated conversation context settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextSettings" }
+        default: { $ref: "#/components/responses/Problem" }
+  /preferences:
+    get:
+      operationId: getPreferences
+      responses:
+        "200":
+          description: Current user preferences
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserPreferences" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      operationId: updatePreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserPreferences" }
+      responses:
+        "200":
+          description: Updated user preferences
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserPreferences" }
+        default: { $ref: "#/components/responses/Problem" }
+  /security/vault:
+    get:
+      operationId: getVaultStatus
+      responses:
+        "200":
+          description: Secret vault status without key material
+          headers:
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultStatus" }
+        default: { $ref: "#/components/responses/Problem" }
+  /security/vault/initialize:
+    post:
+      operationId: initializeVault
+      responses:
+        "200":
+          description: Pending vault and one-time recovery code
+          headers:
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultSecretResponse" }
+        default: { $ref: "#/components/responses/Problem" }
+  /security/vault/confirm:
+    post:
+      operationId: confirmVault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VaultRecoveryRequest" }
+      responses:
+        "200":
+          description: Active vault status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultStatus" }
+        default: { $ref: "#/components/responses/Problem" }
+  /security/vault/recover:
+    post:
+      operationId: recoverVault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VaultRecoveryRequest" }
+      responses:
+        "200":
+          description: Recovered vault status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultStatus" }
+        default: { $ref: "#/components/responses/Problem" }
+  /security/vault/rotate-recovery:
+    post:
+      operationId: rotateVaultRecovery
+      responses:
+        "200":
+          description: New one-time recovery code
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultSecretResponse" }
+        default: { $ref: "#/components/responses/Problem" }
+  /security/vault/reset-pending:
+    post:
+      operationId: resetPendingVault
+      responses:
+        "204": { description: Pending vault removed }
+        default: { $ref: "#/components/responses/Problem" }
   /bootstrap:
     get:
       operationId: getBootstrap
@@ -545,6 +736,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MCPHealth" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/mcp/credential:
+    put:
+      operationId: updateMCPCredential
+      parameters:
+        - name: capability_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MCPSecretUpdateRequest" }
+      responses:
+        "200":
+          description: MCP credential replaced; values are never returned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
         default: { $ref: "#/components/responses/Problem" }
   /capabilities/{capability_id}/mcp/oauth/start:
     parameters:
@@ -2346,6 +2557,161 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    BootstrapConfiguration:
+      type: object
+      required: [profile, listen_address, data_root, run_concurrency, database_driver, trusted_keys_file, config_path, source, restart_required]
+      properties:
+        profile: { type: string, enum: [personal, team] }
+        listen_address: { type: string }
+        data_root: { type: string }
+        run_concurrency: { type: integer, minimum: 1, maximum: 4 }
+        database_driver: { type: string, enum: [sqlite, postgresql] }
+        trusted_keys_file: { type: string }
+        config_path: { type: string }
+        source: { type: string }
+        restart_required: { type: boolean }
+    UpdateBootstrapConfiguration:
+      type: object
+      additionalProperties: false
+      properties:
+        profile: { type: string, enum: [personal, team] }
+        listen_address: { type: string, minLength: 1, maxLength: 255 }
+        data_root: { type: string, maxLength: 2048 }
+        run_concurrency: { type: integer, minimum: 1, maximum: 4 }
+        database_driver: { type: string, enum: [sqlite, postgresql] }
+        trusted_keys_file: { type: string, maxLength: 2048 }
+    AIGovernanceSettings:
+      type: object
+      required: [reviewer_provider_id, reviewer_model_id, enabled, timeout_seconds, fail_closed, policy_version, updated_at]
+      properties:
+        reviewer_provider_id: { type: string }
+        reviewer_model_id: { type: string }
+        enabled: { type: boolean }
+        timeout_seconds: { type: integer, minimum: 5, maximum: 120 }
+        fail_closed: { type: boolean, enum: [true] }
+        policy_version: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    UpdateAIGovernanceSettings:
+      type: object
+      required: [reviewer_provider_id, reviewer_model_id, enabled, timeout_seconds]
+      additionalProperties: false
+      properties:
+        reviewer_provider_id: { type: string, maxLength: 255 }
+        reviewer_model_id: { type: string, maxLength: 255 }
+        enabled: { type: boolean }
+        timeout_seconds: { type: integer, minimum: 5, maximum: 120 }
+    ModelPricingVersion:
+      type: object
+      required: [provider_id, model_id, currency, input_per_1k, output_per_1k, effective_at, version, updated_at]
+      properties:
+        provider_id: { type: string, minLength: 1, maxLength: 255 }
+        model_id: { type: string, minLength: 1, maxLength: 255 }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        input_per_1k: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        output_per_1k: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        effective_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    ModelPricingCollection:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/ModelPricingVersion" }
+    UpdateModelPricingVersion:
+      type: object
+      additionalProperties: false
+      required: [provider_id, model_id, currency, input_per_1k, output_per_1k, effective_at, version]
+      properties:
+        provider_id: { type: string, minLength: 1, maxLength: 255 }
+        model_id: { type: string, minLength: 1, maxLength: 255 }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        input_per_1k: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        output_per_1k: { type: string, pattern: "^[0-9]+(\\.[0-9]+)?$" }
+        effective_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    UpdateModelPricingCollection:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/UpdateModelPricingVersion" }
+    ContextSettings:
+      type: object
+      required: [auto_compact, trigger_tokens, retain_tokens, summary_max_tokens, updated_at]
+      properties:
+        auto_compact: { type: boolean }
+        trigger_tokens: { type: integer, format: int64 }
+        retain_tokens: { type: integer, format: int64 }
+        summary_max_tokens: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time }
+    UpdateContextSettings:
+      type: object
+      required: [auto_compact, trigger_tokens, retain_tokens, summary_max_tokens]
+      additionalProperties: false
+      properties:
+        auto_compact: { type: boolean }
+        trigger_tokens: { type: integer, format: int64, minimum: 1000, maximum: 2000000 }
+        retain_tokens: { type: integer, format: int64, minimum: 1000, maximum: 1000000 }
+        summary_max_tokens: { type: integer, format: int64, minimum: 256, maximum: 32768 }
+    UserPreferences:
+      type: object
+      required: [theme, density, default_permission, recent_provider_id, recent_model_id, updated_at]
+      properties:
+        theme: { type: string, enum: [system, light, dark] }
+        density: { type: string, enum: [compact, comfortable] }
+        default_permission: { type: string, enum: [ask, auto_review] }
+        recent_provider_id: { type: string }
+        recent_model_id: { type: string }
+        updated_at: { type: string, format: date-time }
+    UpdateUserPreferences:
+      type: object
+      required: [theme, density, default_permission, recent_provider_id, recent_model_id]
+      additionalProperties: false
+      properties:
+        theme: { type: string, enum: [system, light, dark] }
+        density: { type: string, enum: [compact, comfortable] }
+        default_permission: { type: string, enum: [ask, auto_review] }
+        recent_provider_id: { type: string, maxLength: 255 }
+        recent_model_id: { type: string, maxLength: 255 }
+    VaultStatus:
+      type: object
+      required: [state, algorithm, key_version, recovery_configured, secret_count, detail, updated_at]
+      properties:
+        state: { type: string, enum: [uninitialized, pending, active, locked, corrupt] }
+        algorithm: { type: string }
+        key_version: { type: integer, minimum: 0 }
+        recovery_configured: { type: boolean }
+        secret_count: { type: integer, format: int64, minimum: 0 }
+        detail: { type: string }
+        updated_at: { type: string, format: date-time }
+    VaultSecretResponse:
+      type: object
+      required: [recovery_code, status]
+      properties:
+        recovery_code: { type: string, description: "One-time response; never persisted or logged." }
+        status: { $ref: "#/components/schemas/VaultStatus" }
+    VaultRecoveryRequest:
+      type: object
+      required: [recovery_code]
+      additionalProperties: false
+      properties:
+        recovery_code: { type: string, minLength: 40, maxLength: 128 }
+    MCPSecretUpdateRequest:
+      type: object
+      required: [credentials]
+      additionalProperties: false
+      properties:
+        credentials:
+          type: object
+          minProperties: 1
+          maxProperties: 16
+          additionalProperties: { type: string, minLength: 1, maxLength: 8192, writeOnly: true }
     CreateAuthSessionRequest:
       type: object
       required: [user_id]
@@ -2373,19 +2739,42 @@ components:
     Diagnostics:
       type: object
       additionalProperties: false
-      required: [status, version, profile, database, providers, worker, sse, logs, maintenance, auto_review]
+      required: [status, version, profile, database, providers, pricing, worker, sse, logs, maintenance, auto_review, vault, credential_states, credential_issues]
       properties:
-        status: { type: string, enum: [ok, degraded] }
+        status: { type: string, enum: [ok, attention, degraded] }
         version: { type: string }
         profile: { type: string }
         database: { $ref: "#/components/schemas/DatabaseDiagnostics" }
         providers: { $ref: "#/components/schemas/ProviderDiagnostics" }
+        pricing: { $ref: "#/components/schemas/PricingDiagnostics" }
         worker: { $ref: "#/components/schemas/WorkerDiagnostics" }
         sse: { $ref: "#/components/schemas/SseDiagnostics" }
         logs: { $ref: "#/components/schemas/DiagnosticLogPolicy" }
         maintenance: { $ref: "#/components/schemas/MaintenanceDiagnostics" }
         storage: { $ref: "#/components/schemas/StorageDiagnostics" }
         auto_review: { $ref: "#/components/schemas/AutoReviewDiagnostics" }
+        vault: { $ref: "#/components/schemas/VaultStatus" }
+        credential_states:
+          type: object
+          required: [ready, locked, missing, corrupt]
+          properties:
+            ready: { type: integer, minimum: 0 }
+            locked: { type: integer, minimum: 0 }
+            missing: { type: integer, minimum: 0 }
+            corrupt: { type: integer, minimum: 0 }
+        credential_issues:
+          type: array
+          items: { $ref: "#/components/schemas/CredentialIssue" }
+    CredentialIssue:
+      type: object
+      additionalProperties: false
+      required: [kind, resource_id, name, state, action_path]
+      properties:
+        kind: { type: string, enum: [provider, mcp, mcp_oauth] }
+        resource_id: { type: string }
+        name: { type: string }
+        state: { type: string, enum: [locked, missing, corrupt] }
+        action_path: { type: string }
     DatabaseDiagnostics:
       type: object
       required: [name, status]
@@ -2399,6 +2788,13 @@ components:
         total: { type: integer }
         active: { type: integer }
         stale_catalog: { type: integer }
+    PricingDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [version_count, uncovered_models]
+      properties:
+        version_count: { type: integer, minimum: 0 }
+        uncovered_models: { type: integer, minimum: 0 }
     WorkerDiagnostics:
       type: object
       required: [queued_runs, running_runs, waiting_approvals, active_leases]
@@ -2471,7 +2867,7 @@ components:
       type: object
       additionalProperties: false
       required:
-        [provider_id, display_name, protocol_family, endpoint, default_model_id, status, is_default, credential_configured, created_at, updated_at]
+        [provider_id, display_name, protocol_family, endpoint, default_model_id, status, is_default, credential_configured, credential_state, created_at, updated_at]
       properties:
         provider_id: { type: string }
         display_name: { type: string }
@@ -2481,6 +2877,7 @@ components:
         status: { type: string, enum: [active, disabled, error] }
         is_default: { type: boolean }
         credential_configured: { type: boolean }
+        credential_state: { type: string, enum: [ready, locked, missing, corrupt] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     SaveProviderRequest:
@@ -2765,7 +3162,7 @@ components:
         updated_at: { type: string, format: date-time }
     Capability:
       type: object
-      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, availability, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, credential_configured, created_at, updated_at]
+      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, availability, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, credential_configured, credential_state, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         organization_id: { type: string, format: uuid }
@@ -2791,6 +3188,7 @@ components:
         credential_configured:
           type: boolean
           description: Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
+        credential_state: { type: string, enum: [ready, locked, missing, corrupt] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     ResourceAvailability:
@@ -3292,11 +3690,12 @@ components:
         quota_bytes: { type: integer, format: int64 }
     WorkspaceFile:
       type: object
-      required: [path, kind, size_bytes, modified_at, git_status]
+      required: [path, kind, lifecycle_role, size_bytes, modified_at, git_status]
       additionalProperties: false
       properties:
         path: { type: string }
         kind: { type: string, enum: [file, directory, symlink] }
+        lifecycle_role: { type: string, enum: [source, input, working, temporary, candidate_output] }
         size_bytes: { type: integer, format: int64 }
         modified_at: { type: string, format: date-time }
         git_status: { type: string }

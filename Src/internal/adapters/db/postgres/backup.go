@@ -55,7 +55,7 @@ func (s *Store) BackupWithDSN(ctx context.Context, targetDir, backupDSN string) 
 	if err := copyTreeSafe(blobRoot, filepath.Join(target, "blobs")); err != nil {
 		return sqlite.BackupManifest{}, fmt.Errorf("copy blobs: %w", err)
 	}
-	manifest := sqlite.BackupManifest{FormatVersion: 1, CreatedAt: time.Now().UTC(), DatabaseType: "postgresql"}
+	manifest := sqlite.BackupManifest{FormatVersion: 2, CreatedAt: time.Now().UTC(), DatabaseType: "postgresql"}
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_versions`).Scan(&manifest.SchemaVersion); err != nil {
 		return sqlite.BackupManifest{}, fmt.Errorf("read postgres schema version: %w", err)
 	}
@@ -97,7 +97,7 @@ func Restore(ctx context.Context, backupDir, dsn, workspaceRoot string) (sqlite.
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return sqlite.BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
-	if manifest.FormatVersion != 1 || manifest.DatabaseType != "postgresql" {
+	if (manifest.FormatVersion != 1 && manifest.FormatVersion != 2) || manifest.DatabaseType != "postgresql" {
 		return sqlite.BackupManifest{}, fmt.Errorf("backup is not a PostgreSQL snapshot")
 	}
 	if manifest.SchemaVersion <= 0 || manifest.SchemaVersion > sqlite.CurrentSchemaVersion {

@@ -70,6 +70,7 @@ export interface ProviderInstance {
   status: 'active' | 'disabled' | 'error'
   is_default: boolean
   credential_configured: boolean
+  credential_state: 'ready' | 'locked' | 'missing' | 'corrupt'
   created_at: string
   updated_at: string
 }
@@ -115,18 +116,84 @@ export interface ProviderTestResult {
 }
 
 export interface Diagnostics {
-  status: 'ok' | 'degraded'
+  status: 'ok' | 'attention' | 'degraded'
   version: string
   profile: string
   database: { name: string; status: 'ok' | 'degraded' }
   providers: { total: number; active: number; stale_catalog: number }
+  pricing: { version_count: number; uncovered_models: number }
   worker: { queued_runs: number; running_runs: number; waiting_approvals: number; active_leases: number }
   sse: { active_connections: number }
   logs: { available: boolean; redacted: boolean; detail: string }
   maintenance: { backup_endpoint_available: boolean; restore_endpoint_available: boolean; detail: string }
   storage?: { data_root: string; workspace_root: string }
   auto_review: { configured: boolean; available: boolean; reason: string }
+  vault: VaultStatus
+  credential_states: Record<'ready' | 'locked' | 'missing' | 'corrupt', number>
+  credential_issues: Array<{ kind: 'provider' | 'mcp' | 'mcp_oauth'; resource_id: string; name: string; state: 'locked' | 'missing' | 'corrupt'; action_path: string }>
 }
+
+export interface BootstrapConfiguration {
+  profile: 'personal' | 'team'
+  listen_address: string
+  data_root: string
+  run_concurrency: number
+  database_driver: 'sqlite' | 'postgresql'
+  trusted_keys_file: string
+  config_path: string
+  source: string
+  restart_required: boolean
+}
+
+export interface AIGovernanceSettings {
+  reviewer_provider_id: string
+  reviewer_model_id: string
+  enabled: boolean
+  timeout_seconds: number
+  fail_closed: true
+  policy_version: number
+  updated_at: string
+}
+
+export interface ModelPricingVersion {
+  provider_id: string
+  model_id: string
+  currency: string
+  input_per_1k: string
+  output_per_1k: string
+  effective_at: string
+  version: number
+  updated_at: string
+}
+
+export interface ContextSettings {
+  auto_compact: boolean
+  trigger_tokens: number
+  retain_tokens: number
+  summary_max_tokens: number
+  updated_at: string
+}
+
+export interface UserPreferences {
+  theme: 'system' | 'light' | 'dark'
+  density: 'compact' | 'comfortable'
+  default_permission: 'ask' | 'auto_review'
+  recent_provider_id: string
+  recent_model_id: string
+  updated_at: string
+}
+
+export interface VaultStatus {
+  state: 'uninitialized' | 'pending' | 'active' | 'locked' | 'corrupt'
+  algorithm: string
+  key_version: number
+  recovery_configured: boolean
+  secret_count: number
+  detail: string
+  updated_at: string
+}
+
+export interface VaultSecretResponse { recovery_code: string; status: VaultStatus }
 
 export interface Project {
   id: string
@@ -230,6 +297,7 @@ export interface Capability {
   bundle_hash: string
   install_job_id: string
   credential_configured: boolean
+  credential_state: 'ready' | 'locked' | 'missing' | 'corrupt'
   created_at: string
   updated_at: string
 }
@@ -635,6 +703,7 @@ export interface RunPlanItem {
 export interface WorkspaceFile {
   path: string
   kind: 'file' | 'directory' | 'symlink'
+  lifecycle_role: 'source' | 'input' | 'working' | 'temporary' | 'candidate_output'
   size_bytes: number
   modified_at: string
   git_status: string
@@ -793,6 +862,20 @@ export class ApiProblem extends Error {
   }
 }
 
+export function displayError(error: unknown) {
+  if (!error) return ''
+  if (!(error instanceof ApiProblem)) return error instanceof Error ? error.message : '请求未完成，请重试。'
+  const messages: Record<string, string> = {
+    INTERNAL_ERROR: `服务未能完成请求，请刷新后重试（关联编号：${error.problem.correlation_id}）。`,
+    VALIDATION_ERROR: error.problem.detail ? `配置值不符合要求：${error.problem.detail}` : '配置值不符合要求，请检查后重试。',
+    SECRET_MISSING: '凭据缺失，请重新录入后再试。',
+    SECRET_VAULT_LOCKED: '数据库密钥库已锁定，请先恢复 Vault。',
+    SECRET_CIPHERTEXT_INVALID: '凭据密文校验失败，请重新录入。',
+    FORBIDDEN: '当前账户没有修改此配置的权限。',
+  }
+  return messages[error.problem.code] || error.problem.detail || error.problem.title || '请求未完成，请重试。'
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const method = (init?.method || 'GET').toUpperCase()
 	const csrf = (typeof document === 'undefined' ? '' : document.cookie)
@@ -890,6 +973,22 @@ export const api = {
   bootstrap: () => request<Bootstrap>('/bootstrap'),
   models: () => request<{ items: ModelDescriptor[]; default_model: string }>('/models'),
   diagnostics: () => request<Diagnostics>('/diagnostics'),
+  configuration: () => request<BootstrapConfiguration>('/configuration'),
+  updateBootstrapConfiguration: (input: Partial<Pick<BootstrapConfiguration, 'profile' | 'listen_address' | 'data_root' | 'run_concurrency' | 'database_driver' | 'trusted_keys_file'>>) => request<BootstrapConfiguration>('/configuration/bootstrap', { method: 'PATCH', body: JSON.stringify(input) }),
+  aiGovernance: () => request<AIGovernanceSettings>('/settings/ai-governance'),
+  updateAIGovernance: (input: Pick<AIGovernanceSettings, 'reviewer_provider_id' | 'reviewer_model_id' | 'enabled' | 'timeout_seconds'>) => request<AIGovernanceSettings>('/settings/ai-governance', { method: 'PUT', body: JSON.stringify(input) }),
+  modelPricing: () => request<{ items: ModelPricingVersion[] }>('/settings/model-pricing'),
+  updateModelPricing: (items: Array<Omit<ModelPricingVersion, 'updated_at'>>) => request<{ items: ModelPricingVersion[] }>('/settings/model-pricing', { method: 'PUT', body: JSON.stringify({ items }) }),
+  contextSettings: () => request<ContextSettings>('/settings/context'),
+  updateContextSettings: (input: Omit<ContextSettings, 'updated_at'>) => request<ContextSettings>('/settings/context', { method: 'PUT', body: JSON.stringify(input) }),
+  preferences: () => request<UserPreferences>('/preferences'),
+  updatePreferences: (input: Omit<UserPreferences, 'updated_at'>) => request<UserPreferences>('/preferences', { method: 'PUT', body: JSON.stringify(input) }),
+  vaultStatus: () => request<VaultStatus>('/security/vault'),
+  initializeVault: () => request<VaultSecretResponse>('/security/vault/initialize', { method: 'POST' }),
+  confirmVault: (recoveryCode: string) => request<VaultStatus>('/security/vault/confirm', { method: 'POST', body: JSON.stringify({ recovery_code: recoveryCode }) }),
+  recoverVault: (recoveryCode: string) => request<VaultStatus>('/security/vault/recover', { method: 'POST', body: JSON.stringify({ recovery_code: recoveryCode }) }),
+  rotateVaultRecovery: () => request<VaultSecretResponse>('/security/vault/rotate-recovery', { method: 'POST' }),
+  resetPendingVault: () => request<void>('/security/vault/reset-pending', { method: 'POST' }),
   providers: () => request<{ items: ProviderInstance[] }>('/providers'),
   provider: (providerId: string) => request<ProviderInstance>(`/providers/${providerId}`),
   saveProvider: (providerId: string | undefined, input: { display_name: string; protocol_family: ProviderInstance['protocol_family']; endpoint: string; default_model_id?: string; status?: ProviderInstance['status']; is_default?: boolean; credential?: string }) =>
@@ -975,6 +1074,7 @@ export const api = {
   reviewCapability: (capabilityId: string, decision: 'approved' | 'rejected', note = '') =>
     request<Capability>(`/capabilities/${capabilityId}/review`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ decision, note }) }),
   connectMCP: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/connect`, { method: 'POST' }),
+  updateMCPCredential: (capabilityId: string, credentials: Record<string, string>) => request<Capability>(`/capabilities/${capabilityId}/mcp/credential`, { method: 'PUT', body: JSON.stringify({ credentials }) }),
   startMCPOAuth: (capabilityId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/start`, { method: 'POST' }),
   mcpOAuthStatus: (capabilityId: string, sessionId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/${sessionId}`),
   cancelMCPOAuth: (capabilityId: string, sessionId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/${sessionId}/cancel`, { method: 'POST' }),
