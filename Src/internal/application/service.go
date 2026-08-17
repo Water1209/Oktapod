@@ -708,19 +708,30 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			})
 		}
 	}
+	contextMemorySnapshots := make([]ContextMemorySnapshot, 0, len(input.ContextMemoryIDs))
 	if len(input.ContextMemoryIDs) > 0 {
 		memories, memoryErr := s.repository.ListMemories(ctx, s.ScopeFor(ctx), projectID, "", 500)
 		if memoryErr != nil {
 			return core.Task{}, memoryErr
 		}
-		visible := make(map[string]struct{}, len(memories))
+		visible := make(map[string]core.Memory, len(memories))
 		for _, memory := range memories {
-			visible[memory.ID] = struct{}{}
+			visible[memory.ID] = memory
 		}
+		remaining := MaxContextMemorySnapshotBytes
 		for _, memoryID := range input.ContextMemoryIDs {
-			if _, ok := visible[memoryID]; !ok {
+			memory, ok := visible[memoryID]
+			if !ok {
 				return core.Task{}, &core.ForbiddenError{Message: "selected context memory is not visible in this project"}
 			}
+			content := ""
+			if remaining > 0 {
+				content = truncateUTF8Bytes(memory.Content, remaining)
+				remaining -= len([]byte(content))
+			}
+			contextMemorySnapshots = append(contextMemorySnapshots, ContextMemorySnapshot{
+				ID: memory.ID, Title: memory.Title, Content: content, SourceHash: memory.SourceHash,
+			})
 		}
 	}
 	idempotencyKey, err = normalizeIdempotencyKey(idempotencyKey)
@@ -916,6 +927,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	}
 	if len(input.ContextMemoryIDs) > 0 {
 		snapshot["context_memory_ids"] = input.ContextMemoryIDs
+		snapshot["context_memory_snapshots"] = contextMemorySnapshots
 	}
 	if len(input.ContinuationRunIDs) > 0 {
 		snapshot["continuation_run_ids"] = input.ContinuationRunIDs

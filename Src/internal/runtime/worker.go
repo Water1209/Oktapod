@@ -2449,7 +2449,7 @@ func steeringInstructionForPrompt(inputJSON string) string {
 // normal task into an unbounded prompt or silently broaden project scope.
 func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (string, map[string]any) {
 	var config map[string]any
-	plan := map[string]any{"requested_assets": 0, "metadata_assets": 0, "loaded_assets": 0, "requested_memories": 0, "loaded_memories": 0, "bytes_loaded": 0, "estimated_tokens": 0, "skipped": 0}
+	plan := map[string]any{"requested_assets": 0, "metadata_assets": 0, "loaded_assets": 0, "requested_memories": 0, "loaded_memories": 0, "bytes_loaded": 0, "estimated_tokens": 0, "skipped": 0, "memory_context_source": "none", "legacy_memory_context": false}
 	if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &config) != nil {
 		return "", plan
 	}
@@ -2507,27 +2507,60 @@ func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (str
 		plan["loaded_assets"] = plan["loaded_assets"].(int) + 1
 		plan["bytes_loaded"] = plan["bytes_loaded"].(int) + len(data)
 	}
-	if len(memoryIDs) > 0 && remaining > 0 {
-		memories, err := w.repository.ListMemories(ctx, scope, run.ProjectID, "", 500)
-		if err == nil {
-			byID := make(map[string]core.Memory, len(memories))
-			for _, memory := range memories {
-				byID[memory.ID] = memory
+	if len(memoryIDs) > 0 {
+		if frozenValue, ok := config["context_memory_snapshots"]; ok {
+			plan["memory_context_source"] = "frozen_snapshot"
+			encoded, _ := json.Marshal(frozenValue)
+			var snapshots []application.ContextMemorySnapshot
+			if json.Unmarshal(encoded, &snapshots) != nil {
+				plan["skipped"] = plan["skipped"].(int) + len(memoryIDs)
+			} else {
+				byID := make(map[string]application.ContextMemorySnapshot, len(snapshots))
+				for _, snapshot := range snapshots {
+					byID[snapshot.ID] = snapshot
+				}
+				for _, memoryID := range memoryIDs {
+					memory, ok := byID[memoryID]
+					if !ok || remaining <= 0 || memory.Content == "" {
+						plan["skipped"] = plan["skipped"].(int) + 1
+						continue
+					}
+					data := []byte(memory.Content)
+					if len(data) > remaining {
+						data = data[:remaining]
+					}
+					remaining -= len(data)
+					sections = append(sections, "[记忆 "+memory.Title+" | "+memory.SourceHash+"]\n"+string(data))
+					plan["loaded_memories"] = plan["loaded_memories"].(int) + 1
+					plan["bytes_loaded"] = plan["bytes_loaded"].(int) + len(data)
+				}
 			}
-			for _, memoryID := range memoryIDs {
-				memory, ok := byID[memoryID]
-				if !ok || remaining <= 0 {
-					plan["skipped"] = plan["skipped"].(int) + 1
-					continue
+		} else if remaining > 0 {
+			// Historical Runs predate bounded Memory payload snapshots. Preserve
+			// recovery compatibility, but expose the non-deterministic fallback.
+			plan["memory_context_source"] = "legacy_live_ids"
+			plan["legacy_memory_context"] = true
+			memories, err := w.repository.ListMemories(ctx, scope, run.ProjectID, "", 500)
+			if err == nil {
+				byID := make(map[string]core.Memory, len(memories))
+				for _, memory := range memories {
+					byID[memory.ID] = memory
 				}
-				data := []byte(memory.Content)
-				if len(data) > remaining {
-					data = data[:remaining]
+				for _, memoryID := range memoryIDs {
+					memory, ok := byID[memoryID]
+					if !ok || remaining <= 0 {
+						plan["skipped"] = plan["skipped"].(int) + 1
+						continue
+					}
+					data := []byte(memory.Content)
+					if len(data) > remaining {
+						data = data[:remaining]
+					}
+					remaining -= len(data)
+					sections = append(sections, "[记忆 "+memory.Title+" | "+memory.SourceHash+"]\n"+string(data))
+					plan["loaded_memories"] = plan["loaded_memories"].(int) + 1
+					plan["bytes_loaded"] = plan["bytes_loaded"].(int) + len(data)
 				}
-				remaining -= len(data)
-				sections = append(sections, "[记忆 "+memory.Title+" | "+memory.SourceHash+"]\n"+string(data))
-				plan["loaded_memories"] = plan["loaded_memories"].(int) + 1
-				plan["bytes_loaded"] = plan["bytes_loaded"].(int) + len(data)
 			}
 		}
 	}
