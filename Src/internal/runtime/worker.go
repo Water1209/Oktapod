@@ -2305,26 +2305,33 @@ func (w *Worker) executeMCPTool(ctx context.Context, step core.ClaimedStep, run 
 	if !allowed {
 		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_TOOL_NOT_ALLOWED", ResultSummary: "MCP 工具不在创建 Run 时的冻结工具清单中，拒绝执行。", Output: map[string]any{"retryable": false, "capability_id": capabilityID, "tool_name": toolName}}
 	}
-	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
-	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, input.Idempotent)
-	if err != nil {
-		return toolReceiptBeginFailure(err, "MCP 副作用状态未知，已停止自动重试。")
-	}
 	credential := ""
 	if credentialRef != "" {
 		if w.mcpSecrets == nil {
 			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据存储不可用。", Output: map[string]any{"retryable": true}}
 		}
-		credential, err = w.mcpSecrets.Get(ctx, credentialRef)
-		if err != nil {
+		resolvedCredential, credentialErr := w.mcpSecrets.Get(ctx, credentialRef)
+		if credentialErr != nil {
 			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据不可用，请重新配置后重试。", Output: map[string]any{"retryable": true}}
 		}
+		credential = resolvedCredential
+	}
+	if err := mcpadapter.PreflightCall(manifestJSON, credential, toolName, input.Arguments); err != nil {
+		if errors.Is(err, mcpadapter.ErrNeedsAuth) {
+			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_CREDENTIAL_MISSING", ResultSummary: "MCP 凭据不可用，请重新配置后重试。", Output: map[string]any{"retryable": true}}
+		}
+		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "MCP_PREFLIGHT_FAILED", ResultSummary: "MCP 调用未通过本地预检，未开始执行。", Output: map[string]any{"retryable": false, "reason": err.Error()}}
 	}
 	var credentialUpdater mcpadapter.CredentialUpdater
 	if credentialRef != "" && w.mcpSecrets != nil {
 		credentialUpdater = func(saveContext context.Context, payload string) error {
 			return w.mcpSecrets.Set(saveContext, credentialRef, payload)
 		}
+	}
+	call := core.ToolCall{ID: input.ToolCallID, Name: input.Name, Arguments: input.Arguments}
+	invocationID, err := w.beginToolExecution(ctx, step, run, call, input.InputHash, input.Idempotent)
+	if err != nil {
+		return toolReceiptBeginFailure(err, "MCP 副作用状态未知，已停止自动重试。")
 	}
 	callContext := ctx
 	cancelCall := func() {}

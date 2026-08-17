@@ -172,6 +172,26 @@ func Call(ctx context.Context, manifestJSON, credential, toolName string, argume
 	return CallWithCredentialUpdater(ctx, manifestJSON, credential, toolName, arguments, nil)
 }
 
+// PreflightCall validates every local invocation prerequisite without opening
+// a process or network connection. Runtimes use it before durable receipt
+// Begin so malformed manifests, oversized arguments, and missing credentials
+// cannot create a false "started" side effect.
+func PreflightCall(manifestJSON, credential, toolName string, arguments map[string]any) error {
+	if strings.TrimSpace(toolName) == "" || len(toolName) > 200 {
+		return errors.New("MCP tool name is invalid")
+	}
+	encoded, err := json.Marshal(arguments)
+	if err != nil || len(encoded) > 1<<20 {
+		return errors.New("MCP tool arguments exceed the 1 MiB safety limit")
+	}
+	spec, err := decodeManifest(manifestJSON)
+	if err != nil {
+		return fmt.Errorf("decode MCP manifest: %w", err)
+	}
+	_, err = manifestCredential(spec, credential)
+	return err
+}
+
 // CallWithCredentialUpdater lets a restored OAuth refresh token be rotated in
 // SecretStore without exposing the new token to the Worker or Run records.
 func CallWithCredentialUpdater(ctx context.Context, manifestJSON, credential, toolName string, arguments map[string]any, updater CredentialUpdater) (CallResult, error) {
