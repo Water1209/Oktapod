@@ -1,11 +1,11 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.4（消息真源、预算决策与任务面板修订）
+> **文档版本**：V2.5（Agent Runtime 收敛修订）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
-> **编制日期**：2026-08-13
+> **编制日期**：2026-08-17
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
-> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），2026-08-13 功能基线 `main@6b8c60e`
+> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），2026-08-17 本地实现基线 `codex/runtime-convergence-v1.1@c927426`
 
 > **阅读规则**：本文件同时保留目标架构和当前落地边界。发布完成度只以《Oktapod V1 验收状态与追踪矩阵》为准；目标目录、代码行数或尚未物理迁移的职责不得当作已完成事实。
 
@@ -150,22 +150,18 @@ V1 已建立：
 │  事件: ModelStarted/TextDelta/ToolBatchProposed │
 └─────────────┬─────────────────┬─────────────┘
               │                 │
-┌─────────────▼─────────┐ ┌─────▼─────────────┐
-│ Prompt & Context      │ │ Tool Context      │
-│ Planner               │ │ Planner           │
-│ (Bundle / Hash /      │ │ (Skill /          │
-│  压缩策略)             │ │  Capability 过滤) │
-└─────────────┬─────────┘ └─────┬─────────────┘
-              │                 │
-              └────────┬────────┘
-                       │
 ┌──────────────────────▼──────────────────────┐
-│         Unified Tool Registry               │
-│  Native Tools + MCP Tools + ToolSpec        │
+│ AgentTurnAssembler + ToolCatalogBuilder     │
+│ PromptSection / Context / Transcript / Hash │
 └──────────────────────┬──────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────┐
-│ ExecutionPolicy → ExecutionAuthorization → Broker │
+│ ToolRuntime: Decode → Preflight → Begin     │
+│ → Native/MCP Handler → Normalize            │
+└──────────────────────┬──────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────┐
+│ ExecutionPolicy → ExecutionAuthorization → Receipt │
 └──────────────┬─────────────────┬────────────┘
                │                 │
        ┌───────▼──────┐  ┌───────▼──────────┐
@@ -180,7 +176,7 @@ V1 已建立：
 └──────────────────────────────────────────────┘
 ```
 
-**当前边界**：`ExecutionPolicy` 与 `ExecutionAuthorization` 已形成统一执行门禁；Prompt/Context 与 Tool Context 是逻辑边界，仍有部分编排位于 Worker。V1 以行为合同和安全不变量为门禁，后续再继续物理拆分。
+**当前边界**：工具型主 Agent 的最终 ModelRequest 统一由 `AgentTurnAssembler` 组装，Tool Definitions 与 AllowedTools 来自同一个 `ToolCatalogBuilder` 结果；Skill、Web、Workspace/Artifact/Asset 与 MCP 统一经过 `ToolRuntime`。Worker 只保留 Claim/Lease、模型或专用工作流分派以及 Finish 编排。Receipt、Authorization、Checkpoint、ToolBatch、Artifact 和 Completion Gate 的持久权威仍在 Durable Harness/SQLite，没有建立第二套状态真源。Agent Team、搜索综合和 Reviewer 保持无工具专用模型工作流，不进入主 Agent Assembler。
 
 任务流摘要必须穷举持久化 `Task.status`；事件流停止只表示不再接收事件，不能推断任务成功。暂停、等待审批、等待输入、阻塞、失败、取消和成功必须保持独立用户语义。
 
@@ -218,6 +214,12 @@ TurnCompleted / TurnFailed / ContextLimitReached
 **不依赖**：DB、HTTP、用户 Session、SQLite、MCP Transport、具体工具实现、审批存储、UI。
 
 当前 `Src/internal/agentloop` 已承载稳定状态、事件与终止判断，Provider 调用、ToolBatch 编排的部分实现仍在 Worker。该物理差距是维护性事项，只要 Golden Trace 与恢复合同不回退，不阻塞 V1 个人版发布。
+
+#### 4.1.1 AgentTurnAssembler
+
+`AgentTurnAssembler` 是工具型主 Agent 的唯一请求装配入口。它在同一次调用内完成冻结上下文、Prompt Sections、Transcript、ToolCatalog、ModelRef、Thinking、Token 上限和 `ContextPlan`，然后计算 `assembly_hash`。Hash 覆盖最终 System Prompt、Messages、Tool Definitions、AllowedTools、工具 Scope、ModelRef、Thinking、Token 上限和移除 hash 字段后的 ContextPlan；相同 Run + Step 必须产生完全相同的请求。
+
+`ToolCatalogBuilder` 完整保留 Builtin/MCP/Skill/显式 Provider/Scene/Search Budget 的既有过滤次序。Definitions 与 AllowedTools 不允许由调用方分别重建。Prompt 使用静态 `PromptSection{Name, Order, Text}` 排序，不建设动态插件注册表。任何新的工具型主 Agent 路径必须经过该 Assembler；无工具专用工作流不得为了形式统一而强塞进来。
 
 ### 4.2 Durable Harness
 
@@ -260,6 +262,14 @@ input_hash / scope / risk / expires_at / policy_version
 ```
 
 Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存在、Input Hash、Tool、Risk、Policy Version、有效期和 Scope。任一字段变化即 fail-closed。当前同进程、同数据库威胁模型下，额外 HMAC 不能防止拥有数据库写权限的攻击者伪造审批，反而引入密钥生命周期和重启恢复故障，因此 V1 不新增 HMAC Grant 表。
+
+#### 4.4.1 ToolRuntime 与 Receipt 边界
+
+`ToolRuntime` 对全部工具执行固定管线：严格解码 `FrozenToolInvocation` → 解析冻结 Tool/Capability 合同 → 重算 Input Hash 与幂等性 → Handler 预检 → Durable `BeginToolExecution` → 静态 Handler → 统一 `core.ToolExecution`。只有预检成功才允许创建 `started` Receipt；Begin 成功后的已收敛结果必须携带 InvocationID 交给 Durable `FinishStep` 原子关闭。
+
+通用层不吸收 Capability 私有语义：Artifact 自动 Capture、Workspace CAS/Git Status Hash、外部不可信 Envelope、MCP OAuth/Secret 和进程树终止仍在对应 Handler/Adapter。Planning、Begin 与 Runtime 共用同一 MCP 快照风险/幂等性推导；SQLite `BeginToolExecution` 使用 Store 注入的同一 `ExecutionPolicy`，并继续验证 Lease/Fence、Scope、Risk、Policy Version、Input Hash 和审批绑定。
+
+取消边界单调收敛：Begin 前取消不派发也不创建 Receipt；Begin 后等待 executor 完成进程树终止或网络调用收敛，Workspace/MCP 取消均返回 `TOOL_CANCELED`，超时保留各自 Timeout Code。Task Cancel 事务将仍为 `started` 的 Receipt 标记为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`；迟到的 Finish 因 Fence 失效不能覆盖，非幂等 unknown 禁止自动重试。
 
 ### 4.5 Project Sandbox（V1 最小可行）
 
@@ -462,7 +472,7 @@ Skill 工具约束保存在已审核 Manifest；执行授权复用 approval、ap
 
 ## 10. Prompt 与外部内容安全（V1 终版）
 
-`PromptAssembler` 只组装公共身份/安全边界、Work/Code 工作流、计划/执行/恢复 Stage 和当前真实 ToolSpec 目录；不在 Worker 重复声明规则，不提示 Schema 中不存在的工具。项目指令按项目根到当前目录合并，同目录 `AGENTS.override.md` 优先于 `AGENTS.md`，最多 32 KiB；路径、内容 Hash 和内容冻结到 Run，Run 中修改只影响下一个 Run。
+`AgentTurnAssembler` 通过 `PromptAssembler` 的静态 Sections 组装公共身份/安全边界、Work/Code 工作流、计划/执行/恢复 Stage 和当前真实 ToolSpec 目录；不在 Worker 重复声明规则，不提示 Schema 中不存在的工具。项目指令按项目根到当前目录合并，同目录 `AGENTS.override.md` 优先于 `AGENTS.md`，最多 32 KiB；路径、内容 Hash 和内容冻结到 Run，Run 中修改只影响下一个 Run。用户显式选择的 Memory 也会在 Task 创建时把标题、来源 Hash 与最多 24 KiB 的实际 Prompt 载荷冻结进 Run；后续编辑或删除不改变新 Run，缺少该字段的历史 Run 才使用 live-ID 回退，并在 ContextPlan 明确标记 legacy。
 
 所有外部内容统一标记 `external_untrusted`，包括：搜索结果、网页内容、GitHub Issue、MCP ToolResult、数据库文本、邮件、仓库内指令文件。
 
