@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -83,5 +84,49 @@ func TestMainAgentModelRequestContractMatchesBuiltinCatalog(t *testing.T) {
 	}
 	if !strings.Contains(request.SystemPrompt, "# Available tools") || !strings.Contains(request.SystemPrompt, "# Stage instructions") {
 		t.Fatalf("system prompt lost catalog or stage sections: %q", request.SystemPrompt)
+	}
+	if request.ContextPlan["assembly_schema_version"] != assemblySchemaVersion || request.ContextPlan["assembly_hash"] != modelAssemblyHash(request) {
+		t.Fatalf("assembly identity=%#v", request.ContextPlan)
+	}
+}
+
+func TestAgentTurnAssemblyIsDeterministicAndHashesFinalRequest(t *testing.T) {
+	assembler := NewAgentTurnAssembler(nil)
+	step := core.ClaimedStep{ID: "assembly-step", InputJSON: `{"stage":"plan"}`}
+	run := core.RunContext{
+		RunID: "assembly-run", Goal: "Inspect the workspace", Acceptance: "Report verified evidence",
+		Mode: core.ModeSingleAgent, ConfigSnapshotJSON: `{"schema_version":2,"scene":"code","permission_mode":"ask"}`,
+	}
+	first, failure := assembler.Assemble(context.Background(), step, run)
+	if failure != nil {
+		t.Fatalf("first assembly failed: %#v", failure)
+	}
+	second, failure := assembler.Assemble(context.Background(), step, run)
+	if failure != nil {
+		t.Fatalf("second assembly failed: %#v", failure)
+	}
+	if !reflect.DeepEqual(first.Request, second.Request) {
+		t.Fatalf("same Run and Step assembled differently\nfirst=%#v\nsecond=%#v", first.Request, second.Request)
+	}
+	baseHash, _ := first.Request.ContextPlan["assembly_hash"].(string)
+	if baseHash == "" || baseHash != modelAssemblyHash(first.Request) {
+		t.Fatalf("invalid assembly hash %q", baseHash)
+	}
+
+	promptChanged := first.Request
+	promptChanged.SystemPrompt += "\nchanged"
+	if modelAssemblyHash(promptChanged) == baseHash {
+		t.Fatal("system prompt change did not change assembly hash")
+	}
+	schemaChanged := first.Request
+	schemaChanged.ToolDefinitions = append([]ToolDefinition(nil), first.Request.ToolDefinitions...)
+	schemaChanged.ToolDefinitions[0].Parameters = map[string]any{"type": "object", "properties": map[string]any{"changed": map[string]any{"type": "boolean"}}}
+	if modelAssemblyHash(schemaChanged) == baseHash {
+		t.Fatal("tool schema change did not change assembly hash")
+	}
+	allowedChanged := first.Request
+	allowedChanged.AllowedTools = append(append([]string(nil), first.Request.AllowedTools...), core.ToolWorkspaceReadFile)
+	if modelAssemblyHash(allowedChanged) == baseHash {
+		t.Fatal("allowed tools change did not change assembly hash")
 	}
 }

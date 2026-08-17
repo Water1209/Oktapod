@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	goruntime "runtime"
+	"sort"
 	"strings"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
@@ -15,8 +16,31 @@ import (
 // exclusively owned by ExecutionPolicy and the approval router.
 type PromptAssembler struct{}
 
+type PromptSection struct {
+	Name  string
+	Order int
+	Text  string
+}
+
+func RenderPromptSections(sections []PromptSection) string {
+	ordered := append([]PromptSection(nil), sections...)
+	sort.SliceStable(ordered, func(left, right int) bool { return ordered[left].Order < ordered[right].Order })
+	parts := make([]string, 0, len(ordered))
+	for _, section := range ordered {
+		if text := strings.TrimSpace(section.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func (PromptAssembler) Base(run core.RunContext) (string, string) {
-	system := `# Identity
+	sections, user := (PromptAssembler{}).BaseSections(run)
+	return RenderPromptSections(sections), user
+}
+
+func (PromptAssembler) BaseSections(run core.RunContext) ([]PromptSection, string) {
+	identity := `# Identity
 You are an autonomous agent operating inside an Oktapod project workspace. Complete the user's goal with the tools actually exposed to this Run.
 
 # Operating contract
@@ -24,40 +48,35 @@ You are an autonomous agent operating inside an Oktapod project workspace. Compl
 - Inspect relevant state before changing it. Keep actions inside the project scope and preserve unrelated user work.
 - Diagnose tool failures and recover from their cause. Never invent execution, validation, source, or file evidence.
 - Report the outcome faithfully and include concrete file paths for deliverables.`
+	sections := []PromptSection{{Name: "identity", Order: 100, Text: identity}}
 	if strings.TrimSpace(run.RunID) != "" {
-		system += `
-
-# Workspace file lifecycle
+		sections = append(sections, PromptSection{Name: "workspace_file_lifecycle", Order: 200, Text: `# Workspace file lifecycle
 - Before creating several files, inspect existing project conventions and state a compact file plan: durable source, reusable input, disposable working files, and final candidates. Do not create duplicate root-level helper scripts or ambiguous names such as final2/new-final.
 - Preserve normal repository layouts for code projects. When no project convention exists, keep editable task sources under work/<task-slug>/, final candidates under outputs/<task-slug>/, and disposable extraction/rendering helpers under .oktapod/work/` + run.RunID + `/. Reusable user inputs belong in Project Files and are staged read-only; do not copy them into arbitrary workspace roots.
-- .oktapod/ is internal and cannot be captured. A final candidate is not delivered until artifact_capture registers it as an immutable Task Output. Validate the real final file and report the registered output path.`
+- .oktapod/ is internal and cannot be captured. A final candidate is not delivered until artifact_capture registers it as an immutable Task Output. Validate the real final file and report the registered output path.`})
 	}
 	if run.Mode == core.ModeAnswer {
-		system = `# Identity
-You are the question-answering agent in an Oktapod project. Answer accurately and concisely, using only the tools actually exposed to this Run. Prefer verified project or source evidence over assumptions.`
+		sections = []PromptSection{{Name: "identity", Order: 100, Text: `# Identity
+You are the question-answering agent in an Oktapod project. Answer accurately and concisely, using only the tools actually exposed to this Run. Prefer verified project or source evidence over assumptions.`}}
 	}
 
 	scene := sceneFromSnapshot(run.ConfigSnapshotJSON)
 	switch scene {
 	case core.SceneCode:
-		system += `
-
-# Code workflow profile
-Prioritize project instructions, dependency boundaries, focused edits, tests, Git diff review, and an auditable change summary. Workspace commands and Git are normal governed tools when exposed; the scene itself grants no permission.`
+		sections = append(sections, PromptSection{Name: "scene", Order: 300, Text: `# Code workflow profile
+Prioritize project instructions, dependency boundaries, focused edits, tests, Git diff review, and an auditable change summary. Workspace commands and Git are normal governed tools when exposed; the scene itself grants no permission.`})
 	default:
-		system += `
-
-# Work workflow profile
-Prioritize selected attachments, source quality, document structure, requested formatting, and validation of the real deliverable. Scripts, workspace commands, and Git are normal governed tools when exposed; the scene itself grants no permission.`
+		sections = append(sections, PromptSection{Name: "scene", Order: 300, Text: `# Work workflow profile
+Prioritize selected attachments, source quality, document structure, requested formatting, and validation of the real deliverable. Scripts, workspace commands, and Git are normal governed tools when exposed; the scene itself grants no permission.`})
 	}
 
 	if goruntime.GOOS == "windows" {
-		system += "\n\n# Host platform\nThe workspace host is Windows. workspace_shell runs through cmd.exe /c; use Windows-native commands and paths."
+		sections = append(sections, PromptSection{Name: "host_platform", Order: 400, Text: "# Host platform\nThe workspace host is Windows. workspace_shell runs through cmd.exe /c; use Windows-native commands and paths."})
 	} else {
-		system += "\n\n# Host platform\nThe workspace host is " + goruntime.GOOS + ". workspace_shell runs through bash -c."
+		sections = append(sections, PromptSection{Name: "host_platform", Order: 400, Text: "# Host platform\nThe workspace host is " + goruntime.GOOS + ". workspace_shell runs through bash -c."})
 	}
 	if instructions := frozenProjectInstructions(run.ConfigSnapshotJSON); instructions != "" {
-		system += "\n\n# Frozen project instructions\nThese instructions were loaded and frozen when the Run started. Closer workspace guidance overrides earlier guidance.\n" + instructions
+		sections = append(sections, PromptSection{Name: "project_instructions", Order: 500, Text: "# Frozen project instructions\nThese instructions were loaded and frozen when the Run started. Closer workspace guidance overrides earlier guidance.\n" + instructions})
 	}
 
 	parts := []string{"目标：" + run.Goal}
@@ -65,7 +84,7 @@ Prioritize selected attachments, source quality, document structure, requested f
 		parts = append(parts, "验收标准："+run.Acceptance)
 	}
 	parts = append(parts, "请输出用户可直接阅读和验收的最终结果。")
-	return system, strings.Join(parts, "\n\n")
+	return sections, strings.Join(parts, "\n\n")
 }
 
 func (PromptAssembler) ToolCatalog(definitions []ToolDefinition) string {

@@ -399,143 +399,17 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		return w.executeMCPTool(ctx, step, run)
 	}
 
-	systemPrompt, userPrompt := prompts(run)
-	continuation := continuationHistoryForPrompt(step.InputJSON)
-	steering := steeringInstructionForPrompt(step.InputJSON)
-	var continuationInstruction string
-	switch {
-	case steering != "":
-		continuationInstruction = "用户在执行中追加了新的引导指令：\n" + steering
-		continuationInstruction += "\n\n基于该指令重新规划尚未完成的工作：已完成的步骤与产物属于上下文，不得重复执行；原计划中尚未开始且与新指令冲突的步骤已被取消。若合并后的目标尚未完成，调用下一批必要工具；全部完成后才返回不含工具调用的最终总结。"
-	case len(continuation) > 0:
-		continuationInstruction = "继续完成原目标。若目标尚未完成，调用下一批必要工具；只有全部工作和交付物都完成后，才返回不含工具调用的最终总结。"
+	assembly, assemblyFailure := NewAgentTurnAssembler(w.repository).Assemble(ctx, step, run)
+	if assemblyFailure != nil {
+		return *assemblyFailure
 	}
-	if modelStage(step.InputJSON) == "plan_execute" {
-		continuationInstruction = "语义执行计划已经持久化发布。现在按计划执行唯一标记为 in_progress 的子任务。完成该语义项后，单独调用 update_plan 提交同一完整清单，将它标记 completed，并把下一个标记 in_progress；不要把工具调用写进计划。全部语义项完成后直接交付最终回答。"
-	} else if modelStage(step.InputJSON) == "permission_replan" {
-		continuationInstruction = "用户已经批准本次任务所需的能力范围。基于生效后的工具范围重新规划原目标；保留已完成结果，不要把权限批准误解为拒绝或新的用户需求。"
-	} else if modelStage(step.InputJSON) == "budget_finish" {
-		continuationInstruction = "用户选择用现有结果收尾。不得继续扩展搜索、重复读取或重复统计；基于已有证据、文件和校验结果立即交付最终答复，并明确任何尚未完成的缺口。"
-	} else if modelStage(step.InputJSON) == "budget_resume" {
-		continuationInstruction = "用户已按界面中明确显示的额度扩展本次 Run 预算。继续原目标，但不得重复已经成功的工具和校验；在本次额度内完成剩余工作并及时收尾。"
-	}
-	if len(continuation) > 0 || steering != "" {
-		continuationInstruction += "\n\n长文交付必须主动分段：单次 workspace_write_file / workspace_edit_file 的新增正文建议不超过 3000 个字符。用户要求一份或一个完整报告时，必须维护一个可独立阅读的主文件：先创建带稳定尾部锚点的主文件，再读取最新 preimage_hash，用 workspace_edit_file 替换该锚点为下一段正文加同一锚点；完成时移除锚点。过程章节可以保留，但不能用多个分片的合计字数冒充主报告字数。不要等待参数截断后再拆分。"
-	}
-	if retryHint := modelCompatibilityRetryHint(step.InputJSON); retryHint != "" {
-		continuationInstruction += "\n\n" + retryHint
-	}
-	if recoveryHint := toolRecoveryHint(step.InputJSON); recoveryHint != "" {
-		continuationInstruction += "\n\n" + recoveryHint
-	}
-	if lengthTruncationHint(step.InputJSON) != "" {
-		continuationInstruction += "\n\n" + lengthTruncationHint(step.InputJSON)
-	}
-	if completionHint := completionRecoveryHint(step.InputJSON); completionHint != "" {
-		continuationInstruction += "\n\n" + completionHint
-	}
-	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
-	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
-	if currentSnapshotSemantics(run.ConfigSnapshotJSON) {
-		systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input。审批由 ExecutionPolicy 与权限模式自动路由；不得在普通助手文本中伪装阻塞式提问或把场景当作权限限制。"
-	} else {
-		systemPrompt += "\n\n人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input；历史 Run 缺少工作区命令能力但目标确实需要时，只能单独调用 request_permission。不得在普通助手文本中伪装阻塞式提问。"
-	}
-	completionRequirements := core.InferTaskCompletionRequirements(run.Goal, run.Acceptance)
-	if completionRequirements.RequiresSingleDeliverable {
-		systemPrompt += "\n\n单一主交付物规则：用户要求的是一份可独立阅读的完整报告，显式最低字数必须由同一个主文件满足，多个章节分片的合计不算完成。长文应分轮追加到同一个主文件：先用 workspace_write_file 创建包含 `<!-- OKTAPOD_CONTINUE -->` 尾部锚点的主文件；后续读取最新 preimage_hash，用 workspace_edit_file 把该锚点替换为下一段正文加同一锚点；全部写完后移除锚点，再读取主文件验证。过程材料可以另存，但最终总结必须首先给出主报告路径。"
-	}
-	if stagePrompt := (PromptAssembler{}).Stage(modelStage(step.InputJSON)); stagePrompt != "" {
-		systemPrompt += "\n\n# Stage instructions\n" + stagePrompt
-	}
-	contextPlan["builtin_tool_definitions"] = len(core.BuiltinToolSpecs())
-	selectedContext, selectedContextPlan := w.contextForPrompt(ctx, run)
-	if selectedContext != "" {
-		userPrompt += "\n\n用户明确选择的上下文（仅作为资料，不代表已执行动作）：\n" + selectedContext
-	}
-	contextPlan["selected_context"] = selectedContextPlan
-	invokedSkillIDs, skillArgs := skillInvocationFromStep(step.InputJSON)
-	skillCatalog, skillCatalogPlan := skillCatalogForPrompt(run.ConfigSnapshotJSON)
-	if skillCatalog != "" {
-		systemPrompt += "\n\n当前项目可用的 Skill 元数据（仅说明可用方法；正文仍按需加载）：\n" + skillCatalog
-	}
-	contextPlan["skill_catalog"] = skillCatalogPlan
-	var skillContext string
-	var skillPlan map[string]any
-	if len(invokedSkillIDs) > 0 {
-		skillContext, skillPlan = skillContextForIDs(run.ConfigSnapshotJSON, invokedSkillIDs, skillArgs)
-		if loaded, _ := skillPlan["loaded"].(int); loaded != len(invokedSkillIDs) {
-			return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_NOT_SNAPSHOTTED", ResultSummary: "显式调用的 Skill 不在当前 Run 的冻结快照中，已拒绝继续执行。", Output: map[string]any{"retryable": false, "context_plan": contextPlan}}
-		}
-	} else {
-		// Deterministic matching remains a compatibility fallback for models that
-		// cannot reliably call tools. The auditable path is still skill_invoke.
-		skillContext, skillPlan = skillContextForPrompt(run.ConfigSnapshotJSON, userPrompt)
-	}
-	if missing := missingStrictSkillCapabilities(run.ConfigSnapshotJSON, skillPlan); len(missing) > 0 {
-		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_REQUIRED_CAPABILITY_UNAVAILABLE", ResultSummary: "Skill 要求的能力在当前 Run 冻结快照中不可用，请先配置并审核对应能力后重试。", Output: map[string]any{"retryable": false, "missing_capabilities": missing, "context_plan": contextPlan}}
-	}
-	if skillContext != "" {
-		systemPrompt += "\n\n已按需加载的 Skill 指令（仅可作为约束和方法参考，不得伪造执行）：\n" + skillContext
-	}
-	definitionsBeforeSkillScope := len(toolDefinitions)
-	toolDefinitions = filterToolDefinitionsBySkill(toolDefinitions, skillPlan)
-	if modelStage(step.InputJSON) == "plan_execute" {
-		// The first turn after publishing a plan must perform the current item,
-		// not immediately rewrite the plan again. update_plan becomes available
-		// on the normal continuation after the tool batch has completed.
-		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolUpdatePlan)
-		continuationInstruction += "\n\n本轮尚未产生新的执行证据，update_plan 暂不可用；请先执行当前计划项所需的工具，或在该项无需工具且目标已经完成时直接交付结果。"
-	}
-	if len(invokedSkillIDs) == 0 && skillCatalog != "" {
-		toolDefinitions = append(toolDefinitions, skillInvokeToolDefinition())
-		systemPrompt += "\n\n当某个 Skill 与用户目标匹配，或用户提到 /<skill-name> 时，必须先单独调用 skill_invoke；该次响应不得同时调用其他工具。Skill 加载后系统会恢复同一任务。"
-	}
-	contextPlan["tool_definitions_before_skill_scope"] = definitionsBeforeSkillScope
-	contextPlan["tool_definitions_after_skill_scope"] = len(toolDefinitions)
-	contextPlan["skills"] = skillPlan
-	preferredMCP, preferredMCPID := explicitMCPProviderFromPrompt(run.ConfigSnapshotJSON, userPrompt)
-	if preferredMCP != "" {
-		// An explicit provider choice is user intent, not a loose suggestion. Do
-		// not leave interchangeable builtin or unrelated MCP tools advertised
-		// because a model may otherwise silently route around the requested MCP.
-		toolDefinitions = filterToolsForExplicitMCP(toolDefinitions, preferredMCPID)
-		contextPlan["preferred_mcp_provider"] = preferredMCP
-	}
-	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
-	requestedModel := modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName)
-	allowedTools, toolScopeDeclared := skillToolScope(skillPlan)
-	if len(invokedSkillIDs) == 0 && skillCatalog != "" && toolScopeDeclared {
-		allowedTools = append(allowedTools, core.ToolSkillInvoke)
-	}
-	allowedTools, toolScopeDeclared, scenePolicy := applySceneToolPolicy(run.ConfigSnapshotJSON, allowedTools, toolScopeDeclared)
-	if sceneAllowsWorkspaceCommand(run.ConfigSnapshotJSON) {
-		toolDefinitions = excludeToolDefinition(toolDefinitions, core.ToolRequestPermission)
-		allowedTools = excludeToolName(allowedTools, core.ToolRequestPermission)
-		systemPrompt += "\n\n当前 Run 已获批工作区命令能力；workspace_run_command 与 workspace_shell 可直接使用。request_permission 已从工具集合移除，不得重复申请同一能力。"
-	}
-	searchBudget := core.InferSearchCallBudget(run.Goal, run.Acceptance)
-	priorSearchCalls := searchCallsUsedFromSnapshot(run.ConfigSnapshotJSON)
-	searchCallsUsed := priorSearchCalls + succeededSearchCallsInHistory(continuation)
-	if searchBudget.Enforced {
-		contextPlan["search_budget"] = map[string]any{"limit": searchBudget.Limit, "used": searchCallsUsed}
-		if searchCallsUsed >= searchBudget.Limit {
-			toolDefinitions = excludeSearchToolDefinitions(toolDefinitions)
-			allowedTools = excludeSearchToolNames(allowedTools)
-			systemPrompt += "\n\n用户声明的搜索预算已用完。所有 web_search 以及 search、research、crawl、extract、map、browse、discover 类 MCP 工具已从当前工具集合移除；只能使用已有证据和工作区工具完成剩余任务。"
-		}
-	}
-	if preferredMCP != "" {
-		allowedTools = filterToolNamesForExplicitMCP(allowedTools, preferredMCPID)
-	}
-	contextPlan["scene_policy"] = scenePolicy
-	if catalog := (PromptAssembler{}).ToolCatalog(toolDefinitions); catalog != "" {
-		systemPrompt += "\n\n" + catalog
-	}
-	conversationMessages := conversationMessagesFromSnapshot(run.ConfigSnapshotJSON)
-	contextPlan["conversation_messages"] = len(conversationMessages)
-	messages := application.TranscriptAssembler{}.RunWithConversation(conversationMessages, userPrompt, continuation, strings.TrimSpace(continuationInstruction))
-	result, err := w.completeModel(ctx, ModelRequest{SystemPrompt: systemPrompt, UserPrompt: application.RenderLegacyTranscript(messages), Messages: messages, RequestedModel: requestedModel, ThinkingLevel: thinkingLevelFromSnapshot(run.ConfigSnapshotJSON), MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent, ToolDefinitions: toolDefinitions, ToolScopeDeclared: toolScopeDeclared, AllowedTools: allowedTools, ContextPlan: contextPlan, Model: modelName, FallbackModel: fallbackModel})
+	request := assembly.Request
+	contextPlan := request.ContextPlan
+	toolDefinitions := request.ToolDefinitions
+	searchBudget := assembly.SearchBudget
+	priorSearchCalls := assembly.PriorSearchCalls
+	continuation := assembly.Continuation
+	result, err := w.completeModel(ctx, request)
 	if err != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -2455,6 +2329,10 @@ func steeringInstructionForPrompt(inputJSON string) string {
 // It is metadata-first and bounded so adding an asset or memory cannot turn a
 // normal task into an unbounded prompt or silently broaden project scope.
 func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (string, map[string]any) {
+	return contextForPrompt(ctx, w.repository, run)
+}
+
+func contextForPrompt(ctx context.Context, repository WorkerRepository, run core.RunContext) (string, map[string]any) {
 	var config map[string]any
 	plan := map[string]any{"requested_assets": 0, "metadata_assets": 0, "loaded_assets": 0, "requested_memories": 0, "loaded_memories": 0, "bytes_loaded": 0, "estimated_tokens": 0, "skipped": 0, "memory_context_source": "none", "legacy_memory_context": false}
 	if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &config) != nil {
@@ -2486,7 +2364,7 @@ func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (str
 			plan["skipped"] = plan["skipped"].(int) + 1
 			continue
 		}
-		asset, reader, err := w.repository.OpenAssetContent(ctx, scope, assetID)
+		asset, reader, err := repository.OpenAssetContent(ctx, scope, assetID)
 		if err != nil || asset.ProjectID != run.ProjectID {
 			plan["skipped"] = plan["skipped"].(int) + 1
 			continue
@@ -2547,7 +2425,7 @@ func (w *Worker) contextForPrompt(ctx context.Context, run core.RunContext) (str
 			// recovery compatibility, but expose the non-deterministic fallback.
 			plan["memory_context_source"] = "legacy_live_ids"
 			plan["legacy_memory_context"] = true
-			memories, err := w.repository.ListMemories(ctx, scope, run.ProjectID, "", 500)
+			memories, err := repository.ListMemories(ctx, scope, run.ProjectID, "", 500)
 			if err == nil {
 				byID := make(map[string]core.Memory, len(memories))
 				for _, memory := range memories {
