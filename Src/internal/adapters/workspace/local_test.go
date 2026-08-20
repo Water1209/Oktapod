@@ -116,7 +116,7 @@ func TestGovernedHostEnvironmentIsolatesHomeSecretsAndGitConfiguration(t *testin
 	if values["HOME"] == "" || values["HOME"] == os.Getenv("HOME") {
 		t.Fatalf("HOME was not isolated: %q", values["HOME"])
 	}
-	if values["GIT_CONFIG_NOSYSTEM"] != "1" || values["GIT_TERMINAL_PROMPT"] != "0" || values["GIT_CONFIG_COUNT"] != "3" || values["GIT_CONFIG_VALUE_2"] != "false" {
+	if values["GIT_CONFIG_NOSYSTEM"] != "1" || values["GIT_TERMINAL_PROMPT"] != "0" || values["GIT_CONFIG_COUNT"] != "4" || values["GIT_CONFIG_VALUE_2"] != "false" || values["GIT_CONFIG_VALUE_3"] != filepath.ToSlash(root) {
 		t.Fatalf("Git isolation is incomplete: %#v", values)
 	}
 }
@@ -191,7 +191,13 @@ func TestWorkspaceGitReadAndMutationPreconditions(t *testing.T) {
 	runGitSetup(t, projectRoot, "add", "tracked.txt", "selected.txt")
 	runGitSetup(t, projectRoot, "commit", "-m", "initial")
 	status := executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
-	statusHash := status.Output["status_hash"].(string)
+	if status.Status != core.StatusSucceeded {
+		t.Fatalf("git status=%+v", status)
+	}
+	statusHash, ok := status.Output["status_hash"].(string)
+	if !ok || statusHash == "" {
+		t.Fatalf("git status did not expose status_hash: %+v", status)
+	}
 	baselineHead, _ := status.Output["head"].(string)
 	if len(baselineHead) < 7 {
 		t.Fatalf("git status did not expose a frozen HEAD: %+v", status)

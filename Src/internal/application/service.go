@@ -844,7 +844,10 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			snapshot["skill_capabilities"] = skillSnapshots
 		}
 		if input.SkillID != "" {
-			if explicitSkill == nil || explicitSkill.ProjectID != projectID {
+			// Scope, not the creation-time project_id column, decides visibility:
+			// a global Skill stays usable from every project owned by the user,
+			// while ListCapabilities already restricted global scope to this user.
+			if explicitSkill == nil || (explicitSkill.ScopeType != core.CapabilityScopeGlobal && explicitSkill.ScopeID != projectID) {
 				return core.Task{}, &core.ValidationError{Field: "skill_id", Message: "Skill is not available in this project"}
 			}
 			if explicitSkill.Kind != core.CapabilityKindSkill {

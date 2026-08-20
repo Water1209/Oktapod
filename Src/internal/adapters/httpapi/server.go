@@ -1631,11 +1631,8 @@ func (s *Server) streamProjectTurn(w http.ResponseWriter, r *http.Request) {
 		return send("assistant_delta", map[string]string{"delta": delta})
 	})
 	if err != nil {
-		code := "TURN_STREAM_ERROR"
-		if _, ok := err.(*application.ModelTurnUnavailableError); ok {
-			code = "MODEL_TURN_UNAVAILABLE"
-		}
-		_ = send("error", map[string]string{"code": code, "detail": "模型响应中断，请重试", "correlation_id": correlationID(r.Context())})
+		code, detail := turnStreamErrorDetail(err)
+		_ = send("error", map[string]string{"code": code, "detail": detail, "correlation_id": correlationID(r.Context())})
 		return
 	}
 	response, err := projectTurnResponse(result)
@@ -1644,6 +1641,29 @@ func (s *Server) streamProjectTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = send("done", response)
+}
+
+// turnStreamErrorDetail keeps genuine model outages on the retry hint while
+// surfacing deterministic request errors instead of masking them as a model
+// interruption.
+func turnStreamErrorDetail(err error) (string, string) {
+	var unavailable *application.ModelTurnUnavailableError
+	if errors.As(err, &unavailable) {
+		return "MODEL_TURN_UNAVAILABLE", "模型响应中断，请重试"
+	}
+	var validation *core.ValidationError
+	if errors.As(err, &validation) {
+		return "VALIDATION_FAILED", validation.Error()
+	}
+	var forbidden *core.ForbiddenError
+	if errors.As(err, &forbidden) {
+		return "FORBIDDEN", forbidden.Error()
+	}
+	var conflict *core.StateConflictError
+	if errors.As(err, &conflict) {
+		return "STATE_CONFLICT", conflict.Error()
+	}
+	return "TURN_STREAM_ERROR", "会话处理失败，请重试"
 }
 
 func (s *Server) ListProjectActivity(ctx context.Context, request generated.ListProjectActivityRequestObject) (generated.ListProjectActivityResponseObject, error) {

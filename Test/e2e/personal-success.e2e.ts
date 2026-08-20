@@ -127,6 +127,11 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
 
 test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径', async ({ page }) => {
   test.setTimeout(90_000)
+  const consoleProblems: string[] = []
+  page.on('console', (message) => {
+    if (['error', 'warning'].includes(message.type())) consoleProblems.push(`${message.type()}: ${message.text()}`)
+  })
+  page.on('pageerror', (error) => consoleProblems.push(`pageerror: ${error.message}`))
   const suffix = Date.now().toString(36)
   await page.goto('/')
   await page.getByRole('link', { name: '查看项目' }).click()
@@ -140,8 +145,16 @@ test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径'
   await openLinkedTask(page)
   await page.getByRole('button', { name: '变更', exact: true }).click()
 
-  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行结果.md' })).toBeVisible()
-  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })).toBeVisible()
+  const resultChanges = page.locator('.changes-file-list details').filter({ hasText: '执行结果.md' })
+  const summaryChanges = page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })
+  await expect(resultChanges).toBeVisible()
+  await expect(summaryChanges).toBeVisible()
+  await expect(resultChanges.locator('.diff-stat')).toContainText(/\+\d+/)
+  await expect(resultChanges.locator('.diff-line .ln').first()).toBeVisible()
+  await page.getByRole('button', { name: '全部折叠' }).click()
+  await expect(resultChanges).not.toHaveAttribute('open', '')
+  await page.getByRole('button', { name: '全部展开' }).click()
+  await expect(resultChanges).toHaveAttribute('open', '')
   await page.getByRole('checkbox', { name: '选择 执行结果.md' }).check()
   await page.getByRole('textbox', { name: 'Git 提交信息' }).fill('Commit selected result')
   await page.getByRole('button', { name: '提交所选' }).click()
@@ -152,9 +165,10 @@ test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径'
   await expect(page.locator('.message-task-stream').last().getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
 
   await page.getByRole('button', { name: '变更', exact: true }).click()
-  await page.getByRole('button', { name: 'Git HEAD', exact: true }).click()
+  await page.getByRole('button', { name: /^Git HEAD/ }).click()
   await expect(page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })).toBeVisible()
   await expect(page.getByRole('checkbox', { name: '选择 执行结果.md' })).toHaveCount(0)
+  expect(consoleProblems).toEqual([])
 })
 
 test('任务执行流默认收敛并支持多 Markdown 文件审阅', async ({ page }) => {

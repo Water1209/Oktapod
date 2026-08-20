@@ -32,6 +32,9 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	sections, userPrompt := (PromptAssembler{}).BaseSections(run)
 	continuation := continuationHistoryForPrompt(step.InputJSON)
 	continuationInstruction := continuationInstructionForTurn(step, continuation)
+	if reminder := planProgressReminder(step, continuation); reminder != "" {
+		continuationInstruction += "\n\n" + reminder
+	}
 
 	if currentSnapshotSemantics(run.ConfigSnapshotJSON) {
 		sections = append(sections, PromptSection{Name: "human_collaboration", Order: 1000, Text: "人机协作规则：缺少继续执行所必需的信息时，只能单独调用 request_input。审批由 ExecutionPolicy 与权限模式自动路由；不得在普通助手文本中伪装阻塞式提问或把场景当作权限限制。"})
@@ -70,6 +73,24 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	}
 	request.ContextPlan["assembly_hash"] = modelAssemblyHash(request)
 	return ModelAssembly{Request: request, SearchBudget: catalog.SearchBudget, PriorSearchCalls: catalog.PriorSearchCalls, Continuation: continuation}, nil
+}
+
+// planProgressReminder keeps semantic plan progress alive on ordinary
+// continuation turns. The plan_execute stage carries the update_plan duty for
+// exactly one turn; without a per-turn reminder the model stops reporting and
+// user-visible plan items freeze until the terminal bulk-complete.
+func planProgressReminder(step core.ClaimedStep, continuation []map[string]any) string {
+	if modelStage(step.InputJSON) != "continue" || len(continuation) == 0 || steeringInstructionForPrompt(step.InputJSON) != "" {
+		return ""
+	}
+	var snapshot struct {
+		Total     int `json:"active_plan_total"`
+		Remaining int `json:"active_plan_remaining"`
+	}
+	if json.Unmarshal([]byte(step.InputJSON), &snapshot) != nil || snapshot.Total <= 1 || snapshot.Remaining == 0 {
+		return ""
+	}
+	return "当前任务存在未完成的语义计划。每完成一个计划项，必须单独调用 update_plan 提交同一完整清单：把已完成项标记 completed，并把下一项标记 in_progress；不要把工具调用写进计划。全部计划项完成后才返回不含工具调用的最终总结。"
 }
 
 func continuationInstructionForTurn(step core.ClaimedStep, continuation []map[string]any) string {

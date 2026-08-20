@@ -10580,7 +10580,8 @@ func deriveRunStatus(ctx context.Context, tx *sql.Tx, runID string) (string, str
 		SELECT COALESCE(SUM(CASE WHEN status IN ('planned', 'queued', 'running') THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN status = 'waiting_approval' THEN 1 ELSE 0 END), 0),
 		       -- Batch-abort casualties (BATCH_CANCELED_AFTER_%) are not policy denials: the batch failure already drove recovery, so they must not hold the Run blocked after later tool steps succeed.
-		       COALESCE(SUM(CASE WHEN (status = 'blocked' AND error_code NOT LIKE 'BATCH_CANCELED_AFTER_%') OR (status = 'rejected' AND error_code <> 'PLAN_SUPERSEDED') THEN 1 ELSE 0 END), 0),
+		       -- POLICY_REPAIR_QUEUED rejections already drove their own bounded model-repair loop; keeping them counted forever re-blocks the Run after every later tool step even once the model re-planned correctly.
+		       COALESCE(SUM(CASE WHEN (status = 'blocked' AND error_code NOT LIKE 'BATCH_CANCELED_AFTER_%') OR (status = 'rejected' AND error_code NOT IN ('PLAN_SUPERSEDED', 'POLICY_REPAIR_QUEUED')) THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN status = 'failed' AND NOT EXISTS (
 		           SELECT 1
 		           FROM run_events recovery
@@ -10902,6 +10903,16 @@ func insertQueuedModelStep(ctx context.Context, tx *sql.Tx, run core.RunContext,
 			return "", iterationErr
 		}
 	}
+	if stage, _ := input["stage"].(string); stage == "continue" {
+		total, remaining, err := activePlanProgressTx(ctx, tx, run.RunID)
+		if err != nil {
+			return "", err
+		}
+		if total > 1 {
+			input["active_plan_total"] = total
+			input["active_plan_remaining"] = remaining
+		}
+	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return "", err
@@ -10922,6 +10933,16 @@ func insertQueuedModelStep(ctx context.Context, tx *sql.Tx, run core.RunContext,
 		return "", err
 	}
 	return stepID, nil
+}
+
+func activePlanProgressTx(ctx context.Context, tx *sql.Tx, runID string) (total, remaining int, err error) {
+	err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(CASE WHEN i.status IN ('pending', 'running') THEN 1 ELSE 0 END), 0)
+		FROM run_plan_items i
+		JOIN run_plan_revisions r ON r.id = i.plan_revision_id
+		WHERE r.run_id = ? AND r.status = 'active'`, runID).Scan(&total, &remaining)
+	return total, remaining, err
 }
 
 // queueModelContinuation is the durable Agent Loop boundary. A completed tool
