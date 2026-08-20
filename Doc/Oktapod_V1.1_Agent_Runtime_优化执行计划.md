@@ -1,21 +1,23 @@
 # Oktapod V1.1 Agent Runtime 优化执行计划
 
-> 版本：V1.0（已实施，本地验证）
-> 更新日期：2026-08-17
+> 版本：V1.1（已实施，本地门禁通过）
+> 更新日期：2026-08-20
 > 实施分支：`codex/runtime-convergence-v1.1`
 > V1.0.0 关系：独立演进批次，不改变 V1.0.0 正式 tag 门禁
-> 发布状态：未 push、未 tag、未合并；远端 CI 证据仍待产生
+> 发布状态：功能分支本地收口完成；未 tag、未合并，PR/Ubuntu/Windows 远端 CI 证据仍待产生
 
 ## 1. 执行结论
 
 本批次已经按“一个 Assembly、一个 Tool Pipeline、一个 Durable 真源”完成代码收敛。DeepSeek Harness 只作为原则参考，没有引入 Cordis、动态插件注册表、第二套 Receipt 或新的状态数据库。
 
-用户可见变化只有两项：
+原计划的两项兼容修复已完成：
 
 1. 新 Run 选择的 Memory 正文、标题和来源 Hash 在创建 Task 时冻结，后续编辑或删除 Memory 不再改变该 Run 的模型请求；历史 Run 继续使用 live-ID 回退，并在 `ContextPlan` 标记 `legacy_live_ids`。
 2. MCP 在执行开始后的取消明确返回 `TOOL_CANCELED`；Task Cancel 会把仍为 `started` 的 Receipt 原子收敛为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`，禁止非幂等调用自动重试。
 
-HTTP、OpenAPI、工具名和 Schema、数据库表与迁移、ToolBatch 顺序规则均未改变。任一 `Sequential` ToolCall 仍使整个批次串行；per-call barrier 不进入本批次。
+收口时同步合入了已有缺陷修复：全局 Skill 按用户 Scope 可在其他自有项目调用；普通 continuation Step 冻结未完成计划计数并持续提醒 `update_plan`；已收敛的 `POLICY_REPAIR_QUEUED` 不再重复阻塞 Run；SSE 将校验、授权和状态冲突与真实模型中断分类；Changes 面板增加可理解的基线、行号、增删统计和折叠控制。
+
+HTTP/OpenAPI 结构、工具名和 Schema、数据库表与迁移、ToolBatch 顺序规则均未改变；SSE 只修正已有错误的分类与用户提示。任一 `Sequential` ToolCall 仍使整个批次串行；per-call barrier 不进入本批次。
 
 ## 2. 当前架构
 
@@ -79,6 +81,7 @@ Run 配置快照新增向后兼容字段：
 | Phase 2 主 Agent Assembly | `59c6241` | 提取 AgentTurnAssembler、ToolCatalogBuilder、PromptSection 与 assembly hash |
 | Phase 3 ToolRuntime | `e42e099` | 四类工具迁入统一管线；planning/Begin/Runtime 共用 MCP 风险与幂等性推导 |
 | Phase 4 取消收敛 | `c927426` | pre-dispatch cancel、Workspace 进程树终止、MCP cancel/timeout 分类、started Receipt unknown |
+| 2026-08-20 回归收口 | `fe53801` | 合并 Scope/计划/Run 状态/SSE/Changes 修复；修复 Windows CI 受控 Git 信任边界，race 套件保留全量执行并放宽为 20 分钟超时 |
 
 主要代码入口：
 
@@ -106,21 +109,26 @@ Run 配置快照新增向后兼容字段：
 | Task Cancel 将 started Receipt 置 unknown | `TestTaskCancelClosesPendingApproval` |
 | Workspace 取消终止真实进程树 | `TestWorkspaceCommandCancellationTerminatesProcessTree` |
 | OHCS 整批串行、并行收敛、审批、恢复不回退 | 既有 runtime/integration/Golden Trace 全套回归 |
+| continuation Step 的计划进度冻结且重组确定 | `TestQueuedContinuationFreezesActivePlanProgress` + `TestContinuationTurnUsesFrozenPlanProgressReminder` |
+| 已处理的 Policy Repair 不重复阻塞 Run | `TestDeriveRunStatusIgnoresSettledPolicyRepairs` |
+| 全局 Skill 按用户 Scope 跨自有项目可用 | `TestGlobalSkillInvocableFromOtherProject` |
+| SSE 保留确定性错误分类 | `TestTurnStreamErrorDetailPreservesDeterministicFailures` |
+| Changes 行级展示与受治理提交无浏览器错误 | Playwright `Changes 可按文件查看并通过原 Thread 受治理提交所选路径` |
 
-2026-08-17 每个代码 Phase 均先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 41/41、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
+2026-08-20 收口仍先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 41/41、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
 
 ## 6. 合并与发布门禁
 
-2026-08-17 本地门禁已经全部完成：
+2026-08-20 本地门禁已经全部重跑：
 
 | 门禁 | 结果 |
 |---|---|
 | `pnpm verify` | `PASS`：Go、ESLint、Web 41/41、TypeScript/Vite/Go build、migration、OpenAPI drift |
 | `pnpm test:e2e` | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 26/26 |
-| `pnpm release:build` | `PASS`：`oktapod-v1.0.0-windows-amd64.exe`，SHA256 `5dae7968ef1a60000f9e0eed99579f1c7d381a4a153707d4a1f010fa5540989c` |
+| `pnpm release:build` | `PASS`：`oktapod-v1.0.0-windows-amd64.exe`，SHA256 `b094ba20cd96193aeb854b20f2d734e44bd7a06214698be4ca809683e3ee56fa` |
 | `pnpm release:smoke` | `PASS`：独立数据目录启动、health 200、项目创建与服务停止 |
 
-远端还需 Ubuntu CI 的 `pnpm verify`、`pnpm test:race` 和原生 smoke，以及 Windows CI 的完整验证和原生 smoke。Windows 本地结果不能替代 Ubuntu race 或远端双平台证据。
+远端还需 PR 触发 Ubuntu CI 的 `pnpm verify`、`pnpm test:race` 和原生 smoke，以及 Windows CI 的完整验证和原生 smoke。当前 workflow 只在 PR 或 `main` push 上运行，功能分支 push 本身不产生 CI 证据；Windows 本地结果不能替代 Ubuntu race 或远端双平台证据。
 
 ## 7. 非目标与后续 RFC
 
