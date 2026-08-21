@@ -169,6 +169,79 @@ func TestTaskRetryRecreatesPlanRecoveryCheckpoint(t *testing.T) {
 	}
 }
 
+func TestTaskRetryAppendsCompletionValidationRecoveryCheckpoint(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Completion Recovery User"}, core.Organization{ID: testOrgID, Name: "Completion Recovery Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Completion recovery", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "不要修改任何文件；只需回复 OK。", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "completion-recovery-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openTaskControlDatabase(t, databasePath)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var sourceStepID string
+	if err := db.QueryRow(`SELECT id FROM steps WHERE run_id = ? ORDER BY position LIMIT 1`, task.RunID).Scan(&sourceStepID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE steps SET status = 'succeeded', input_json = '{"stage":"completion_recovery","completion_recovery_reason":"WORKSPACE_MUTATION_MISSING","history":[]}', output_json = '{"content":"OK"}', updated_at = ? WHERE id = ?`, now, sourceStepID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status = 'blocked', error_code = 'WORKSPACE_MUTATION_MISSING', result_summary = 'missing mutation', updated_at = ? WHERE id = ?`, now, task.ID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE runs SET status = 'blocked', updated_at = ? WHERE id = ?`, now, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "completion-recovery", "completion-recovery-key")
+	if err != nil || updated.Status != core.StatusQueued {
+		t.Fatalf("retry task=%#v err=%v", updated, err)
+	}
+	db = openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	var sourceStatus, recoveryStepID, recoveryStatus, recoveryInput string
+	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, sourceStepID).Scan(&sourceStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT id, status, input_json FROM steps WHERE run_id = ? ORDER BY position DESC LIMIT 1`, task.RunID).Scan(&recoveryStepID, &recoveryStatus, &recoveryInput); err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus != core.StatusSucceeded || recoveryStepID == sourceStepID || recoveryStatus != core.StatusQueued {
+		t.Fatalf("source=%q recovery=%q status=%q", sourceStatus, recoveryStepID, recoveryStatus)
+	}
+	if !strings.Contains(recoveryInput, `"stage":"completion_recovery"`) ||
+		!strings.Contains(recoveryInput, `"model_retry_reason":"WORKSPACE_MUTATION_MISSING"`) ||
+		!strings.Contains(recoveryInput, `"manual_retry":true`) {
+		t.Fatalf("unexpected recovery input=%s", recoveryInput)
+	}
+	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.EventType == "run.retried" && event.Payload["retry_scope"] == "completion_validation_recovery" && event.Payload["source_step_id"] == sourceStepID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("completion recovery run.retried missing from events=%#v", events)
+	}
+}
+
 func TestTaskRetryRejectsUnknownSideEffect(t *testing.T) {
 	t.Parallel()
 	repository, databasePath := newRepository(t)
@@ -532,6 +605,7 @@ func TestTaskCancelClosesPendingApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepID, toolCallID, approvalID := insertPendingApproval(t, databasePath, project.ID, task.ID, task.RunID)
+	receiptID := insertStartedReceipt(t, databasePath, project.ID, task.ID, task.RunID, stepID, toolCallID)
 	setTaskAndRunStatus(t, databasePath, task.ID, task.RunID, core.StatusWaitingApproval)
 	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "cancel-control", "cancel-control-key")
 	if err != nil || updated.Status != core.StatusCanceled {
@@ -539,7 +613,7 @@ func TestTaskCancelClosesPendingApproval(t *testing.T) {
 	}
 	db := openTaskControlDatabase(t, databasePath)
 	defer db.Close()
-	var stepStatus, toolStatus, approvalStatus, note string
+	var stepStatus, toolStatus, approvalStatus, note, receiptStatus, receiptError string
 	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, stepID).Scan(&stepStatus); err != nil {
 		t.Fatal(err)
 	}
@@ -549,8 +623,11 @@ func TestTaskCancelClosesPendingApproval(t *testing.T) {
 	if err := db.QueryRow(`SELECT status, decision_note FROM approval_requests WHERE id = ?`, approvalID).Scan(&approvalStatus, &note); err != nil {
 		t.Fatal(err)
 	}
-	if stepStatus != core.StatusCanceled || toolStatus != "rejected" || approvalStatus != core.ApprovalRejected || note != "任务已取消" {
-		t.Fatalf("cancel state step=%s tool=%s approval=%s note=%q", stepStatus, toolStatus, approvalStatus, note)
+	if err := db.QueryRow(`SELECT status, error_code FROM side_effect_receipts WHERE id = ?`, receiptID).Scan(&receiptStatus, &receiptError); err != nil {
+		t.Fatal(err)
+	}
+	if stepStatus != core.StatusCanceled || toolStatus != "rejected" || approvalStatus != core.ApprovalRejected || note != "任务已取消" || receiptStatus != core.SideEffectReceiptUnknown || receiptError != "SIDE_EFFECT_STATUS_UNKNOWN" {
+		t.Fatalf("cancel state step=%s tool=%s approval=%s note=%q receipt=%s/%s", stepStatus, toolStatus, approvalStatus, note, receiptStatus, receiptError)
 	}
 }
 
@@ -666,4 +743,16 @@ func insertUnknownReceipt(t *testing.T, databasePath, projectID, taskID, runID, 
 	if _, err := db.Exec(`INSERT INTO side_effect_receipts (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, invocation_id, input_hash, idempotent, status, exit_code, output_json, error_code, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hash:test', 0, 'unknown', -1, '{}', 'UNKNOWN', ?, '')`, receiptID, testOrgID, projectID, taskID, runID, stepID, toolCallID, uuid.NewString(), now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func insertStartedReceipt(t *testing.T, databasePath, projectID, taskID, runID, stepID, toolCallID string) string {
+	t.Helper()
+	db := openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	receiptID := uuid.NewString()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO side_effect_receipts (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, invocation_id, input_hash, idempotent, status, exit_code, output_json, error_code, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hash:test', 0, 'started', -1, '{}', '', ?, '')`, receiptID, testOrgID, projectID, taskID, runID, stepID, toolCallID, uuid.NewString(), now); err != nil {
+		t.Fatal(err)
+	}
+	return receiptID
 }

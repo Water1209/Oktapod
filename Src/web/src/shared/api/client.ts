@@ -140,9 +140,28 @@ export interface BootstrapConfiguration {
   run_concurrency: number
   database_driver: 'sqlite' | 'postgresql'
   trusted_keys_file: string
+  web_access: WebAccessConfiguration
   config_path: string
   source: string
   restart_required: boolean
+}
+
+export interface WebPrivateOrigin {
+  id: string
+  origin: string
+}
+
+export interface WebAccessConfiguration {
+  private_fetch: {
+    enabled: boolean
+    allowed_origins: WebPrivateOrigin[]
+    allowed_origin_count: number
+    origins_redacted: boolean
+  }
+}
+
+export interface UpdateWebAccessConfiguration {
+  private_fetch: Pick<WebAccessConfiguration['private_fetch'], 'enabled' | 'allowed_origins'>
 }
 
 export interface AIGovernanceSettings {
@@ -673,6 +692,10 @@ export interface Approval {
   tool_call_id: string
   tool_name: string
   risk_level: 'L0' | 'L1' | 'L2' | 'L3'
+  approval_scope: ApprovalScope
+  target_origin: string
+  matched_rule_id: string
+  policy_hash: string
   status: 'pending' | 'approved' | 'rejected'
   reason: string
   frozen_params: Record<string, unknown>
@@ -684,7 +707,7 @@ export interface Approval {
   decided_at?: string
 }
 
-export type ApprovalScope = 'once' | 'conversation' | 'project'
+export type ApprovalScope = 'once' | 'conversation' | 'project' | 'run_origin'
 
 export interface RunPlanItem {
   id: string
@@ -817,6 +840,10 @@ export interface SideEffectReceipt {
   idempotent: boolean
   status: 'started' | 'succeeded' | 'failed' | 'unknown'
   error_code: string
+  network_class: '' | 'public' | 'private'
+  matched_rule_id: string
+  policy_hash: string
+  authorization_id: string
   started_at: string
   finished_at?: string
 }
@@ -974,7 +1001,7 @@ export const api = {
   models: () => request<{ items: ModelDescriptor[]; default_model: string }>('/models'),
   diagnostics: () => request<Diagnostics>('/diagnostics'),
   configuration: () => request<BootstrapConfiguration>('/configuration'),
-  updateBootstrapConfiguration: (input: Partial<Pick<BootstrapConfiguration, 'profile' | 'listen_address' | 'data_root' | 'run_concurrency' | 'database_driver' | 'trusted_keys_file'>>) => request<BootstrapConfiguration>('/configuration/bootstrap', { method: 'PATCH', body: JSON.stringify(input) }),
+  updateBootstrapConfiguration: (input: Partial<Pick<BootstrapConfiguration, 'profile' | 'listen_address' | 'data_root' | 'run_concurrency' | 'database_driver' | 'trusted_keys_file'>> & { web_access?: UpdateWebAccessConfiguration }) => request<BootstrapConfiguration>('/configuration/bootstrap', { method: 'PATCH', body: JSON.stringify(input) }),
   aiGovernance: () => request<AIGovernanceSettings>('/settings/ai-governance'),
   updateAIGovernance: (input: Pick<AIGovernanceSettings, 'reviewer_provider_id' | 'reviewer_model_id' | 'enabled' | 'timeout_seconds'>) => request<AIGovernanceSettings>('/settings/ai-governance', { method: 'PUT', body: JSON.stringify(input) }),
   modelPricing: () => request<{ items: ModelPricingVersion[] }>('/settings/model-pricing'),

@@ -17,6 +17,22 @@ func (s modelStub) Complete(context.Context, ModelRequest) (core.ModelResult, er
 	return s.result, s.err
 }
 
+type streamingModelStub struct {
+	completeCalls int
+	streamCalls   int
+	result        core.ModelResult
+}
+
+func (s *streamingModelStub) Complete(context.Context, ModelRequest) (core.ModelResult, error) {
+	s.completeCalls++
+	return core.ModelResult{}, nil
+}
+
+func (s *streamingModelStub) Stream(context.Context, ModelRequest, func(string) error) (core.ModelResult, error) {
+	s.streamCalls++
+	return s.result, nil
+}
+
 func TestLoopProjectsProviderResultWithoutPersistenceDependencies(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -36,5 +52,17 @@ func TestLoopProjectsProviderResultWithoutPersistenceDependencies(t *testing.T) 
 				t.Fatalf("kind=%q want=%q", event.Kind, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoopPrefersStreamingProviderForTaskTurns(t *testing.T) {
+	model := &streamingModelStub{result: core.ModelResult{Content: "streamed", StopReason: core.StopReasonStop}}
+	event := New(model).Next(t.Context(), LoopState{Request: ModelRequest{UserPrompt: "test"}})
+
+	if event.Err != nil || event.Result.Content != "streamed" {
+		t.Fatalf("event=%+v", event)
+	}
+	if model.streamCalls != 1 || model.completeCalls != 0 {
+		t.Fatalf("stream_calls=%d complete_calls=%d", model.streamCalls, model.completeCalls)
 	}
 }

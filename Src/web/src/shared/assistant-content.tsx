@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { splitAssistantContent } from './assistant-segments'
+import { normalizeAssistantSourceLinks } from './assistant-source-links'
 
 /** 折叠的推理过程块，默认收起，避免干扰阅读正文。 */
 function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
@@ -37,7 +38,7 @@ export function AssistantContent({ content, streaming }: { content: string; stre
       <ThinkingBlock key={`think-${index}`} text={segment.text} streaming={streaming && index === segments.length - 1} />
     ) : (
       <div key={`content-${index}`} className="assistant-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{segment.text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeAssistantSourceLinks(segment.text)}</ReactMarkdown>
       </div>
     ),
   )

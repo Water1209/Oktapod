@@ -42,6 +42,15 @@ type ModelGateway interface {
 	Complete(ctx context.Context, request ModelRequest) (core.ModelResult, error)
 }
 
+// StreamingModelGateway is implemented by production model adapters that can
+// consume incremental provider responses. The loop prefers this path even when
+// no UI delta callback is attached: continuously reading the stream prevents a
+// tool-capable Task from waiting for one large non-streaming response before it
+// can make progress.
+type StreamingModelGateway interface {
+	Stream(ctx context.Context, request ModelRequest, onDelta func(string) error) (core.ModelResult, error)
+}
+
 type EventKind string
 
 const (
@@ -74,7 +83,13 @@ func New(model ModelGateway) *Loop {
 }
 
 func (l *Loop) Next(ctx context.Context, state LoopState) LoopEvent {
-	result, err := l.model.Complete(ctx, state.Request)
+	var result core.ModelResult
+	var err error
+	if streaming, ok := l.model.(StreamingModelGateway); ok {
+		result, err = streaming.Stream(ctx, state.Request, nil)
+	} else {
+		result, err = l.model.Complete(ctx, state.Request)
+	}
 	if err != nil {
 		return LoopEvent{Kind: EventTurnFailed, Result: result, Err: err}
 	}

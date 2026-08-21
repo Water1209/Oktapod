@@ -1,7 +1,6 @@
 package native
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/oktapod/oktapod/Src/internal/adapters/model/modeltransport"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 	okruntime "github.com/oktapod/oktapod/Src/internal/runtime"
 )
@@ -32,23 +32,23 @@ type Client struct {
 }
 
 type GatewayError struct {
-	Code string
+	Code  string
+	Cause error
 }
 
 func (e *GatewayError) Error() string {
 	return e.Code + ": provider request failed; details were redacted"
 }
 func (e *GatewayError) ErrorCode() string { return e.Code }
+func (e *GatewayError) Unwrap() error     { return e.Cause }
 
 func New(protocol, endpoint, model string, key func() string) *Client {
 	return &Client{
-		protocol: strings.TrimSpace(protocol),
-		endpoint: strings.TrimRight(strings.TrimSpace(endpoint), "/"),
-		model:    strings.TrimSpace(model),
-		key:      key,
-		httpClient: &http.Client{
-			Timeout: 2 * time.Minute,
-		},
+		protocol:   strings.TrimSpace(protocol),
+		endpoint:   strings.TrimRight(strings.TrimSpace(endpoint), "/"),
+		model:      strings.TrimSpace(model),
+		key:        key,
+		httpClient: modeltransport.NewHTTPClient(),
 	}
 }
 
@@ -102,16 +102,14 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 	}
 	blocks := map[int]*blockState{}
 	order := make([]int, 0)
-	scanner := bufio.NewScanner(io.LimitReader(response.Body, 16<<20))
-	scanner.Buffer(make([]byte, 64<<10), 4<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	scanErr := modeltransport.ScanLines(ctx, response.Body, io.LimitReader(response.Body, 16<<20), 4<<20, modeltransport.StreamIdleTimeout, func(rawLine string) error {
+		line := strings.TrimSpace(rawLine)
 		if !strings.HasPrefix(line, "data:") {
-			continue
+			return nil
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "" || data == "[DONE]" {
-			continue
+			return nil
 		}
 		var event struct {
 			Type    string `json:"type"`
@@ -144,7 +142,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 		}
 		if json.Unmarshal([]byte(data), &event) != nil {
 			result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_PROTOCOL_ERROR"
-			return result, &GatewayError{Code: result.ErrorCode}
+			return &GatewayError{Code: result.ErrorCode}
 		}
 		switch event.Type {
 		case "message_start":
@@ -177,7 +175,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 				if onDelta != nil && event.Delta.Text != "" {
 					if deltaErr := onDelta(event.Delta.Text); deltaErr != nil {
 						result.StopReason = core.StopReasonAborted
-						return result, deltaErr
+						return deltaErr
 					}
 				}
 			case "thinking_delta":
@@ -191,10 +189,19 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 			result.StopReason = nativeStopReason(event.Delta.StopReason, false)
 			result.Usage.OutputTokens = event.Usage.OutputTokens
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		result.StopReason, result.ErrorCode = stopForError(err), "PROVIDER_STREAM_ERROR"
-		return result, &GatewayError{Code: result.ErrorCode}
+		return nil
+	})
+	if scanErr != nil {
+		if ctx.Err() != nil {
+			result.StopReason, result.ErrorCode = core.StopReasonAborted, "MODEL_ABORTED"
+			return result, ctx.Err()
+		}
+		var gatewayErr *GatewayError
+		if errors.As(scanErr, &gatewayErr) {
+			return result, scanErr
+		}
+		result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_UNAVAILABLE"
+		return result, &GatewayError{Code: result.ErrorCode, Cause: scanErr}
 	}
 	var visible strings.Builder
 	for _, index := range order {
@@ -252,16 +259,14 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 		return result, &GatewayError{Code: result.ErrorCode}
 	}
 	var visible strings.Builder
-	scanner := bufio.NewScanner(io.LimitReader(response.Body, 16<<20))
-	scanner.Buffer(make([]byte, 64<<10), 4<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	scanErr := modeltransport.ScanLines(ctx, response.Body, io.LimitReader(response.Body, 16<<20), 4<<20, modeltransport.StreamIdleTimeout, func(rawLine string) error {
+		line := strings.TrimSpace(rawLine)
 		if !strings.HasPrefix(line, "data:") {
-			continue
+			return nil
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "" || data == "[DONE]" {
-			continue
+			return nil
 		}
 		var chunk struct {
 			Candidates []struct {
@@ -289,7 +294,7 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 		}
 		if json.Unmarshal([]byte(data), &chunk) != nil || len(chunk.Candidates) == 0 {
 			result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_PROTOCOL_ERROR"
-			return result, &GatewayError{Code: result.ErrorCode}
+			return &GatewayError{Code: result.ErrorCode}
 		}
 		candidate := chunk.Candidates[0]
 		if candidate.FinishReason != "" {
@@ -308,7 +313,7 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 				if onDelta != nil {
 					if deltaErr := onDelta(part.Text); deltaErr != nil {
 						result.StopReason = core.StopReasonAborted
-						return result, deltaErr
+						return deltaErr
 					}
 				}
 			}
@@ -325,10 +330,19 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 				UsageSemanticsVersion: "v2",
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_STREAM_ERROR"
-		return result, &GatewayError{Code: result.ErrorCode}
+		return nil
+	})
+	if scanErr != nil {
+		if ctx.Err() != nil {
+			result.StopReason, result.ErrorCode = core.StopReasonAborted, "MODEL_ABORTED"
+			return result, ctx.Err()
+		}
+		var gatewayErr *GatewayError
+		if errors.As(scanErr, &gatewayErr) {
+			return result, scanErr
+		}
+		result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_UNAVAILABLE"
+		return result, &GatewayError{Code: result.ErrorCode, Cause: scanErr}
 	}
 	result.Content = strings.TrimSpace(visible.String())
 	if len(result.ToolCalls) > 0 {
@@ -383,9 +397,9 @@ func (c *Client) ListModels(ctx context.Context) ([]core.ModelDescriptor, error)
 		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
-	response, err := c.httpClient.Do(request)
+	response, err := modeltransport.Do(c.httpClient, request)
 	if err != nil {
-		return nil, &GatewayError{Code: "MODEL_DISCOVERY_FAILED"}
+		return nil, &GatewayError{Code: "MODEL_DISCOVERY_FAILED", Cause: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -637,12 +651,12 @@ func (c *Client) postAccept(ctx context.Context, endpoint string, payload any, h
 		request.Header.Set(key, value)
 	}
 	started := time.Now()
-	response, err := c.httpClient.Do(request)
+	response, err := modeltransport.Do(c.httpClient, request)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, started, ctx.Err()
 		}
-		return nil, started, &GatewayError{Code: "PROVIDER_UNAVAILABLE"}
+		return nil, started, &GatewayError{Code: "PROVIDER_UNAVAILABLE", Cause: err}
 	}
 	return response, started, nil
 }

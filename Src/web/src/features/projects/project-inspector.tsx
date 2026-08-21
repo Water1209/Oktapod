@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronRight, Clock3, ExternalLink, File as FileIcon, FileUp, GitCommit, LockKeyhole, RotateCcw, Workflow, XCircle } from 'lucide-react'
+import { Check, ChevronRight, Clock3, ExternalLink, File as FileIcon, FileUp, GitCommit, Layers, LockKeyhole, RotateCcw, Workflow, XCircle } from 'lucide-react'
 import { api, type AgentTeamRoom, type Approval, type ApprovalRule, type Artifact, type RunEvent, type RunUsage, type Scene, type Task, type Visibility } from '../../shared/api/client'
-import { parseUnifiedDiff } from './run-diff'
+import { parseUnifiedDiff, type RunDiffFile, type RunDiffHunk } from './run-diff'
 
 const statusLabels: Record<string, string> = {
   queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '执行受阻', succeeded: '已完成', failed: '失败', canceled: '已取消',
@@ -62,15 +62,25 @@ export function InspectorSecurity({ projectId, taskId, approvals }: { projectId:
   return <div className="inspector-section"><h3>安全</h3><p>完全访问和项目规则只减少逐次确认，确定性路径、网络和命令黑名单始终生效。</p>{relevant.length ? <div className="inspector-event-list">{relevant.map((approval) => <article key={approval.id}><span className={`activity-node ${approval.status}`} /><div><strong>{approval.tool_name}</strong><small>{approval.status} · {approval.risk_level}</small></div></article>)}</div> : <div className="inspector-empty compact"><LockKeyhole size={16} /><strong>当前 Run 无审批记录</strong></div>}<h3>项目审批规则</h3>{activeRules.length ? <div className="inspector-event-list">{activeRules.map((rule) => <article key={rule.id}><span className="activity-node approved" /><div><strong>{rule.tool_name}</strong><small>{rule.rule_key} · 至 {new Date(rule.expires_at).toLocaleString('zh-CN')}</small></div><button type="button" disabled={revoke.isPending} onClick={() => revoke.mutate(rule)}>撤销</button></article>)}</div> : <div className="inspector-empty compact"><LockKeyhole size={16} /><strong>没有生效中的项目规则</strong></div>}{revoke.error ? <small className="approval-error">{revoke.error.message}</small> : null}</div>
 }
 
+const baselineOptions = [
+  { value: 'run_start', label: '任务开始', icon: Clock3, hint: 'Run 启动时冻结的提交到当前工作区，即本任务产生的全部改动（验收默认口径）', empty: '任务开始以来没有产生文本变更。' },
+  { value: 'head', label: 'Git HEAD', icon: GitCommit, hint: '当前工作区相对最新提交，包含已暂存与未暂存的全部未提交改动', empty: '工作区与最新提交一致，没有未提交改动。' },
+  { value: 'index', label: 'Git 暂存区', icon: Layers, hint: '当前工作区相对暂存区，只看尚未 git add 的改动', empty: '没有未暂存的工作区改动（工作区与暂存区一致）。' },
+] as const
+
 export function InspectorChanges({ task, artifacts, scene }: { task?: Task; artifacts: Artifact[]; scene: Scene }) {
   const runId = task?.run_id
   const [baseline, setBaseline] = useState<'run_start' | 'head' | 'index'>('run_start')
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [commitMessage, setCommitMessage] = useState('')
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({})
   const queryClient = useQueryClient()
   const changes = useQuery({ queryKey: ['run-changes', runId, baseline], queryFn: () => api.runChanges(runId!, baseline), enabled: Boolean(runId) })
   const files = parseUnifiedDiff(changes.data?.diff ?? '')
   const selected = files.map((file) => file.path).filter((path) => selectedPaths.includes(path))
+  const activeOption = baselineOptions.find((option) => option.value === baseline) ?? baselineOptions[0]
+  const allSelected = files.length > 0 && files.every((file) => selectedPaths.includes(file.path))
+  const allOpen = files.length > 0 && files.every((file, fileIndex) => expandedFiles[file.path] ?? fileIndex < 5)
   const accept = useMutation({
     mutationFn: () => api.acceptTaskOutcome(task!.id, '已在任务面板的变更页接受当前成果'),
     onSuccess: async () => {
@@ -105,7 +115,105 @@ export function InspectorChanges({ task, artifacts, scene }: { task?: Task; arti
   const fileArtifacts = artifacts.filter((artifact) => artifact.kind.includes('file') || artifact.name.includes('.') || artifact.media_type.startsWith('text/'))
   if (!runId) return <div className="inspector-empty"><FileIcon size={18} /><strong>当前 Run 尚无文件变化</strong><span>创建 Run 后会冻结工作区基线。</span></div>
   const commitLabel = scene === 'work' ? '保存版本（Git 提交）' : '提交所选'
-  return <div className="inspector-section"><h3>变更</h3><div className="changes-baseline-tabs" aria-label="差异基线">{([['run_start', '任务开始'], ['head', 'Git HEAD'], ['index', 'Git 暂存区']] as const).map(([value, label]) => <button type="button" className={baseline === value ? 'active' : ''} key={value} onClick={() => { setBaseline(value); setSelectedPaths([]) }}>{label}</button>)}</div>{changes.isLoading ? <p>正在读取受限差异…</p> : null}{changes.error ? <div className="panel-error">{changes.error.message}</div> : null}{changes.data?.baseline_notice ? <div className="panel-notice">{changes.data.baseline_notice}</div> : null}{changes.data ? <><div className="changes-meta"><span>{changes.data.baseline_head.slice(0, 12) || '暂存区'}</span><span>→</span><span>{changes.data.current_head.slice(0, 12)}</span>{changes.data.truncated ? <em>已截断</em> : null}</div>{files.length ? <div className="changes-file-list">{files.map((file, fileIndex) => <details key={file.path} open><summary><input type="checkbox" aria-label={`选择 ${file.path}`} checked={selectedPaths.includes(file.path)} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelectedPaths((current) => event.target.checked ? [...current, file.path] : current.filter((path) => path !== file.path))} /><span>{file.path}</span><small>{file.hunks.length} 个变更块</small></summary>{file.header.length ? <pre>{file.header.join('\n')}</pre> : null}{file.hunks.map((hunk, index) => <section className="changes-hunk" key={`${file.path}-${hunk.header}-${index}`}><a href={`#change-${fileIndex}-${index}`} id={`change-${fileIndex}-${index}`}>{hunk.header}</a><pre>{hunk.lines.join('\n')}</pre></section>)}</details>)}</div> : <div className="inspector-empty compact"><Check size={16} /><strong>该基线下没有文本变更</strong></div>}<div className="changes-actions"><button type="button" disabled={!task || task.accepted || accept.isPending} onClick={() => accept.mutate()}><Check size={13} />{task?.accepted ? '成果已接受' : '接受成果'}</button><button type="button" disabled={!selected.length || governedAction.isPending} onClick={() => governedAction.mutate('restore')}><RotateCcw size={13} />撤销所选</button><input aria-label="Git 提交信息" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="提交信息" /><button type="button" disabled={!selected.length || !commitMessage.trim() || governedAction.isPending} onClick={() => governedAction.mutate('commit')}><GitCommit size={13} />{commitLabel}</button></div><small className="inspector-note">撤销与保存版本会在原会话创建受治理任务，并再次校验状态哈希、Policy、审批与 Receipt；浏览器不会直接改写 Git。</small>{accept.error || governedAction.error ? <div className="panel-error">{accept.error?.message || governedAction.error?.message}</div> : null}</> : null}{fileArtifacts.length ? <div className="inspector-file-list">{fileArtifacts.map((artifact) => <a key={artifact.id} href={api.artifactContentUrl(artifact.id)} target="_blank" rel="noreferrer"><FileIcon size={14} /><span><strong>{artifact.name}</strong><small>{artifact.kind} · {artifact.media_type}</small></span><ChevronRight size={14} /></a>)}</div> : null}</div>
+  return <div className="inspector-section">
+    <h3>变更</h3>
+    <div className="changes-baseline-tabs" aria-label="差异基线">
+      {baselineOptions.map((option) => {
+        const Icon = option.icon
+        return <button type="button" className={baseline === option.value ? 'active' : ''} key={option.value} onClick={() => { setBaseline(option.value); setSelectedPaths([]) }}>
+          <strong><Icon size={13} />{option.label}</strong>
+          <small>{option.hint}</small>
+        </button>
+      })}
+    </div>
+    {changes.isLoading ? <p>正在读取受限差异…</p> : null}
+    {changes.error ? <div className="panel-error">{changes.error.message}</div> : null}
+    {changes.data?.baseline_notice ? <div className="panel-notice">{changes.data.baseline_notice}</div> : null}
+    {changes.data ? <>
+      <div className="changes-state-card">
+        <span>{baselineMeta(baseline, changes.data.baseline_head, changes.data.current_head)}</span>
+        {changes.data.truncated ? <em>差异过长 · 已截断</em> : null}
+      </div>
+      {files.length ? <>
+        <div className="changes-toolbar">
+          <span>{files.length} 个文件 · 已选 {selected.length}</span>
+          <div>
+            <button type="button" onClick={() => setSelectedPaths(allSelected ? [] : files.map((file) => file.path))}>{allSelected ? '取消全选' : '全选'}</button>
+            <button type="button" onClick={() => setExpandedFiles(Object.fromEntries(files.map((file) => [file.path, !allOpen] as [string, boolean])))}>{allOpen ? '全部折叠' : '全部展开'}</button>
+          </div>
+        </div>
+        <div className="changes-file-list">
+          {files.map((file, fileIndex) => {
+            const stats = diffStats(file)
+            return <details key={file.path} open={expandedFiles[file.path] ?? fileIndex < 5} onToggle={(event) => {
+              const open = event.currentTarget.open
+              setExpandedFiles((current) => (current[file.path] === open ? current : { ...current, [file.path]: open }))
+            }}>
+              <summary>
+                <input type="checkbox" aria-label={`选择 ${file.path}`} checked={selectedPaths.includes(file.path)} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelectedPaths((current) => event.target.checked ? [...current, file.path] : current.filter((path) => path !== file.path))} />
+                <span className="changes-file-path">{file.path}</span>
+                <small className="diff-stat"><i className="add">+{stats.added}</i><i className="remove">−{stats.removed}</i> · {file.hunks.length} 块</small>
+              </summary>
+              {file.header.length ? <pre className="changes-file-header">{file.header.join('\n')}</pre> : null}
+              {file.hunks.map((hunk, index) => <section className="changes-hunk" key={`${file.path}-${hunk.header}-${index}`}>
+                <a href={`#change-${fileIndex}-${index}`} id={`change-${fileIndex}-${index}`}>{hunk.header}</a>
+                <DiffHunkBody hunk={hunk} />
+              </section>)}
+            </details>
+          })}
+        </div>
+      </> : <div className="inspector-empty compact"><Check size={16} /><strong>{activeOption.empty}</strong></div>}
+      {baseline !== 'run_start' ? <p className="changes-baseline-note">基线只影响上方差异展示；“撤销所选”和“保存版本”始终作用于工作区文件，与所选基线无关。</p> : null}
+      <div className="changes-actions">
+        <button type="button" className="changes-accept" disabled={!task || task.accepted || accept.isPending} onClick={() => accept.mutate()}><Check size={13} />{task?.accepted ? '成果已接受' : '接受成果'}</button>
+        <span className="changes-actions-divider" aria-hidden="true" />
+        <button type="button" disabled={!selected.length || governedAction.isPending} onClick={() => governedAction.mutate('restore')}><RotateCcw size={13} />撤销所选</button>
+        <input aria-label="Git 提交信息" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="提交信息" />
+        <button type="button" disabled={!selected.length || !commitMessage.trim() || governedAction.isPending} onClick={() => governedAction.mutate('commit')}><GitCommit size={13} />{commitLabel}</button>
+      </div>
+      <small className="inspector-note">撤销与保存版本会在原会话创建受治理任务，并再次校验状态哈希、Policy、审批与 Receipt；浏览器不会直接改写 Git。</small>
+      {accept.error || governedAction.error ? <div className="panel-error">{accept.error?.message || governedAction.error?.message}</div> : null}
+    </> : null}
+    {fileArtifacts.length ? <div className="inspector-file-list">{fileArtifacts.map((artifact) => <a key={artifact.id} href={api.artifactContentUrl(artifact.id)} target="_blank" rel="noreferrer"><FileIcon size={14} /><span><strong>{artifact.name}</strong><small>{artifact.kind} · {artifact.media_type}</small></span><ChevronRight size={14} /></a>)}</div> : null}
+  </div>
+}
+
+function diffLineKind(line: string) {
+  if (line.startsWith('+')) return 'add'
+  if (line.startsWith('-')) return 'remove'
+  if (line.startsWith('\\')) return 'meta'
+  return 'ctx'
+}
+
+function diffStats(file: RunDiffFile) {
+  let added = 0
+  let removed = 0
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.startsWith('+')) added += 1
+      else if (line.startsWith('-')) removed += 1
+    }
+  }
+  return { added, removed }
+}
+
+function baselineMeta(baseline: 'run_start' | 'head' | 'index', baselineHead: string, currentHead: string) {
+  if (baseline === 'index') return '对比：工作区 ↔ Git 暂存区（尚未 git add 的改动）'
+  if (baseline === 'head') return `对比：工作区 ↔ 最新提交 HEAD ${currentHead.slice(0, 8) || '—'}`
+  return `对比：任务开始 ${baselineHead.slice(0, 8) || '—'} ↔ 当前工作区（HEAD ${currentHead.slice(0, 8) || '—'}）`
+}
+
+function DiffHunkBody({ hunk }: { hunk: RunDiffHunk }) {
+  const match = hunk.header.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+  let oldLine = match ? Number(match[1]) : 0
+  let newLine = match ? Number(match[2]) : 0
+  return <pre className="changes-diff-lines">{hunk.lines.map((line, index) => {
+    const kind = diffLineKind(line)
+    if (kind === 'meta') return <code key={index} className="diff-line meta"><span className="txt">{line}</span></code>
+    const oldNo = kind === 'ctx' || kind === 'remove' ? String(oldLine++) : ''
+    const newNo = kind === 'ctx' || kind === 'add' ? String(newLine++) : ''
+    return <code key={index} className={`diff-line ${kind}`}><span className="ln">{oldNo}</span><span className="ln">{newNo}</span><span className="txt">{line || '\u00A0'}</span></code>
+  })}</pre>
 }
 
 function eventSummary(payload: Record<string, unknown>) {

@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.6
-> 更新日期：2026-08-13
+> 版本：V1.7
+> 更新日期：2026-08-20
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -45,10 +45,10 @@ V1 唯一交付目标：
 | B1 | `PASS` | Repository 窄端口、`agentloop`、`harness` 与任务面板组件已提取并有测试 | Worker/页面仍可继续拆分，但行数只作维护指标 |
 | B2 | `PARTIAL` | `ExecutionAuthorization`、Git/凭据隔离、版本注入、CI/OpenAPI/迁移门禁已落地 | 等待 Ubuntu/Windows 原生 CI 关闭 tag 门禁 |
 | B3 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已落地 | stdout/stderr 逐块直播进入 V1.1 |
-| B4 | `PASS` | 通用来源解析、MCPDefinition v1、官方 SDK、本地/远端传输、多 Secret、OAuth Authorization Code/回调/取消/刷新、Run Tool Snapshot、Skill ZIP 与内置 Skill Creator 已落地 | 确定性同能力排名与跨 Provider 参数转换进入 V1.1 |
+| B4 | `PASS` | 通用来源解析、MCPDefinition v1、Skill/OAuth 已落地；内建 WebAccess 统一 `web_search`/`web_fetch`，具备精确私网 origin、Run 快照和强制人工授权 | 确定性同能力排名与跨 Provider 参数转换进入后续版本 |
 | B5 | `PASS` | Composer 邻接治理、三基线 Changes、文件/Hunk 查看、接受、受治理撤销与选择提交已落地；中文未跟踪文件浏览器闭环通过 | 更细粒度行级交互可后续优化 |
 | B6 | `PARTIAL` | Windows `pnpm verify`（Web 28/28）、Playwright foundation 初始化 1/1 + 重启 1/1、turn 1/1、success 26/26、真实 Provider、进程 kill 恢复、带版本工件和产品烟测均有证据 | Ubuntu race 与双平台原生产品烟测须在 tag 前由 CI 通过 |
-| B8 | `PASS` | 000058～000061、DatabaseSecretStore、VaultKeyManager、严格 config.yaml、设置/API/CLI、Backup V2 和两阶段 Browser E2E 已落地 | DEK 轮换 UI、Team/PostgreSQL Vault 与外部 KMS 延期 |
+| B8 | `PASS` | 000058～000063、DatabaseSecretStore、VaultKeyManager、严格 config.yaml、Web Access 配置/API/UI、Backup V2 和两阶段 Browser E2E 已落地 | DEK 轮换 UI、Team/PostgreSQL Vault 与外部 KMS 延期 |
 
 ### 2.2 场景、文件产物与审核体系收口（2026-08-11）
 

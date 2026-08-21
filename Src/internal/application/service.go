@@ -52,6 +52,7 @@ type Service struct {
 	mcpOAuth               MCPOAuthCoordinator
 	vault                  VaultController
 	bootstrapConfiguration BootstrapConfigurationManager
+	webAccessPolicy        core.WebAccessPolicy
 }
 
 const (
@@ -95,6 +96,14 @@ func (s *Service) WithChatToolExecutor(executor ChatToolExecutor, workspaceRoot 
 // into explicit user-driven recovery actions in the Files inspector.
 func (s *Service) WithArtifactCapture(capture ArtifactCapture) *Service {
 	s.artifactCapture = capture
+	return s
+}
+
+// WithWebAccessPolicy freezes the current non-secret network boundary into
+// every new Run. The execution policy still intersects it with the live
+// bootstrap policy immediately before a tool is dispatched.
+func (s *Service) WithWebAccessPolicy(policy core.WebAccessPolicy) *Service {
+	s.webAccessPolicy = policy
 	return s
 }
 
@@ -708,19 +717,30 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			})
 		}
 	}
+	contextMemorySnapshots := make([]ContextMemorySnapshot, 0, len(input.ContextMemoryIDs))
 	if len(input.ContextMemoryIDs) > 0 {
 		memories, memoryErr := s.repository.ListMemories(ctx, s.ScopeFor(ctx), projectID, "", 500)
 		if memoryErr != nil {
 			return core.Task{}, memoryErr
 		}
-		visible := make(map[string]struct{}, len(memories))
+		visible := make(map[string]core.Memory, len(memories))
 		for _, memory := range memories {
-			visible[memory.ID] = struct{}{}
+			visible[memory.ID] = memory
 		}
+		remaining := MaxContextMemorySnapshotBytes
 		for _, memoryID := range input.ContextMemoryIDs {
-			if _, ok := visible[memoryID]; !ok {
+			memory, ok := visible[memoryID]
+			if !ok {
 				return core.Task{}, &core.ForbiddenError{Message: "selected context memory is not visible in this project"}
 			}
+			content := ""
+			if remaining > 0 {
+				content = truncateUTF8Bytes(memory.Content, remaining)
+				remaining -= len([]byte(content))
+			}
+			contextMemorySnapshots = append(contextMemorySnapshots, ContextMemorySnapshot{
+				ID: memory.ID, Title: memory.Title, Content: content, SourceHash: memory.SourceHash,
+			})
 		}
 	}
 	idempotencyKey, err = normalizeIdempotencyKey(idempotencyKey)
@@ -738,6 +758,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		"permission_mode":        input.PermissionMode,
 		"prompt_profile_version": core.PromptProfileVersionCurrent,
 	}
+	s.webAccessPolicy.Snapshot().AddTo(snapshot)
 	if input.ProviderID != "" {
 		snapshot["model_provider_id"] = input.ProviderID
 	}
@@ -833,7 +854,10 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			snapshot["skill_capabilities"] = skillSnapshots
 		}
 		if input.SkillID != "" {
-			if explicitSkill == nil || explicitSkill.ProjectID != projectID {
+			// Scope, not the creation-time project_id column, decides visibility:
+			// a global Skill stays usable from every project owned by the user,
+			// while ListCapabilities already restricted global scope to this user.
+			if explicitSkill == nil || (explicitSkill.ScopeType != core.CapabilityScopeGlobal && explicitSkill.ScopeID != projectID) {
 				return core.Task{}, &core.ValidationError{Field: "skill_id", Message: "Skill is not available in this project"}
 			}
 			if explicitSkill.Kind != core.CapabilityKindSkill {
@@ -916,6 +940,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	}
 	if len(input.ContextMemoryIDs) > 0 {
 		snapshot["context_memory_ids"] = input.ContextMemoryIDs
+		snapshot["context_memory_snapshots"] = contextMemorySnapshots
 	}
 	if len(input.ContinuationRunIDs) > 0 {
 		snapshot["continuation_run_ids"] = input.ContinuationRunIDs
@@ -1640,6 +1665,7 @@ func (s *Service) ForkTask(ctx context.Context, taskID, correlationID, idempoten
 		"source_task_id": source.ID,
 		"source_run_id":  source.RunID,
 	}
+	s.webAccessPolicy.Snapshot().AddTo(snapshot)
 	if sourceRun, runErr := s.repository.GetRunContext(ctx, source.RunID); runErr == nil {
 		var sourceConfig map[string]any
 		if json.Unmarshal([]byte(sourceRun.ConfigSnapshotJSON), &sourceConfig) == nil {

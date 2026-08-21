@@ -114,6 +114,14 @@ const (
 	AppendConversationMessageRequestVisibilitySelected AppendConversationMessageRequestVisibility = "selected"
 )
 
+// Defines values for ApprovalApprovalScope.
+const (
+	ApprovalApprovalScopeConversation ApprovalApprovalScope = "conversation"
+	ApprovalApprovalScopeOnce         ApprovalApprovalScope = "once"
+	ApprovalApprovalScopeProject      ApprovalApprovalScope = "project"
+	ApprovalApprovalScopeRunOrigin    ApprovalApprovalScope = "run_origin"
+)
+
 // Defines values for ApprovalRiskLevel.
 const (
 	L0 ApprovalRiskLevel = "L0"
@@ -388,6 +396,7 @@ const (
 	DecideApprovalRequestScopeConversation DecideApprovalRequestScope = "conversation"
 	DecideApprovalRequestScopeOnce         DecideApprovalRequestScope = "once"
 	DecideApprovalRequestScopeProject      DecideApprovalRequestScope = "project"
+	DecideApprovalRequestScopeRunOrigin    DecideApprovalRequestScope = "run_origin"
 )
 
 // Defines values for DecideHumanActionRequestDecision.
@@ -404,6 +413,7 @@ const (
 	DecideHumanActionRequestScopeConversation DecideHumanActionRequestScope = "conversation"
 	DecideHumanActionRequestScopeOnce         DecideHumanActionRequestScope = "once"
 	DecideHumanActionRequestScopeProject      DecideHumanActionRequestScope = "project"
+	DecideHumanActionRequestScopeRunOrigin    DecideHumanActionRequestScope = "run_origin"
 )
 
 // Defines values for DiagnosticsStatus.
@@ -939,6 +949,13 @@ const (
 	Inactive SetMemoryStatusRequestStatus = "inactive"
 )
 
+// Defines values for SideEffectReceiptNetworkClass.
+const (
+	SideEffectReceiptNetworkClassEmpty   SideEffectReceiptNetworkClass = ""
+	SideEffectReceiptNetworkClassPrivate SideEffectReceiptNetworkClass = "private"
+	SideEffectReceiptNetworkClassPublic  SideEffectReceiptNetworkClass = "public"
+)
+
 // Defines values for SideEffectReceiptStatus.
 const (
 	SideEffectReceiptStatusFailed    SideEffectReceiptStatus = "failed"
@@ -1337,24 +1354,31 @@ type AppendConversationMessageRequestVisibility string
 
 // Approval defines model for Approval.
 type Approval struct {
-	DecidedAt    *time.Time             `json:"decided_at"`
-	DecidedBy    *string                `json:"decided_by,omitempty"`
-	ExpiresAt    time.Time              `json:"expires_at"`
-	FrozenParams map[string]interface{} `json:"frozen_params"`
-	Id           openapi_types.UUID     `json:"id"`
-	InputHash    string                 `json:"input_hash"`
-	ProjectId    openapi_types.UUID     `json:"project_id"`
-	Reason       string                 `json:"reason"`
-	RequestedAt  time.Time              `json:"requested_at"`
-	RequestedBy  string                 `json:"requested_by"`
-	RiskLevel    ApprovalRiskLevel      `json:"risk_level"`
-	RunId        openapi_types.UUID     `json:"run_id"`
-	Status       ApprovalStatus         `json:"status"`
-	StepId       openapi_types.UUID     `json:"step_id"`
-	TaskId       openapi_types.UUID     `json:"task_id"`
-	ToolCallId   openapi_types.UUID     `json:"tool_call_id"`
-	ToolName     string                 `json:"tool_name"`
+	ApprovalScope ApprovalApprovalScope  `json:"approval_scope"`
+	DecidedAt     *time.Time             `json:"decided_at"`
+	DecidedBy     *string                `json:"decided_by,omitempty"`
+	ExpiresAt     time.Time              `json:"expires_at"`
+	FrozenParams  map[string]interface{} `json:"frozen_params"`
+	Id            openapi_types.UUID     `json:"id"`
+	InputHash     string                 `json:"input_hash"`
+	MatchedRuleId string                 `json:"matched_rule_id"`
+	PolicyHash    string                 `json:"policy_hash"`
+	ProjectId     openapi_types.UUID     `json:"project_id"`
+	Reason        string                 `json:"reason"`
+	RequestedAt   time.Time              `json:"requested_at"`
+	RequestedBy   string                 `json:"requested_by"`
+	RiskLevel     ApprovalRiskLevel      `json:"risk_level"`
+	RunId         openapi_types.UUID     `json:"run_id"`
+	Status        ApprovalStatus         `json:"status"`
+	StepId        openapi_types.UUID     `json:"step_id"`
+	TargetOrigin  string                 `json:"target_origin"`
+	TaskId        openapi_types.UUID     `json:"task_id"`
+	ToolCallId    openapi_types.UUID     `json:"tool_call_id"`
+	ToolName      string                 `json:"tool_name"`
 }
+
+// ApprovalApprovalScope defines model for Approval.ApprovalScope.
+type ApprovalApprovalScope string
 
 // ApprovalRiskLevel defines model for Approval.RiskLevel.
 type ApprovalRiskLevel string
@@ -1472,6 +1496,7 @@ type BootstrapConfiguration struct {
 	RunConcurrency  int                                  `json:"run_concurrency"`
 	Source          string                               `json:"source"`
 	TrustedKeysFile string                               `json:"trusted_keys_file"`
+	WebAccess       WebAccessConfiguration               `json:"web_access"`
 }
 
 // BootstrapConfigurationDatabaseDriver defines model for BootstrapConfiguration.DatabaseDriver.
@@ -1826,14 +1851,14 @@ type DecideApprovalRequest struct {
 	Decision  DecideApprovalRequestDecision `json:"decision"`
 	Note      *string                       `json:"note,omitempty"`
 
-	// Scope Approval lifetime. conversation creates a same-tool session rule; project creates a 30-day project rule.
+	// Scope Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
 	Scope *DecideApprovalRequestScope `json:"scope,omitempty"`
 }
 
 // DecideApprovalRequestDecision defines model for DecideApprovalRequest.Decision.
 type DecideApprovalRequestDecision string
 
-// DecideApprovalRequestScope Approval lifetime. conversation creates a same-tool session rule; project creates a 30-day project rule.
+// DecideApprovalRequestScope Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
 type DecideApprovalRequestScope string
 
 // DecideHumanActionRequest defines model for DecideHumanActionRequest.
@@ -2289,6 +2314,14 @@ type PortableTranscriptMessageRole string
 type PricingDiagnostics struct {
 	UncoveredModels int `json:"uncovered_models"`
 	VersionCount    int `json:"version_count"`
+}
+
+// PrivateFetchConfiguration defines model for PrivateFetchConfiguration.
+type PrivateFetchConfiguration struct {
+	AllowedOriginCount int                `json:"allowed_origin_count"`
+	AllowedOrigins     []WebPrivateOrigin `json:"allowed_origins"`
+	Enabled            bool               `json:"enabled"`
+	OriginsRedacted    bool               `json:"origins_redacted"`
 }
 
 // Problem defines model for Problem.
@@ -2826,20 +2859,27 @@ type SetMemoryStatusRequestStatus string
 
 // SideEffectReceipt defines model for SideEffectReceipt.
 type SideEffectReceipt struct {
-	ErrorCode  string                  `json:"error_code"`
-	FinishedAt *time.Time              `json:"finished_at"`
-	Id         openapi_types.UUID      `json:"id"`
-	Idempotent bool                    `json:"idempotent"`
-	InputHash  string                  `json:"input_hash"`
-	ProjectId  openapi_types.UUID      `json:"project_id"`
-	RunId      openapi_types.UUID      `json:"run_id"`
-	StartedAt  time.Time               `json:"started_at"`
-	Status     SideEffectReceiptStatus `json:"status"`
-	StepId     openapi_types.UUID      `json:"step_id"`
-	TaskId     openapi_types.UUID      `json:"task_id"`
-	ToolCallId openapi_types.UUID      `json:"tool_call_id"`
-	ToolName   string                  `json:"tool_name"`
+	AuthorizationId string                        `json:"authorization_id"`
+	ErrorCode       string                        `json:"error_code"`
+	FinishedAt      *time.Time                    `json:"finished_at"`
+	Id              openapi_types.UUID            `json:"id"`
+	Idempotent      bool                          `json:"idempotent"`
+	InputHash       string                        `json:"input_hash"`
+	MatchedRuleId   string                        `json:"matched_rule_id"`
+	NetworkClass    SideEffectReceiptNetworkClass `json:"network_class"`
+	PolicyHash      string                        `json:"policy_hash"`
+	ProjectId       openapi_types.UUID            `json:"project_id"`
+	RunId           openapi_types.UUID            `json:"run_id"`
+	StartedAt       time.Time                     `json:"started_at"`
+	Status          SideEffectReceiptStatus       `json:"status"`
+	StepId          openapi_types.UUID            `json:"step_id"`
+	TaskId          openapi_types.UUID            `json:"task_id"`
+	ToolCallId      openapi_types.UUID            `json:"tool_call_id"`
+	ToolName        string                        `json:"tool_name"`
 }
+
+// SideEffectReceiptNetworkClass defines model for SideEffectReceipt.NetworkClass.
+type SideEffectReceiptNetworkClass string
 
 // SideEffectReceiptStatus defines model for SideEffectReceipt.Status.
 type SideEffectReceiptStatus string
@@ -2922,6 +2962,7 @@ type UpdateBootstrapConfiguration struct {
 	Profile         *UpdateBootstrapConfigurationProfile        `json:"profile,omitempty"`
 	RunConcurrency  *int                                        `json:"run_concurrency,omitempty"`
 	TrustedKeysFile *string                                     `json:"trusted_keys_file,omitempty"`
+	WebAccess       *UpdateWebAccessConfiguration               `json:"web_access,omitempty"`
 }
 
 // UpdateBootstrapConfigurationDatabaseDriver defines model for UpdateBootstrapConfiguration.DatabaseDriver.
@@ -2965,6 +3006,12 @@ type UpdateModelPricingVersion struct {
 	Version     int       `json:"version"`
 }
 
+// UpdatePrivateFetchConfiguration defines model for UpdatePrivateFetchConfiguration.
+type UpdatePrivateFetchConfiguration struct {
+	AllowedOrigins []WebPrivateOrigin `json:"allowed_origins"`
+	Enabled        bool               `json:"enabled"`
+}
+
 // UpdateProjectSettingsRequest defines model for UpdateProjectSettingsRequest.
 type UpdateProjectSettingsRequest struct {
 	DefaultModel    *string `json:"default_model,omitempty"`
@@ -3002,6 +3049,11 @@ type UpdateUserPreferencesDensity string
 
 // UpdateUserPreferencesTheme defines model for UpdateUserPreferences.Theme.
 type UpdateUserPreferencesTheme string
+
+// UpdateWebAccessConfiguration defines model for UpdateWebAccessConfiguration.
+type UpdateWebAccessConfiguration struct {
+	PrivateFetch UpdatePrivateFetchConfiguration `json:"private_fetch"`
+}
 
 // UploadAssetRequest defines model for UploadAssetRequest.
 type UploadAssetRequest struct {
@@ -3071,6 +3123,19 @@ type VaultStatus struct {
 
 // VaultStatusState defines model for VaultStatus.State.
 type VaultStatusState string
+
+// WebAccessConfiguration defines model for WebAccessConfiguration.
+type WebAccessConfiguration struct {
+	PrivateFetch PrivateFetchConfiguration `json:"private_fetch"`
+}
+
+// WebPrivateOrigin defines model for WebPrivateOrigin.
+type WebPrivateOrigin struct {
+	Id string `json:"id"`
+
+	// Origin Exact HTTP(S) origin with a literal IPv4/IPv6 address and explicit port.
+	Origin string `json:"origin"`
+}
 
 // WorkerDiagnostics defines model for WorkerDiagnostics.
 type WorkerDiagnostics struct {

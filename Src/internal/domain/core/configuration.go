@@ -113,9 +113,21 @@ type BootstrapConfiguration struct {
 	RunConcurrency  int
 	DatabaseDriver  string
 	TrustedKeysFile string
+	WebAccess       WebAccessConfiguration
 	ConfigPath      string
 	Source          string
 	RestartRequired bool
+}
+
+type WebAccessConfiguration struct {
+	PrivateFetch PrivateFetchConfiguration
+}
+
+type PrivateFetchConfiguration struct {
+	Enabled            bool
+	AllowedOrigins     []WebPrivateOrigin
+	AllowedOriginCount int
+	OriginsRedacted    bool
 }
 
 type UpdateBootstrapConfiguration struct {
@@ -125,4 +137,5 @@ type UpdateBootstrapConfiguration struct {
 	RunConcurrency  *int
 	DatabaseDriver  *string
 	TrustedKeysFile *string
+	WebAccess       *WebAccessConfiguration
 }

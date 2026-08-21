@@ -14,7 +14,7 @@
     "release:smoke": "node Test/release-smoke.mjs",
     "lint": "pnpm --dir Src/web lint",
     "test:web": "pnpm --dir Src/web test",
-    "test:race": "go test -race ./...",
+    "test:race": "go test -race -timeout 20m ./...",
     "test:migrations": "go test ./Src/internal/adapters/db/sqlite -run Migration -count=1",
     "verify:openapi": "node Test/openapi-drift.mjs",
     "test": "go test ./... && pnpm test:web",

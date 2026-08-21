@@ -1,7 +1,7 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.0.3
-> 更新日期：2026-08-13
+> 版本：v1.0.4
+> 更新日期：2026-08-20
 > 发布路径：注册用户 + 个人私有项目 + SQLite
 
 ## 1. 部署结论
@@ -26,7 +26,32 @@ pnpm release:smoke
 
 浏览器访问 `http://127.0.0.1:8787/`。首次启动不会创建共享默认账户或密码，必须在登录页完成注册。新建个人项目会自动初始化 `main` 分支和空 Git 基线，确保首次文件修改就能进入 Changes、撤销和选择提交闭环。
 
-启动配置默认位于 `%APPDATA%\Oktapod\config.yaml`；可复制 `Deploy/config.yaml.example`。加载顺序固定为 `--config > OKTAPOD_CONFIG_FILE > 默认 config.yaml > 内置默认值`，未知 YAML 字段会阻止启动。`profile`、监听地址、DataRoot、Run 并发、数据库驱动和 Capability 信任键文件属于启动配置；Reviewer、模型价格、上下文和用户偏好属于数据库产品配置。
+启动配置默认位于 `%APPDATA%\Oktapod\config.yaml`；可复制 `Deploy/config.yaml.example`。加载顺序固定为 `--config > OKTAPOD_CONFIG_FILE > 默认 config.yaml > 内置默认值`，未知 YAML 字段会阻止启动。`profile`、监听地址、DataRoot、Run 并发、数据库驱动、Capability 信任键文件和 Web Access 私网边界属于启动配置；Reviewer、模型价格、上下文和用户偏好属于数据库产品配置。
+
+### 2.1 Web Access 与受控私网读取
+
+`web_search` 只向模型暴露单个 `query`，使用内建 DDG → Bing RSS 零凭据链路；`web_fetch` 只接受模型传入一个 URL。代理、Header、Cookie、凭据、超时、内容上限和网络策略都由服务端固定。公网 Fetch 仅允许 HTTP/HTTPS 的 80/443；域名解析结果只要包含私网、回环、链路本地、组播、未指定、文档/基准测试网段或其他非公网地址，整次请求即拒绝。
+
+私网读取默认关闭。需要读取内网站点时，在配置中心“运行与上下文 → Web Access 网络边界”编辑，或直接修改 YAML 后重启：
+
+```yaml
+web_access:
+  private_fetch:
+    enabled: true
+    allowed_origins:
+      - id: intranet-wiki
+        origin: http://192.168.10.20:8080
+      - id: local-preview
+        origin: http://127.0.0.1:3000
+      - id: ipv6-service
+        origin: https://[fd00::20]:8443
+```
+
+每项只能是唯一 ID 和“HTTP/HTTPS + 字面量 IPv4/IPv6 + 显式端口”的精确 origin；最多 64 项。域名、路径、query、fragment、userinfo、CIDR、通配符、端口范围、公网地址、链路本地/组播/未指定/广播、云元数据地址和 Oktapod 自身监听 origin 会阻止启动。开启但列表为空也会阻止启动。普通成员的配置 API 只返回启用状态和规则数量，完整 origin 只向 Owner/Admin 展示。
+
+新 Run 只冻结 origin Hash 和策略 Hash，不保存明文白名单。执行时取“Run 冻结策略 ∩ 当前启动策略”：新增规则不会让旧 Run 访问新 origin；关闭、删除或修改 origin 并重启会立即收回对应访问权。任意配置策略 Hash 变化都会使已有 `run_origin` 授权失效；仍同时存在于冻结与当前列表的 origin 可重新人工批准，不需要重建 Run。每个 Run 首次访问一个私网 origin 必须人工批准；同 Run 同 scheme + IP + port 的后续路径复用授权，不跨端口、协议或 Run，最长 24 小时且 Run 终态后失效。“完全访问”和 AI Reviewer 都不能替代这次人工决定。
+
+Fetch 固定 GET-only、无系统代理/认证/Cookie/Referer，DNS 校验和 Dial 绑定同一验证 IP；最多 5 次同源重定向，每跳重验。跨 origin 不跟随，只把目标地址返回给模型发起新的受治理调用。响应在解压后限制 2 MiB，转换输入 256 KiB，模型正文 24 KiB；支持 HTML、text、JSON、XML，PDF 与二进制拒绝。HTML 转 Markdown 会移除脚本节点并把相对链接解析为绝对链接；页面内容统一标记 `external_untrusted`，只能作为数据和引用来源。
 
 `pnpm release:build` 从根 `package.json` 读取版本，生成带版本二进制及同名 `.sha256`；普通 `pnpm build` 是开发构建，运行时版本为 `dev`。
 
@@ -58,9 +83,9 @@ Web/API 支持多个 Provider 实例，协议族为 `openai_compatible`、`anthr
 
 “自动审查”在“配置中心 → 治理与审批”中保存准确的 Provider ID + Model ID、启用状态、超时和策略版本；它与“模型服务”的连接配置保持职责分离。每次 Reviewer 调用冻结实际 Provider、Model 和策略版本；未配置、模型不在该 Provider 的启用目录、凭据不可用、超时或非法结构都会 fail-closed 并转人工审批。`GET /api/v1/diagnostics` 的 `auto_review.configured/available/reason` 是运维真源，`credential_issues` 会列出需重新录入的 Provider/MCP 名称、状态和修复路径，不返回 `credential_ref` 或 Secret。
 
-## 5. MCP、Skill 与搜索
+## 5. MCP、Skill 与 Web Access
 
-内建搜索是无需外部凭据的最低可用能力，不因可选 MCP 不健康而删除。资源中心支持当前用户全局或项目级 Skill、MCP 与 Agent 的校验、隔离、人工审核、启用、调用、停用和永久删除；活动 Run 引用时拒绝删除，历史快照与脱敏审计保留。MCP Schema、配置版本、凭据引用与健康状态会进入新 Run 快照。凭据原文不得进入 Manifest、API 返回、日志或普通导出；SQLite 只保存 AES-256-GCM 应用层密文。
+内建 `web_search` 与 `web_fetch` 是无需外部凭据的最低可用 Web Access 能力，不因可选 MCP 不健康而删除。资源中心支持当前用户全局或项目级 Skill、MCP 与 Agent 的校验、隔离、人工审核、启用、调用、停用和永久删除；活动 Run 引用时拒绝删除，历史快照与脱敏审计保留。MCP Schema、配置版本、凭据引用与健康状态会进入新 Run 快照。凭据原文不得进入 Manifest、API 返回、日志或普通导出；SQLite 只保存 AES-256-GCM 应用层密文。
 
 Skill 菜单安装只接受单 Skill ZIP，不接受裸 `SKILL.md`、JSON 或 YAML；ZIP 在写入前校验唯一 `SKILL.md`、frontmatter、允许目录、文件数/体积、路径穿越、Unicode 冲突、符号链接、嵌套 Skill、依赖目录和隐藏载荷。MCP 不使用 ZIP：输入名称、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包或本地命令，解析后只显示该传输所需字段，高级区可复核规范化 `MCPDefinition v1`。名称发现访问官方 Registry `https://registry.modelcontextprotocol.io`，生产环境需要允许对该域名的出站 HTTPS；Registry 只用于发现，歧义候选必须人工选择且安装前固定实际版本。模型不能静默安装或启用能力；在新 Thread 中用自然语言要求安装 MCP 时，Composer 会打开相同配置与确认面板。一个 MCP 的多项凭据以不透明加密集合写入数据库 Vault，运行时仅注入定义声明的环境变量或受控 Header。
 
@@ -68,7 +93,7 @@ Skill 菜单安装只接受单 Skill ZIP，不接受裸 `SKILL.md`、JSON 或 YA
 
 Windows 上的 npm stdio MCP 会把 `npx.cmd`/`npx.ps1` 解析为 `node.exe` 直接启动 `npx-cli.js`，不经过命令行 shell。MCP 子进程的 HOME、APPDATA、npm 和 uv 缓存使用 `%TEMP%\oktapod-mcp-runtime`，防止社区服务器意外读取宿主配置；该目录是可重建运行缓存，服务停止后可由系统临时文件策略清理。
 
-当用户在任务中明确点名 Tavily 等已连接 MCP 时，Run 只向模型暴露该 MCP、计划/输入/审批控制工具以及完成交付所需的工作区工具，不静默改走内建搜索。完整 Annotation 显式声明非只读、破坏性或非幂等，以及快照外未知工具时按 L3 逐次审批；已审核、启用并冻结到 Run 的语义检索工具即使缺少可选 Annotation，也按只读幂等 L2 保存 Receipt，在“完全访问”下不再重复确认。Tavily 是可选首选，不是 V1 核心依赖。
+当用户在任务中明确点名 Tavily 等已连接 MCP 时，Run 同时移除内建 `web_search` 与 `web_fetch`，只向模型暴露该 MCP、计划/输入/审批控制工具以及完成交付所需的工作区工具，不静默混用外部数据源。完整 Annotation 显式声明非只读、破坏性或非幂等，以及快照外未知工具时按 L3 逐次审批；已审核、启用并冻结到 Run 的语义检索工具即使缺少可选 Annotation，也按只读幂等 L2 保存 Receipt，在“完全访问”下不再重复确认。Tavily 是可选首选，不是 V1 核心依赖。
 
 ## 6. 数据库 Vault、备份与跨机器恢复
 
@@ -99,7 +124,7 @@ Windows 上的 npm stdio MCP 会把 `npx.cmd`/`npx.ps1` 解析为 `node.exe` 直
 - 命令有超时、取消与进程树终止；
 - 写文件、命令和 Git 修改受 Policy、状态哈希、审批、Receipt 与验证治理。
 
-这不是容器或 OS 级强沙箱。宿主进程仍可能访问宿主可读资源，因此 UI 明示“宿主受控 · 非强沙箱”。网络默认拒绝、文件挂载白名单、CPU/内存硬隔离属于后续强沙箱。
+这不是容器或 OS 级强沙箱。宿主进程仍可能访问宿主可读资源，因此 UI 明示“宿主受控 · 非强沙箱”。通用进程的网络默认拒绝、文件挂载白名单、CPU/内存硬隔离仍属于后续强沙箱；内建 `web_fetch` 已单独实施 DNS/Dial/重定向/内容边界，不代表任意宿主进程获得同等级网络隔离。
 
 项目文件在项目右侧“任务面板”查看：“工作区”是可变文件，“项目文件”是上传或明确保存、可供同项目后续任务复用的 Asset，“任务输出”是不可变 Artifact；“变更”仅显示 Git 差异。“保存到项目文件”不会向项目外发布。Personal Profile 的 Diagnostics 会显示数据根和 Workspace 根的宿主绝对路径，Team Profile 不暴露该路径。脚本生成的文件先在“工作区”可见；只有经 `artifact_capture` 校验登记后才会进入“任务输出”并可作为任务交付证据。
 
@@ -131,6 +156,9 @@ Ubuntu CI 额外执行 `pnpm test:race`；Ubuntu 与 Windows CI 都执行 clean 
 - `SECRET_CIPHERTEXT_INVALID`：密文、Nonce、AAD 或包装信息损坏；禁止空值回退，使用正式备份恢复或重新录入。
 - `MODEL_CREDENTIAL_MISSING`：数据库 Vault 中不存在相应凭据，重新录入 Provider Key。
 - `WEB_SEARCH_UNAVAILABLE`：检查主机网络与内建搜索，再检查可选 MCP 健康。
+- `WEB_FETCH_BLOCKED_URL`：目标不是公网 80/443，或私网 origin 未同时命中 Run 快照和当前启动白名单；检查设置并重启，新建 Run 后再试。
+- `WEB_FETCH_REDIRECT_BLOCKED`：页面跳到其他 origin；确认返回的目标地址后由模型发起新的受治理 Fetch，私网目标需单独配置和审批。
+- `WEB_FETCH_TOO_LARGE` / `WEB_FETCH_UNSUPPORTED_CONTENT_TYPE`：页面解压后超过 2 MiB，或返回 PDF/二进制；首批不会放宽模型参数绕过固定边界。
 - `SQLITE_BUSY`：检查活跃 Worker/Lease；应用会有限重试，不要改成无限重试。
 - 预算申请反复出现：先确认运行的是 2026-08-13 之后的构建；新版本不会以“每次只增加 1 次模型调用”的方式循环申请，失败或停止的终态任务也不会继续占用“待我处理”徽标。
 - 版本不符：运行 `<binary> version`，不要发布显示为 `dev` 的开发构建。

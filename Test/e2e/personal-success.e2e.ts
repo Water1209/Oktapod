@@ -127,6 +127,11 @@ test('Personal 成功结果需要用户独立接受', async ({ page }) => {
 
 test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径', async ({ page }) => {
   test.setTimeout(90_000)
+  const consoleProblems: string[] = []
+  page.on('console', (message) => {
+    if (['error', 'warning'].includes(message.type())) consoleProblems.push(`${message.type()}: ${message.text()}`)
+  })
+  page.on('pageerror', (error) => consoleProblems.push(`pageerror: ${error.message}`))
   const suffix = Date.now().toString(36)
   await page.goto('/')
   await page.getByRole('link', { name: '查看项目' }).click()
@@ -140,8 +145,16 @@ test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径'
   await openLinkedTask(page)
   await page.getByRole('button', { name: '变更', exact: true }).click()
 
-  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行结果.md' })).toBeVisible()
-  await expect(page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })).toBeVisible()
+  const resultChanges = page.locator('.changes-file-list details').filter({ hasText: '执行结果.md' })
+  const summaryChanges = page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })
+  await expect(resultChanges).toBeVisible()
+  await expect(summaryChanges).toBeVisible()
+  await expect(resultChanges.locator('.diff-stat')).toContainText(/\+\d+/)
+  await expect(resultChanges.locator('.diff-line .ln').first()).toBeVisible()
+  await page.getByRole('button', { name: '全部折叠' }).click()
+  await expect(resultChanges).not.toHaveAttribute('open', '')
+  await page.getByRole('button', { name: '全部展开' }).click()
+  await expect(resultChanges).toHaveAttribute('open', '')
   await page.getByRole('checkbox', { name: '选择 执行结果.md' }).check()
   await page.getByRole('textbox', { name: 'Git 提交信息' }).fill('Commit selected result')
   await page.getByRole('button', { name: '提交所选' }).click()
@@ -152,9 +165,10 @@ test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径'
   await expect(page.locator('.message-task-stream').last().getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
 
   await page.getByRole('button', { name: '变更', exact: true }).click()
-  await page.getByRole('button', { name: 'Git HEAD', exact: true }).click()
+  await page.getByRole('button', { name: /^Git HEAD/ }).click()
   await expect(page.locator('.changes-file-list details').filter({ hasText: '执行摘要.md' })).toBeVisible()
   await expect(page.getByRole('checkbox', { name: '选择 执行结果.md' })).toHaveCount(0)
+  expect(consoleProblems).toEqual([])
 })
 
 test('任务执行流默认收敛并支持多 Markdown 文件审阅', async ({ page }) => {
@@ -252,6 +266,59 @@ test('L2 命令建立可撤销项目规则后只执行一次并由代码验收',
   await expect(page.locator('.approval-card').filter({ hasText: '运行工作区命令' }).filter({ hasText: '已批准' })).toBeVisible()
   await page.getByRole('button', { name: '处理记录', exact: true }).click()
   await expect(page.locator('.approval-history-list').getByText('当前项目已允许同类窄规则动作 30 天，可随时撤销')).toBeVisible()
+})
+
+test('私网 Web Fetch 每 Run 每 origin 只审批一次并以文本卡片重放', async ({ page }) => {
+  test.setTimeout(90_000)
+  const consoleProblems: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleProblems.push(message.text())
+  })
+  const suffix = Date.now().toString(36)
+  await page.goto('/')
+  await page.getByRole('link', { name: '查看项目' }).click()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('textbox', { name: '项目名称' }).fill(`私网读取 ${suffix}`)
+  await page.getByRole('textbox', { name: '目标说明' }).fill('私网 origin 授权保持 Run 隔离并按 origin 复用')
+  await page.getByRole('button', { name: '建立工作空间' }).click()
+  await page.locator('.conversation-composer').getByRole('combobox').first().click()
+  await page.getByRole('option', { name: 'Task', exact: true }).click()
+  await page.getByRole('textbox', { name: '消息' }).fill('读取两页私网文档并总结')
+  await page.getByRole('button', { name: '发送' }).click()
+
+  const approval = page.locator('.human-action-card').filter({ hasText: '受控私网读取' })
+  await expect(approval).toBeVisible({ timeout: 15_000 })
+  await expect(approval).toContainText('http://127.0.0.1:19090')
+  await expect(approval).toContainText('e2e-private-docs')
+  await expect(approval).toContainText('只读 GET · 当前 Run · 最长 24 小时')
+  await expect(approval.getByRole('button', { name: '允许本任务访问此站点' })).toBeVisible()
+  await expect(approval.getByRole('button', { name: /本项目允许/ })).toHaveCount(0)
+  await page.getByRole('button', { name: '展开执行记录' }).click()
+  await expect(page.getByRole('button', { name: '收起执行记录' })).toBeVisible()
+  await approval.getByRole('button', { name: '允许本任务访问此站点' }).click()
+
+  await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
+  await expect(approval).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '收起执行记录' })).toBeVisible()
+  const fetchSteps = page.locator('.message-task-stream .message-execution-step').filter({ hasText: '读取网页来源' })
+  await expect(fetchSteps).toHaveCount(2)
+  for (const step of await fetchSteps.all()) {
+    await step.getByRole('button', { name: '展开读取网页来源' }).click()
+  }
+  const fetchCards = page.locator('.message-task-stream .web-fetch-card.private')
+  await expect(fetchCards).toHaveCount(2)
+  await expect(fetchCards.first()).toContainText('Private docs')
+  await expect(fetchCards.last()).toContainText('Next page')
+  await expect(fetchCards).toContainText(['e2e-private-docs', 'e2e-private-docs'])
+  await expect(fetchCards.locator('a')).toHaveCount(0)
+  await fetchSteps.first().getByRole('button', { name: '收起读取网页来源' }).click()
+  await expect(fetchCards).toHaveCount(1)
+  await fetchSteps.first().getByRole('button', { name: '展开读取网页来源' }).click()
+  await expect(fetchCards).toHaveCount(2)
+  expect((await fetchCards.allTextContents()).join('\n')).not.toContain('privatePayloadExecuted')
+  expect(await page.evaluate(() => Reflect.get(globalThis, 'privatePayloadExecuted'))).toBeUndefined()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  expect(consoleProblems).toEqual([])
 })
 
 test('完全访问在有效窗口内跳过命令审批并自动完成', async ({ page }) => {

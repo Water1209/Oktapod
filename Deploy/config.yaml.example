@@ -7,3 +7,15 @@ database:
   driver: sqlite
 capabilities:
   trusted_keys_file: trusted-keys.json
+web_access:
+  private_fetch:
+    # 默认关闭。开启后至少配置一个精确的字面量 IP + 端口 origin，并重启服务。
+    enabled: false
+    allowed_origins: []
+    # 示例：
+    # - id: intranet-wiki
+    #   origin: http://192.168.10.20:8080
+    # - id: local-preview
+    #   origin: http://127.0.0.1:3000
+    # - id: ipv6-service
+    #   origin: https://[fd00::20]:8443

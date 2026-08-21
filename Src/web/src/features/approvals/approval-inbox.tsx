@@ -3,7 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, ExternalLink, LockKeyhole, ShieldAlert, X } from 'lucide-react'
-import { api, type Approval, type InboxHistoryItem, type InboxItem } from '../../shared/api/client'
+import { api, type Approval, type ApprovalScope, type InboxHistoryItem, type InboxItem } from '../../shared/api/client'
 import { RunBudgetControl } from '../tasks/run-budget-control'
 import { taskFailureInfo } from '../tasks/task-progress-model'
 
@@ -39,7 +39,7 @@ export function ApprovalInbox() {
       ])
     },
   })
-  const pendingIDs = (approvals.data?.items ?? []).filter((item) => item.status === 'pending').map((item) => item.id)
+  const pendingIDs = (approvals.data?.items ?? []).filter((item) => item.status === 'pending' && item.tool_name !== 'web_fetch').map((item) => item.id)
   const allPendingSelected = pendingIDs.length > 0 && pendingIDs.every((id) => selected.includes(id))
   const toggleSelected = (id: string) => setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
   const toggleAll = () => setSelected(allPendingSelected ? [] : pendingIDs)
@@ -61,13 +61,13 @@ export function ApprovalInbox() {
     <section className="approval-list">
       {view === 'pending' ? <div className="approval-list-section"><header><h2>待我处理</h2><span>{actionItems.length + (approvals.data?.items.length ?? 0)} 项</span></header>
         {actionItems.map((item) => <InboxSummary item={item} key={`${item.kind}:${item.id}`} />)}
-        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
+        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable={approval.tool_name !== 'web_fetch'} selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
         {!approvals.isLoading && actionItems.length === 0 && approvals.data?.items.length === 0 ? <div className="empty-panel"><Check size={28} /><h2>当前没有待处理事项</h2><p>需要补充输入、恢复任务或人工授权的事项会出现在这里。</p></div> : null}
       </div> : null}
       {view === 'risk' ? <div className="approval-list-section"><header><h2>风险审批</h2><div className="approval-filter compact" aria-label="风险审批状态">{(['all', 'approved', 'rejected'] as const).map((item) => <button className={riskStatus === item ? 'active' : ''} key={item} onClick={() => setRiskStatus(item)}>{item === 'all' ? '全部审批' : statusLabel(item)}</button>)}</div><span>{approvals.data?.items.length ?? 0} 项</span></header>
         {approvals.isLoading ? <div className="page-loading">正在恢复审批队列…</div> : null}
         {approvals.error ? <div className="empty-panel"><h2>审批队列无法读取</h2><p>{approvals.error.message}</p></div> : null}
-        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable={approval.status === 'pending'} selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
+        {approvals.data?.items.map((approval) => <ApprovalCard approval={approval} key={approval.id} selectable={approval.status === 'pending' && approval.tool_name !== 'web_fetch'} selected={selected.includes(approval.id)} onSelect={() => toggleSelected(approval.id)} />)}
         {approvals.data?.items.length === 0 ? <div className="empty-panel"><ShieldAlert size={28} /><h2>当前没有风险审批</h2><p>最近没有触发人工授权，或动作已按“完全访问 / 自动审查”处理。执行 Receipt 仍可在任务的“安全”和“追踪”中查看。</p></div> : null}
       </div> : null}
       {view === 'history' ? <div className="approval-list-section approval-history-list"><header><h2>处理记录</h2><span>{historyItems.length} 项</span></header>{historyItems.map((item) => <InboxHistory item={item} key={`history:${item.id}`} />)}{!inbox.isLoading && historyItems.length === 0 ? <div className="empty-panel"><Clock3 size={28} /><h2>还没有处理记录</h2><p>任务验收、暂停、恢复、取消、审批决定和副作用核查会记录在这里。</p></div> : null}</div> : null}
@@ -103,7 +103,7 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
   const queryClient = useQueryClient()
   const [projectConfirmOpen, setProjectConfirmOpen] = useState(false)
   const decision = useMutation({
-    mutationFn: ({ decision, scope, confirmed = false }: { decision: 'approved' | 'rejected'; scope: 'once' | 'conversation' | 'project'; confirmed?: boolean }) => api.decideApproval(approval.id, decision, '', scope, confirmed),
+    mutationFn: ({ decision, scope, confirmed = false }: { decision: 'approved' | 'rejected'; scope: ApprovalScope; confirmed?: boolean }) => api.decideApproval(approval.id, decision, '', scope, confirmed),
     onSuccess: (updated) => {
       setProjectConfirmOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['approvals'] })
@@ -115,7 +115,8 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
     },
   })
   const params = formatFrozenParams(approval)
-	const persistentApprovalSupported = !approval.tool_name.startsWith('mcp__')
+  const privateWebFetch = approval.tool_name === 'web_fetch' && approval.approval_scope === 'run_origin'
+	const persistentApprovalSupported = !approval.tool_name.startsWith('mcp__') && !privateWebFetch
   return <article className={`approval-card ${compact ? 'compact' : ''}`}>
     <div className="approval-card-head">
       {selectable ? <input type="checkbox" aria-label={`选择审批 ${approval.tool_name}`} checked={selected} onChange={onSelect} /> : null}
@@ -124,14 +125,15 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
       <span className={`approval-state ${approval.status}`}>{statusLabel(approval.status)}</span>
     </div>
     <p className="approval-reason">{approval.reason}</p>
-	{approval.status === 'pending' && !persistentApprovalSupported ? <small className="approval-error">外部 MCP 仅支持逐次批准，避免把一次确认扩展为后续未知参数。</small> : null}
+	{approval.status === 'pending' && approval.tool_name.startsWith('mcp__') ? <small className="approval-error">外部 MCP 仅支持逐次批准，避免把一次确认扩展为后续未知参数。</small> : null}
+    {privateWebFetch ? <div className="private-origin-approval"><ShieldAlert size={16} /><span><strong>受控私网读取</strong><small>只读 GET · 当前 Run · 最长 24 小时</small><code>{approval.target_origin}</code>{approval.matched_rule_id ? <small>匹配规则：{approval.matched_rule_id}</small> : null}<p>批准后，模型可读取此 origin 的其他路径，并可能把页面数据带入模型上下文；不会授权其他端口、协议或 Run。</p></span></div> : null}
     <div className="frozen-params"><LockKeyhole size={15} /><span><small>冻结参数</small><code>{params}</code></span></div>
     <div className="approval-hash"><span>INPUT HASH</span><code>{approval.input_hash}</code></div>
     <div className="approval-actions">
       <Link to="/tasks/$taskId" params={{ taskId: approval.task_id }}>打开任务<ExternalLink size={13} /></Link>
       {approval.status === 'pending' ? <>
         <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-        <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />批准一次</button>
+		{privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_origin' })}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />批准一次</button>}
 		{persistentApprovalSupported ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话允许同类动作</button> : null}
 		{persistentApprovalSupported ? <button className="approve approve-project" disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
       </> : null}
@@ -144,6 +146,7 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
 }
 
 function formatFrozenParams(approval: Approval) {
+  if (approval.tool_name === 'web_fetch') return String(approval.frozen_params.url ?? 'invalid url')
   if (approval.tool_name === 'workspace_run_command') {
     const program = typeof approval.frozen_params.program === 'string' ? approval.frozen_params.program : 'invalid'
     const args = Array.isArray(approval.frozen_params.args) ? approval.frozen_params.args.map(String) : []
@@ -158,6 +161,7 @@ function formatFrozenParams(approval: Approval) {
 function toolLabel(tool: string) {
   if (tool === 'workspace_run_command') return '运行工作区命令'
   if (tool === 'workspace_write_file') return '写入工作区文件'
+  if (tool === 'web_fetch') return '读取网页'
   return tool
 }
 

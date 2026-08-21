@@ -87,6 +87,9 @@ function ProjectWorkspace() {
   const [pendingMessages, setPendingMessages] = useState<Awaited<ReturnType<typeof api.conversationMessages>>['items']>([])
   const [streamingAssistant, setStreamingAssistant] = useState('')
   const [streamPhase, setStreamPhase] = useState<'routing' | 'responding' | 'task' | undefined>()
+  // 执行流会在任务终态时从用户消息迁移到助手结果消息；按 task_id
+  // 提升展开状态，避免组件归属迁移导致用户刚打开的审计记录再次折叠。
+  const [taskStreamDetails, setTaskStreamDetails] = useState<Record<string, boolean>>({})
   const threadRef = useRef<HTMLDivElement>(null)
 
   const handleComposerDraft = (draft: ComposerDraft) => {
@@ -179,7 +182,14 @@ function ProjectWorkspace() {
                   {message.role === 'user' ? <MessagePresentation presentation={message.presentation} /> : null}
                 </article>
                 <div className="thread-task-stream">
-                  <MessageTaskStream taskId={message.task_id!} runId={linkedTask!.run_id ?? ''} active={taskIsActive} onRequestFileReview={() => { setFilesSection('outputs'); selectInspectorTab('files') }} />
+                  <MessageTaskStream
+                    taskId={message.task_id!}
+                    runId={linkedTask!.run_id ?? ''}
+                    active={taskIsActive}
+                    detailsOpen={Boolean(taskStreamDetails[message.task_id!])}
+                    onDetailsOpenChange={(open) => setTaskStreamDetails((current) => ({ ...current, [message.task_id!]: open }))}
+                    onRequestFileReview={() => { setFilesSection('outputs'); selectInspectorTab('files') }}
+                  />
                 </div>
               </div>
             }
@@ -1116,9 +1126,21 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content permission-mode-dialog" aria-describedby="full-access-description">
-          <Dialog.Title>启用完全访问？</Dialog.Title>
-          <Dialog.Description id="full-access-description">它会用于后续发送的任务，直到你手动切换权限模式。工作区内 L0-L2 动作免逐次审批；越界访问、确定性硬拒绝和 L3 高风险动作仍不会放行。</Dialog.Description>
-          <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" onClick={() => { selectPermissionMode('full_access'); setFullAccessOpen(false) }}>确认启用</button></div>
+          <div className="permission-dialog-heading">
+            <span className="permission-dialog-icon"><ShieldAlert size={20} /></span>
+            <div>
+              <span className="permission-dialog-eyebrow">运行权限</span>
+              <Dialog.Title>启用完全访问</Dialog.Title>
+              <Dialog.Description id="full-access-description">后续发送的任务会沿用此模式，直到你手动切换。</Dialog.Description>
+            </div>
+          </div>
+          <div className="permission-dialog-notice"><LockKeyhole size={16} /><div><strong>减少逐次审批，不扩大安全边界</strong><span>工作区内 L0-L2 动作可以连续执行。</span></div></div>
+          <ul className="permission-dialog-boundaries">
+            <li><Check size={15} /><span><strong>自动放行</strong><small>工作区内 L0-L2 动作免逐次确认。</small></span></li>
+            <li><ShieldAlert size={15} /><span><strong>仍会拦截</strong><small>越界访问、确定性硬拒绝和 L3 高风险动作不会放行。</small></span></li>
+            <li><LockKeyhole size={15} /><span><strong>作用范围</strong><small>只影响当前项目后续发送的任务，不改变历史 Run。</small></span></li>
+          </ul>
+          <div className="dialog-actions permission-dialog-actions"><Dialog.Close asChild><button className="permission-dialog-cancel" type="button">暂不启用</button></Dialog.Close><button className="primary permission-dialog-confirm" type="button" onClick={() => { selectPermissionMode('full_access'); setFullAccessOpen(false) }}><ShieldAlert size={15} />确认启用</button></div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

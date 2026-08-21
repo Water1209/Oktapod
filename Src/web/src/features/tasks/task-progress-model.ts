@@ -23,7 +23,7 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   const code = task.error_code?.trim()
   if (!code) return undefined
   const summary = task.result_summary?.trim() ?? ''
-  const timedOut = /context deadline exceeded|Client\.Timeout exceeded|awaiting headers/i.test(summary)
+  const timedOut = /模型响应超时|context deadline exceeded|Client\.Timeout exceeded|awaiting headers/i.test(summary)
 
   if (/通过确定性校验/.test(summary)) {
     return {
@@ -34,15 +34,15 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
     }
   }
 
-  if (code === 'PROVIDER_UNAVAILABLE') {
-    return timedOut
-      ? { title: '模型服务请求超时', detail: '等待模型响应超过 120 秒，本次模型交互没有完成。', action: '系统会从当前检查点自动重试，连续 3 次失败后才停止。', retryable: true }
-      : { title: '模型服务暂时不可用', detail: '当前请求没有获得可用响应，已保留现有执行进度。', action: '系统会从当前检查点自动重试，连续 3 次失败后才停止。', retryable: true }
+	if (code === 'PROVIDER_UNAVAILABLE') {
+		return timedOut
+			? { title: '模型服务请求超时', detail: '模型在请求截止时间内没有返回，本次模型交互没有完成。', action: '系统会从当前检查点自动重试 1 次；仍失败就停止等待并保留进度。', retryable: true }
+			: { title: '模型服务暂时不可用', detail: '当前请求没有获得可用响应，已保留现有执行进度。', action: '系统会从当前检查点自动重试 1 次；仍失败就停止等待并保留进度。', retryable: true }
   }
   if (code === 'PROVIDER_AUTH') return { title: '模型凭证被拒绝', detail: '模型服务未接受当前凭证，任务没有继续执行。', action: '更新受保护的模型凭证后重试。', retryable: true }
   if (code === 'MODEL_CREDENTIAL_MISSING') return { title: '数据库中没有可用的模型配置', detail: '当前工作空间尚未保存模型配置，或对应系统凭据不可访问。', action: '运行 oktapod model configure 后直接重试。', retryable: true }
   if (code === 'BUDGET_RESERVATION_EXCEEDED' || code === 'BUDGET_EXCEEDED') return { title: '本次运行配额不足', detail: '任务下一步需要的 Token 或模型调用次数已超过本次 Run 的剩余配额，系统已保留当前检查点。', action: '请在任务详情增加本次 Run 的配额；保存后系统会从检查点重试。', retryable: false }
-  if (code === 'PROVIDER_RATE_LIMIT') return { title: '模型服务请求过多', detail: 'Provider 暂时拒绝了本次请求，现有步骤不会丢失。', action: '系统会自动重试，连续 3 次失败后才停止。', retryable: true }
+	if (code === 'PROVIDER_RATE_LIMIT') return { title: '模型服务请求过多', detail: 'Provider 暂时拒绝了本次请求，现有步骤不会丢失。', action: '系统会自动重试 1 次；仍被限流就停止等待。', retryable: true }
   if (code === 'PROVIDER_MODEL_NOT_FOUND') return { title: '所选模型不可用', detail: 'Provider 不支持当前任务冻结的模型。', action: '修改项目模型后重新创建任务。', retryable: false }
   if (code === 'PROVIDER_PROTOCOL_ERROR' || code === 'PROVIDER_EMPTY_RESPONSE') return { title: '模型返回内容不完整', detail: '响应无法解析或没有可用内容，现有步骤不会丢失。', action: '系统会自动修复并重试，连续 3 次失败后才停止。', retryable: true }
   if (code === 'PROVIDER_REASONING_TRUNCATED') return { title: '模型推理达到输出上限', detail: '模型只产生了内部推理，还没有形成回答或工具动作；系统没有把它误判为完成。', action: '系统会要求模型跳过重复分析，改为一次执行一个较小动作并自动续接。', retryable: true }
@@ -67,6 +67,24 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
 
 export type TimelineState = 'pending' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'muted'
 
+export type WebToolPresentation = {
+  kind: 'web_search'
+  query: string
+  provider: string
+  truncated: boolean
+  sources: Array<{ title: string; url: string; domain: string; snippet: string }>
+} | {
+  kind: 'web_fetch'
+  network_class: 'public' | 'private' | ''
+  rule_id: string
+  url: string
+  status_code: number
+  media_type: string
+  content_format: string
+  content_preview: string
+  truncated: boolean
+}
+
 export interface TaskTimelineItem {
   id: string
   label: string
@@ -79,6 +97,7 @@ export interface TaskTimelineItem {
     input: string
     result: string
     output: string
+    presentation?: WebToolPresentation
   }
 }
 
@@ -123,6 +142,7 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
     const toolInput = [...stepEvents].reverse().map((event) => payloadString(event, 'input_summary')).find(Boolean) ?? ''
     const toolResult = [...stepEvents].reverse().map((event) => payloadString(event, 'output_summary')).find(Boolean) ?? ''
     const toolOutput = [...stepEvents].reverse().map((event) => payloadString(event, 'output_excerpt')).find(Boolean) ?? ''
+    const toolPresentation = toolCompleted ? parseWebToolPresentation(toolCompleted.payload.presentation) : undefined
     const modelProgress = [...stepEvents].reverse().map((event) => payloadString(event, 'content')).find(Boolean) ?? ''
     const code = final ? payloadString(final, 'error_code') : ''
     let state: TimelineState = 'pending'
@@ -145,7 +165,7 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
       state,
       occurredAt: latest.occurred_at,
       code: code || undefined,
-      tool: toolName ? { name: toolName, input: toolInput, result: toolResult, output: toolOutput } : undefined,
+      tool: toolName ? { name: toolName, input: toolInput, result: toolResult, output: toolOutput, presentation: toolPresentation } : undefined,
     })
   }
 
@@ -154,6 +174,28 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
     items.push({ id: `status-${task.id}`, label: failure?.title ?? taskStatusView[task.status].label, detail: failure?.detail ?? '暂无可用的步骤事件。', state: task.status === 'succeeded' ? 'succeeded' : task.status === 'failed' ? 'failed' : task.status === 'blocked' ? 'blocked' : 'muted', occurredAt: task.updated_at, code: task.error_code })
   }
   return items
+}
+
+function parseWebToolPresentation(raw: unknown): WebToolPresentation | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = raw as Record<string, unknown>
+  if (value.kind === 'web_search') {
+    const sources = Array.isArray(value.sources) ? value.sources.flatMap((rawSource) => {
+      if (!rawSource || typeof rawSource !== 'object') return []
+      const source = rawSource as Record<string, unknown>
+      return [{ title: String(source.title ?? ''), url: String(source.url ?? ''), domain: String(source.domain ?? ''), snippet: String(source.snippet ?? '') }]
+    }) : []
+    return { kind: 'web_search', query: String(value.query ?? ''), provider: String(value.provider ?? ''), truncated: value.truncated === true, sources }
+  }
+  if (value.kind === 'web_fetch') {
+    const networkClass = value.network_class === 'private' ? 'private' : value.network_class === 'public' ? 'public' : ''
+    return {
+      kind: 'web_fetch', network_class: networkClass, rule_id: String(value.rule_id ?? ''), url: String(value.url ?? ''),
+      status_code: typeof value.status_code === 'number' ? value.status_code : 0, media_type: String(value.media_type ?? ''),
+      content_format: String(value.content_format ?? ''), content_preview: String(value.content_preview ?? ''), truncated: value.truncated === true,
+    }
+  }
+  return undefined
 }
 
 export function buildTaskExecutionPlan(events: RunEvent[], timeline: TaskTimelineItem[]): TaskExecutionPlan | undefined {
@@ -201,7 +243,7 @@ function modelStepLabel(events: RunEvent[], stepCount: number) {
 	if (retry) {
 		const code = payloadString(retry, 'error_code')
     const maxRetries = payloadNumber(retry, 'max_retries') || 3
-		const action = code === 'PROVIDER_TOOL_ARGUMENTS_INVALID' || code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED' ? '修复模型响应' : '重新连接模型'
+		const action = code === 'PROVIDER_TOOL_ARGUMENTS_INVALID' || code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED' ? '修复模型响应' : '重试模型请求'
 		return `${action}（第 ${payloadNumber(retry, 'retry_count') || 1}/${maxRetries} 次）`
 	}
   const role = events.map((event) => payloadString(event, 'role')).find(Boolean)
@@ -223,6 +265,6 @@ function roleLabel(role: string) {
 }
 
 function toolStepLabel(toolName: string) {
-  const labels: Record<string, string> = { workspace_write_file: '写入工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_run_command: '运行验证命令' }
+  const labels: Record<string, string> = { workspace_write_file: '写入工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_run_command: '运行验证命令', web_search: '搜索互联网来源', web_fetch: '读取网页来源' }
   return labels[toolName] ?? `执行工具：${toolName}`
 }

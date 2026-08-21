@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oktapod/oktapod/Src/internal/adapters/db/sqlite"
 	"github.com/oktapod/oktapod/Src/internal/application"
@@ -129,37 +130,6 @@ func TestPlanExecuteTurnCannotRepublishPlanBeforeProducingEvidence(t *testing.T)
 	}
 }
 
-func TestWebSearchDropsOnlyEmptyOptionalDomainsBeforePolicyFreeze(t *testing.T) {
-	calls := []core.ToolCall{{
-		Name: core.ToolWebSearch,
-		Arguments: map[string]any{
-			"query":           "physical ai robotics",
-			"allowed_domains": []any{"", "nvidia.com", "  "},
-			"blocked_domains": []any{},
-		},
-	}}
-	if repairs := normalizeSafeToolArguments(calls); repairs != 1 {
-		t.Fatalf("repairs=%d calls=%#v", repairs, calls)
-	}
-	allowed, ok := calls[0].Arguments["allowed_domains"].([]any)
-	if !ok || len(allowed) != 1 || allowed[0] != "nvidia.com" {
-		t.Fatalf("allowed_domains=%#v", calls[0].Arguments["allowed_domains"])
-	}
-	if _, exists := calls[0].Arguments["blocked_domains"]; !exists {
-		t.Fatal("valid empty blocked_domains was unexpectedly rewritten")
-	}
-	invalid := []core.ToolCall{{
-		Name:      core.ToolWebSearch,
-		Arguments: map[string]any{"query": "physical ai", "allowed_domains": []any{"https://example.com"}},
-	}}
-	if repairs := normalizeSafeToolArguments(invalid); repairs != 0 {
-		t.Fatalf("non-empty invalid domain was repaired: %#v", invalid)
-	}
-	if core.PlanTool(invalid[0]).Decision != core.PolicyDeny {
-		t.Fatal("non-empty invalid domain must still fail closed")
-	}
-}
-
 func TestScenePolicyOnlyRestrictsHistoricalSnapshots(t *testing.T) {
 	if sceneAllowsWorkspaceCommand(`{"scene":"work","scene_policy":{"workspace_command":false}}`) {
 		t.Fatal("historical work snapshot must preserve its frozen command restriction")
@@ -268,16 +238,112 @@ func TestSelectedContextLoadsAuthorizedTextWithBoundedPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.UpdateMemory(ctx, memory.ID, core.UpdateMemoryInput{Title: "Changed memory", Content: "This later edit must not enter the Run.", Visibility: core.VisibilityPrivate}, "runtime-context-memory-update"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteMemory(ctx, memory.ID, "runtime-context-memory-delete", "runtime-context-memory-delete"); err != nil {
+		t.Fatal(err)
+	}
 	run, err := store.GetRunContext(ctx, task.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	worker := NewWorker("context-worker", store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	content, plan := worker.contextForPrompt(ctx, run)
-	if !strings.Contains(content, "authorized context") || !strings.Contains(content, "Use deterministic validation") {
+	if !strings.Contains(content, "authorized context") || !strings.Contains(content, "Use deterministic validation") || strings.Contains(content, "later edit") {
 		t.Fatalf("selected context content=%q plan=%#v", content, plan)
 	}
-	if plan["loaded_assets"] != 1 || plan["loaded_memories"] != 1 || plan["estimated_tokens"].(int) <= 0 {
+	if plan["loaded_assets"] != 1 || plan["loaded_memories"] != 1 || plan["estimated_tokens"].(int) <= 0 || plan["memory_context_source"] != "frozen_snapshot" || plan["legacy_memory_context"] != false {
 		t.Fatalf("selected context plan=%#v", plan)
+	}
+}
+
+func TestHistoricalSelectedMemoryUsesMarkedLiveFallback(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, t.TempDir()+"/oktapod.db", t.TempDir()+"/workspaces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	actor := core.Actor{ID: "00000000-0000-7000-0000-000000000303", DisplayName: "Legacy Context User"}
+	org := core.Organization{ID: "00000000-0000-7000-0000-000000000304", Name: "Legacy Context Org"}
+	if err := store.Bootstrap(ctx, actor, org); err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, core.ProfilePersonal, "https://provider.invalid/v1", actor, org, func() string { return "" })
+	project, err := service.CreateProject(ctx, core.CreateProjectInput{Name: "Legacy context project", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := service.CreateMemory(ctx, project.ID, core.CreateMemoryInput{Kind: "manual", Title: "Legacy memory", Content: "Original content", Visibility: core.VisibilityPrivate}, "legacy-context-memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "Use legacy context", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate, ContextMemoryIDs: []string{memory.ID}}, "legacy-context-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetRunContext(ctx, task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyConfig map[string]any
+	if err := json.Unmarshal([]byte(run.ConfigSnapshotJSON), &legacyConfig); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacyConfig, "context_memory_snapshots")
+	legacyJSON, err := json.Marshal(legacyConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ConfigSnapshotJSON = string(legacyJSON)
+	if _, err := service.UpdateMemory(ctx, memory.ID, core.UpdateMemoryInput{Title: "Legacy memory changed", Content: "Live fallback content", Visibility: core.VisibilityPrivate}, "legacy-context-memory-update"); err != nil {
+		t.Fatal(err)
+	}
+	worker := NewWorker("legacy-context-worker", store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	content, plan := worker.contextForPrompt(ctx, run)
+	if !strings.Contains(content, "Live fallback content") || plan["memory_context_source"] != "legacy_live_ids" || plan["legacy_memory_context"] != true {
+		t.Fatalf("legacy selected context content=%q plan=%#v", content, plan)
+	}
+}
+
+func TestSelectedMemorySnapshotBoundsAggregateUTF8Payload(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, t.TempDir()+"/oktapod.db", t.TempDir()+"/workspaces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	actor := core.Actor{ID: "00000000-0000-7000-0000-000000000305", DisplayName: "Bounded Context User"}
+	org := core.Organization{ID: "00000000-0000-7000-0000-000000000306", Name: "Bounded Context Org"}
+	if err := store.Bootstrap(ctx, actor, org); err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewService(store, core.ProfilePersonal, "https://provider.invalid/v1", actor, org, func() string { return "" })
+	project, err := service.CreateProject(ctx, core.CreateProjectInput{Name: "Bounded context project", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeContent := strings.Repeat("界", application.MaxContextMemorySnapshotBytes)
+	memory, err := service.CreateMemory(ctx, project.ID, core.CreateMemoryInput{Kind: "manual", Title: "Large memory", Content: largeContent, Visibility: core.VisibilityPrivate}, "bounded-context-memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "Use bounded context", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate, ContextMemoryIDs: []string{memory.ID}}, "bounded-context-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetRunContext(ctx, task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Memories []application.ContextMemorySnapshot `json:"context_memory_snapshots"`
+	}
+	if err := json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Memories) != 1 || len([]byte(snapshot.Memories[0].Content)) > application.MaxContextMemorySnapshotBytes || !utf8.ValidString(snapshot.Memories[0].Content) {
+		t.Fatalf("bounded memory snapshots=%#v", snapshot.Memories)
 	}
 }

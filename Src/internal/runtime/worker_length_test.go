@@ -19,6 +19,17 @@ type countingSearch struct {
 	payload string
 }
 
+type blockingStreamingModel struct{}
+
+func (blockingStreamingModel) Complete(context.Context, ModelRequest) (core.ModelResult, error) {
+	panic("streaming path was not used")
+}
+
+func (blockingStreamingModel) Stream(ctx context.Context, _ ModelRequest, _ func(string) error) (core.ModelResult, error) {
+	<-ctx.Done()
+	return core.ModelResult{Provider: "test", Model: "slow-model", ErrorCode: "MODEL_ABORTED"}, ctx.Err()
+}
+
 func TestMCPCallsHaveABoundedExecutionDeadline(t *testing.T) {
 	worker := NewWorker("mcp-timeout-worker", nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if worker.mcpCallTimeout != 10*time.Minute {
@@ -27,6 +38,39 @@ func TestMCPCallsHaveABoundedExecutionDeadline(t *testing.T) {
 	worker.WithMCPCallTimeout(25 * time.Millisecond)
 	if worker.mcpCallTimeout != 25*time.Millisecond {
 		t.Fatalf("configured MCP timeout = %s, want 25ms", worker.mcpCallTimeout)
+	}
+}
+
+func TestModelTurnsHaveABoundedCompletionDeadline(t *testing.T) {
+	worker := NewWorker("model-timeout-worker", nil, blockingStreamingModel{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if worker.modelCallTimeout != 2*time.Minute {
+		t.Fatalf("default model timeout = %s, want 2m", worker.modelCallTimeout)
+	}
+	worker.WithModelCallTimeout(20 * time.Millisecond)
+	started := time.Now()
+	result, err := worker.completeModel(t.Context(), ModelRequest{})
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("model timeout returned after %s", elapsed)
+	}
+	if result.ErrorCode != "PROVIDER_UNAVAILABLE" || !isModelRequestTimeout(err) {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	failure := modelFailureDetails(err)
+	if failure["kind"] != "model_turn_timeout" || failure["phase"] != "model_turn" || failure["timed_out"] != true {
+		t.Fatalf("failure=%#v", failure)
+	}
+	if got := modelFailureSummary(result.ErrorCode, err); got != "模型本轮响应超过 120 秒；即使连接仍有数据，系统也已停止等待并从当前检查点重试。" {
+		t.Fatalf("summary=%q", got)
+	}
+}
+
+func TestModelTimeoutSummaryDistinguishesSlowProviderResponse(t *testing.T) {
+	err := errors.New("PROVIDER_UNAVAILABLE: context deadline exceeded (Client.Timeout exceeded while awaiting headers)")
+	if !isModelRequestTimeout(err) {
+		t.Fatal("expected provider timeout to be recognized")
+	}
+	if got := modelFailureSummary("PROVIDER_UNAVAILABLE", err); got != "模型响应超时；系统将从当前检查点自动重试。" {
+		t.Fatalf("summary=%q", got)
 	}
 }
 

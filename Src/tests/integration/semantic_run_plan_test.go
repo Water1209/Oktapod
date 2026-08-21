@@ -321,7 +321,7 @@ func TestRuntimePlanStructureRewriteProjectsProgressOntoStableRevision(t *testin
 			}}
 		case 2:
 			toolName = core.ToolWebSearch
-			arguments = map[string]any{"query": "physical ai foundation model", "max_results": 3}
+			arguments = map[string]any{"query": "physical ai foundation model"}
 		case 3:
 			toolName = core.ToolUpdatePlan
 			arguments = map[string]any{"items": []map[string]any{
@@ -420,7 +420,7 @@ func TestPlanStatusRegressionIsAutomaticallyRepaired(t *testing.T) {
 			}}
 		case 2:
 			toolName = core.ToolWebSearch
-			arguments = map[string]any{"query": "verified source", "max_results": 3}
+			arguments = map[string]any{"query": "verified source"}
 		case 3:
 			toolName = core.ToolUpdatePlan
 			arguments = map[string]any{"items": []map[string]any{

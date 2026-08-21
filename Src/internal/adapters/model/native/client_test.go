@@ -7,10 +7,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 	okruntime "github.com/oktapod/oktapod/Src/internal/runtime"
 )
+
+func TestNativeClientUsesPhaseTimeoutsWithoutBoundingHealthyStreams(t *testing.T) {
+	client := New(ProtocolAnthropic, "http://provider.test", "model-test", func() string { return "fake-test-key" })
+	if client.httpClient.Timeout != 0 {
+		t.Fatalf("provider total timeout=%s, want disabled", client.httpClient.Timeout)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok || transport.ResponseHeaderTimeout != time.Minute {
+		t.Fatalf("response header timeout=%v, want 1m", transport)
+	}
+}
 
 func TestAnthropicNativeMapsTypedMessagesToolsUsageAndStopReason(t *testing.T) {
 	var received map[string]any

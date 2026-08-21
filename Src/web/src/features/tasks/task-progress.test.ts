@@ -16,7 +16,7 @@ describe('task progress presentation', () => {
       title: '模型服务请求超时',
       retryable: true,
     })
-    expect(taskFailureInfo(task)?.action).toContain('连续 3 次失败后才停止')
+		expect(taskFailureInfo(task)?.action).toContain('自动重试 1 次')
   })
 
   it('turns a budget error into an actionable recovery reason', () => {
@@ -136,8 +136,22 @@ describe('task progress presentation', () => {
     const plan = buildTaskExecutionPlan(events, timeline)
     expect(plan).toMatchObject({ iteration: 2, summary: '先检索，再生成报告。' })
     expect(plan?.items).toEqual([
-      expect.objectContaining({ index: 1, label: '执行工具：web_search', state: 'succeeded' }),
+      expect.objectContaining({ index: 1, label: '搜索互联网来源', state: 'succeeded' }),
       expect.objectContaining({ index: 2, label: '写入工作区文件', state: 'pending' }),
     ])
+  })
+
+  it('preserves the governed private fetch presentation without rendering HTML', () => {
+    const events: RunEvent[] = [
+      { id: 'event-fetch-1', run_id: 'run-1', stream_seq: 1, event_type: 'tool.completed', occurred_at: '2026-08-20T12:00:00Z', payload: {
+        step_id: 'step-fetch', tool_name: 'web_fetch', input_summary: 'http://127.0.0.1:3000/docs', output_summary: '完成',
+        presentation: { kind: 'web_fetch', network_class: 'private', rule_id: 'local-preview', url: 'http://127.0.0.1:3000/docs', status_code: 200, media_type: 'text/html', content_format: 'markdown', content_preview: '<script>never execute</script> # Docs', truncated: true },
+      } },
+      { id: 'event-fetch-2', run_id: 'run-1', stream_seq: 2, event_type: 'step.succeeded', occurred_at: '2026-08-20T12:00:01Z', payload: { step_id: 'step-fetch', result_summary: '完成' } },
+    ]
+    const timeline = buildTaskTimeline({ ...task, status: 'succeeded', error_code: '', result_summary: '完成' }, events)
+    expect(timeline.find((item) => item.tool?.name === 'web_fetch')).toMatchObject({ label: '读取网页来源', tool: { name: 'web_fetch', presentation: {
+      kind: 'web_fetch', network_class: 'private', rule_id: 'local-preview', status_code: 200, content_preview: '<script>never execute</script> # Docs', truncated: true,
+    } } })
   })
 })

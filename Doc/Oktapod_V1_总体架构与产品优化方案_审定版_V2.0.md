@@ -1,11 +1,11 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.4（消息真源、预算决策与任务面板修订）
+> **文档版本**：V2.6（Web Access 安全边界修订）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
-> **编制日期**：2026-08-13
+> **编制日期**：2026-08-20
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
 > **配套执行文件**：`Oktapod_V1_执行计划与验收门禁_V1.0.md`（任务卡、验收门禁、实施顺序）
-> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），2026-08-13 功能基线 `main@6b8c60e`
+> **输入代码基线**：`Src/`（Go）+ `Src/web/`（React/TS），2026-08-20 `codex/runtime-convergence-v1.1` 本地工作树
 
 > **阅读规则**：本文件同时保留目标架构和当前落地边界。发布完成度只以《Oktapod V1 验收状态与追踪矩阵》为准；目标目录、代码行数或尚未物理迁移的职责不得当作已完成事实。
 
@@ -150,22 +150,18 @@ V1 已建立：
 │  事件: ModelStarted/TextDelta/ToolBatchProposed │
 └─────────────┬─────────────────┬─────────────┘
               │                 │
-┌─────────────▼─────────┐ ┌─────▼─────────────┐
-│ Prompt & Context      │ │ Tool Context      │
-│ Planner               │ │ Planner           │
-│ (Bundle / Hash /      │ │ (Skill /          │
-│  压缩策略)             │ │  Capability 过滤) │
-└─────────────┬─────────┘ └─────┬─────────────┘
-              │                 │
-              └────────┬────────┘
-                       │
 ┌──────────────────────▼──────────────────────┐
-│         Unified Tool Registry               │
-│  Native Tools + MCP Tools + ToolSpec        │
+│ AgentTurnAssembler + ToolCatalogBuilder     │
+│ PromptSection / Context / Transcript / Hash │
 └──────────────────────┬──────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────┐
-│ ExecutionPolicy → ExecutionAuthorization → Broker │
+│ ToolRuntime: Decode → Preflight → Begin     │
+│ → Native/MCP Handler → Normalize            │
+└──────────────────────┬──────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────┐
+│ ExecutionPolicy → ExecutionAuthorization → Receipt │
 └──────────────┬─────────────────┬────────────┘
                │                 │
        ┌───────▼──────┐  ┌───────▼──────────┐
@@ -180,7 +176,7 @@ V1 已建立：
 └──────────────────────────────────────────────┘
 ```
 
-**当前边界**：`ExecutionPolicy` 与 `ExecutionAuthorization` 已形成统一执行门禁；Prompt/Context 与 Tool Context 是逻辑边界，仍有部分编排位于 Worker。V1 以行为合同和安全不变量为门禁，后续再继续物理拆分。
+**当前边界**：工具型主 Agent 的最终 ModelRequest 统一由 `AgentTurnAssembler` 组装，Tool Definitions 与 AllowedTools 来自同一个 `ToolCatalogBuilder` 结果；Skill、Web、Workspace/Artifact/Asset 与 MCP 统一经过 `ToolRuntime`。Worker 只保留 Claim/Lease、模型或专用工作流分派以及 Finish 编排。Receipt、Authorization、Checkpoint、ToolBatch、Artifact 和 Completion Gate 的持久权威仍在 Durable Harness/SQLite，没有建立第二套状态真源。Agent Team、搜索综合和 Reviewer 保持无工具专用模型工作流，不进入主 Agent Assembler。
 
 任务流摘要必须穷举持久化 `Task.status`；事件流停止只表示不再接收事件，不能推断任务成功。暂停、等待审批、等待输入、阻塞、失败、取消和成功必须保持独立用户语义。
 
@@ -218,6 +214,12 @@ TurnCompleted / TurnFailed / ContextLimitReached
 **不依赖**：DB、HTTP、用户 Session、SQLite、MCP Transport、具体工具实现、审批存储、UI。
 
 当前 `Src/internal/agentloop` 已承载稳定状态、事件与终止判断，Provider 调用、ToolBatch 编排的部分实现仍在 Worker。该物理差距是维护性事项，只要 Golden Trace 与恢复合同不回退，不阻塞 V1 个人版发布。
+
+#### 4.1.1 AgentTurnAssembler
+
+`AgentTurnAssembler` 是工具型主 Agent 的唯一请求装配入口。它在同一次调用内完成冻结上下文、Prompt Sections、Transcript、ToolCatalog、ModelRef、Thinking、Token 上限和 `ContextPlan`，然后计算 `assembly_hash`。Hash 覆盖最终 System Prompt、Messages、Tool Definitions、AllowedTools、工具 Scope、ModelRef、Thinking、Token 上限和移除 hash 字段后的 ContextPlan；相同 Run + Step 必须产生完全相同的请求。
+
+`ToolCatalogBuilder` 完整保留 Builtin/MCP/Skill/显式 Provider/Scene/Search Budget 的既有过滤次序。Definitions 与 AllowedTools 不允许由调用方分别重建。Prompt 使用静态 `PromptSection{Name, Order, Text}` 排序，不建设动态插件注册表。任何新的工具型主 Agent 路径必须经过该 Assembler；无工具专用工作流不得为了形式统一而强塞进来。
 
 ### 4.2 Durable Harness
 
@@ -259,7 +261,15 @@ run_id / step_id / tool_call_id / tool_identity /
 input_hash / scope / risk / expires_at / policy_version
 ```
 
-Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存在、Input Hash、Tool、Risk、Policy Version、有效期和 Scope。任一字段变化即 fail-closed。当前同进程、同数据库威胁模型下，额外 HMAC 不能防止拥有数据库写权限的攻击者伪造审批，反而引入密钥生命周期和重启恢复故障，因此 V1 不新增 HMAC Grant 表。
+Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存在、Input Hash、Tool、Risk、Policy Version、有效期和 Scope。任一字段变化即 fail-closed。私网 `web_fetch` 使用窄化的 `run_approval_rules`：授权只绑定 Organization/Project/Run、`web_fetch`、canonical origin、Web 策略 Hash 和最长 24 小时 TTL；每个 ToolCall 仍绑定完整 URL 与 Input Hash。`run_origin` 不升级为 Conversation/Project 规则，Full Access 与 Reviewer 均不能创建它。当前同进程、同数据库威胁模型下，额外 HMAC 不能防止拥有数据库写权限的攻击者伪造审批，反而引入密钥生命周期和重启恢复故障，因此 V1 不新增 HMAC Grant 表。
+
+#### 4.4.1 ToolRuntime 与 Receipt 边界
+
+`ToolRuntime` 对全部工具执行固定管线：严格解码 `FrozenToolInvocation` → 解析冻结 Tool/Capability 合同 → 重算 Input Hash 与幂等性 → Handler 预检 → Durable `BeginToolExecution` → 静态 Handler → 统一 `core.ToolExecution`。只有预检成功才允许创建 `started` Receipt；Begin 成功后的已收敛结果必须携带 InvocationID 交给 Durable `FinishStep` 原子关闭。
+
+通用层不吸收 Capability 私有语义：Artifact 自动 Capture、Workspace CAS/Git Status Hash、外部不可信 Envelope、MCP OAuth/Secret、Web DNS/Dial/内容边界和进程树终止仍在对应 Handler/Adapter。Planning、Begin 与 Runtime 共用同一 MCP 或 Web Access 快照风险/幂等性推导；SQLite `BeginToolExecution` 使用 Store 注入的同一 `ExecutionPolicy`，并继续验证 Lease/Fence、Scope、Risk、Policy Version、Input Hash 和审批绑定。Web Receipt 额外记录 `network_class`、匹配配置规则 ID、策略 Hash 与授权 ID。
+
+取消边界单调收敛：Begin 前取消不派发也不创建 Receipt；Begin 后等待 executor 完成进程树终止或网络调用收敛，Workspace/MCP 取消均返回 `TOOL_CANCELED`，超时保留各自 Timeout Code。Task Cancel 事务将仍为 `started` 的 Receipt 标记为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`；迟到的 Finish 因 Fence 失效不能覆盖，非幂等 unknown 禁止自动重试。
 
 ### 4.5 Project Sandbox（V1 最小可行）
 
@@ -272,15 +282,15 @@ V1 的默认模式命名为 `governed_host`，只承诺：
 - 进程树终止；
 - 命令超时与进程树终止。
 
-任意宿主 Shell 进程仍可能通过绝对路径访问宿主文件，因此 UI 必须标注："宿主受控执行，非强沙箱"。非 root、挂载隔离和网络默认拒绝只在容器/OS 强沙箱模式下声明。
+任意宿主 Shell 进程仍可能通过绝对路径访问宿主文件，因此 UI 必须标注："宿主受控执行，非强沙箱"。非 root、挂载隔离和通用进程网络默认拒绝只在容器/OS 强沙箱模式下声明。内建 `web_fetch` 是独立的受控网络适配器：不使用系统代理、Cookie 或凭据，域名的全部 DNS 结果与实际 Dial 绑定，逐跳验证重定向并限制响应类型与大小；这不等价于宿主进程网络沙箱。
 
-**V1.1 再补**：网络默认拒绝、受控网络授权、完整容器沙箱。
+**V1.1 再补**：通用进程网络默认拒绝与完整容器沙箱；内建 Web Access 的精确私网 origin 授权已经落地。
 
 ### 4.6 Scene、Permission Mode 与 ExecutionPolicy
 
 V1 只保留一套 Executor。`scene=work|code` 是工作流配置，只影响 Prompt、上下文优先级和默认界面；`permission_mode=ask|auto_review|full_access` 只决定 `ExecutionPolicy` 返回 `Ask` 后由用户、Reviewer 还是已授权自动执行。`ExecutionPolicy` 只根据工具、冻结参数、Scope 和风险产生 `Allow / Ask / Deny`，不读 Work/Code。因此 Work/Code 都可使用 Workspace、命令、Git、Skill、MCP 和 Artifact；历史 Run 仍按冻结的 `scene_policy` 恢复，新 Run 不再由场景生成能力升级。
 
-Reviewer 只审查 Policy 已判为 `Ask` 的 L2 动作，输入只有脱敏目标、工具、冻结参数摘要、Scope、风险和策略理由；没有工具、凭据或完整执行输出。结构版本为 `reviewer-decision-v1`，超时、非法输出、未配置或 L3 全部 fail-closed 并转人工/拒绝。
+Reviewer 只审查 Policy 已判为 `Ask` 的普通 L2 动作，输入只有脱敏目标、工具、冻结参数摘要、Scope、风险和策略理由；没有工具、凭据或完整执行输出。结构版本为 `reviewer-decision-v1`，超时、非法输出、未配置或 L3 全部 fail-closed 并转人工/拒绝。私网 `web_fetch` 虽为 L2，但带 `ForceHumanApproval`，禁止 Reviewer 与 Full Access 代替人工建立 `run_origin` 授权。
 
 ### 4.7 Workspace、Asset、Artifact 与 Changes
 
@@ -301,7 +311,9 @@ Agent 创建多个文件前必须先检查项目约定并给出简洁文件计�
 
 ### 4.8 统一配置与数据库 Secret Vault
 
-启动配置、产品配置和设备状态必须是三个明确边界：`config.yaml` 只负责 Profile、监听地址、DataRoot、Run 并发、数据库驱动和 Capability 信任键；Reviewer、版本化模型价格、上下文策略和用户偏好进入数据库；Composer 草稿、侧栏与 Inspector 页签保留在当前设备。`full_access` 永不作为跨设备默认值。启动配置加载顺序为 `--config > OKTAPOD_CONFIG_FILE > 默认 config.yaml > 内置默认值`，严格拒绝未知字段；数据库连接凭据是“打开数据库之前”的 Bootstrap Secret 例外，不得反向存入尚未打开的数据库。
+启动配置、产品配置和设备状态必须是三个明确边界：`config.yaml` 只负责 Profile、监听地址、DataRoot、Run 并发、数据库驱动、Capability 信任键和 Web Access 私网安全边界；Reviewer、版本化模型价格、上下文策略和用户偏好进入数据库；Composer 草稿、侧栏与 Inspector 页签保留在当前设备。`full_access` 永不作为跨设备默认值。启动配置加载顺序为 `--config > OKTAPOD_CONFIG_FILE > 默认 config.yaml > 内置默认值`，严格拒绝未知字段；数据库连接凭据是“打开数据库之前”的 Bootstrap Secret 例外，不得反向存入尚未打开的数据库。
+
+`web_access.private_fetch` 默认关闭；开启时必须配置 1～64 个唯一 ID 的精确 HTTP/HTTPS 字面量 IP + 显式端口 origin，不支持域名、CIDR、路径或通配符，并永久拒绝链路本地、组播、未指定、广播、云元数据和自身监听 origin。Run 创建时只冻结允许 origin Hash 与策略 Hash；执行取冻结策略和当前启动策略交集，因此新增规则不扩权旧 Run，关闭/删除/修改 origin 会收回对应权限。策略 Hash 变化后旧 `run_origin` 授权不再复用，但仍在交集中的 origin 可重新人工批准。普通成员只看到 enabled 与 count，完整 origin 只向 Owner/Admin 返回。
 
 Provider、MCP 多字段 Secret 与 OAuth Token 统一经 Application `SecretStore` Port 进入 `DatabaseSecretStore`。SQLite Repository 只保存 AES-256-GCM 密文：每组织随机 256-bit DEK，每条记录独立 Nonce，AAD 绑定 Schema、Organization、Secret Ref、Kind 和 Key Version。业务层只观察 `ready | locked | missing | corrupt`；解密或认证失败必须返回 `SECRET_CIPHERTEXT_INVALID`，不得回退为空值或继续调用外部系统。正常运行路径不读取 Windows Credential Manager、Linux Secret Service 或 macOS Keychain，也不接受模型 Key、Reviewer 和价格环境变量作为第二真源。
 
@@ -335,9 +347,9 @@ run_command / artifact_capture / asset_stage / update_plan
 
 ### 5.2 MCP 工具
 
-互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。
+互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。内建 `web_search` 与 `web_fetch` 共同实现 `WebAccess`，前者只向模型暴露单个 `query` 并保持 DDG → Bing RSS 零凭据链路，后者只向模型暴露单个 URL 参数。
 
-现有内建搜索注册为内置 ToolSpec，提供无外部凭据的最低可用能力。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。多项 Secret 以一个不透明加密集合经 SecretStore Port 写入数据库 Vault，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情；SQLite 只保存应用层密文。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：过滤内建搜索和其他 MCP，防止静默改用其他外部数据源；工作区、Git、计划、输入和审批等本地交付能力继续可用，使 Agent 能把指定 MCP 的证据写成文件并验证。Tavily 是可选首选，不进入核心依赖。
+现有内建 Search/Fetch 注册为 Web Renderer ToolSpec，提供无外部凭据的最低可用能力。Fetch 固定 GET-only、30 秒、解压后 2 MiB、转换输入 256 KiB、模型正文 24 KiB、HTML 深度 512；支持 HTML/text/JSON/XML，HTML 经固定 `html-to-markdown/v2@v2.5.2` 转为 CommonMark/table 并移除脚本，失败降级受限纯文本。最多 5 次同源重定向；跨 origin 不访问，只返回目标供新的受治理调用。网页输出标记 `external_untrusted`，模型 Prompt 禁止把页面指令当作权限或策略。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。多项 Secret 以一个不透明加密集合经 SecretStore Port 写入数据库 Vault，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情；SQLite 只保存应用层密文。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：同时过滤内建 `web_search`、`web_fetch` 和其他 MCP，防止静默改用或混用其他外部数据源；工作区、Git、计划、输入和审批等本地交付能力继续可用，使 Agent 能把指定 MCP 的证据写成文件并验证。Tavily 是可选首选，不进入核心依赖。
 
 用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。活动 Run 引用时拒绝删除；历史 Run 快照和脱敏审计保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。前端只能声明“客户端预检通过”，必须等服务端完整扫描通过后才能进入审批；失败时展示结构化原因，并可将修复上下文带入新对话交给内置只读 Skill Creator 生成兼容副本。所有草稿仍进入同一 ZIP 校验、权限差异和人工审批链。
 
@@ -462,7 +474,7 @@ Skill 工具约束保存在已审核 Manifest；执行授权复用 approval、ap
 
 ## 10. Prompt 与外部内容安全（V1 终版）
 
-`PromptAssembler` 只组装公共身份/安全边界、Work/Code 工作流、计划/执行/恢复 Stage 和当前真实 ToolSpec 目录；不在 Worker 重复声明规则，不提示 Schema 中不存在的工具。项目指令按项目根到当前目录合并，同目录 `AGENTS.override.md` 优先于 `AGENTS.md`，最多 32 KiB；路径、内容 Hash 和内容冻结到 Run，Run 中修改只影响下一个 Run。
+`AgentTurnAssembler` 通过 `PromptAssembler` 的静态 Sections 组装公共身份/安全边界、Work/Code 工作流、计划/执行/恢复 Stage 和当前真实 ToolSpec 目录；不在 Worker 重复声明规则，不提示 Schema 中不存在的工具。项目指令按项目根到当前目录合并，同目录 `AGENTS.override.md` 优先于 `AGENTS.md`，最多 32 KiB；路径、内容 Hash 和内容冻结到 Run，Run 中修改只影响下一个 Run。用户显式选择的 Memory 也会在 Task 创建时把标题、来源 Hash 与最多 24 KiB 的实际 Prompt 载荷冻结进 Run；后续编辑或删除不改变新 Run，缺少该字段的历史 Run 才使用 live-ID 回退，并在 ContextPlan 明确标记 legacy。
 
 所有外部内容统一标记 `external_untrusted`，包括：搜索结果、网页内容、GitHub Issue、MCP ToolResult、数据库文本、邮件、仓库内指令文件。
 
@@ -534,6 +546,7 @@ V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Ubuntu 与 Win
 | ADR-013 | **Scene 不授权** | Work/Code 共用执行内核，只改工作流；授权与风险判定独立 |
 | ADR-014 | **Artifact Capture 是唯一产物登记口** | 不扫描整个 Workspace，完成必须有可审计、可校验的新 Artifact |
 | ADR-015 | **文件类型不混储** | Workspace、Asset、Artifact 分别表示可变工作、可复用输入和不可变交付；Changes 只派生 Git |
+| ADR-016 | **私网 Web Access 三层授权** | 启动精确白名单 + Run Hash 快照 + 每 Run 每 origin 人工授权；当前策略只能收权不能给旧 Run 扩权 |
 
 ---
 

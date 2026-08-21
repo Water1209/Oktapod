@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useParams } from '@tanstack/react-router'
-import { AlertTriangle, BadgeDollarSign, Bot, CheckCircle2, Copy, Database, Download, HardDrive, KeyRound, Palette, RotateCcw, Save, Server, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, BadgeDollarSign, Bot, CheckCircle2, Copy, Database, Download, Globe2, HardDrive, KeyRound, Palette, Plus, RotateCcw, Save, Server, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { api, displayError, type AIGovernanceSettings, type BootstrapConfiguration, type ContextSettings, type ModelPricingVersion, type ProviderInstance, type UserPreferences } from '../../shared/api/client'
 import { applyPresentationPreferences, defaultPresentationPreferences, presentationPreferenceStorageKey, readPresentationPreferences } from '../../shared/presentation-preferences'
+import { validatePrivateFetchDraft } from './private-fetch-validation'
 
 type SettingsSection = 'governance' | 'runtime' | 'pricing' | 'vault' | 'data' | 'appearance'
 type SettingsNavigation = 'providers' | SettingsSection
@@ -26,13 +27,22 @@ function RuntimeSettings() {
   const [bootstrapDraft, setBootstrapDraft] = useState<Partial<BootstrapConfiguration>>({})
   const [contextDraft, setContextDraft] = useState<Partial<ContextSettings>>({})
   const [savedBootstrap, setSavedBootstrap] = useState<BootstrapConfiguration>()
-  const effectiveBootstrap = configuration.data ? { ...configuration.data, ...bootstrapDraft } : undefined
+  const bootstrapBase = savedBootstrap ?? configuration.data
+  const effectiveBootstrap = bootstrapBase ? { ...bootstrapBase, ...bootstrapDraft } : undefined
   const effectiveContext = context.data ? { ...context.data, ...contextDraft } : undefined
+  const privateFetch = effectiveBootstrap?.web_access?.private_fetch
+  const privateFetchValidationError = validatePrivateFetchDraft(privateFetch)
+  const privateFetchInvalid = Boolean(privateFetchValidationError)
   const hasBootstrapChanges = Object.keys(bootstrapDraft).length > 0
   const hasContextChanges = Object.keys(contextDraft).length > 0
   const saveAll = useMutation({
     mutationFn: async () => {
-      const bootstrap = hasBootstrapChanges ? await api.updateBootstrapConfiguration(bootstrapDraft) : undefined
+      const { web_access: webAccessDraft, ...bootstrapFields } = bootstrapDraft
+      const bootstrapInput = webAccessDraft ? {
+        ...bootstrapFields,
+        web_access: { private_fetch: { enabled: webAccessDraft.private_fetch.enabled, allowed_origins: webAccessDraft.private_fetch.allowed_origins } },
+      } : bootstrapFields
+      const bootstrap = hasBootstrapChanges ? await api.updateBootstrapConfiguration(bootstrapInput) : undefined
       const contextSettings = hasContextChanges ? await api.updateContextSettings({
         auto_compact: effectiveContext?.auto_compact ?? true,
         trigger_tokens: effectiveContext?.trigger_tokens ?? 80_000,
@@ -52,6 +62,13 @@ function RuntimeSettings() {
       ])
     },
   })
+  const updatePrivateFetch = (next: Partial<BootstrapConfiguration['web_access']['private_fetch']>) => {
+    if (!effectiveBootstrap) return
+    setBootstrapDraft({
+      ...bootstrapDraft,
+      web_access: { private_fetch: { ...effectiveBootstrap.web_access.private_fetch, ...next } },
+    })
+  }
 
   return <SettingsLayout active="runtime">
     <div className="settings-group settings-ledger-page">
@@ -65,6 +82,16 @@ function RuntimeSettings() {
           <SettingRow label="并发 Run" meta={sourceMeta(configuration.data!, true)}><input type="number" min={1} max={4} value={effectiveBootstrap.run_concurrency} onChange={(event) => setBootstrapDraft({ ...bootstrapDraft, run_concurrency: Number(event.target.value) })} /></SettingRow>
           <SettingRow label="Capability 信任公钥文件" meta={sourceMeta(configuration.data!, true)}><input value={effectiveBootstrap.trusted_keys_file} onChange={(event) => setBootstrapDraft({ ...bootstrapDraft, trusted_keys_file: event.target.value })} /></SettingRow>
         </div>
+        <SettingsSectionHeader title="Web Access 网络边界" description="公网网页保持受控读取；私网仅允许精确 IP + 端口，保存后重启生效。" />
+        {privateFetch ? <section className={`private-fetch-settings ${privateFetch.enabled ? 'enabled' : ''}`}>
+          <div className="private-fetch-heading"><span><Globe2 size={18} /><span><strong>受控私网读取</strong><small>首次访问每个 origin 仍需人工批准；完全访问和 AI Reviewer 不会代替该审批。</small></span></span><label><input aria-label="启用受控私网读取" type="checkbox" disabled={privateFetch.origins_redacted} checked={privateFetch.enabled} onChange={(event) => updatePrivateFetch({ enabled: event.target.checked })} />{privateFetch.enabled ? '已启用' : '默认关闭'}</label></div>
+          {privateFetch.origins_redacted ? <div className="private-fetch-redacted"><ShieldCheck size={16} /><span>当前配置包含 {privateFetch.allowed_origin_count} 条规则。只有 Owner / Admin 可以查看完整 origin 并修改。</span></div> : <div className="private-origin-editor">
+            {privateFetch.allowed_origins.map((item, index) => <div className="private-origin-row" key={`${item.id}:${index}`}><input aria-label={`规则 ${index + 1} ID`} value={item.id} placeholder="intranet-wiki" onChange={(event) => updatePrivateFetch({ allowed_origins: privateFetch.allowed_origins.map((origin, row) => row === index ? { ...origin, id: event.target.value } : origin) })} /><input aria-label={`规则 ${index + 1} Origin`} value={item.origin} placeholder="http://192.168.10.20:8080" onChange={(event) => updatePrivateFetch({ allowed_origins: privateFetch.allowed_origins.map((origin, row) => row === index ? { ...origin, origin: event.target.value } : origin) })} /><button type="button" aria-label={`删除规则 ${item.id || index + 1}`} onClick={() => updatePrivateFetch({ allowed_origins: privateFetch.allowed_origins.filter((_, row) => row !== index) })}><Trash2 size={14} /></button></div>)}
+            <button className="secondary-button compact private-origin-add" type="button" disabled={privateFetch.allowed_origins.length >= 64} onClick={() => updatePrivateFetch({ allowed_origins: [...privateFetch.allowed_origins, { id: '', origin: '' }] })}><Plus size={14} />添加精确 origin</button>
+            <small>仅 HTTP/HTTPS、字面量 IPv4/IPv6 和显式端口；不支持域名、路径、CIDR、通配符或端口范围。</small>
+            {privateFetchValidationError ? <div className="form-error">{privateFetchValidationError}</div> : null}
+          </div>}
+        </section> : null}
       </> : <p className="muted-row">正在读取有效配置…</p>}
       {effectiveContext ? <>
         <SettingsSectionHeader title="上下文压缩" description="保存在数据库，对新启动的模型调用立即生效。" />
@@ -76,7 +103,7 @@ function RuntimeSettings() {
         </div>
       </> : <p className="muted-row">正在读取上下文策略…</p>}
       {saveAll.error ? <div className="form-error settings-inline-error">{displayError(saveAll.error)}</div> : null}
-      <SettingsSaveBar changed={hasBootstrapChanges || hasContextChanges} pending={saveAll.isPending} restart={hasBootstrapChanges} label="保存本页更改" onSave={() => saveAll.mutate()} />
+      <SettingsSaveBar changed={hasBootstrapChanges || hasContextChanges} pending={saveAll.isPending} restart={hasBootstrapChanges} disabled={privateFetchInvalid} label="保存本页更改" onSave={() => saveAll.mutate()} />
     </div>
   </SettingsLayout>
 }

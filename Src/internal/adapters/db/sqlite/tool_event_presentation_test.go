@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
@@ -56,23 +57,23 @@ func TestConversationApprovalRuleKeyScope(t *testing.T) {
 
 func TestMCPPolicyRequiresCompleteSafeAnnotations(t *testing.T) {
 	missing := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":true}}]}]}`
-	if risk, idempotent, _ := mcpPolicyFromSnapshot(missing, "mcp__cap-1__search"); risk != "L2" || !idempotent {
+	if risk, idempotent, _ := application.MCPPolicyFromSnapshot(missing, "mcp__cap-1__search"); risk != "L2" || !idempotent {
 		t.Fatalf("missing annotations risk=%s idempotent=%v", risk, idempotent)
 	}
 	missingMutation := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"confirm","annotations":{}}]}]}`
-	if risk, idempotent, _ := mcpPolicyFromSnapshot(missingMutation, "mcp__cap-1__confirm"); risk != "L3" || idempotent {
+	if risk, idempotent, _ := application.MCPPolicyFromSnapshot(missingMutation, "mcp__cap-1__confirm"); risk != "L3" || idempotent {
 		t.Fatalf("missing mutation annotations risk=%s idempotent=%v", risk, idempotent)
 	}
 	safe := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}]}]}`
-	if risk, idempotent, _ := mcpPolicyFromSnapshot(safe, "mcp__cap-1__search"); risk != "L2" || !idempotent {
+	if risk, idempotent, _ := application.MCPPolicyFromSnapshot(safe, "mcp__cap-1__search"); risk != "L2" || !idempotent {
 		t.Fatalf("safe annotations risk=%s idempotent=%v", risk, idempotent)
 	}
 	openWorld := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}]}]}`
-	if risk, idempotent, _ := mcpPolicyFromSnapshot(openWorld, "mcp__cap-1__search"); risk != "L2" || !idempotent {
+	if risk, idempotent, _ := application.MCPPolicyFromSnapshot(openWorld, "mcp__cap-1__search"); risk != "L2" || !idempotent {
 		t.Fatalf("open-world annotation risk=%s", risk)
 	}
 	destructive := `{"mcp_capabilities":[{"id":"cap-1","tools":[{"name":"search","annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}]}]}`
-	if risk, idempotent, _ := mcpPolicyFromSnapshot(destructive, "mcp__cap-1__search"); risk != "L3" || idempotent {
+	if risk, idempotent, _ := application.MCPPolicyFromSnapshot(destructive, "mcp__cap-1__search"); risk != "L3" || idempotent {
 		t.Fatalf("destructive annotation risk=%s idempotent=%v", risk, idempotent)
 	}
 }
