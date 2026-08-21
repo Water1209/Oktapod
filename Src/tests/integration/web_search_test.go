@@ -52,7 +52,7 @@ func TestWebSearchToolExecutesAndSynthesizesCitedAnswer(t *testing.T) {
 			if !strings.Contains(string(body), `"name":"web_search"`) {
 				t.Fatalf("web_search schema missing: %s", body)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "search-plan", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "search-call", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"Oktapod current","max_results":5}`}}}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "search-plan", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "search-call", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"Oktapod current"}`}}}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5}})
 			return
 		}
 		if !strings.Contains(string(body), "https://docs.example.test/oktapod") || !strings.Contains(string(body), `"tools"`) {

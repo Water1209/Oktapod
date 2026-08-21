@@ -14,6 +14,12 @@ type WebSearchExecutor interface {
 	Execute(ctx context.Context, call core.ToolCall) core.ToolExecution
 }
 
+type WebAccess interface {
+	Search(context.Context, core.WebSearchRequest) (core.WebSearchResult, error)
+	Fetch(context.Context, core.WebFetchRequest) (core.WebFetchResult, error)
+	EvaluateFetch(snapshotJSON, rawURL string) core.WebFetchPolicyDecision
+}
+
 func builtinToolDefinitions() []ToolDefinition {
 	specs := core.BuiltinToolSpecs()
 	definitions := make([]ToolDefinition, 0, len(specs))

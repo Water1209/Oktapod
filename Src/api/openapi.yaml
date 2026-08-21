@@ -2559,7 +2559,7 @@ components:
   schemas:
     BootstrapConfiguration:
       type: object
-      required: [profile, listen_address, data_root, run_concurrency, database_driver, trusted_keys_file, config_path, source, restart_required]
+      required: [profile, listen_address, data_root, run_concurrency, database_driver, trusted_keys_file, config_path, source, restart_required, web_access]
       properties:
         profile: { type: string, enum: [personal, team] }
         listen_address: { type: string }
@@ -2570,6 +2570,7 @@ components:
         config_path: { type: string }
         source: { type: string }
         restart_required: { type: boolean }
+        web_access: { $ref: "#/components/schemas/WebAccessConfiguration" }
     UpdateBootstrapConfiguration:
       type: object
       additionalProperties: false
@@ -2580,6 +2581,46 @@ components:
         run_concurrency: { type: integer, minimum: 1, maximum: 4 }
         database_driver: { type: string, enum: [sqlite, postgresql] }
         trusted_keys_file: { type: string, maxLength: 2048 }
+        web_access: { $ref: "#/components/schemas/UpdateWebAccessConfiguration" }
+    WebPrivateOrigin:
+      type: object
+      required: [id, origin]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" }
+        origin: { type: string, minLength: 1, maxLength: 255, description: "Exact HTTP(S) origin with a literal IPv4/IPv6 address and explicit port." }
+    PrivateFetchConfiguration:
+      type: object
+      required: [enabled, allowed_origins, allowed_origin_count, origins_redacted]
+      properties:
+        enabled: { type: boolean }
+        allowed_origins:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/WebPrivateOrigin" }
+        allowed_origin_count: { type: integer, minimum: 0, maximum: 64 }
+        origins_redacted: { type: boolean }
+    WebAccessConfiguration:
+      type: object
+      required: [private_fetch]
+      properties:
+        private_fetch: { $ref: "#/components/schemas/PrivateFetchConfiguration" }
+    UpdatePrivateFetchConfiguration:
+      type: object
+      required: [enabled, allowed_origins]
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean }
+        allowed_origins:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/WebPrivateOrigin" }
+    UpdateWebAccessConfiguration:
+      type: object
+      required: [private_fetch]
+      additionalProperties: false
+      properties:
+        private_fetch: { $ref: "#/components/schemas/UpdatePrivateFetchConfiguration" }
     AIGovernanceSettings:
       type: object
       required: [reviewer_provider_id, reviewer_model_id, enabled, timeout_seconds, fail_closed, policy_version, updated_at]
@@ -4204,14 +4245,14 @@ components:
       additionalProperties: false
       properties:
         decision: { type: string, enum: [approved, rejected, answered, confirm_applied, confirm_not_applied] }
-        scope: { type: string, enum: [once, conversation, project], default: once }
+        scope: { type: string, enum: [once, conversation, project, run_origin], default: once }
         answer: {}
         note: { type: string, maxLength: 2000, default: "" }
         confirmed: { type: boolean, default: false }
         version: { type: integer, format: int64, minimum: 1 }
     Approval:
       type: object
-      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
+      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, approval_scope, target_origin, matched_rule_id, policy_hash, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
       properties:
         id: { type: string, format: uuid }
         project_id: { type: string, format: uuid }
@@ -4221,6 +4262,10 @@ components:
         tool_call_id: { type: string, format: uuid }
         tool_name: { type: string }
         risk_level: { type: string, enum: [L0, L1, L2, L3] }
+        approval_scope: { type: string, enum: [once, conversation, project, run_origin] }
+        target_origin: { type: string }
+        matched_rule_id: { type: string }
+        policy_hash: { type: string }
         status: { type: string, enum: [pending, approved, rejected] }
         reason: { type: string }
         frozen_params: { type: object, additionalProperties: true }
@@ -4236,7 +4281,7 @@ components:
       additionalProperties: false
       properties:
         decision: { type: string, enum: [approved, rejected] }
-        scope: { type: string, enum: [once, conversation, project], default: once, description: "Approval lifetime. conversation creates a same-tool session rule; project creates a 30-day project rule." }
+        scope: { type: string, enum: [once, conversation, project, run_origin], default: once, description: "Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule." }
         note: { type: string, maxLength: 1000, default: "" }
         confirmed: { type: boolean, default: false, description: "Must be true when scope is project; UI must require a second explicit confirmation." }
     ApprovalRule:
@@ -4255,7 +4300,7 @@ components:
         revoked_by: { type: string }
     SideEffectReceipt:
       type: object
-      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, input_hash, idempotent, status, error_code, started_at]
+      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, input_hash, idempotent, status, error_code, network_class, matched_rule_id, policy_hash, authorization_id, started_at]
       properties:
         id: { type: string, format: uuid }
         project_id: { type: string, format: uuid }
@@ -4268,6 +4313,10 @@ components:
         idempotent: { type: boolean }
         status: { type: string, enum: [started, succeeded, failed, unknown] }
         error_code: { type: string }
+        network_class: { type: string, enum: ["", public, private] }
+        matched_rule_id: { type: string }
+        policy_hash: { type: string }
+        authorization_id: { type: string }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
     ResolveSideEffectRequest:

@@ -24,27 +24,9 @@ const (
 	maxResponseSize  = 2 << 20
 )
 
-type Input struct {
-	Query          string
-	MaxResults     int
-	Freshness      string
-	AllowedDomains []string
-	BlockedDomains []string
-}
-
-type Result struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet,omitempty"`
-	Domain  string `json:"domain"`
-}
-
-type Response struct {
-	Query    string   `json:"query"`
-	Provider string   `json:"provider"`
-	Results  []Result `json:"results"`
-	Duration int64    `json:"duration_ms"`
-}
+type Input = core.WebSearchRequest
+type Result = core.WebSearchSource
+type Response = core.WebSearchResult
 
 type Client struct {
 	endpoints  []*url.URL
@@ -99,6 +81,11 @@ func (c *Client) Execute(ctx context.Context, call core.ToolCall) core.ToolExecu
 	if err != nil {
 		execution.Status = core.StatusFailed
 		execution.ErrorCode = "WEB_SEARCH_UNAVAILABLE"
+		if errors.Is(err, context.Canceled) {
+			execution.ErrorCode = "TOOL_CANCELED"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			execution.ErrorCode = "WEB_SEARCH_TIMEOUT"
+		}
 		execution.Output["query"] = input.Query
 		execution.Output["reason"] = safeError(err)
 		return execution
@@ -109,6 +96,7 @@ func (c *Client) Execute(ctx context.Context, call core.ToolCall) core.ToolExecu
 		"result_count": len(response.Results),
 		"results":      response.Results,
 		"duration_ms":  response.Duration,
+		"truncated":    response.Truncated,
 	}
 	return execution
 }
@@ -195,10 +183,11 @@ func (c *Client) searchEndpoint(ctx context.Context, endpoint *url.URL, input In
 		return Response{}, errors.New("search provider response exceeded 2 MiB")
 	}
 	var results []Result
+	parseLimit := input.MaxResults + 1
 	if provider == "bing_rss" {
-		results, err = parseRSSResults(body, input.MaxResults, input.AllowedDomains, input.BlockedDomains)
+		results, err = parseRSSResults(body, parseLimit, input.AllowedDomains, input.BlockedDomains)
 	} else {
-		results, err = parseResults(body, input.MaxResults, input.AllowedDomains, input.BlockedDomains)
+		results, err = parseResults(body, parseLimit, input.AllowedDomains, input.BlockedDomains)
 	}
 	if err != nil {
 		return Response{}, err
@@ -206,7 +195,11 @@ func (c *Client) searchEndpoint(ctx context.Context, endpoint *url.URL, input In
 	if len(results) == 0 {
 		return Response{}, errors.New("search provider returned no usable results")
 	}
-	return Response{Query: input.Query, Provider: provider, Results: results, Duration: time.Since(started).Milliseconds()}, nil
+	truncated := len(results) > input.MaxResults
+	if truncated {
+		results = results[:input.MaxResults]
+	}
+	return Response{Query: input.Query, Provider: provider, Results: results, Duration: time.Since(started).Milliseconds(), Truncated: truncated}, nil
 }
 
 func parseRSSResults(body []byte, limit int, allowed, blocked []string) ([]Result, error) {
@@ -247,42 +240,15 @@ func parseRSSResults(body []byte, limit int, allowed, blocked []string) ([]Resul
 
 func inputFromArguments(arguments map[string]any) (Input, error) {
 	input := Input{MaxResults: 5}
+	if len(arguments) != 1 {
+		return Input{}, errors.New("web_search accepts only query")
+	}
 	query, ok := arguments["query"].(string)
 	if !ok {
 		return Input{}, errors.New("query is required")
 	}
 	input.Query = strings.TrimSpace(query)
-	if value, ok := arguments["max_results"].(float64); ok {
-		input.MaxResults = int(value)
-	}
-	input.Freshness, _ = arguments["freshness"].(string)
-	var err error
-	if input.AllowedDomains, err = stringList(arguments["allowed_domains"]); err != nil {
-		return Input{}, fmt.Errorf("allowed_domains: %w", err)
-	}
-	if input.BlockedDomains, err = stringList(arguments["blocked_domains"]); err != nil {
-		return Input{}, fmt.Errorf("blocked_domains: %w", err)
-	}
 	return input, nil
-}
-
-func stringList(value any) ([]string, error) {
-	if value == nil {
-		return nil, nil
-	}
-	raw, ok := value.([]any)
-	if !ok {
-		return nil, errors.New("must be an array")
-	}
-	values := make([]string, 0, len(raw))
-	for _, item := range raw {
-		text, ok := item.(string)
-		if !ok {
-			return nil, errors.New("must contain strings")
-		}
-		values = append(values, strings.ToLower(strings.TrimSpace(text)))
-	}
-	return values, nil
 }
 
 func parseResults(body []byte, limit int, allowed, blocked []string) ([]Result, error) {

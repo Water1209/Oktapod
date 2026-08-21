@@ -29,6 +29,7 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/native"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
 	"github.com/oktapod/oktapod/Src/internal/adapters/secretstore"
+	"github.com/oktapod/oktapod/Src/internal/adapters/webaccess"
 	"github.com/oktapod/oktapod/Src/internal/adapters/websearch"
 	"github.com/oktapod/oktapod/Src/internal/adapters/workspace"
 	"github.com/oktapod/oktapod/Src/internal/application"
@@ -120,6 +121,11 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+	if configurable, ok := store.(interface {
+		SetExecutionPolicy(application.ExecutionPolicy)
+	}); ok {
+		configurable.SetExecutionPolicy(application.StaticExecutionPolicy{WebAccess: config.WebAccessPolicy})
+	}
 
 	actor := core.Actor{ID: personalUserID, DisplayName: "本地用户"}
 	organization := core.Organization{ID: personalOrgID, Name: "个人空间"}
@@ -158,7 +164,7 @@ func run() error {
 		}
 		return value
 	})
-	service.WithVault(vaultKeys).WithBootstrapConfiguration(configManager)
+	service.WithVault(vaultKeys).WithBootstrapConfiguration(configManager).WithWebAccessPolicy(config.WebAccessPolicy)
 	service.WithMCPRegistry(mcpregistry.New(nil))
 	trustedCapabilityKeys, keyErr := bootstrap.CapabilityTrustedKeys(config.CapabilityTrustedKeysJSON)
 	if keyErr != nil {
@@ -199,6 +205,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	webAccessExecutor, err := webaccess.New(webSearchExecutor, config.WebAccessPolicy)
+	if err != nil {
+		return err
+	}
 	queuedTurnStarter := func(ctx context.Context, scope core.Scope, item core.ConversationQueueItem) (core.Task, error) {
 		return service.StartQueuedConversationTurn(ctx, item)
 	}
@@ -212,7 +222,7 @@ func run() error {
 			WithWorkspaceExecutor(workspaceExecutor).
 			WithArtifactCapture(artifactCapture).
 			WithAssetStager(workspaceExecutor).
-			WithWebSearchExecutor(webSearchExecutor).
+			WithWebAccess(webAccessExecutor).
 			WithMCPSecretStore(credentials).
 			WithQueuedTurnStarter(queuedTurnStarter)
 		workerGroup.Add(1)

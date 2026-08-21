@@ -148,6 +148,35 @@ func TestPersonalTaskCompletesWithPersistedEventsAndUsage(t *testing.T) {
 	}
 }
 
+func TestReadOnlyTaskDoesNotRequireWorkspaceMutation(t *testing.T) {
+	t.Parallel()
+
+	provider := newMockProvider(t)
+	defer provider.Close()
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Read-only User"}, core.Organization{ID: testOrgID, Name: "Read-only Org"}, func() string { return "fake-test-key" })
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Read-only project", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{Goal: "模型链路回归：不要修改任何文件；只需回复 OK。", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "read-only-completion-gate", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := okruntime.NewWorker("read-only-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-test-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if worked, runErr := worker.RunOnce(t.Context()); runErr != nil || !worked {
+		t.Fatalf("worker worked=%v err=%v", worked, runErr)
+	}
+	completed, err := service.GetTask(t.Context(), task.ID)
+	if err != nil || completed.Status != core.StatusSucceeded || completed.ErrorCode == "WORKSPACE_MUTATION_MISSING" {
+		t.Fatalf("read-only task=%#v err=%v", completed, err)
+	}
+}
+
 func TestConversationAppendKeepsSequenceAndSnapshotsSelectedContext(t *testing.T) {
 	t.Parallel()
 

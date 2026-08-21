@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Activity, AlertCircle, ArrowRight, CheckCircle2, Clock3, Code2, FolderClosed, FolderOpen, FolderPlus, Gauge, LockKeyhole, Plus, Search, ShieldCheck, X } from 'lucide-react'
+import { Activity, AlertCircle, ArrowRight, CheckCircle2, Clock3, Code2, FolderClosed, FolderOpen, FolderPlus, Gauge, LockKeyhole, Search, ShieldCheck, X } from 'lucide-react'
 import { api, type ModelDescriptor, type Scene } from '../../shared/api/client'
 
 export function ProjectsPage() {
@@ -29,11 +29,10 @@ export function ProjectsPage() {
   const failed = tasks.filter((task) => ['failed', 'blocked'].includes(task.status)).slice(0, 5)
   const needsAttention = inbox.data?.items ?? []
   const hasProvider = (providers.data?.items.length ?? 0) > 0
-  const primaryProject = latestProject ?? filtered[0]
 
   return (
     <main className="home-page">
-      <header className="home-heading"><div><span className="privacy-label"><LockKeyhole size={13} /> 仅你可见</span><h1>工作台</h1><p>继续正在进行的工作，或从一个清晰的新任务开始。</p></div><div className="home-actions">{hasProvider ? <Link className="primary-button" to={primaryProject ? '/projects/$projectId' : '/projects'} params={primaryProject ? { projectId: primaryProject.id } : undefined} search={primaryProject ? { conversation: 'new' } : undefined}><Plus size={15} />新建任务</Link> : <Link className="primary-button" to="/settings/providers"><Plus size={15} />配置模型服务</Link>}<Link className="secondary-button" to="/projects"><FolderOpen size={15} />查看项目</Link></div></header>
+      <header className="home-heading"><div><span className="privacy-label"><LockKeyhole size={13} /> 仅你可见</span><h1>工作台</h1><p>继续正在进行的工作，或从一个清晰的新任务开始。</p></div><div className="home-actions"><button className="primary-button" type="button" onClick={() => setCreateOpen(true)}><FolderPlus size={15} />新建项目</button><Link className="secondary-button" to="/projects"><FolderOpen size={15} />查看项目</Link></div></header>
 
       {!hasProvider && !providers.isLoading ? <Link className="home-provider-callout" to="/settings/providers"><AlertCircle size={17} /><span><strong>发送任务前需要配置模型服务</strong><small>添加 Provider 实例并测试连接；不会静默使用未知配置。</small></span><ArrowRight size={15} /></Link> : null}
 

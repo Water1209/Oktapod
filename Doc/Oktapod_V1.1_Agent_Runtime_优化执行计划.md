@@ -1,7 +1,7 @@
 # Oktapod V1.1 Agent Runtime 优化执行计划
 
-> 版本：V1.1（已实施，本地门禁通过）
-> 更新日期：2026-08-20
+> 版本：V1.3（Task 流式模型传输已实施并通过真实 Provider 回归）
+> 更新日期：2026-08-21
 > 实施分支：`codex/runtime-convergence-v1.1`
 > V1.0.0 关系：独立演进批次，不改变 V1.0.0 正式 tag 门禁
 > 发布状态：功能分支本地收口完成；未 tag、未合并，PR/Ubuntu/Windows 远端 CI 证据仍待产生
@@ -17,7 +17,11 @@
 
 收口时同步合入了已有缺陷修复：全局 Skill 按用户 Scope 可在其他自有项目调用；普通 continuation Step 冻结未完成计划计数并持续提醒 `update_plan`；已收敛的 `POLICY_REPAIR_QUEUED` 不再重复阻塞 Run；SSE 将校验、授权和状态冲突与真实模型中断分类；Changes 面板增加可理解的基线、行号、增删统计和折叠控制。
 
-HTTP/OpenAPI 结构、工具名和 Schema、数据库表与迁移、ToolBatch 顺序规则均未改变；SSE 只修正已有错误的分类与用户提示。任一 `Sequential` ToolCall 仍使整个批次串行；per-call barrier 不进入本批次。
+2026-08-21 运行回归补充：真实失败 Run 显示 Task 经 `AgentLoop.Complete` 发送 `stream:false`，12 次失败均精确等待 120 秒且零 Token，而同 Run 的成功调用只需 4.8～13.2 秒；Ask 经 `Stream` 8.1 秒成功。现已让 Task 优先消费同一 Provider SSE，移除会累计整个响应体时间的 HTTP 总截止，改为连接 10 秒、TLS 10 秒、首包 60 秒、流式静默 60 秒的分阶段边界；DNS、连接、TLS、首包和流中断以脱敏结构写入 Step/Event。网络与限流只自动重试 1 次，工具参数等会改变后续 Prompt 的语义修复仍保留 3 次。真实 Kimi Task `01a02228-5503-756e-8180-1d1f44475e9c` 两次模型交互 11.2 秒/7.9 秒，终态 `succeeded`、结果 `OK`。消息执行步骤的 Web 结果卡随步骤详情统一折叠，来源段落中的 `标题（URL）` 兼容渲染为可点击 Markdown 链接。
+
+同日原失败“贪吃蛇” Run 浏览器续跑进一步证明仅有阶段超时仍不充分：Provider 在 SSE 连接持续活跃时，用 430,298 ms 才形成首个完整工具调用，期间既不触发 60 秒流静默，也没有可执行结果。Worker 因此增加单次模型 Turn 120 秒总完成时限；超限归类为脱敏 `model_turn_timeout/model_turn`，沿用网络类最多 1 次检查点重试，不再让 reasoning 或心跳把用户等待无限延长。另修复完成合同的否定语义：按意图片段过滤“不要修改/禁止创建/只分析/only reply”等只读要求，同时保留“不要修改旧文件，但创建新文件”的正向动作；只读 Task 不再误报 `WORKSPACE_MUTATION_MISSING`。历史上已被该门禁阻塞且所有 Step 均成功的 Run，手动继续时会追加新的 `completion_validation_recovery` 模型检查点，保留原成功 Step 审计记录并按当前门禁重新收口。
+
+原 Runtime 收敛批次没有改变 HTTP/OpenAPI、数据库迁移或 ToolBatch 顺序规则。随后合入的 Web Access 扩展新增 `web_fetch`、Bootstrap 配置契约、000062～000063 与 Web Renderer，但继续复用同一个 ToolRuntime、ExecutionPolicy、Receipt 和 SQLite Durable 真源。任一 `Sequential` ToolCall 仍使整个批次串行；per-call barrier 不进入本批次。
 
 ## 2. 当前架构
 
@@ -65,11 +69,22 @@ Run 配置快照新增向后兼容字段：
 }
 ```
 
+Web Access 追加同样向后兼容且不含明文 origin 的字段：
+
+```json
+{
+  "web_access_policy_version": 1,
+  "private_fetch_enabled": true,
+  "allowed_origin_hashes": ["sha256:..."],
+  "web_access_policy_hash": "sha256:..."
+}
+```
+
 - 选中 Memory 的聚合正文上限为 24 KiB，并在 UTF-8 字符边界截断。
 - 新 Run 优先读取快照；字段缺失的历史 Run 才读取 live Memory。
 - `ContextPlan.memory_context_source` 为 `frozen_snapshot`、`legacy_live_ids` 或 `none`；历史回退同时设置 `legacy_memory_context=true`。
 - `ContextPlan.assembly_schema_version=oktapod.agent-assembly/v1`，`assembly_hash` 使用 `sha256:` 前缀。
-- 未新增数据库迁移：配置快照继续使用已有 JSON 存储。
+- Runtime 收敛本身未新增迁移；Web Access 使用 000062 `run_approval_rules` 和审批展示字段、000063 Web Receipt 授权证据字段。Run 安全策略仍写入已有 JSON 快照。
 
 ## 4. 已实施批次
 
@@ -82,6 +97,8 @@ Run 配置快照新增向后兼容字段：
 | Phase 3 ToolRuntime | `e42e099` | 四类工具迁入统一管线；planning/Begin/Runtime 共用 MCP 风险与幂等性推导 |
 | Phase 4 取消收敛 | `c927426` | pre-dispatch cancel、Workspace 进程树终止、MCP cancel/timeout 分类、started Receipt unknown |
 | 2026-08-20 回归收口 | `fe53801` | 合并 Scope/计划/Run 状态/SSE/Changes 修复；修复 Windows CI 受控 Git 信任边界，race 套件保留全量执行并放宽为 20 分钟超时 |
+| 2026-08-20 Web Access | 本地工作树 | `WebAccess` 统一 Search/Fetch；私网精确 origin 配置、Run Hash 快照、`run_origin` 人工授权、安全 Transport、Web 卡片与 OpenAPI/UI 同步 |
+| 2026-08-21 浏览器收口 | 本地工作树 | 执行记录展开状态提升为按 `task_id` 管理，任务流从用户消息迁移到助手结果消息时不再意外折叠；真实 Chromium 并发套件 27/27 |
 
 主要代码入口：
 
@@ -114,17 +131,21 @@ Run 配置快照新增向后兼容字段：
 | 全局 Skill 按用户 Scope 跨自有项目可用 | `TestGlobalSkillInvocableFromOtherProject` |
 | SSE 保留确定性错误分类 | `TestTurnStreamErrorDetailPreservesDeterministicFailures` |
 | Changes 行级展示与受治理提交无浏览器错误 | Playwright `Changes 可按文件查看并通过原 Thread 受治理提交所选路径` |
+| 私网配置严格校验与旧 Run 不扩权 | `TestWebAccessPolicyValidation` + `TestWebAccessPolicyRunSnapshotIntersection` |
+| DNS 混合地址、跨源重定向、代理隔离与内容边界 | `TestFetchPrivateHTMLUsesBoundedMarkdownConversion` + `TestFetchRejectsPrivateDNSAndCrossOriginRedirects` + `TestFetchHandlesSameOriginRedirectStatusAndContentBounds` |
+| 每 Run 每 origin 授权，Full Access/Reviewer 不绕过 | `TestPrivateWebFetchApprovalIsRunOriginScoped` + `TestPrivateWebFetchIgnoresFullAccessAndAutoReviewer` |
+| 浏览器内一次私网授权复用同 origin、迁移后保持展开、两张文本卡与零控制台错误 | Playwright `私网 Web Fetch 每 Run 每 origin 只审批一次并以文本卡片重放` 1/1 |
 
-2026-08-20 收口仍先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 41/41、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
+2026-08-21 收口先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 48/48、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
 
 ## 6. 合并与发布门禁
 
-2026-08-20 本地门禁已经全部重跑：
+2026-08-21 本地门禁已经全部重跑：
 
 | 门禁 | 结果 |
 |---|---|
-| `pnpm verify` | `PASS`：Go、ESLint、Web 41/41、TypeScript/Vite/Go build、migration、OpenAPI drift |
-| `pnpm test:e2e` | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 26/26 |
+| `pnpm verify` | `PASS`：Go、ESLint、Web 48/48、TypeScript/Vite/Go build、migration、OpenAPI drift |
+| `pnpm test:e2e` | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 27/27；私网场景同时覆盖审批前展开与终态消息迁移后状态保持 |
 | `pnpm release:build` | `PASS`：`oktapod-v1.0.0-windows-amd64.exe`，SHA256 `b094ba20cd96193aeb854b20f2d734e44bd7a06214698be4ca809683e3ee56fa` |
 | `pnpm release:smoke` | `PASS`：独立数据目录启动、health 200、项目创建与服务停止 |
 

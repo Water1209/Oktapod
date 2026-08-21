@@ -114,13 +114,26 @@ func (s *Service) ResetPendingVault(ctx context.Context) error {
 }
 
 func (s *Service) Configuration(ctx context.Context) (core.BootstrapConfiguration, error) {
-	if _, err := s.principalFor(ctx); err != nil {
+	principal, err := s.principalFor(ctx)
+	if err != nil {
 		return core.BootstrapConfiguration{}, err
 	}
 	if s.bootstrapConfiguration == nil {
 		return core.BootstrapConfiguration{}, fmt.Errorf("bootstrap configuration manager is unavailable")
 	}
-	return s.bootstrapConfiguration.Snapshot(), nil
+	configuration := s.bootstrapConfiguration.Snapshot()
+	canReadOrigins := principal.Administrator
+	if !canReadOrigins {
+		if repository, ok := s.repository.(ConfigurationRepository); ok {
+			role, roleErr := repository.GetOrganizationRole(ctx, principal.OrganizationID, principal.UserID)
+			canReadOrigins = roleErr == nil && role == "owner"
+		}
+	}
+	if !canReadOrigins {
+		configuration.WebAccess.PrivateFetch.AllowedOrigins = nil
+		configuration.WebAccess.PrivateFetch.OriginsRedacted = true
+	}
+	return configuration, nil
 }
 
 func (s *Service) UpdateBootstrapConfiguration(ctx context.Context, input core.UpdateBootstrapConfiguration) (core.BootstrapConfiguration, error) {

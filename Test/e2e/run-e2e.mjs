@@ -22,7 +22,7 @@ const dataRoot = resolve(tmpdir(), 'oktapod-e2e', `${mode}-${process.pid}-${Date
 mkdirSync(dataRoot, { recursive: true })
 const configPath = resolve(dataRoot, 'config.yaml')
 const browserStatePath = resolve(dataRoot, 'browser-state.json')
-writeFileSync(configPath, `profile: personal\nlisten_address: 127.0.0.1:${apiPort}\ndata_root: ${JSON.stringify(dataRoot)}\nrun_concurrency: 4\ndatabase:\n  driver: sqlite\ncapabilities:\n  trusted_keys_file: trusted-keys.json\n`)
+writeFileSync(configPath, `profile: personal\nlisten_address: 127.0.0.1:${apiPort}\ndata_root: ${JSON.stringify(dataRoot)}\nrun_concurrency: 4\ndatabase:\n  driver: sqlite\ncapabilities:\n  trusted_keys_file: trusted-keys.json\n${success ? `web_access:\n  private_fetch:\n    enabled: true\n    allowed_origins:\n      - id: e2e-private-docs\n        origin: http://127.0.0.1:19090\n` : ''}`)
 const children = []
 let activeTest
 let cleaning = false

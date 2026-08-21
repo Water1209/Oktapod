@@ -32,7 +32,8 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
   const impact = String(action.request.impact_scope ?? action.request.scope ?? '仅当前计划项')
   const toolName = String(action.request.tool_name ?? '')
   const approval = action.kind === 'tool_approval'
-	const persistentApprovalSupported = approval && !toolName.startsWith('mcp__')
+  const privateWebFetch = approval && toolName === 'web_fetch' && action.request.approval_scope === 'run_origin'
+	const persistentApprovalSupported = approval && !toolName.startsWith('mcp__') && !privateWebFetch
   const input = action.kind === 'input_request'
   const permission = action.kind === 'permission_escalation'
   const budget = action.kind === 'budget_request'
@@ -55,7 +56,8 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       <em>{statusLabel(action.status)}</em>
     </header>
     <p>{action.reason}</p>
-	{waiting && approval && !persistentApprovalSupported ? <small className="human-action-error">外部 MCP 的参数与返回边界由服务端决定，为避免静默扩大权限，仅支持逐次批准。</small> : null}
+	{waiting && approval && toolName.startsWith('mcp__') ? <small className="human-action-error">外部 MCP 的参数与返回边界由服务端决定，为避免静默扩大权限，仅支持逐次批准。</small> : null}
+    {privateWebFetch ? <div className="private-origin-approval"><ShieldAlert size={16} /><span><strong>受控私网读取</strong><small>只读 GET · 当前 Run · 最长 24 小时</small><code>{String(action.request.target_origin ?? '未知 origin')}</code>{action.request.matched_rule_id ? <small>匹配规则：{String(action.request.matched_rule_id)}</small> : null}<p>批准后，模型可读取此 origin 的其他路径，并可能把页面数据带入模型上下文；不会授权其他端口、协议或 Run。</p></span></div> : null}
 	{!input && !budget ? <div className="human-action-frozen"><LockKeyhole size={14} /><span><small>{approval ? '冻结参数' : '请求内容'}</small><code>{formatRequest(toolName, frozen)}</code></span></div> : null}
     {budget ? <div className="human-action-budget-summary">
       <div><Gauge size={15} /><span><small>当前上限</small><strong>{formatCount(currentCalls)} 次 · {formatTokens(currentTokens)}</strong></span></div>
@@ -72,7 +74,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
 
     {waiting && (approval || permission) ? <div className="human-action-actions">
       <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-	  <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />批准一次</button>
+	  {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => approve('run_origin')}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />批准一次</button>}
 	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
 	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
     </div> : null}
@@ -105,6 +107,9 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
 }
 
 function formatRequest(toolName: string, value: unknown) {
+  if (toolName === 'web_fetch' && value && typeof value === 'object') {
+    return String((value as Record<string, unknown>).url ?? 'invalid url')
+  }
   if (toolName === 'workspace_run_command' && value && typeof value === 'object') {
     const params = value as Record<string, unknown>
     const program = typeof params.program === 'string' ? params.program : ''
@@ -118,6 +123,7 @@ function actionTitle(action: HumanAction) {
   const tool = String(action.request.tool_name ?? action.title)
   if (tool === 'workspace_run_command') return '运行工作区命令'
   if (tool === 'workspace_write_file') return '写入工作区文件'
+  if (tool === 'web_fetch') return '读取网页'
   if (action.kind === 'input_request') return action.title || '需要补充信息'
   if (action.kind === 'permission_escalation') return action.title || '申请运行权限'
   if (action.kind === 'budget_request') return action.title || '确认扩展本次运行预算'

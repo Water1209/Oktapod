@@ -50,6 +50,7 @@ type ToolRuntime struct {
 	artifactCapture application.ArtifactCapture
 	assetStager     application.AssetStager
 	webSearch       WebSearchExecutor
+	webAccess       WebAccess
 	mcpSecrets      application.ProviderSecretStore
 	mcpCallTimeout  time.Duration
 	logger          *slog.Logger
@@ -66,12 +67,12 @@ func (w *Worker) toolRuntime() ToolRuntime {
 	return ToolRuntime{
 		ledger: w.repository, repository: w.repository, workspace: w.workspace,
 		artifactCapture: w.artifactCapture, assetStager: w.assetStager,
-		webSearch: w.webSearch, mcpSecrets: w.mcpSecrets, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
+		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
 	}
 }
 
 func isToolRuntimeStep(stepType string) bool {
-	return stepType == core.ToolSkillInvoke || stepType == core.ToolWebSearch || isWorkspaceTool(stepType) || isMCPTool(stepType)
+	return stepType == core.ToolSkillInvoke || stepType == core.ToolWebSearch || stepType == core.ToolWebFetch || isWorkspaceTool(stepType) || isMCPTool(stepType)
 }
 
 func (runtime ToolRuntime) Execute(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
@@ -87,6 +88,10 @@ func (runtime ToolRuntime) Execute(ctx context.Context, step core.ClaimedStep, r
 	}
 	call := core.ToolCall{ID: invocation.ToolCallID, Name: invocation.Name, Arguments: invocation.Arguments}
 	planned := core.PlanTool(call)
+	if invocation.Name == core.ToolWebFetch && runtime.webAccess != nil && planned.Decision != core.PolicyDeny {
+		decision := runtime.webAccess.EvaluateFetch(run.ConfigSnapshotJSON, stringArgument(invocation.Arguments, "url"))
+		planned.RiskLevel, planned.Decision, planned.Reason = decision.RiskLevel, decision.Decision, decision.Reason
+	}
 	if isMCPTool(invocation.Name) {
 		risk, idempotent, reason := application.MCPPolicyFromSnapshot(run.ConfigSnapshotJSON, invocation.Name)
 		planned.RiskLevel, planned.Idempotent = risk, idempotent
@@ -153,6 +158,8 @@ func toolInputFailure(stepType string) core.StepOutcome {
 		code, summary = "SKILL_INVOKE_INPUT_INVALID", "Skill 调用输入无法解析。"
 	} else if stepType == core.ToolWebSearch {
 		code, summary = "WEB_SEARCH_INPUT_INVALID", "互联网搜索输入无法解析。"
+	} else if stepType == core.ToolWebFetch {
+		code, summary = "WEB_FETCH_INPUT_INVALID", "网页读取输入无法解析。"
 	} else if isMCPTool(stepType) {
 		code, summary = "MCP_TOOL_INPUT_INVALID", "MCP 工具输入无法解析。"
 	}
@@ -165,6 +172,8 @@ func toolPolicyFailure(stepType, reason string) core.StepOutcome {
 		summary = "Skill 调用未通过冻结策略校验。"
 	} else if stepType == core.ToolWebSearch {
 		summary = "互联网搜索输入未通过冻结策略校验。"
+	} else if stepType == core.ToolWebFetch {
+		summary = "网页读取输入未通过冻结 Web Access 策略校验。"
 	} else if isMCPTool(stepType) {
 		summary = "MCP 工具输入未通过冻结策略校验。"
 	}
@@ -195,8 +204,8 @@ func (runtime ToolRuntime) preflight(ctx context.Context, step core.ClaimedStep,
 	switch {
 	case invocation.Name == core.ToolSkillInvoke:
 		return runtime.preflightSkill(run, invocation)
-	case invocation.Name == core.ToolWebSearch:
-		return runtime.preflightWeb(invocation)
+	case invocation.Name == core.ToolWebSearch || invocation.Name == core.ToolWebFetch:
+		return runtime.preflightWeb(run, invocation)
 	case isWorkspaceTool(invocation.Name):
 		return runtime.preflightWorkspace(run, invocation, planned)
 	case isMCPTool(invocation.Name):
@@ -244,15 +253,45 @@ func (runtime ToolRuntime) preflightSkill(run core.RunContext, invocation Frozen
 	}, nil
 }
 
-func (runtime ToolRuntime) preflightWeb(invocation FrozenToolInvocation) (preparedTool, *core.StepOutcome) {
-	if runtime.webSearch == nil {
-		failure := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "WEB_SEARCH_NOT_CONFIGURED", ResultSummary: "当前运行时未配置互联网搜索执行器。", Output: map[string]any{"retryable": false}}
+func (runtime ToolRuntime) preflightWeb(run core.RunContext, invocation FrozenToolInvocation) (preparedTool, *core.StepOutcome) {
+	if runtime.webAccess == nil && (invocation.Name == core.ToolWebFetch || runtime.webSearch == nil) {
+		code, summary := "WEB_ACCESS_NOT_CONFIGURED", "当前运行时未配置 Web Access 执行器。"
+		if invocation.Name == core.ToolWebSearch {
+			code, summary = "WEB_SEARCH_NOT_CONFIGURED", "当前运行时未配置互联网搜索执行器。"
+		}
+		failure := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: code, ResultSummary: summary, Output: map[string]any{"retryable": false}}
 		return preparedTool{}, &failure
 	}
 	call := core.ToolCall{ID: invocation.ToolCallID, Name: invocation.Name, Arguments: invocation.Arguments}
+	if invocation.Name == core.ToolWebFetch {
+		return preparedTool{
+			dispatch: func(ctx context.Context) core.ToolExecution {
+				result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusSucceeded, ExitCode: 0, Idempotent: true, Output: map[string]any{}}
+				fetched, err := runtime.webAccess.Fetch(ctx, core.WebFetchRequest{URL: stringArgument(call.Arguments, "url"), PolicySnapshot: run.ConfigSnapshotJSON})
+				if err != nil {
+					result.Status, result.ExitCode = core.StatusFailed, -1
+					result.ErrorCode, result.Output["reason"], result.Output["redirect_target"] = webAccessError(err)
+					if result.Output["redirect_target"] == "" {
+						delete(result.Output, "redirect_target")
+					}
+					return result
+				}
+				body, _ := json.Marshal(fetched)
+				_ = json.Unmarshal(body, &result.Output)
+				result.Output["_envelope"] = map[string]any{"trust": core.TrustExternalUntrusted, "source": "builtin:web_fetch", "capability": "web.fetch"}
+				return result
+			},
+			receiptUnknown: "网页读取收据状态未知，已停止自动重试。", successSummary: "网页读取完成，受限正文已进入来源综合。", failureSummary: "网页读取失败，已记录受控错误收据。",
+		}, nil
+	}
 	return preparedTool{
 		dispatch: func(ctx context.Context) core.ToolExecution {
-			execution := runtime.webSearch.Execute(ctx, call)
+			var execution core.ToolExecution
+			if runtime.webAccess == nil {
+				execution = runtime.webSearch.Execute(ctx, call)
+			} else {
+				execution = executeWebSearch(ctx, runtime.webAccess, call)
+			}
 			if execution.Output == nil {
 				execution.Output = map[string]any{}
 			}
@@ -261,6 +300,45 @@ func (runtime ToolRuntime) preflightWeb(invocation FrozenToolInvocation) (prepar
 		},
 		receiptUnknown: "互联网搜索收据状态未知，已停止自动重试。", successSummary: "互联网搜索完成，结果已保存并进入来源综合。", failureSummary: "互联网搜索失败，已记录受控错误收据。",
 	}, nil
+}
+
+func executeWebSearch(ctx context.Context, access WebAccess, call core.ToolCall) core.ToolExecution {
+	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusSucceeded, ExitCode: 0, Idempotent: true, Output: map[string]any{}}
+	request := core.WebSearchRequest{Query: stringArgument(call.Arguments, "query"), MaxResults: 5}
+	response, err := access.Search(ctx, request)
+	if err != nil {
+		result.Status, result.ExitCode, result.ErrorCode = core.StatusFailed, -1, "WEB_SEARCH_UNAVAILABLE"
+		if errors.Is(err, context.Canceled) {
+			result.ErrorCode = "TOOL_CANCELED"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			result.ErrorCode = "WEB_SEARCH_TIMEOUT"
+		}
+		result.Output = map[string]any{"query": request.Query, "reason": safeErrorSummary(err)}
+		return result
+	}
+	result.Output = map[string]any{"query": response.Query, "provider": response.Provider, "result_count": len(response.Results), "results": response.Results, "duration_ms": response.Duration, "truncated": response.Truncated}
+	return result
+}
+
+func webAccessError(err error) (code, reason, redirectTarget string) {
+	type coded interface{ ErrorCode() string }
+	code = "WEB_FETCH_UNAVAILABLE"
+	var value coded
+	if errors.As(err, &value) && strings.TrimSpace(value.ErrorCode()) != "" {
+		code = value.ErrorCode()
+	}
+	reason = safeErrorSummary(err)
+	type redirecting interface{ RedirectURL() string }
+	var redirect redirecting
+	if errors.As(err, &redirect) {
+		redirectTarget = redirect.RedirectURL()
+	}
+	return
+}
+
+func stringArgument(arguments map[string]any, name string) string {
+	value, _ := arguments[name].(string)
+	return strings.TrimSpace(value)
 }
 
 func (runtime ToolRuntime) preflightWorkspace(run core.RunContext, invocation FrozenToolInvocation, planned core.PlannedTool) (preparedTool, *core.StepOutcome) {

@@ -68,6 +68,7 @@ const (
 	ToolGitRestoreHunk          = "git_restore_hunk"
 	ToolGitConflicts            = "git_conflicts"
 	ToolWebSearch               = "web_search"
+	ToolWebFetch                = "web_fetch"
 	ToolSkillInvoke             = "skill_invoke"
 	ToolUpdatePlan              = "update_plan"
 	ToolRequestInput            = "request_input"
@@ -85,6 +86,7 @@ const (
 	ApprovalScopeOnce         = "once"
 	ApprovalScopeConversation = "conversation"
 	ApprovalScopeProject      = "project"
+	ApprovalScopeRunOrigin    = "run_origin"
 
 	HumanActionToolApproval         = "tool_approval"
 	HumanActionPermissionEscalation = "permission_escalation"
@@ -129,8 +131,12 @@ const (
 	DefaultTaskMaxModelCalls = 80
 	DefaultTaskMaxTokens     = 1_000_000
 	DefaultModelRetryLimit   = 3
-	DefaultToolRetryLimit    = 5
-	DefaultModelOutputTokens = 8_192
+	// Transport failures get one checkpoint retry. Semantic response repairs
+	// retain three attempts because they change the next prompt and can make
+	// deterministic progress; repeating an unavailable network call cannot.
+	DefaultModelTransportRetryLimit = 1
+	DefaultToolRetryLimit           = 5
+	DefaultModelOutputTokens        = 8_192
 
 	SideEffectReceiptStarted   = "started"
 	SideEffectReceiptSucceeded = "succeeded"
@@ -197,6 +203,15 @@ const (
 	StepModelContinue             = "model_continue"
 	StepHumanActionReview         = "human_action_review"
 )
+
+func ModelRetryLimit(reason string) int {
+	switch reason {
+	case "PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMIT":
+		return DefaultModelTransportRetryLimit
+	default:
+		return DefaultModelRetryLimit
+	}
+}
 
 const TrustExternalUntrusted = "external_untrusted"
 
@@ -831,6 +846,10 @@ type Approval struct {
 	ToolCallID     string
 	ToolName       string
 	RiskLevel      string
+	ApprovalScope  string
+	TargetOrigin   string
+	MatchedRuleID  string
+	PolicyHash     string
 	Status         string
 	Reason         string
 	FrozenParams   map[string]any
@@ -913,20 +932,24 @@ type DecideHumanActionInput struct {
 // otherwise non-idempotent action. Unknown receipts are never retried by the
 // runtime; a human must explicitly resolve them.
 type SideEffectReceipt struct {
-	ID             string
-	OrganizationID string
-	ProjectID      string
-	TaskID         string
-	RunID          string
-	StepID         string
-	ToolCallID     string
-	ToolName       string
-	InputHash      string
-	Idempotent     bool
-	Status         string
-	ErrorCode      string
-	StartedAt      time.Time
-	FinishedAt     *time.Time
+	ID              string
+	OrganizationID  string
+	ProjectID       string
+	TaskID          string
+	RunID           string
+	StepID          string
+	ToolCallID      string
+	ToolName        string
+	InputHash       string
+	Idempotent      bool
+	Status          string
+	ErrorCode       string
+	NetworkClass    string
+	MatchedRuleID   string
+	PolicyHash      string
+	AuthorizationID string
+	StartedAt       time.Time
+	FinishedAt      *time.Time
 }
 
 type ResolveSideEffectInput struct {

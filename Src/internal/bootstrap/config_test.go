@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,70 @@ func TestLoadConfigRejectsUnknownYAMLFields(t *testing.T) {
 	t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, "profile: personal\nunknown: true\n"))
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("unknown YAML field must fail closed")
+	}
+}
+
+func TestLoadConfigPrivateFetchDefaultsAndStrictRules(t *testing.T) {
+	t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, "profile: personal\n"))
+	config, err := LoadConfig()
+	if err != nil || config.WebAccessPolicy.PrivateFetchEnabled || len(config.WebAccessPolicy.AllowedOrigins) != 0 {
+		t.Fatalf("default web access=%#v err=%v", config.WebAccessPolicy, err)
+	}
+
+	valid := "profile: personal\nweb_access:\n  private_fetch:\n    enabled: true\n    allowed_origins:\n      - id: intranet-wiki\n        origin: http://192.168.10.20:8080\n"
+	t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, valid))
+	config, err = LoadConfig()
+	if err != nil || !config.WebAccessPolicy.PrivateFetchEnabled || len(config.WebAccessPolicy.AllowedOrigins) != 1 {
+		t.Fatalf("valid web access=%#v err=%v", config.WebAccessPolicy, err)
+	}
+
+	for name, body := range map[string]string{
+		"empty":   "profile: personal\nweb_access:\n  private_fetch:\n    enabled: true\n",
+		"unknown": "profile: personal\nweb_access:\n  private_fetch:\n    enabled: false\n    allow_cidr: true\n",
+		"domain":  "profile: personal\nweb_access:\n  private_fetch:\n    enabled: true\n    allowed_origins:\n      - id: wiki\n        origin: http://wiki.internal:8080\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, body))
+			if _, err := LoadConfig(); err == nil {
+				t.Fatal("invalid private fetch configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestConfigManagerPrivateFetchRequiresRestart(t *testing.T) {
+	path := writeTestConfig(t, "profile: personal\n")
+	t.Setenv("OKTAPOD_CONFIG_FILE", path)
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewConfigManager(config)
+	updated, err := manager.Update(core.UpdateBootstrapConfiguration{WebAccess: &core.WebAccessConfiguration{PrivateFetch: core.PrivateFetchConfiguration{
+		Enabled: true, AllowedOrigins: []core.WebPrivateOrigin{{ID: "preview", Origin: "http://127.0.0.1:3000"}},
+	}}})
+	if err != nil || !updated.RestartRequired || !updated.WebAccess.PrivateFetch.Enabled {
+		t.Fatalf("updated=%#v err=%v", updated, err)
+	}
+	current := manager.Snapshot()
+	if current.WebAccess.PrivateFetch.Enabled || current.RestartRequired {
+		t.Fatalf("pending configuration changed live runtime: %#v", current)
+	}
+}
+
+func TestConfigManagerReturnsValidationErrorForInvalidPrivateFetchUpdate(t *testing.T) {
+	path := writeTestConfig(t, "profile: personal\n")
+	t.Setenv("OKTAPOD_CONFIG_FILE", path)
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewConfigManager(config).Update(core.UpdateBootstrapConfiguration{WebAccess: &core.WebAccessConfiguration{PrivateFetch: core.PrivateFetchConfiguration{
+		Enabled: true, AllowedOrigins: []core.WebPrivateOrigin{{ID: "wiki", Origin: ""}},
+	}}})
+	var validation *core.ValidationError
+	if !errors.As(err, &validation) || validation.Field != "configuration" {
+		t.Fatalf("expected configuration validation error, got %T %v", err, err)
 	}
 }
 

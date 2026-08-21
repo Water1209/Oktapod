@@ -1,7 +1,6 @@
 package openaicompat
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/oktapod/oktapod/Src/internal/adapters/model/modeltransport"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 	okruntime "github.com/oktapod/oktapod/Src/internal/runtime"
 )
@@ -36,7 +36,10 @@ type GatewayError struct {
 	Code       string
 	StatusCode int
 	Message    string
+	Cause      error
 }
+
+var errStreamComplete = errors.New("stream complete")
 
 func (e *GatewayError) Error() string {
 	if e.StatusCode > 0 {
@@ -47,14 +50,14 @@ func (e *GatewayError) Error() string {
 
 func (e *GatewayError) ErrorCode() string { return e.Code }
 
+func (e *GatewayError) Unwrap() error { return e.Cause }
+
 func New(endpoint, model string, key func() string) *Client {
 	return &Client{
-		endpoint: strings.TrimRight(endpoint, "/"),
-		explicit: strings.TrimSpace(model),
-		key:      key,
-		httpClient: &http.Client{
-			Timeout: 2 * time.Minute,
-		},
+		endpoint:   strings.TrimRight(endpoint, "/"),
+		explicit:   strings.TrimSpace(model),
+		key:        key,
+		httpClient: modeltransport.NewHTTPClient(),
 	}
 }
 
@@ -171,14 +174,15 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 	httpRequest.Header.Set("Accept", "text/event-stream, application/json")
 	httpRequest.Header.Set("User-Agent", "Oktapod/0.1")
 	started := time.Now()
-	response, err := c.httpClient.Do(httpRequest)
+	response, err := modeltransport.Do(c.httpClient, httpRequest)
+	result.Latency = time.Since(started)
 	if err != nil {
 		if ctx.Err() != nil {
 			result.ErrorCode = "MODEL_ABORTED"
 			return result, ctx.Err()
 		}
 		result.ErrorCode = "PROVIDER_UNAVAILABLE"
-		return result, &GatewayError{Code: result.ErrorCode, Message: err.Error()}
+		return result, &GatewayError{Code: result.ErrorCode, Message: "provider transport failed", Cause: err}
 	}
 	defer response.Body.Close()
 	result.ProviderRequestID = response.Header.Get("x-request-id")
@@ -213,21 +217,19 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 			result.ProviderRequestID = decoded.Id
 		}
 	} else {
-		scanner := bufio.NewScanner(response.Body)
-		scanner.Buffer(make([]byte, 64<<10), 2<<20)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
+		scanErr := modeltransport.ScanLines(ctx, response.Body, response.Body, 2<<20, modeltransport.StreamIdleTimeout, func(rawLine string) error {
+			line := strings.TrimSpace(rawLine)
 			if !strings.HasPrefix(line, "data:") {
-				continue
+				return nil
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				break
+				return errStreamComplete
 			}
 			var chunk chatStreamResponse
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				result.ErrorCode = "PROVIDER_PROTOCOL_ERROR"
-				return result, &GatewayError{Code: result.ErrorCode, Message: "invalid streaming chat completion chunk"}
+				return &GatewayError{Code: result.ErrorCode, Message: "invalid streaming chat completion chunk"}
 			}
 			if chunk.Id != "" {
 				result.ProviderRequestID = chunk.Id
@@ -260,14 +262,23 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 				if choice.Delta.Content != "" {
 					content.WriteString(choice.Delta.Content)
 					if err := onDelta(choice.Delta.Content); err != nil {
-						return result, err
+						return err
 					}
 				}
 			}
-		}
-		if err := scanner.Err(); err != nil {
+			return nil
+		})
+		if scanErr != nil && !errors.Is(scanErr, errStreamComplete) {
+			if ctx.Err() != nil {
+				result.ErrorCode = "MODEL_ABORTED"
+				return result, ctx.Err()
+			}
+			var gatewayErr *GatewayError
+			if errors.As(scanErr, &gatewayErr) {
+				return result, scanErr
+			}
 			result.ErrorCode = "PROVIDER_UNAVAILABLE"
-			return result, &GatewayError{Code: result.ErrorCode, Message: err.Error()}
+			return result, &GatewayError{Code: result.ErrorCode, Message: "provider stream interrupted", Cause: scanErr}
 		}
 	}
 	result.Latency = time.Since(started)
@@ -379,7 +390,7 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 	httpRequest.Header.Set("User-Agent", "Oktapod/0.1")
 
 	started := time.Now()
-	response, err := c.httpClient.Do(httpRequest)
+	response, err := modeltransport.Do(c.httpClient, httpRequest)
 	result.Latency = time.Since(started)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -387,7 +398,7 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 			return result, ctx.Err()
 		}
 		result.ErrorCode = "PROVIDER_UNAVAILABLE"
-		return result, &GatewayError{Code: result.ErrorCode, Message: err.Error()}
+		return result, &GatewayError{Code: result.ErrorCode, Message: "provider transport failed", Cause: err}
 	}
 	defer response.Body.Close()
 	result.ProviderRequestID = response.Header.Get("x-request-id")
@@ -449,9 +460,9 @@ func (c *Client) resolveModel(ctx context.Context, key string) (string, string, 
 	request.Header.Set("Authorization", "Bearer "+key)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "Oktapod/0.1")
-	response, err := c.httpClient.Do(request)
+	response, err := modeltransport.Do(c.httpClient, request)
 	if err != nil {
-		return "", "auto_discovery", &GatewayError{Code: "MODEL_DISCOVERY_FAILED", Message: err.Error()}
+		return "", "auto_discovery", &GatewayError{Code: "MODEL_DISCOVERY_FAILED", Message: "provider transport failed", Cause: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -520,9 +531,9 @@ func (c *Client) listModels(ctx context.Context, key string) ([]core.ModelDescri
 	request.Header.Set("Authorization", "Bearer "+key)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "Oktapod/0.1")
-	response, err := c.httpClient.Do(request)
+	response, err := modeltransport.Do(c.httpClient, request)
 	if err != nil {
-		return nil, &GatewayError{Code: "MODEL_DISCOVERY_FAILED", Message: err.Error()}
+		return nil, &GatewayError{Code: "MODEL_DISCOVERY_FAILED", Message: "provider transport failed", Cause: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

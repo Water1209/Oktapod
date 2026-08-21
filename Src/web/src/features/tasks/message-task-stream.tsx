@@ -7,22 +7,25 @@ import { buildTaskTimeline, taskFailureInfo, type TaskTimelineItem } from '../ta
 import { useRunEvents } from '../runs/use-run-events'
 import { latestDeliverableArtifacts } from './artifact-versions'
 import { taskStreamPresentation } from './task-stream-presentation'
+import { WebAccessResultCard } from './task-progress'
 
 // StepLine 是消息流内的可折叠单行步骤，关闭时仅显示一行标题。
 function StepLine({ step }: { step: TaskTimelineItem }) {
   const [expanded, setExpanded] = useState(false)
   const isRunning = step.state === 'running'
   const isFailed = step.state === 'failed' || step.state === 'blocked'
+  const hasDetails = Boolean(step.tool || step.detail)
   return <div className={`message-execution-step ${step.state}`}>
-    <div className="step-header" onClick={() => setExpanded((value) => !value)}>
+    <button className="step-header" type="button" aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'}${step.label}`} onClick={() => setExpanded((value) => !value)}>
       {isRunning ? <LoaderCircle className="spin" size={12} /> :
         step.state === 'succeeded' ? <Check size={12} /> :
           isFailed ? <AlertTriangle size={12} /> : <ChevronRight size={12} />}
       <strong>{step.label}</strong>
       <small>{step.state === 'running' ? '执行中' : step.state === 'succeeded' ? '已完成' : step.state}</small>
       {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-    </div>
-    {expanded && (step.tool || step.detail) ? <div className="step-content">
+    </button>
+    {expanded && hasDetails ? <div className="step-content">
+      {step.tool?.presentation ? <WebAccessResultCard presentation={step.tool.presentation} /> : null}
       {step.tool ? <>
         {step.tool.input ? <div className="step-tool-input"><small>输入</small><pre>{step.tool.input}</pre></div> : null}
         {step.tool.result ? <div className="step-tool-result"><small>结果</small><p>{step.tool.result}</p></div> : null}
@@ -34,13 +37,14 @@ function StepLine({ step }: { step: TaskTimelineItem }) {
 }
 
 // MessageTaskStream 只保留历史执行证据。活动计划与人工动作统一位于 Composer 上方。
-export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }: {
+export function MessageTaskStream({ taskId, runId, active, detailsOpen, onDetailsOpenChange, onRequestFileReview }: {
   taskId: string
   runId: string
   active?: boolean
+  detailsOpen: boolean
+  onDetailsOpenChange: (open: boolean) => void
   onRequestFileReview: (artifacts: Artifact[], task: Task) => void
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => api.task(taskId), enabled: !!taskId, refetchInterval: active ? 1_000 : false })
@@ -94,8 +98,8 @@ export function MessageTaskStream({ taskId, runId, active, onRequestFileReview }
       </span>
       {artifacts.length > 0 ? <small>{artifacts.length} 个文件</small> : null}
         <span className="message-task-stream-actions">
-          <button type="button" className={searchOpen ? 'active' : ''} aria-label="搜索执行记录" title="搜索执行记录" onClick={() => { setSearchOpen((value) => !value); setDetailsOpen(true) }}><Search size={13} /></button>
-          <button type="button" className={detailsOpen ? 'active' : ''} aria-label={detailsOpen ? '收起执行记录' : '展开执行记录'} title={detailsOpen ? '收起执行记录' : '展开执行记录'} onClick={() => setDetailsOpen((value) => !value)}><ListTree size={14} /></button>
+          <button type="button" className={searchOpen ? 'active' : ''} aria-label="搜索执行记录" title="搜索执行记录" onClick={() => { setSearchOpen((value) => !value); onDetailsOpenChange(true) }}><Search size={13} /></button>
+          <button type="button" className={detailsOpen ? 'active' : ''} aria-label={detailsOpen ? '收起执行记录' : '展开执行记录'} title={detailsOpen ? '收起执行记录' : '展开执行记录'} onClick={() => onDetailsOpenChange(!detailsOpen)}><ListTree size={14} /></button>
         </span>
       </div>
       {searchOpen ? <label className="message-task-search"><Search size={12} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索步骤、输入或输出" /><button type="button" aria-label="关闭搜索" onClick={() => { setQuery(''); setSearchOpen(false) }}><X size={12} /></button></label> : null}

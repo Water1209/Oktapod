@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, Clock3, Files, LoaderCircle, RotateCw, Workflow } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, Clock3, ExternalLink, Files, Globe2, LoaderCircle, LockKeyhole, RotateCw, Workflow } from 'lucide-react'
 import { api, type RunEvent, type Task } from '../../shared/api/client'
-import { buildTaskExecutionPlan, buildTaskTimeline, taskFailureInfo, taskStatusView, type TimelineState } from './task-progress-model'
+import { buildTaskExecutionPlan, buildTaskTimeline, taskFailureInfo, taskStatusView, type TimelineState, type WebToolPresentation } from './task-progress-model'
 import { ApprovalCard } from '../approvals/approval-inbox'
 import { MultiFileReviewDialog } from './multi-file-review'
 import { useRunEvents } from '../runs/use-run-events'
@@ -30,6 +30,7 @@ export function TaskTimeline({ task, events, compact = false }: { task: Task; ev
         {item.tool ? <>
           {item.tool.input ? <small className="task-tool-input">{item.tool.input}</small> : null}
           <span className={`task-tool-result ${item.state}`}><span aria-hidden="true" />{item.tool.result || item.detail}</span>
+          {item.tool.presentation ? <WebAccessResultCard presentation={item.tool.presentation} /> : null}
           {item.tool.output ? <details className="task-tool-output"><summary>查看执行结果<ChevronDown size={12} /></summary><pre>{item.tool.output}</pre></details> : null}
         </> : <small>{item.detail}</small>}
       </span>
@@ -37,6 +38,27 @@ export function TaskTimeline({ task, events, compact = false }: { task: Task; ev
       </li>)}
     </ol>
   </>
+}
+
+export function WebAccessResultCard({ presentation }: { presentation: WebToolPresentation }) {
+  if (presentation.kind === 'web_search') {
+    return <div className="web-result-card web-search-card"><header><Globe2 size={14} /><span><strong>搜索来源</strong><small>{presentation.provider || 'Web'} · {presentation.sources.length} 条{presentation.truncated ? ' · 已截断' : ''}</small></span></header><div className="web-source-list">{presentation.sources.map((source, index) => {
+      const href = safeExternalURL(source.url)
+      return <div className="web-source-item" key={`${source.url}:${index}`}><span><strong>{source.title || source.domain || '未命名来源'}</strong><small>{source.domain}</small></span>{source.snippet ? <p>{source.snippet}</p> : null}{href ? <a href={href} target="_blank" rel="noreferrer">打开来源<ExternalLink size={11} /></a> : null}</div>
+    })}</div></div>
+  }
+  const privateTarget = presentation.network_class === 'private'
+  const href = privateTarget ? '' : safeExternalURL(presentation.url)
+  return <div className={`web-result-card web-fetch-card ${privateTarget ? 'private' : 'public'}`}><header>{privateTarget ? <LockKeyhole size={14} /> : <Globe2 size={14} />}<span><strong>{privateTarget ? '私网页面' : '公开网页'}</strong><small>{presentation.status_code ? `HTTP ${presentation.status_code}` : '读取失败'} · {presentation.media_type || presentation.content_format || '未知类型'}{presentation.truncated ? ' · 已截断' : ''}</small></span>{presentation.rule_id ? <em>{presentation.rule_id}</em> : null}</header><div className="web-fetch-url">{href ? <a href={href} target="_blank" rel="noreferrer">{presentation.url}<ExternalLink size={11} /></a> : <code>{presentation.url}</code>}</div>{presentation.content_preview ? <pre>{presentation.content_preview}</pre> : null}</div>
+}
+
+function safeExternalURL(raw: string) {
+  try {
+    const value = new URL(raw)
+    return value.protocol === 'http:' || value.protocol === 'https:' ? value.toString() : ''
+  } catch {
+    return ''
+  }
 }
 
 export function ConversationTaskCard({ task, inStrip = false }: { task: Task; inStrip?: boolean }) {

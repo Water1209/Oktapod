@@ -169,6 +169,79 @@ func TestTaskRetryRecreatesPlanRecoveryCheckpoint(t *testing.T) {
 	}
 }
 
+func TestTaskRetryAppendsCompletionValidationRecoveryCheckpoint(t *testing.T) {
+	t.Parallel()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Completion Recovery User"}, core.Organization{ID: testOrgID, Name: "Completion Recovery Org"}, func() string { return "" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "Completion recovery", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "不要修改任何文件；只需回复 OK。", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "completion-recovery-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openTaskControlDatabase(t, databasePath)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var sourceStepID string
+	if err := db.QueryRow(`SELECT id FROM steps WHERE run_id = ? ORDER BY position LIMIT 1`, task.RunID).Scan(&sourceStepID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE steps SET status = 'succeeded', input_json = '{"stage":"completion_recovery","completion_recovery_reason":"WORKSPACE_MUTATION_MISSING","history":[]}', output_json = '{"content":"OK"}', updated_at = ? WHERE id = ?`, now, sourceStepID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status = 'blocked', error_code = 'WORKSPACE_MUTATION_MISSING', result_summary = 'missing mutation', updated_at = ? WHERE id = ?`, now, task.ID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE runs SET status = 'blocked', updated_at = ? WHERE id = ?`, now, task.RunID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := service.ControlTask(context.Background(), task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "completion-recovery", "completion-recovery-key")
+	if err != nil || updated.Status != core.StatusQueued {
+		t.Fatalf("retry task=%#v err=%v", updated, err)
+	}
+	db = openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+	var sourceStatus, recoveryStepID, recoveryStatus, recoveryInput string
+	if err := db.QueryRow(`SELECT status FROM steps WHERE id = ?`, sourceStepID).Scan(&sourceStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT id, status, input_json FROM steps WHERE run_id = ? ORDER BY position DESC LIMIT 1`, task.RunID).Scan(&recoveryStepID, &recoveryStatus, &recoveryInput); err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus != core.StatusSucceeded || recoveryStepID == sourceStepID || recoveryStatus != core.StatusQueued {
+		t.Fatalf("source=%q recovery=%q status=%q", sourceStatus, recoveryStepID, recoveryStatus)
+	}
+	if !strings.Contains(recoveryInput, `"stage":"completion_recovery"`) ||
+		!strings.Contains(recoveryInput, `"model_retry_reason":"WORKSPACE_MUTATION_MISSING"`) ||
+		!strings.Contains(recoveryInput, `"manual_retry":true`) {
+		t.Fatalf("unexpected recovery input=%s", recoveryInput)
+	}
+	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.EventType == "run.retried" && event.Payload["retry_scope"] == "completion_validation_recovery" && event.Payload["source_step_id"] == sourceStepID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("completion recovery run.retried missing from events=%#v", events)
+	}
+}
+
 func TestTaskRetryRejectsUnknownSideEffect(t *testing.T) {
 	t.Parallel()
 	repository, databasePath := newRepository(t)

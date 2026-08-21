@@ -92,7 +92,7 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 		if searchCallsUsed >= searchBudget.Limit {
 			toolDefinitions = excludeSearchToolDefinitions(toolDefinitions)
 			allowedTools = excludeSearchToolNames(allowedTools)
-			sections = append(sections, PromptSection{Name: "search_budget", Order: 1700, Text: "用户声明的搜索预算已用完。所有 web_search 以及 search、research、crawl、extract、map、browse、discover 类 MCP 工具已从当前工具集合移除；只能使用已有证据和工作区工具完成剩余任务。"})
+			sections = append(sections, PromptSection{Name: "search_budget", Order: 1700, Text: "用户声明的联网预算已用完。所有 web_search、web_fetch 以及 search、research、crawl、extract、map、browse、discover 类 MCP 工具已从当前工具集合移除；只能使用已有证据和工作区工具完成剩余任务。"})
 		}
 	}
 	if preferredMCP != "" {

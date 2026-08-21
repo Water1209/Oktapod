@@ -10,13 +10,19 @@ import (
 )
 
 type PlannedTool struct {
-	Call          ToolCall
-	ArgumentsJSON string
-	InputHash     string
-	RiskLevel     string
-	Decision      string
-	Reason        string
-	Idempotent    bool
+	Call               ToolCall
+	ArgumentsJSON      string
+	InputHash          string
+	RiskLevel          string
+	Decision           string
+	Reason             string
+	Idempotent         bool
+	ApprovalScope      string
+	ApprovalGrantKey   string
+	ApprovalPolicyHash string
+	ApprovalOrigin     string
+	ApprovalRuleID     string
+	ForceHumanApproval bool
 }
 
 const ToolPolicyVersion = "tool-policy-v1"
@@ -100,6 +106,16 @@ func PlanTool(call ToolCall) PlannedTool {
 		}
 		planned.Decision = PolicyAllow
 		planned.Reason = "Read-only search is limited to the configured search provider and bounded public results"
+	case ToolWebFetch:
+		planned.RiskLevel = "L0"
+		planned.Idempotent = true
+		if err := validateWebFetchArguments(call.Arguments); err != nil {
+			planned.Decision = PolicyDeny
+			planned.Reason = err.Error()
+			return planned
+		}
+		planned.Decision = PolicyAllow
+		planned.Reason = "Web fetch requires the injected Web Access policy to classify its destination"
 	case ToolWorkspaceWriteFile:
 		planned.RiskLevel = "L1"
 		planned.Idempotent = true
@@ -492,68 +508,29 @@ func validateSkillInvokeArguments(arguments map[string]any) error {
 }
 
 func validateWebSearchArguments(arguments map[string]any) error {
-	if len(arguments) == 0 || len(arguments) > 5 {
-		return fmt.Errorf("web_search accepts query plus optional max_results, freshness, allowed_domains, and blocked_domains")
+	if len(arguments) != 1 {
+		return fmt.Errorf("web_search accepts only query")
 	}
 	query, ok := arguments["query"].(string)
 	query = strings.TrimSpace(query)
 	if !ok || len([]rune(query)) < 2 || len([]rune(query)) > 500 || strings.ContainsRune(query, 0) {
 		return fmt.Errorf("query must contain 2 to 500 characters")
 	}
-	if value, exists := arguments["max_results"]; exists {
-		count, ok := value.(float64)
-		if !ok || count < 1 || count > 10 || count != float64(int(count)) {
-			return fmt.Errorf("max_results must be an integer from 1 to 10")
-		}
-	}
-	if value, exists := arguments["freshness"]; exists {
-		freshness, ok := value.(string)
-		if !ok || (freshness != "day" && freshness != "week" && freshness != "month" && freshness != "year") {
-			return fmt.Errorf("freshness must be day, week, month, or year")
-		}
-	}
-	allowed, err := validateSearchDomains(arguments["allowed_domains"])
-	if err != nil {
-		return fmt.Errorf("allowed_domains: %w", err)
-	}
-	blocked, err := validateSearchDomains(arguments["blocked_domains"])
-	if err != nil {
-		return fmt.Errorf("blocked_domains: %w", err)
-	}
-	if len(allowed) > 0 && len(blocked) > 0 {
-		return fmt.Errorf("allowed_domains and blocked_domains cannot be used together")
-	}
 	return nil
 }
 
-func validateSearchDomains(value any) ([]string, error) {
-	if value == nil {
-		return nil, nil
+func validateWebFetchArguments(arguments map[string]any) error {
+	if len(arguments) != 1 {
+		return fmt.Errorf("web_fetch accepts only url")
 	}
-	items, ok := value.([]any)
-	if !ok || len(items) > 20 {
-		return nil, fmt.Errorf("must be an array containing at most 20 host names")
+	raw, ok := arguments["url"].(string)
+	if !ok {
+		return fmt.Errorf("url is required")
 	}
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		domain, ok := item.(string)
-		domain = strings.ToLower(strings.TrimSpace(domain))
-		if !ok || domain == "" || len(domain) > 253 || strings.ContainsAny(domain, "/\\:@?# ") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
-			return nil, fmt.Errorf("each domain must be a bounded host name without scheme, path, port, or credentials")
-		}
-		for _, label := range strings.Split(domain, ".") {
-			if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-				return nil, fmt.Errorf("each domain must contain valid DNS labels")
-			}
-			for _, char := range label {
-				if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
-					return nil, fmt.Errorf("each domain must contain only ASCII DNS characters")
-				}
-			}
-		}
-		result = append(result, domain)
+	if _, _, _, _, err := NormalizeWebFetchURL(raw); err != nil {
+		return err
 	}
-	return result, nil
+	return nil
 }
 
 func validateWriteArguments(arguments map[string]any) error {

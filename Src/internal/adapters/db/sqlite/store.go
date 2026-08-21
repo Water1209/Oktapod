@@ -133,6 +133,12 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
+func (s *Store) SetExecutionPolicy(policy application.ExecutionPolicy) {
+	if policy != nil {
+		s.executionPolicy = policy
+	}
+}
+
 func (s *Store) GetActor(ctx context.Context, scope core.Scope) (core.Actor, error) {
 	var actor core.Actor
 	if err := s.db.QueryRowContext(ctx, `
@@ -3379,6 +3385,11 @@ func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, no
 		}, nil
 	}
 	if frontier == nil {
+		if recovery, recovered, recoveryErr := s.retryCompletionValidationFailure(ctx, tx, runID, steps, now); recoveryErr != nil {
+			return nil, recoveryErr
+		} else if recovered {
+			return recovery, nil
+		}
 		return s.retryPlanControlFailure(ctx, tx, runID, steps, now)
 	}
 
@@ -3557,6 +3568,116 @@ func (s *Store) retryDeniedToolThroughModel(ctx context.Context, tx *sql.Tx, run
 		"retry_scope": "model_policy_repair", "source_step_id": sourceStep.ID,
 		"plan_revision_id": planRevisionID, "run_plan_item_id": planItemID,
 	}, true, nil
+}
+
+// retryCompletionValidationFailure restores a new model checkpoint for a Run
+// whose Steps all succeeded but whose deterministic completion gate blocked
+// the task afterward. The previous successful completion-recovery Step remains
+// immutable audit history; retry appends a fresh Step so corrected inference or
+// newly available evidence can be evaluated through the normal Worker path.
+func (s *Store) retryCompletionValidationFailure(ctx context.Context, tx *sql.Tx, runID string, steps []taskControlStep, now string) (map[string]any, bool, error) {
+	var errorCode string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT t.error_code
+		FROM tasks t JOIN runs r ON r.task_id = t.id
+		WHERE r.id = ?`, runID).Scan(&errorCode); err != nil {
+		return nil, false, err
+	}
+	if !isCompletionValidationError(errorCode) {
+		return nil, false, nil
+	}
+
+	var source taskControlStep
+	found := false
+	for index := len(steps) - 1; index >= 0; index-- {
+		candidate := steps[index]
+		if candidate.Status != core.StatusSucceeded {
+			continue
+		}
+		var input map[string]any
+		if json.Unmarshal([]byte(candidate.InputJSON), &input) != nil || inputString(input, "stage") != "completion_recovery" {
+			continue
+		}
+		source = candidate
+		found = true
+		break
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return nil, false, err
+	}
+	history, err := s.collectContinuationHistory(ctx, tx, run)
+	if err != nil {
+		return nil, false, err
+	}
+	var recoveryInput map[string]any
+	if json.Unmarshal([]byte(source.InputJSON), &recoveryInput) != nil {
+		return nil, false, fmt.Errorf("MODEL_RETRY_INPUT_INVALID: completion recovery input is not JSON")
+	}
+	recoveryInput["history"] = history
+	recoveryInput["source_step_id"] = source.ID
+	retryCount := 0
+	if value, ok := numericToolValue(recoveryInput["model_retry_count"]); ok {
+		retryCount = int(value)
+	}
+	recoveryInput["model_retry_count"] = retryCount + 1
+	recoveryInput["model_retry_reason"] = errorCode
+	recoveryInput["model_retry_source_step_id"] = source.ID
+	recoveryInput["manual_retry"] = true
+
+	stepID, err := insertQueuedModelStep(ctx, tx, run, recoveryInput, now)
+	if err != nil {
+		return nil, false, err
+	}
+	var planRevisionID, planItemID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT plan_revision_id, run_plan_item_id FROM steps WHERE id = ?`, source.ID,
+	).Scan(&planRevisionID, &planItemID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE id = ?`,
+		planRevisionID, planItemID, stepID,
+	); err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(planRevisionID) != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'active' WHERE id = ?`, planRevisionID); err != nil {
+			return nil, false, err
+		}
+	}
+	if strings.TrimSpace(planItemID) != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE run_plan_items
+			SET status = 'running', result_summary = '', completed_at = '', updated_at = ?
+			WHERE id = ? AND status = 'blocked'`, now, planItemID); err != nil {
+			return nil, false, err
+		}
+	}
+	var position int64
+	if err := tx.QueryRowContext(ctx, `SELECT position FROM steps WHERE id = ?`, stepID).Scan(&position); err != nil {
+		return nil, false, err
+	}
+	return map[string]any{
+		"step_id": stepID, "step_position": position,
+		"retry_scope": "completion_validation_recovery", "source_step_id": source.ID,
+		"plan_revision_id": planRevisionID, "run_plan_item_id": planItemID,
+	}, true, nil
+}
+
+func isCompletionValidationError(errorCode string) bool {
+	switch errorCode {
+	case "ATTACHMENT_NOT_READ", "WEB_EVIDENCE_MISSING", "DELIVERABLE_MISSING",
+		"DELIVERABLE_TOO_SHORT", "DELIVERABLE_CITATIONS_MISSING", "DELIVERABLE_INCOMPLETE",
+		"WORKSPACE_MUTATION_MISSING", "VERIFICATION_MISSING":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) resumeCompletedToolBatch(ctx context.Context, tx *sql.Tx, runID, now, correlationID string) (continuationStepID, batchID string, resumed bool, err error) {
@@ -4470,6 +4591,9 @@ func (s *Store) enrichToolCompletedEvent(ctx context.Context, runID string, payl
 	payload["input_summary"] = toolInputSummary(toolName, arguments)
 	payload["output_summary"] = toolOutputSummary(toolName, status, errorCode, exitCode, output)
 	payload["output_excerpt"] = toolOutputExcerpt(toolName, output)
+	if presentation := toolPresentation(toolName, arguments, output); presentation != nil {
+		payload["presentation"] = presentation
+	}
 }
 
 func toolInputSummary(toolName string, arguments map[string]any) string {
@@ -4510,6 +4634,9 @@ func toolInputSummary(toolName string, arguments map[string]any) string {
 			return fmt.Sprintf("%s · 最多 %d 条", truncateToolText(query, 260), maxResults)
 		}
 		return truncateToolText(query, 300)
+	case core.ToolWebFetch:
+		rawURL, _ := arguments["url"].(string)
+		return truncateToolText(rawURL, 360)
 	case core.ToolSkillInvoke:
 		skill, _ := arguments["skill"].(string)
 		return "加载 " + skill
@@ -4571,6 +4698,13 @@ func toolOutputSummary(toolName, status, errorCode string, exitCode int64, outpu
 		if count, ok := numericToolValue(output["result_count"]); ok {
 			return fmt.Sprintf("%s · %d 条结果 · %s", result, count, provider)
 		}
+	case core.ToolWebFetch:
+		statusCode, _ := numericToolValue(output["status_code"])
+		networkClass, _ := output["network_class"].(string)
+		mediaType, _ := output["media_type"].(string)
+		if statusCode > 0 {
+			return strings.TrimSpace(fmt.Sprintf("%s · HTTP %d · %s · %s", result, statusCode, networkClass, mediaType))
+		}
 	case core.ToolSkillInvoke:
 		name, _ := output["skill_name"].(string)
 		version, _ := output["version"].(string)
@@ -4602,6 +4736,49 @@ func toolOutputExcerpt(toolName string, output map[string]any) string {
 		return ""
 	}
 	return truncateToolText(string(encoded), 6000)
+}
+
+func toolPresentation(toolName string, arguments, output map[string]any) map[string]any {
+	switch toolName {
+	case core.ToolWebSearch:
+		sources := make([]map[string]any, 0, 8)
+		if values, ok := output["results"].([]any); ok {
+			for _, raw := range values {
+				value, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				sources = append(sources, map[string]any{
+					"title": truncateToolText(stringValue(value["title"]), 240),
+					"url":   stringValue(value["url"]), "domain": stringValue(value["domain"]),
+					"snippet": truncateToolText(stringValue(value["snippet"]), 480),
+				})
+				if len(sources) == 8 {
+					break
+				}
+			}
+		}
+		return map[string]any{
+			"kind": "web_search", "query": stringValue(arguments["query"]),
+			"provider": stringValue(output["provider"]), "sources": sources,
+			"truncated": output["truncated"],
+		}
+	case core.ToolWebFetch:
+		finalURL := stringValue(output["final_url"])
+		if finalURL == "" {
+			finalURL = stringValue(arguments["url"])
+		}
+		return map[string]any{
+			"kind": "web_fetch", "network_class": stringValue(output["network_class"]),
+			"rule_id": stringValue(output["matched_rule_id"]), "url": finalURL,
+			"status_code": output["status_code"], "media_type": stringValue(output["media_type"]),
+			"content_format":  stringValue(output["content_format"]),
+			"content_preview": truncateToolText(stringValue(output["content"]), 1600),
+			"truncated":       output["truncated"],
+		}
+	default:
+		return nil
+	}
 }
 
 func redactToolValue(value any) any {
@@ -6602,7 +6779,8 @@ func (s *Store) ListApprovals(ctx context.Context, scope core.Scope, status stri
 		SELECT ar.id, ar.organization_id, ar.project_id, ar.task_id, ar.run_id,
 		       ar.step_id, ar.tool_call_id, ar.tool_name, ar.risk_level, ar.status,
 		       ar.reason, ar.frozen_params_json, ar.input_hash, ar.requested_by,
-		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at
+		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at,
+		       ar.approval_scope, ar.target_origin, ar.matched_rule_id, ar.policy_hash
 		FROM approval_requests ar
 		JOIN tasks t ON t.id = ar.task_id
 		JOIN memberships m ON m.organization_id = ar.organization_id
@@ -6844,6 +7022,9 @@ func inboxHistorySummary(eventType string, payload map[string]any) (kind, status
 			if stringValue("approval_scope") == core.ApprovalScopeProject {
 				return "approval", decision, "当前项目已允许同类窄规则动作 30 天，可随时撤销"
 			}
+			if stringValue("approval_scope") == core.ApprovalScopeRunOrigin {
+				return "approval", decision, "当前 Run 已允许访问同一私网 origin，终态或 24 小时后自动失效"
+			}
 			return "approval", decision, "审批已批准一次，冻结参数保持不变"
 		}
 		return "approval", decision, "审批已拒绝，风险动作未执行"
@@ -6870,7 +7051,8 @@ func (s *Store) ListSideEffectReceipts(ctx context.Context, scope core.Scope, st
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.id, r.organization_id, r.project_id, r.task_id, r.run_id,
 		       r.step_id, r.tool_call_id, tc.tool_name, r.input_hash, r.idempotent,
-		       r.status, r.error_code, r.started_at, r.finished_at
+		       r.status, r.error_code, r.network_class, r.matched_rule_id,
+		       r.policy_hash, r.authorization_id, r.started_at, r.finished_at
 		FROM side_effect_receipts r
 		JOIN tool_calls tc ON tc.id = r.tool_call_id
 		JOIN tasks t ON t.id = r.task_id
@@ -7067,6 +7249,38 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 	if err != nil {
 		return core.Approval{}, err
 	}
+	var runOriginPlan core.PlannedTool
+	var runOriginAuthorizationID string
+	if input.Decision == core.ApprovalApproved && approval.ToolName == core.ToolWebFetch {
+		if input.Scope != core.ApprovalScopeRunOrigin {
+			return core.Approval{}, &core.ValidationError{Field: "scope", Message: "private web_fetch approvals must use the current Run and origin scope"}
+		}
+		run, runErr := getRunContextTx(ctx, tx, approval.RunID)
+		if runErr != nil {
+			return core.Approval{}, runErr
+		}
+		var argumentsJSON string
+		if err := tx.QueryRowContext(ctx, `SELECT arguments_json FROM tool_calls WHERE id = ?`, approval.ToolCallID).Scan(&argumentsJSON); err != nil {
+			return core.Approval{}, err
+		}
+		arguments := map[string]any{}
+		if err := json.Unmarshal([]byte(argumentsJSON), &arguments); err != nil {
+			return core.Approval{}, &core.ValidationError{Field: "frozen_params", Message: "frozen web_fetch parameters are invalid"}
+		}
+		runOriginPlan, err = s.executionPolicy.EvaluateExecution(ctx,
+			application.Principal{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID},
+			application.ExecutionRequest{ProjectID: run.ProjectID, Call: core.ToolCall{ID: approval.ToolCallID, Name: approval.ToolName, Arguments: arguments}, ConfigSnapshot: run.ConfigSnapshotJSON},
+		)
+		if err != nil {
+			return core.Approval{}, err
+		}
+		if runOriginPlan.Decision != core.PolicyAsk || runOriginPlan.ApprovalScope != core.ApprovalScopeRunOrigin ||
+			runOriginPlan.ApprovalGrantKey == "" || runOriginPlan.ApprovalPolicyHash == "" || runOriginPlan.ApprovalOrigin == "" {
+			return core.Approval{}, &core.StateConflictError{Status: runOriginPlan.Decision, Command: "approve private web origin"}
+		}
+	} else if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunOrigin {
+		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "Run origin approval is only valid for private web_fetch calls"}
+	}
 	if input.Decision == core.ApprovalApproved && input.Scope != core.ApprovalScopeOnce && strings.HasPrefix(approval.ToolName, "mcp__") {
 		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "MCP tools only support one-time approval"}
 	}
@@ -7161,6 +7375,29 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 			return core.Approval{}, err
 		}
 	}
+	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunOrigin {
+		ruleID, err := newID()
+		if err != nil {
+			return core.Approval{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO run_approval_rules
+			(id, organization_id, project_id, run_id, tool_name, grant_type, grant_key,
+			 policy_hash, canonical_origin, created_from_approval_id, created_by, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, 'run_origin', ?, ?, ?, ?, ?, ?, ?)`,
+			ruleID, approval.OrganizationID, approval.ProjectID, approval.RunID, approval.ToolName,
+			runOriginPlan.ApprovalGrantKey, runOriginPlan.ApprovalPolicyHash, runOriginPlan.ApprovalOrigin,
+			approval.ID, scope.UserID, now, formatTime(approval.ExpiresAt)); err != nil {
+			return core.Approval{}, err
+		}
+		if err := tx.QueryRowContext(ctx, `
+			SELECT id FROM run_approval_rules
+			WHERE run_id = ? AND tool_name = ? AND grant_type = 'run_origin'
+			  AND grant_key = ? AND policy_hash = ? LIMIT 1`, approval.RunID, approval.ToolName,
+			runOriginPlan.ApprovalGrantKey, runOriginPlan.ApprovalPolicyHash).Scan(&runOriginAuthorizationID); err != nil {
+			return core.Approval{}, err
+		}
+	}
 	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeConversation {
 		var conversationID, argumentsJSON string
 		if err := tx.QueryRowContext(ctx, `
@@ -7216,7 +7453,7 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 			}
 		}
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "approval.decided", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"approval_id": approval.ID, "tool_call_id": approval.ToolCallID, "step_id": approval.StepID, "decision": input.Decision, "approval_scope": input.Scope, "input_hash": approval.InputHash, "parameters_changed": false}}); err != nil {
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "approval.decided", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"approval_id": approval.ID, "tool_call_id": approval.ToolCallID, "step_id": approval.StepID, "decision": input.Decision, "approval_scope": input.Scope, "input_hash": approval.InputHash, "parameters_changed": false, "target_origin": approval.TargetOrigin, "matched_rule_id": approval.MatchedRuleID, "policy_hash": approval.PolicyHash, "authorization_id": runOriginAuthorizationID}}); err != nil {
 		return core.Approval{}, err
 	}
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "human_action.resolved", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"human_action_id": approval.ID, "kind": core.HumanActionToolApproval, "status": humanStatus, "decision": input.Decision, "scope": input.Scope}}); err != nil {
@@ -7581,6 +7818,21 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 		}
 		return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: %w", authErr)
 	}
+	networkClass, matchedRuleID, policyHash, authorizationID := "", "", "", ""
+	if call.Name == core.ToolWebFetch {
+		networkClass = "public"
+		if planned.ApprovalScope == core.ApprovalScopeRunOrigin {
+			networkClass, matchedRuleID, policyHash = "private", planned.ApprovalRuleID, planned.ApprovalPolicyHash
+			if err := tx.QueryRowContext(ctx, `
+				SELECT id FROM run_approval_rules
+				WHERE organization_id = ? AND project_id = ? AND run_id = ? AND tool_name = ?
+				  AND grant_type = 'run_origin' AND grant_key = ? AND policy_hash = ? AND expires_at > ?
+				LIMIT 1`, run.OrganizationID, run.ProjectID, run.RunID, call.Name,
+				planned.ApprovalGrantKey, planned.ApprovalPolicyHash, formatTime(time.Now())).Scan(&authorizationID); err != nil {
+				return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: private web origin approval is missing or expired: %w", err)
+			}
+		}
+	}
 
 	var receiptID string
 	var invocationID string
@@ -7605,10 +7857,11 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO side_effect_receipts (
 				id, organization_id, project_id, task_id, run_id, step_id, tool_call_id,
-				invocation_id, input_hash, idempotent, status, started_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?)`,
+				invocation_id, input_hash, idempotent, status, network_class, matched_rule_id,
+				policy_hash, authorization_id, started_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?, ?)`,
 			receiptID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, step.ID, call.ID,
-			invocationID, inputHash, idempotentValue, now,
+			invocationID, inputHash, idempotentValue, networkClass, matchedRuleID, policyHash, authorizationID, now,
 		); err != nil {
 			return "", err
 		}
@@ -7622,8 +7875,9 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 	} else if _, err := tx.ExecContext(ctx, `
 			UPDATE side_effect_receipts
 			SET status = 'started', exit_code = -1, output_json = '{}',
-			    error_code = '', started_at = ?, finished_at = ''
-			WHERE id = ?`, now, receiptID); err != nil {
+			    error_code = '', network_class = ?, matched_rule_id = ?, policy_hash = ?,
+			    authorization_id = ?, started_at = ?, finished_at = ''
+			WHERE id = ?`, networkClass, matchedRuleID, policyHash, authorizationID, now, receiptID); err != nil {
 		return "", err
 	}
 	if unknown {
@@ -8027,11 +8281,14 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 			}
 		}
 	}
+	if modelFailure, ok := outcome.Output["model_failure"].(map[string]any); ok {
+		eventPayload["model_failure"] = modelFailure
+	}
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: eventType, ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: eventPayload}); err != nil {
 		return err
 	}
 	if modelRetryStepID != "" {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.retry_queued", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": modelRetryStepID, "source_step_id": step.ID, "retry_count": modelRetryCount, "max_retries": core.DefaultModelRetryLimit, "error_code": outcome.ErrorCode}}); err != nil {
+		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.retry_queued", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": modelRetryStepID, "source_step_id": step.ID, "retry_count": modelRetryCount, "max_retries": core.ModelRetryLimit(outcome.ErrorCode), "error_code": outcome.ErrorCode}}); err != nil {
 			return err
 		}
 	}
@@ -9322,16 +9579,20 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		// for tools whose bounded risk was established from the immutable Run
 		// snapshot. Applying this at planning time is essential: a
 		// waiting-approval step is not claimable by the Worker.
-		if fullAccessAutoAllows(fullAccess, plan) {
+		if !plan.ForceHumanApproval && fullAccessAutoAllows(fullAccess, plan) {
 			plan.Decision = core.PolicyAllow
 		} else if plan.Decision == core.PolicyAsk {
-			matched, err := approvalRuleMatches(ctx, tx, run, plan.Call, plan.RiskLevel, now)
+			matched, err := approvalRuleMatches(ctx, tx, run, plan, now)
 			if err != nil {
 				return "", "", err
 			}
 			if matched {
 				plan.Decision = core.PolicyAllow
-				plan.Reason = "本会话已批准同类动作，继续使用冻结参数执行"
+				if plan.ApprovalScope == core.ApprovalScopeRunOrigin {
+					plan.Reason = "当前 Run 已批准访问相同私网 origin，继续使用冻结 URL 执行"
+				} else {
+					plan.Reason = "本会话已批准同类动作，继续使用冻结参数执行"
+				}
 			}
 		}
 		toolCallID := toolCallIDs[index]
@@ -9377,6 +9638,11 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			return "", "", err
 		}
 		if !hasDeny && plan.Decision == core.PolicyAsk {
+			approvalScope := core.ApprovalScopeOnce
+			if plan.ApprovalScope != "" {
+				approvalScope = plan.ApprovalScope
+			}
+			toolAutoReview := autoReview && !plan.ForceHumanApproval
 			approvalID, err := newID()
 			if err != nil {
 				return "", "", err
@@ -9384,7 +9650,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			expiresAt := formatTime(time.Now().UTC().Add(core.DefaultApprovalTTL))
 			actionStatus := core.HumanActionWaitingUser
 			actionReviewer := core.HumanActionReviewerUser
-			if autoReview {
+			if toolAutoReview {
 				actionStatus = core.HumanActionReviewing
 				actionReviewer = core.HumanActionReviewerAuto
 				hasQueued = true
@@ -9395,14 +9661,17 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				"impact_scope":    "当前计划项",
 				"policy_reason":   plan.Reason,
 				"policy_decision": plan.Decision,
+				"approval_scope":  approvalScope,
+				"target_origin":   plan.ApprovalOrigin,
+				"matched_rule_id": plan.ApprovalRuleID,
 			})
 			if err != nil {
 				return "", "", err
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO approval_requests (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, status, reason, frozen_params_json, input_hash, requested_by, requested_at, expires_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
-				approvalID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, stepID, toolCallID, plan.Call.Name, plan.RiskLevel, plan.Reason, plan.ArgumentsJSON, plan.InputHash, modelStep.OwnerID, now, expiresAt,
+				INSERT INTO approval_requests (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, status, reason, frozen_params_json, input_hash, requested_by, requested_at, expires_at, approval_scope, target_origin, matched_rule_id, policy_hash, approval_grant_key)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				approvalID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, stepID, toolCallID, plan.Call.Name, plan.RiskLevel, plan.Reason, plan.ArgumentsJSON, plan.InputHash, modelStep.OwnerID, now, expiresAt, approvalScope, plan.ApprovalOrigin, plan.ApprovalRuleID, plan.ApprovalPolicyHash, plan.ApprovalGrantKey,
 			); err != nil {
 				return "", "", err
 			}
@@ -9421,20 +9690,20 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			}
 			if executionPlanItemID != "" {
 				planStatus := core.RunPlanItemWaitingUser
-				if autoReview {
+				if toolAutoReview {
 					planStatus = core.RunPlanItemRunning
 				}
 				if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'running')`, planStatus, now, executionPlanItemID); err != nil {
 					return "", "", err
 				}
 			}
-			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "approval.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"approval_id": approvalID, "tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "risk_level": plan.RiskLevel, "approval_scope": core.ApprovalScopeOnce, "input_hash": plan.InputHash, "reason": plan.Reason}}); err != nil {
+			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "approval.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"approval_id": approvalID, "tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "risk_level": plan.RiskLevel, "approval_scope": approvalScope, "input_hash": plan.InputHash, "reason": plan.Reason, "target_origin": plan.ApprovalOrigin, "matched_rule_id": plan.ApprovalRuleID}}); err != nil {
 				return "", "", err
 			}
 			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": approvalID, "kind": core.HumanActionToolApproval, "status": actionStatus, "reviewer": actionReviewer, "plan_revision_id": planRevisionID, "run_plan_item_id": executionPlanItemID, "risk_level": plan.RiskLevel, "title": plan.Call.Name, "reason": plan.Reason}}); err != nil {
 				return "", "", err
 			}
-			if autoReview {
+			if toolAutoReview {
 				reviewStepID, err := newID()
 				if err != nil {
 					return "", "", err
@@ -10254,8 +10523,26 @@ func activeExecutionPlanBinding(ctx context.Context, tx *sql.Tx, runID string) (
 	return revisionID, itemID
 }
 
-func approvalRuleMatches(ctx context.Context, tx *sql.Tx, run core.RunContext, call core.ToolCall, riskLevel, now string) (bool, error) {
-	ruleKey, _, ok := approvalRuleSignature(call.Name, mustToolArgumentsJSON(call.Arguments))
+func approvalRuleMatches(ctx context.Context, tx *sql.Tx, run core.RunContext, planned core.PlannedTool, now string) (bool, error) {
+	if planned.ApprovalScope == core.ApprovalScopeRunOrigin {
+		if planned.ApprovalGrantKey == "" || planned.ApprovalPolicyHash == "" {
+			return false, nil
+		}
+		var marker int
+		err := tx.QueryRowContext(ctx, `
+			SELECT 1
+			FROM run_approval_rules
+			WHERE organization_id = ? AND project_id = ? AND run_id = ?
+			  AND tool_name = ? AND grant_type = 'run_origin' AND grant_key = ?
+			  AND policy_hash = ? AND expires_at > ?
+			LIMIT 1`, run.OrganizationID, run.ProjectID, run.RunID, planned.Call.Name,
+			planned.ApprovalGrantKey, planned.ApprovalPolicyHash, now).Scan(&marker)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return err == nil && marker == 1, err
+	}
+	ruleKey, _, ok := approvalRuleSignature(planned.Call.Name, mustToolArgumentsJSON(planned.Call.Arguments))
 	if !ok || strings.TrimSpace(run.ConversationID) == "" {
 		return false, nil
 	}
@@ -10265,14 +10552,14 @@ func approvalRuleMatches(ctx context.Context, tx *sql.Tx, run core.RunContext, c
 		FROM conversation_approval_rules
 		WHERE organization_id = ? AND project_id = ? AND conversation_id = ?
 		  AND tool_name = ? AND rule_version = 2 AND match_hash = ? AND risk_level = ? AND expires_at > ?
-		LIMIT 1`, run.OrganizationID, run.ProjectID, run.ConversationID, call.Name, ruleKey, riskLevel, now).Scan(&marker)
+		LIMIT 1`, run.OrganizationID, run.ProjectID, run.ConversationID, planned.Call.Name, ruleKey, planned.RiskLevel, now).Scan(&marker)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = tx.QueryRowContext(ctx, `
 			SELECT 1
 			FROM project_approval_rules
 			WHERE organization_id = ? AND project_id = ?
 			  AND tool_name = ? AND rule_version = 2 AND match_hash = ? AND risk_level = ? AND expires_at > ? AND revoked_at = ''
-			LIMIT 1`, run.OrganizationID, run.ProjectID, call.Name, ruleKey, riskLevel, now).Scan(&marker)
+			LIMIT 1`, run.OrganizationID, run.ProjectID, planned.Call.Name, ruleKey, planned.RiskLevel, now).Scan(&marker)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -10451,6 +10738,8 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		validator = "git_precondition_hash_policy_and_receipt"
 	} else if step.StepType == core.ToolWebSearch {
 		validator = "web_search_result_schema_and_receipt"
+	} else if step.StepType == core.ToolWebFetch {
+		validator = "web_fetch_url_dns_transport_content_and_receipt"
 	} else if step.StepType == core.ToolSkillInvoke {
 		validator = "skill_snapshot_and_tool_scope"
 	} else if strings.HasPrefix(step.StepType, "mcp__") {
@@ -10469,7 +10758,11 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	}
 	arguments := map[string]any{}
 	_ = json.Unmarshal([]byte(argumentsJSON), &arguments)
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.completed", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": execution.ToolCallID, "step_id": step.ID, "tool_name": toolName, "input_summary": toolInputSummary(toolName, arguments), "output_summary": toolOutputSummary(toolName, receiptStatus, execution.ErrorCode, int64(execution.ExitCode), execution.Output), "output_excerpt": toolOutputExcerpt(toolName, execution.Output), "invocation_id": execution.InvocationID, "status": receiptStatus, "error_code": execution.ErrorCode, "exit_code": execution.ExitCode, "input_hash": execution.InputHash}}); err != nil {
+	completedPayload := map[string]any{"tool_call_id": execution.ToolCallID, "step_id": step.ID, "tool_name": toolName, "input_summary": toolInputSummary(toolName, arguments), "output_summary": toolOutputSummary(toolName, receiptStatus, execution.ErrorCode, int64(execution.ExitCode), execution.Output), "output_excerpt": toolOutputExcerpt(toolName, execution.Output), "invocation_id": execution.InvocationID, "status": receiptStatus, "error_code": execution.ErrorCode, "exit_code": execution.ExitCode, "input_hash": execution.InputHash}
+	if presentation := toolPresentation(toolName, arguments, execution.Output); presentation != nil {
+		completedPayload["presentation"] = presentation
+	}
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.completed", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: completedPayload}); err != nil {
 		return err
 	}
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "validation.completed", ActorType: "validator", ActorID: validator, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"validation_id": validationID, "tool_call_id": execution.ToolCallID, "validator": validator, "status": validationStatus, "input_hash": execution.InputHash}}); err != nil {
@@ -11127,7 +11420,7 @@ func (s *Store) queueModelInteractionRetry(ctx context.Context, tx *sql.Tx, sour
 	} else if value, ok := numericToolValue(input["model_compat_retry_count"]); ok {
 		retryCount = int(value)
 	}
-	if retryCount >= core.DefaultModelRetryLimit {
+	if retryCount >= core.ModelRetryLimit(reason) {
 		return "", retryCount, false, nil
 	}
 	retryCount++
@@ -12044,7 +12337,8 @@ func getApprovalForUser(ctx context.Context, runner idempotencyRunner, scope cor
 		SELECT ar.id, ar.organization_id, ar.project_id, ar.task_id, ar.run_id,
 		       ar.step_id, ar.tool_call_id, ar.tool_name, ar.risk_level, ar.status,
 		       ar.reason, ar.frozen_params_json, ar.input_hash, ar.requested_by,
-		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at
+		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at,
+		       ar.approval_scope, ar.target_origin, ar.matched_rule_id, ar.policy_hash
 		FROM approval_requests ar
 		JOIN tasks t ON t.id = ar.task_id
 		JOIN memberships m ON m.organization_id = ar.organization_id
@@ -12068,6 +12362,7 @@ func scanApproval(scanner rowScanner) (core.Approval, error) {
 		&approval.StepID, &approval.ToolCallID, &approval.ToolName, &approval.RiskLevel, &approval.Status,
 		&approval.Reason, &frozenJSON, &approval.InputHash, &approval.RequestedBy,
 		&approval.DecidedBy, &requestedAt, &expiresAt, &decidedAt,
+		&approval.ApprovalScope, &approval.TargetOrigin, &approval.MatchedRuleID, &approval.PolicyHash,
 	); err != nil {
 		return core.Approval{}, err
 	}
@@ -12105,7 +12400,8 @@ func getSideEffectReceiptForUserTx(ctx context.Context, runner idempotencyRunner
 	row := runner.QueryRowContext(ctx, `
 		SELECT r.id, r.organization_id, r.project_id, r.task_id, r.run_id,
 		       r.step_id, r.tool_call_id, tc.tool_name, r.input_hash, r.idempotent,
-		       r.status, r.error_code, r.started_at, r.finished_at
+		       r.status, r.error_code, r.network_class, r.matched_rule_id,
+		       r.policy_hash, r.authorization_id, r.started_at, r.finished_at
 		FROM side_effect_receipts r
 		JOIN tool_calls tc ON tc.id = r.tool_call_id
 		JOIN tasks t ON t.id = r.task_id
@@ -12126,7 +12422,8 @@ func scanSideEffectReceipt(scanner rowScanner) (core.SideEffectReceipt, error) {
 	if err := scanner.Scan(
 		&receipt.ID, &receipt.OrganizationID, &receipt.ProjectID, &receipt.TaskID, &receipt.RunID,
 		&receipt.StepID, &receipt.ToolCallID, &receipt.ToolName, &receipt.InputHash, &idempotent,
-		&receipt.Status, &receipt.ErrorCode, &startedAt, &finishedAt,
+		&receipt.Status, &receipt.ErrorCode, &receipt.NetworkClass, &receipt.MatchedRuleID,
+		&receipt.PolicyHash, &receipt.AuthorizationID, &startedAt, &finishedAt,
 	); err != nil {
 		return core.SideEffectReceipt{}, err
 	}

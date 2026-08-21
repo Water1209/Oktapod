@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,7 @@ type Config struct {
 	CapabilityTrustedKeysJSON string
 	CapabilityTrustedKeysFile string
 	RunConcurrency            int
+	WebAccessPolicy           core.WebAccessPolicy
 	ConfigPath                string
 	ConfigSource              string
 }
@@ -46,6 +48,12 @@ type configFile struct {
 	Capabilities struct {
 		TrustedKeysFile string `yaml:"trusted_keys_file"`
 	} `yaml:"capabilities"`
+	WebAccess struct {
+		PrivateFetch struct {
+			Enabled        bool                    `yaml:"enabled"`
+			AllowedOrigins []core.WebPrivateOrigin `yaml:"allowed_origins"`
+		} `yaml:"private_fetch"`
+	} `yaml:"web_access"`
 }
 
 func defaultConfigFile() configFile {
@@ -143,6 +151,14 @@ func materializeConfig(file configFile, configPath, source, defaultRoot string) 
 			return Config{}, fmt.Errorf("read capability trusted keys file: %w", readErr)
 		}
 	}
+	webPolicy, err := (core.WebAccessPolicy{
+		PrivateFetchEnabled: file.WebAccess.PrivateFetch.Enabled,
+		AllowedOrigins:      append([]core.WebPrivateOrigin(nil), file.WebAccess.PrivateFetch.AllowedOrigins...),
+		ListenOrigin:        listenOrigin(listenAddress),
+	}).Validate()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Profile: profile, ListenAddress: listenAddress, DataRoot: absoluteRoot,
 		DatabasePath: filepath.Join(absoluteRoot, "oktapod.db"), DatabaseDriver: driver,
@@ -150,7 +166,8 @@ func materializeConfig(file configFile, configPath, source, defaultRoot string) 
 		DatabaseBackupURL:         strings.TrimSpace(os.Getenv("OKTAPOD_DATABASE_BACKUP_URL")),
 		WorkspaceRoot:             filepath.Join(absoluteRoot, "workspaces"),
 		CapabilityTrustedKeysJSON: trustedKeysJSON, CapabilityTrustedKeysFile: trustedKeysFile,
-		RunConcurrency: file.RunConcurrency, ConfigPath: configPath, ConfigSource: source,
+		WebAccessPolicy: webPolicy,
+		RunConcurrency:  file.RunConcurrency, ConfigPath: configPath, ConfigSource: source,
 	}, nil
 }
 
@@ -202,6 +219,7 @@ func (m *ConfigManager) Snapshot() core.BootstrapConfiguration {
 		Profile: m.current.Profile, ListenAddress: m.current.ListenAddress,
 		DataRoot: m.current.DataRoot, RunConcurrency: m.current.RunConcurrency,
 		DatabaseDriver: m.current.DatabaseDriver, TrustedKeysFile: m.current.CapabilityTrustedKeysFile,
+		WebAccess:  webAccessConfiguration(m.current.WebAccessPolicy),
 		ConfigPath: m.current.ConfigPath, Source: m.current.ConfigSource, RestartRequired: false,
 	}
 }
@@ -244,8 +262,13 @@ func (m *ConfigManager) Update(input core.UpdateBootstrapConfiguration) (core.Bo
 	if input.TrustedKeysFile != nil {
 		file.Capabilities.TrustedKeysFile = strings.TrimSpace(*input.TrustedKeysFile)
 	}
-	if _, err := materializeConfig(file, m.current.ConfigPath, "configuration API", m.current.DataRoot); err != nil {
-		return core.BootstrapConfiguration{}, err
+	if input.WebAccess != nil {
+		file.WebAccess.PrivateFetch.Enabled = input.WebAccess.PrivateFetch.Enabled
+		file.WebAccess.PrivateFetch.AllowedOrigins = append([]core.WebPrivateOrigin(nil), input.WebAccess.PrivateFetch.AllowedOrigins...)
+	}
+	materialized, err := materializeConfig(file, m.current.ConfigPath, "configuration API", m.current.DataRoot)
+	if err != nil {
+		return core.BootstrapConfiguration{}, &core.ValidationError{Field: "configuration", Message: err.Error()}
 	}
 	data, err := yaml.Marshal(file)
 	if err != nil {
@@ -266,9 +289,31 @@ func (m *ConfigManager) Update(input core.UpdateBootstrapConfiguration) (core.Bo
 		Profile: file.Profile, ListenAddress: file.ListenAddress, DataRoot: file.DataRoot,
 		RunConcurrency: file.RunConcurrency, DatabaseDriver: file.Database.Driver,
 		TrustedKeysFile: file.Capabilities.TrustedKeysFile, ConfigPath: m.current.ConfigPath,
-		Source: "configuration API", RestartRequired: true,
+		WebAccess: webAccessConfiguration(materialized.WebAccessPolicy),
+		Source:    "configuration API", RestartRequired: true,
 	}
 	return snapshot, nil
+}
+
+func webAccessConfiguration(policy core.WebAccessPolicy) core.WebAccessConfiguration {
+	origins := append([]core.WebPrivateOrigin(nil), policy.AllowedOrigins...)
+	return core.WebAccessConfiguration{PrivateFetch: core.PrivateFetchConfiguration{
+		Enabled: policy.PrivateFetchEnabled, AllowedOrigins: origins, AllowedOriginCount: len(origins),
+	}}
+}
+
+func listenOrigin(address string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil || port == "" {
+		return ""
+	}
+	if strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	}
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // CapabilityTrustedKeys parses a non-secret JSON object of key id to base64

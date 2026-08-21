@@ -59,8 +59,10 @@ type Worker struct {
 	artifactCapture   application.ArtifactCapture
 	assetStager       application.AssetStager
 	webSearch         WebSearchExecutor
+	webAccess         WebAccess
 	mcpSecrets        application.ProviderSecretStore
 	mcpCallTimeout    time.Duration
+	modelCallTimeout  time.Duration
 	queuedTurnStarter QueuedTurnStarter
 	reviewerSettings  func(context.Context, string) (core.AIGovernanceSettings, error)
 }
@@ -98,6 +100,11 @@ func (w *Worker) WithWebSearchExecutor(executor WebSearchExecutor) *Worker {
 	return w
 }
 
+func (w *Worker) WithWebAccess(access WebAccess) *Worker {
+	w.webAccess = access
+	return w
+}
+
 func (w *Worker) WithMCPSecretStore(secrets application.ProviderSecretStore) *Worker {
 	w.mcpSecrets = secrets
 	return w
@@ -109,6 +116,15 @@ func (w *Worker) WithMCPSecretStore(secrets application.ProviderSecretStore) *Wo
 // production keeps enough time for research-style tools to finish.
 func (w *Worker) WithMCPCallTimeout(timeout time.Duration) *Worker {
 	w.mcpCallTimeout = timeout
+	return w
+}
+
+// WithModelCallTimeout bounds one model turn even when the provider keeps an
+// SSE connection active with reasoning or keep-alive chunks. Those bytes prove
+// that the network is alive, but they do not justify making a user wait without
+// a completed answer or executable tool call.
+func (w *Worker) WithModelCallTimeout(timeout time.Duration) *Worker {
+	w.modelCallTimeout = timeout
 	return w
 }
 
@@ -127,15 +143,16 @@ func (w *Worker) WithLease(lease time.Duration) *Worker {
 
 func NewWorker(id string, repository WorkerRepository, model ModelGateway, logger *slog.Logger) *Worker {
 	worker := &Worker{
-		id:             id,
-		repository:     repository,
-		model:          model,
-		agentLoop:      agentloop.New(model),
-		harness:        durableharness.New(repository),
-		logger:         logger,
-		lease:          90 * time.Second,
-		pollInterval:   250 * time.Millisecond,
-		mcpCallTimeout: 10 * time.Minute,
+		id:               id,
+		repository:       repository,
+		model:            model,
+		agentLoop:        agentloop.New(model),
+		harness:          durableharness.New(repository),
+		logger:           logger,
+		lease:            90 * time.Second,
+		pollInterval:     250 * time.Millisecond,
+		mcpCallTimeout:   10 * time.Minute,
+		modelCallTimeout: 2 * time.Minute,
 	}
 	if settingsRepository, ok := repository.(interface {
 		GetAIGovernanceSettings(context.Context, string) (core.AIGovernanceSettings, error)
@@ -150,9 +167,36 @@ func (w *Worker) completeModel(ctx context.Context, request ModelRequest) (core.
 	if loop == nil {
 		loop = agentloop.New(w.model)
 	}
-	event := loop.Next(ctx, agentloop.LoopState{Request: request})
+	callCtx := ctx
+	cancel := func() {}
+	if w.modelCallTimeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, w.modelCallTimeout)
+	}
+	defer cancel()
+	started := time.Now()
+	event := loop.Next(callCtx, agentloop.LoopState{Request: request})
+	if event.Err != nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		event.Result.ErrorCode = "PROVIDER_UNAVAILABLE"
+		event.Result.StopReason = core.StopReasonError
+		if event.Result.Latency <= 0 {
+			event.Result.Latency = time.Since(started)
+		}
+		return event.Result, &modelTurnTimeoutFailure{timeout: w.modelCallTimeout}
+	}
 	return event.Result, event.Err
 }
+
+type modelTurnTimeoutFailure struct {
+	timeout time.Duration
+}
+
+func (f *modelTurnTimeoutFailure) Error() string {
+	return "model turn exceeded its completion deadline"
+}
+func (f *modelTurnTimeoutFailure) Unwrap() error             { return context.DeadlineExceeded }
+func (f *modelTurnTimeoutFailure) ModelFailureKind() string  { return "model_turn_timeout" }
+func (f *modelTurnTimeoutFailure) ModelFailurePhase() string { return "model_turn" }
+func (f *modelTurnTimeoutFailure) ModelFailureTimeout() bool { return true }
 
 func (w *Worker) durableHarness() *durableharness.Durable {
 	if w.harness == nil {
@@ -374,19 +418,22 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
 			status = core.StatusBlocked
 		}
+		output := map[string]any{
+			"retryable":    isRetryableModelInteractionError(result.ErrorCode),
+			"model":        result.Model,
+			"context_plan": contextPlan,
+		}
+		if failure := modelFailureDetails(err); failure != nil {
+			output["model_failure"] = failure
+		}
 		return core.StepOutcome{
 			Status:        status,
 			ErrorCode:     result.ErrorCode,
 			ResultSummary: modelFailureSummary(result.ErrorCode, err),
-			Output: map[string]any{
-				"retryable":    isRetryableModelInteractionError(result.ErrorCode),
-				"model":        result.Model,
-				"context_plan": contextPlan,
-			},
-			Model: &result,
+			Output:        output,
+			Model:         &result,
 		}
 	}
-	result.ToolArgumentRepairs += normalizeSafeToolArguments(result.ToolCalls)
 	annotateToolCallExecutionMode(result.ToolCalls, toolDefinitions)
 	if searchBudget.Enforced && searchCallBudgetExceededWithPrior(continuation, result.ToolCalls, searchBudget.Limit, priorSearchCalls) {
 		summary := fmt.Sprintf("任务明确限制最多执行 %d 次搜索；超限调用未执行，系统将使用已有证据继续。", searchBudget.Limit)
@@ -639,12 +686,33 @@ func lengthTruncationHint(inputJSON string) string {
 }
 
 func modelFailureSummary(code string, err error) string {
+	if failure := modelFailureDetails(err); failure != nil {
+		switch failure["kind"] {
+		case "response_header_timeout":
+			return "模型首包响应超时；系统未在 60 秒内收到响应头，将从当前检查点自动重试。"
+		case "stream_idle_timeout":
+			return "模型流式响应停滞；连续 60 秒没有收到新数据，将从当前检查点自动重试。"
+		case "model_turn_timeout":
+			return "模型本轮响应超过 120 秒；即使连接仍有数据，系统也已停止等待并从当前检查点重试。"
+		case "dns_error":
+			return "模型服务域名解析失败；请检查 DNS 或网络配置，系统将从当前检查点自动重试。"
+		case "connect_error":
+			return "无法建立到模型服务的网络连接；系统将从当前检查点自动重试。"
+		case "tls_error":
+			return "模型服务 TLS 握手失败；请检查证书、代理或系统时间，系统将从当前检查点自动重试。"
+		case "stream_interrupted":
+			return "模型流式连接在响应完成前中断；系统将从当前检查点自动重试。"
+		}
+	}
 	switch code {
 	case "PROVIDER_TOOL_ARGUMENTS_INVALID":
 		return "模型返回的工具参数不是有效 JSON；系统未执行该动作，并将进行兼容性重试。"
 	case "PROVIDER_TOOL_ARGUMENTS_TRUNCATED":
 		return "模型工具参数输出被截断；系统未执行不完整动作，并将要求模型缩短参数后重试。"
 	case "PROVIDER_UNAVAILABLE":
+		if isModelRequestTimeout(err) {
+			return "模型响应超时；系统将从当前检查点自动重试。"
+		}
 		return "模型连接暂时中断；系统将从当前检查点自动重试。"
 	case "PROVIDER_RATE_LIMIT":
 		return "模型服务暂时限流；系统将保留当前进度并自动重试。"
@@ -653,6 +721,44 @@ func modelFailureSummary(code string, err error) string {
 	default:
 		return safeErrorSummary(err)
 	}
+}
+
+type modelFailureDiagnostic interface {
+	ModelFailureKind() string
+	ModelFailurePhase() string
+	ModelFailureTimeout() bool
+}
+
+func modelFailureDetails(err error) map[string]any {
+	if err == nil {
+		return nil
+	}
+	var diagnostic modelFailureDiagnostic
+	if !errors.As(err, &diagnostic) {
+		return nil
+	}
+	return map[string]any{
+		"kind":      diagnostic.ModelFailureKind(),
+		"phase":     diagnostic.ModelFailurePhase(),
+		"timed_out": diagnostic.ModelFailureTimeout(),
+	}
+}
+
+func isModelRequestTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var diagnostic modelFailureDiagnostic
+	if errors.As(err, &diagnostic) {
+		return diagnostic.ModelFailureTimeout()
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "client.timeout exceeded") ||
+		strings.Contains(message, "awaiting headers") ||
+		strings.Contains(message, "i/o timeout")
 }
 
 func isRetryableModelInteractionError(code string) bool {
@@ -687,7 +793,7 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 	if input.RetryCount < 1 {
 		return ""
 	}
-	hint := fmt.Sprintf("系统模型交互重试 %d/%d：上一次请求%s。请从当前检查点继续，不要重复已经成功的步骤。", input.RetryCount, core.DefaultModelRetryLimit, modelRetryReasonLabel(input.RetryReason))
+	hint := fmt.Sprintf("系统模型交互重试 %d/%d：上一次请求%s。请从当前检查点继续，不要重复已经成功的步骤。", input.RetryCount, core.ModelRetryLimit(input.RetryReason), modelRetryReasonLabel(input.RetryReason))
 	if input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_INVALID" || input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_TRUNCATED" {
 		hint += " 每个 function.arguments 必须是完整 JSON 对象，使用双引号并正确转义换行和反斜杠，不要使用 Markdown 代码块；参数过长时拆成更小的工具调用。"
 	}
@@ -695,7 +801,7 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 		hint += " 上一次只产生了内部推理并耗尽输出预算，没有形成任何动作。不要重新做全局分析；若执行轨迹已经包含用户要求的交付物与验证，禁止为了总结重复读写或创建额外文件，直接返回不超过 800 字的最终交付摘要。否则立即发出一个最小且完整的工具调用；长文任务一次只写一个不超过 3000 字符的章节，后续轮次再继续。"
 	}
 	if input.RetryReason == "TOOL_BUDGET_EXCEEDED" {
-		hint += " 用户声明的搜索调用上限已经用完，刚才的超限调用没有执行。禁止继续调用 web_search 或任何 search、research、crawl、extract、map、browse、discover 类 MCP 工具；只使用已有工具结果完成剩余写作与工作区核验。"
+		hint += " 用户声明的联网调用上限已经用完，刚才的超限调用没有执行。禁止继续调用 web_search、web_fetch 或任何 search、research、crawl、extract、map、browse、discover 类 MCP 工具；只使用已有工具结果完成剩余写作与工作区核验。"
 	}
 	if input.RetryReason == "RUN_PLAN_STATUS_REGRESSION" {
 		hint += " 上一次 update_plan 试图把已完成项改回未完成，系统已拒绝并保留原计划。先读取当前持久化计划，再提交同一完整清单；所有 completed 项必须继续保持 completed，只推进当前项和后续项。"
@@ -1541,7 +1647,7 @@ func explicitMCPToolAllowed(name, capabilityID string) bool {
 	// local delivery capabilities. Exclude the interchangeable builtin search,
 	// while preserving workspace, Git, planning, input and approval tools so a
 	// task can turn MCP evidence into verified artifacts.
-	return name != core.ToolWebSearch
+	return name != core.ToolWebSearch && name != core.ToolWebFetch
 }
 
 func filterToolDefinitionsBySkill(definitions []ToolDefinition, plan map[string]any) []ToolDefinition {
@@ -1574,45 +1680,6 @@ func filterOutToolDefinition(definitions []ToolDefinition, toolName string) []To
 		}
 	}
 	return filtered
-}
-
-// normalizeSafeToolArguments removes semantically empty optional values that
-// some OpenAI-compatible providers emit for array fields. It never repairs a
-// non-empty invalid value: those still reach the deterministic policy validator
-// and fail closed.
-func normalizeSafeToolArguments(calls []core.ToolCall) int {
-	repairs := 0
-	for index := range calls {
-		if calls[index].Name != core.ToolWebSearch {
-			continue
-		}
-		for _, field := range []string{"allowed_domains", "blocked_domains"} {
-			raw, ok := calls[index].Arguments[field].([]any)
-			if !ok {
-				continue
-			}
-			filtered := make([]any, 0, len(raw))
-			removed := false
-			for _, item := range raw {
-				text, isText := item.(string)
-				if isText && strings.TrimSpace(text) == "" {
-					removed = true
-					continue
-				}
-				filtered = append(filtered, item)
-			}
-			if !removed {
-				continue
-			}
-			repairs++
-			if len(filtered) == 0 {
-				delete(calls[index].Arguments, field)
-			} else {
-				calls[index].Arguments[field] = filtered
-			}
-		}
-	}
-	return repairs
 }
 
 func skillRelevant(skill skillSnapshot, tokens map[string]struct{}, prompt string) bool {

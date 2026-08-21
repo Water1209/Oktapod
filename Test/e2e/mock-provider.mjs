@@ -7,6 +7,12 @@ const server = createServer(async (request, response) => {
     response.end('{"status":"ok"}')
     return
   }
+  if (request.url === '/private/docs' || request.url === '/private/next') {
+    response.setHeader('Content-Type', 'text/html; charset=utf-8')
+    const page = request.url.endsWith('/next') ? 'Next page' : 'Private docs'
+    response.end(`<html><head><title>${page}</title><script>globalThis.privatePayloadExecuted = true</script></head><body><h1>${page}</h1><p>Governed intranet content.</p><a href="/private/next">Next</a></body></html>`)
+    return
+  }
   if (request.headers.authorization !== 'Bearer fake-e2e-key') {
     response.writeHead(401)
     response.end('{"error":"unauthorized"}')
@@ -23,6 +29,7 @@ const server = createServer(async (request, response) => {
     const calledToolNames = Array.isArray(body.messages)
       ? body.messages.flatMap((message) => Array.isArray(message.tool_calls) ? message.tool_calls.map((call) => call.function?.name).filter(Boolean) : [])
       : []
+    const webFetchCallCount = calledToolNames.filter((name) => name === 'web_fetch').length
     if (process.env.OKTAPOD_E2E_DEBUG === '1') process.stderr.write(`[mock-provider] chat request ${JSON.stringify({ stream: body.stream, userContent: userContent.slice(0, 80) })}\n`)
     const systemContent = Array.isArray(body.messages) ? body.messages.find((message) => message.role === 'system')?.content ?? '' : ''
     if (systemContent.includes("route a user's project message")) {
@@ -51,6 +58,29 @@ const server = createServer(async (request, response) => {
           tool_calls: [
             { id: 'provider-e2e-write', type: 'function', function: { name: 'workspace_write_file', arguments: JSON.stringify({ path: 'e2e/approval.txt', content: 'approval persisted\n' }) } },
             { id: 'provider-e2e-command', type: 'function', function: { name: 'workspace_run_command', arguments: JSON.stringify({ program: 'node', args: ['--version'] }) } },
+          ],
+        } }],
+        usage: { prompt_tokens: 30, completion_tokens: 14 },
+      }))
+      return
+    }
+    if (userContent.includes('读取两页私网文档并总结') || webFetchCallCount > 0) {
+      if (webFetchCallCount >= 2 && hasToolResults) {
+        response.end(JSON.stringify({
+          id: 'provider-e2e-private-fetch-finished',
+          choices: [{ message: { role: 'assistant', content: '私网文档两页均已通过同一 Run 的受控授权读取。' } }],
+          usage: { prompt_tokens: 28, completion_tokens: 10 },
+        }))
+        return
+      }
+      const path = webFetchCallCount === 0 ? '/private/docs' : '/private/next'
+      response.end(JSON.stringify({
+        id: `provider-e2e-private-fetch-${webFetchCallCount + 1}`,
+        choices: [{ message: {
+          role: 'assistant',
+          content: webFetchCallCount === 0 ? '先读取受控私网页面。' : '继续读取相同 origin 的第二个路径。',
+          tool_calls: [
+            { id: `provider-e2e-private-fetch-call-${webFetchCallCount + 1}`, type: 'function', function: { name: 'web_fetch', arguments: JSON.stringify({ url: `http://127.0.0.1:19090${path}` }) } },
           ],
         } }],
         usage: { prompt_tokens: 30, completion_tokens: 14 },

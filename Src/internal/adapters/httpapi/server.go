@@ -429,6 +429,15 @@ func (s *Server) UpdateBootstrapConfiguration(ctx context.Context, request gener
 		ListenAddress: request.Body.ListenAddress, DataRoot: request.Body.DataRoot,
 		RunConcurrency: request.Body.RunConcurrency, TrustedKeysFile: request.Body.TrustedKeysFile,
 	}
+	if request.Body.WebAccess != nil {
+		allowedOrigins := make([]core.WebPrivateOrigin, 0, len(request.Body.WebAccess.PrivateFetch.AllowedOrigins))
+		for _, origin := range request.Body.WebAccess.PrivateFetch.AllowedOrigins {
+			allowedOrigins = append(allowedOrigins, core.WebPrivateOrigin{ID: origin.Id, Origin: origin.Origin})
+		}
+		input.WebAccess = &core.WebAccessConfiguration{PrivateFetch: core.PrivateFetchConfiguration{
+			Enabled: request.Body.WebAccess.PrivateFetch.Enabled, AllowedOrigins: allowedOrigins,
+		}}
+	}
 	if request.Body.Profile != nil {
 		value := string(*request.Body.Profile)
 		input.Profile = &value
@@ -581,7 +590,22 @@ func (s *Server) ResetPendingVault(ctx context.Context, _ generated.ResetPending
 }
 
 func bootstrapConfigurationResponse(item core.BootstrapConfiguration) generated.BootstrapConfiguration {
-	return generated.BootstrapConfiguration{Profile: generated.BootstrapConfigurationProfile(item.Profile), ListenAddress: item.ListenAddress, DataRoot: item.DataRoot, RunConcurrency: item.RunConcurrency, DatabaseDriver: generated.BootstrapConfigurationDatabaseDriver(item.DatabaseDriver), TrustedKeysFile: item.TrustedKeysFile, ConfigPath: item.ConfigPath, Source: item.Source, RestartRequired: item.RestartRequired}
+	allowedOrigins := make([]generated.WebPrivateOrigin, 0, len(item.WebAccess.PrivateFetch.AllowedOrigins))
+	for _, origin := range item.WebAccess.PrivateFetch.AllowedOrigins {
+		allowedOrigins = append(allowedOrigins, generated.WebPrivateOrigin{Id: origin.ID, Origin: origin.Origin})
+	}
+	return generated.BootstrapConfiguration{
+		Profile: generated.BootstrapConfigurationProfile(item.Profile), ListenAddress: item.ListenAddress,
+		DataRoot: item.DataRoot, RunConcurrency: item.RunConcurrency,
+		DatabaseDriver:  generated.BootstrapConfigurationDatabaseDriver(item.DatabaseDriver),
+		TrustedKeysFile: item.TrustedKeysFile, ConfigPath: item.ConfigPath, Source: item.Source,
+		RestartRequired: item.RestartRequired,
+		WebAccess: generated.WebAccessConfiguration{PrivateFetch: generated.PrivateFetchConfiguration{
+			Enabled: item.WebAccess.PrivateFetch.Enabled, AllowedOrigins: allowedOrigins,
+			AllowedOriginCount: item.WebAccess.PrivateFetch.AllowedOriginCount,
+			OriginsRedacted:    item.WebAccess.PrivateFetch.OriginsRedacted,
+		}},
+	}
 }
 
 func aiGovernanceResponse(item core.AIGovernanceSettings) generated.AIGovernanceSettings {
@@ -3121,7 +3145,7 @@ func sideEffectReceiptResponse(receipt core.SideEffectReceipt) (generated.SideEf
 	if err != nil {
 		return generated.SideEffectReceipt{}, err
 	}
-	return generated.SideEffectReceipt{Id: id, ProjectId: projectID, TaskId: taskID, RunId: runID, StepId: stepID, ToolCallId: toolCallID, ToolName: receipt.ToolName, InputHash: receipt.InputHash, Idempotent: receipt.Idempotent, Status: generated.SideEffectReceiptStatus(receipt.Status), ErrorCode: receipt.ErrorCode, StartedAt: receipt.StartedAt, FinishedAt: receipt.FinishedAt}, nil
+	return generated.SideEffectReceipt{Id: id, ProjectId: projectID, TaskId: taskID, RunId: runID, StepId: stepID, ToolCallId: toolCallID, ToolName: receipt.ToolName, InputHash: receipt.InputHash, Idempotent: receipt.Idempotent, Status: generated.SideEffectReceiptStatus(receipt.Status), ErrorCode: receipt.ErrorCode, NetworkClass: generated.SideEffectReceiptNetworkClass(receipt.NetworkClass), MatchedRuleId: receipt.MatchedRuleID, PolicyHash: receipt.PolicyHash, AuthorizationId: receipt.AuthorizationID, StartedAt: receipt.StartedAt, FinishedAt: receipt.FinishedAt}, nil
 }
 
 func (s *Server) DecideApproval(ctx context.Context, request generated.DecideApprovalRequestObject) (generated.DecideApprovalResponseObject, error) {
@@ -4021,6 +4045,8 @@ func approvalResponse(approval core.Approval) (generated.Approval, error) {
 	response := generated.Approval{
 		Id: id, ProjectId: projectID, TaskId: taskID, RunId: runID, StepId: stepID,
 		ToolCallId: toolCallID, ToolName: approval.ToolName, RiskLevel: generated.ApprovalRiskLevel(approval.RiskLevel),
+		ApprovalScope: generated.ApprovalApprovalScope(approval.ApprovalScope), TargetOrigin: approval.TargetOrigin,
+		MatchedRuleId: approval.MatchedRuleID, PolicyHash: approval.PolicyHash,
 		Status: generated.ApprovalStatus(approval.Status), Reason: approval.Reason, FrozenParams: approval.FrozenParams,
 		InputHash: approval.InputHash, RequestedBy: approval.RequestedBy, RequestedAt: approval.RequestedAt, ExpiresAt: approval.ExpiresAt,
 		DecidedAt: approval.DecidedAt,

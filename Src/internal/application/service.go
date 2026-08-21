@@ -52,6 +52,7 @@ type Service struct {
 	mcpOAuth               MCPOAuthCoordinator
 	vault                  VaultController
 	bootstrapConfiguration BootstrapConfigurationManager
+	webAccessPolicy        core.WebAccessPolicy
 }
 
 const (
@@ -95,6 +96,14 @@ func (s *Service) WithChatToolExecutor(executor ChatToolExecutor, workspaceRoot 
 // into explicit user-driven recovery actions in the Files inspector.
 func (s *Service) WithArtifactCapture(capture ArtifactCapture) *Service {
 	s.artifactCapture = capture
+	return s
+}
+
+// WithWebAccessPolicy freezes the current non-secret network boundary into
+// every new Run. The execution policy still intersects it with the live
+// bootstrap policy immediately before a tool is dispatched.
+func (s *Service) WithWebAccessPolicy(policy core.WebAccessPolicy) *Service {
+	s.webAccessPolicy = policy
 	return s
 }
 
@@ -749,6 +758,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		"permission_mode":        input.PermissionMode,
 		"prompt_profile_version": core.PromptProfileVersionCurrent,
 	}
+	s.webAccessPolicy.Snapshot().AddTo(snapshot)
 	if input.ProviderID != "" {
 		snapshot["model_provider_id"] = input.ProviderID
 	}
@@ -1655,6 +1665,7 @@ func (s *Service) ForkTask(ctx context.Context, taskID, correlationID, idempoten
 		"source_task_id": source.ID,
 		"source_run_id":  source.RunID,
 	}
+	s.webAccessPolicy.Snapshot().AddTo(snapshot)
 	if sourceRun, runErr := s.repository.GetRunContext(ctx, source.RunID); runErr == nil {
 		var sourceConfig map[string]any
 		if json.Unmarshal([]byte(sourceRun.ConfigSnapshotJSON), &sourceConfig) == nil {

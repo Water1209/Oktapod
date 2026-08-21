@@ -117,10 +117,29 @@ type ExecutionPolicy interface {
 // StaticExecutionPolicy is the single deterministic policy path used both
 // when persisting a ToolCall and immediately before the adapter executes it.
 // Approval grants may narrow an Ask to Allow, but cannot bypass a hard Deny.
-type StaticExecutionPolicy struct{}
+type StaticExecutionPolicy struct {
+	WebAccess core.WebAccessPolicy
+}
 
-func (StaticExecutionPolicy) EvaluateExecution(_ context.Context, _ Principal, request ExecutionRequest) (core.PlannedTool, error) {
-	return core.PlanTool(request.Call), nil
+func (policy StaticExecutionPolicy) EvaluateExecution(_ context.Context, _ Principal, request ExecutionRequest) (core.PlannedTool, error) {
+	planned := core.PlanTool(request.Call)
+	if request.Call.Name != core.ToolWebFetch || planned.Decision == core.PolicyDeny {
+		return planned, nil
+	}
+	rawURL, _ := request.Call.Arguments["url"].(string)
+	decision := policy.WebAccess.EvaluateFetch(request.ConfigSnapshot, rawURL)
+	planned.RiskLevel = decision.RiskLevel
+	planned.Decision = decision.Decision
+	planned.Reason = decision.Reason
+	if decision.NetworkClass == "private" && decision.Decision == core.PolicyAsk {
+		planned.ApprovalScope = core.ApprovalScopeRunOrigin
+		planned.ApprovalGrantKey = decision.GrantKey
+		planned.ApprovalPolicyHash = decision.PolicyHash
+		planned.ApprovalOrigin = decision.CanonicalOrigin
+		planned.ApprovalRuleID = decision.RuleID
+		planned.ForceHumanApproval = true
+	}
+	return planned, nil
 }
 
 type principalContextKey struct{}

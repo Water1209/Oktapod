@@ -130,37 +130,6 @@ func TestPlanExecuteTurnCannotRepublishPlanBeforeProducingEvidence(t *testing.T)
 	}
 }
 
-func TestWebSearchDropsOnlyEmptyOptionalDomainsBeforePolicyFreeze(t *testing.T) {
-	calls := []core.ToolCall{{
-		Name: core.ToolWebSearch,
-		Arguments: map[string]any{
-			"query":           "physical ai robotics",
-			"allowed_domains": []any{"", "nvidia.com", "  "},
-			"blocked_domains": []any{},
-		},
-	}}
-	if repairs := normalizeSafeToolArguments(calls); repairs != 1 {
-		t.Fatalf("repairs=%d calls=%#v", repairs, calls)
-	}
-	allowed, ok := calls[0].Arguments["allowed_domains"].([]any)
-	if !ok || len(allowed) != 1 || allowed[0] != "nvidia.com" {
-		t.Fatalf("allowed_domains=%#v", calls[0].Arguments["allowed_domains"])
-	}
-	if _, exists := calls[0].Arguments["blocked_domains"]; !exists {
-		t.Fatal("valid empty blocked_domains was unexpectedly rewritten")
-	}
-	invalid := []core.ToolCall{{
-		Name:      core.ToolWebSearch,
-		Arguments: map[string]any{"query": "physical ai", "allowed_domains": []any{"https://example.com"}},
-	}}
-	if repairs := normalizeSafeToolArguments(invalid); repairs != 0 {
-		t.Fatalf("non-empty invalid domain was repaired: %#v", invalid)
-	}
-	if core.PlanTool(invalid[0]).Decision != core.PolicyDeny {
-		t.Fatal("non-empty invalid domain must still fail closed")
-	}
-}
-
 func TestScenePolicyOnlyRestrictsHistoricalSnapshots(t *testing.T) {
 	if sceneAllowsWorkspaceCommand(`{"scene":"work","scene_policy":{"workspace_command":false}}`) {
 		t.Fatal("historical work snapshot must preserve its frozen command restriction")

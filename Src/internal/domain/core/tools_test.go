@@ -98,9 +98,7 @@ func TestPlanToolMCPCallRequiresApproval(t *testing.T) {
 
 func TestPlanToolAllowsBoundedReadOnlyWebSearch(t *testing.T) {
 	planned := PlanTool(ToolCall{Name: ToolWebSearch, Arguments: map[string]any{
-		"query":           "latest Go release",
-		"max_results":     float64(5),
-		"allowed_domains": []any{"go.dev"},
+		"query": "latest Go release",
 	}})
 	if planned.Decision != PolicyAllow || planned.RiskLevel != "L0" || !planned.Idempotent || planned.InputHash == "" {
 		t.Fatalf("planned=%#v", planned)
