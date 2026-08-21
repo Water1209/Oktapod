@@ -1,6 +1,6 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.10
+> 版本：v1.11
 > 更新日期：2026-08-21
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`
@@ -99,7 +99,7 @@
 | R1A-005 | Durable ToolBatch | `PASS` | 000046 批次持久化；Skill/Web/Workspace/MCP 统一经过 Decode、Capability Preflight、Input Hash、Policy/Begin 与 Normalize；任一 sequential 仍使整批串行；源顺序、唯一 continuation、lease/并行兄弟失败恢复及“收据已提交但 continuation 未入队”的崩溃窗口均有回归 |
 | R1A-006 | Session Tree V2 | `PASS` | 000047、独立 entry_seq、事务追加、Active Leaf 上下文、Navigate/Fork/Clone/Label/五节 Summary/CAS/Busy Guard/分页/循环检测/重启恢复及 OpenAPI 通过；PostgreSQL 已按 V1 范围决策排除 |
 | R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填、000056 启用模型真源；同协议多实例与同名模型按 Provider 隔离；API 目录显式刷新且不覆盖用户选择；手动模型能力未知；项目/会话/Agent 拒绝未启用模型，历史 Run 继续使用冻结 ModelRef |
-| R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write/capture/stage；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、100 MiB、MIME/PDF 签名、Artifact、Policy、审批和 Receipt 测试通过 |
+| R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write/capture/stage；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；Git 根目录以文件系统身份而非路径文本比较，兼容 Windows 短路径/规范路径别名；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、100 MiB、MIME/PDF 签名、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行与整批串行覆盖均保留；Begin 前取消不派发，Task Cancel 将遗留 `started` Receipt 原子收敛为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`，非幂等 unknown 禁止自动重试 |
 | R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出，品牌图形标/字标来自仓库唯一 Logo 源 |
 | R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效；流式 Turn 将 Validation/Forbidden/State Conflict 与真实 Model Unavailable 分类，不再统一误报“模型响应中断” |
@@ -207,3 +207,4 @@
 | 2026-08-21 | Web Access 真实浏览器竞态收口 | 全量双 Worker Chromium 复现任务完成后执行记录意外折叠：任务流从发起消息迁移到助手结果消息时组件重建，局部展开状态丢失。状态提升为按 `task_id` 管理，并把回归固化为“审批前展开、终态迁移后仍展开、两张私网卡可见”；定向 Playwright 1/1、success 27/27 与 `pnpm verify`（Web 46/46）全绿。 |
 | 2026-08-21 | Task 流式模型传输与工作台交互修复 | 根因确认 Task 走 `Complete/stream:false`，失败 Run 12 次精确 120 秒零 Token，而 Ask 流式 8.1 秒成功；Task 现优先消费 SSE，HTTP 总截止改为连接/TLS 各 10 秒、首包/流式静默各 60 秒，并脱敏区分 DNS、连接、TLS、首包与流中断。网络类只重试 1 次，语义修复保留 3 次。真实 Kimi Task `01a02228-5503-756e-8180-1d1f44475e9c` 以 11.2 秒/7.9 秒两次模型交互完成，终态 `succeeded`、结果 `OK`。执行步骤 Web 卡可折叠、来源标题可点击、工作台“新建项目”和完全访问权限卡同步完成；定向单测、健康检查和浏览器回归通过。 |
 | 2026-08-21 | Task 长流与只读完成门禁补充修复 | 原失败“贪吃蛇” Run 在浏览器续跑时出现一次 430,298 ms 的成功 SSE：连接持续活跃却迟迟没有完整工具调用，证明首包/流静默边界不能限制 reasoning 或心跳造成的假进展。Worker 新增单次模型 Turn 120 秒总完成时限，超限持久化为 `model_turn_timeout/model_turn`，网络类仍最多重试 1 次。完成合同改为按意图片段识别正向工作区动作，“不要修改任何文件；只需回复 OK”及中英文同类只读请求不再触发 `WORKSPACE_MUTATION_MISSING`，混合请求“不要修改旧文件，但创建新文件”仍要求真实变更；历史误判 Run 可从成功的 `completion_recovery` 审计检查点追加恢复 Step，不再因“没有 failed Step”而无法继续；领域单测与真实 Worker 集成回归通过。 |
+| 2026-08-21 | `main` 首次双平台 CI 与 Windows Git 根路径修复 | `main` 首次远端 CI 的 Ubuntu/Windows 原生发布构建与产品烟测均通过；Windows `pnpm verify` 暴露 Runner 临时目录短路径与 Git 规范路径文本不同，导致 Workspace Git/RunChanges 误报 `GIT_REPOSITORY_INVALID`。根目录校验改用 `os.SameFile` 文件系统身份，文本归一化仅作为路径不可访问时的保守回退，并新增别名身份回归；Workspace Git 全包、RunChanges 定向集成和本地 `pnpm verify`（Web 48/48）通过，远端修复提交的双平台 CI 待重跑确认。 |

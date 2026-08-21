@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -273,9 +275,24 @@ func stringSliceArgument(arguments map[string]any, key string) []string {
 }
 
 func samePath(left, right string) bool {
-	left = strings.TrimRight(strings.ReplaceAll(left, "\\", "/"), "/")
-	right = strings.TrimRight(strings.ReplaceAll(right, "\\", "/"), "/")
-	return strings.EqualFold(left, right)
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	if leftErr == nil && rightErr == nil {
+		return os.SameFile(leftInfo, rightInfo)
+	}
+	left, leftErr = filepath.Abs(filepath.Clean(left))
+	right, rightErr = filepath.Abs(filepath.Clean(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	left = strings.TrimRight(filepathSlash(left), "/")
+	right = strings.TrimRight(filepathSlash(right), "/")
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func filepathSlash(value string) string {

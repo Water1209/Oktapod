@@ -310,6 +310,28 @@ func TestInitializeProjectTracksUntrackedDiffCommitAndRestore(t *testing.T) {
 	}
 }
 
+func TestSamePathUsesFilesystemIdentity(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original")
+	alias := filepath.Join(root, "alias")
+	other := filepath.Join(root, "other")
+	if err := os.WriteFile(original, []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(original, alias); err != nil {
+		t.Skipf("filesystem does not support hard-link identity test: %v", err)
+	}
+	if err := os.WriteFile(other, []byte("different"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(original, alias) {
+		t.Fatalf("filesystem aliases should resolve to the same path: %q %q", original, alias)
+	}
+	if samePath(original, other) {
+		t.Fatalf("different files should not resolve to the same path: %q %q", original, other)
+	}
+}
+
 func newWorkspaceTestExecutor(t *testing.T) (*Local, string) {
 	t.Helper()
 	root := t.TempDir()
