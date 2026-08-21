@@ -101,7 +101,7 @@
 | R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填、000056 启用模型真源；同协议多实例与同名模型按 Provider 隔离；API 目录显式刷新且不覆盖用户选择；手动模型能力未知；项目/会话/Agent 拒绝未启用模型，历史 Run 继续使用冻结 ModelRef |
 | R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write/capture/stage；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；Git 根目录以文件系统身份而非路径文本比较，兼容 Windows 短路径/规范路径别名；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、100 MiB、MIME/PDF 签名、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行与整批串行覆盖均保留；Begin 前取消不派发，Task Cancel 将遗留 `started` Receipt 原子收敛为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`，非幂等 unknown 禁止自动重试 |
-| R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出，品牌图形标/字标来自仓库唯一 Logo 源 |
+| R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出，品牌图形标/字标来自仓库唯一 Logo 源；项目空闲时不持续轮询任务、动态和消息列表 |
 | R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效；流式 Turn 将 Validation/Forbidden/State Conflict 与真实 Model Unavailable 分类，不再统一误报“模型响应中断” |
 | R1A-012 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；任务面板支持文件/Hunk 查看、基线说明卡片、行级差异高亮与行号、按文件增删统计、前 5 个文件默认展开且可一键折叠/展开、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环及控制台零错误通过 |
@@ -134,7 +134,7 @@
 | SSE | 断线、重连、去重、页面隐藏、登录失效 |
 | 状态 | 空、加载、失败、审批、重试、中断、恢复 |
 | 控制台 | 无 error、未处理 Promise rejection 和重复 EventSource |
-| 性能 | Thread 分页、局部事件更新、重路由懒加载、无 390px 横向溢出 |
+| 性能 | Thread 分页、局部事件更新、活跃任务条件轮询、空闲项目无持续刷新、重路由懒加载、无 390px 横向溢出 |
 
 ## 8. 发布门禁
 

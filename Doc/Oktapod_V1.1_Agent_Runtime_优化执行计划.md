@@ -23,6 +23,8 @@
 
 原 Runtime 收敛批次没有改变 HTTP/OpenAPI、数据库迁移或 ToolBatch 顺序规则。随后合入的 Web Access 扩展新增 `web_fetch`、Bootstrap 配置契约、000062～000063 与 Web Renderer，但继续复用同一个 ToolRuntime、ExecutionPolicy、Receipt 和 SQLite Durable 真源。任一 `Sequential` ToolCall 仍使整个批次串行；per-call barrier 不进入本批次。
 
+2026-08-21 Web 刷新收敛：项目页的任务、动态和消息查询改为仅在 live task 存在时有限轮询；动态面板未打开时不请求 activity；会话列表取消无条件定时刷新，Shell 保留共享缓存但不再创建重复轮询；项目库与会话树的任务刷新同样在无 live task 时停止；全局 inbox 统一 Query key，空列表退避至 15 秒，有待处理项时保持 5 秒。运行态仍以可恢复 SSE 为主，写操作通过 Query 失效保持列表一致。
+
 ## 2. 当前架构
 
 ```mermaid
@@ -99,6 +101,7 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 2026-08-20 回归收口 | `fe53801` | 合并 Scope/计划/Run 状态/SSE/Changes 修复；修复 Windows CI 受控 Git 信任边界，race 套件保留全量执行并放宽为 20 分钟超时 |
 | 2026-08-20 Web Access | 本地工作树 | `WebAccess` 统一 Search/Fetch；私网精确 origin 配置、Run Hash 快照、`run_origin` 人工授权、安全 Transport、Web 卡片与 OpenAPI/UI 同步 |
 | 2026-08-21 浏览器收口 | 本地工作树 | 执行记录展开状态提升为按 `task_id` 管理，任务流从用户消息迁移到助手结果消息时不再意外折叠；真实 Chromium 并发套件 27/27 |
+| 2026-08-21 Web 刷新收敛 | 本地工作树 | 空闲项目停止任务/动态/消息轮询；活跃任务按状态启停有限刷新；Shell 与项目页共享缓存但不重复定时刷新；inbox 统一缓存并按是否有待处理项退避；Web 单测 50/50、lint、build 通过 |
 
 主要代码入口：
 

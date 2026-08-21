@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { GitBranch, GitFork, MessageSquare, Network, PencilLine, Split, Tag } from 'lucide-react'
 import { api, type SessionEntry } from '../../shared/api/client'
+import { hasLiveTasks } from '../../shared/task-status'
 
 type TreeSearch = { thread?: string }
 
@@ -12,7 +13,7 @@ export function SessionTreePage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const conversations = useQuery({ queryKey: ['conversations', projectId], queryFn: () => api.conversations(projectId) })
-  const tasks = useQuery({ queryKey: ['tasks', projectId], queryFn: () => api.tasks(projectId), refetchInterval: 2_000 })
+  const tasks = useQuery({ queryKey: ['tasks', projectId], queryFn: () => api.tasks(projectId), refetchInterval: (query) => hasLiveTasks(query.state.data?.items) ? 2_000 : false })
   const conversationId = search.thread ?? conversations.data?.items[0]?.id
   const tree = useQuery({ queryKey: ['session-tree', conversationId], queryFn: () => api.sessionEntries(conversationId!), enabled: Boolean(conversationId) })
   const [selectedId, setSelectedId] = useState<string>()

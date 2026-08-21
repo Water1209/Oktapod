@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, ExternalLink, LockKeyhole, ShieldAlert, X } from 'lucide-react'
 import { api, type Approval, type ApprovalScope, type InboxHistoryItem, type InboxItem } from '../../shared/api/client'
+import { backgroundInboxRefetchInterval } from '../../shared/query-refresh'
 import { RunBudgetControl } from '../tasks/run-budget-control'
 import { taskFailureInfo } from '../tasks/task-progress-model'
 
@@ -14,7 +15,7 @@ export function ApprovalInbox() {
   const queryClient = useQueryClient()
   const approvalStatus = view === 'pending' ? 'pending' : riskStatus
   const approvals = useQuery({ queryKey: ['approvals', approvalStatus], queryFn: () => api.approvals(approvalStatus), enabled: view !== 'history' })
-  const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: 5_000 })
+  const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: (query) => backgroundInboxRefetchInterval(query.state.data) })
   const batch = useMutation({
     mutationFn: async (decision: 'approved' | 'rejected') => {
       const ids = [...selected]

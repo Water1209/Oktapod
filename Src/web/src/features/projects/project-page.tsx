@@ -8,6 +8,7 @@ import { api, type Artifact, type Asset, type Capability, type CapabilityKind, t
 import { AssistantContent } from '../../shared/assistant-content'
 import { useBootstrap } from '../../shared/bootstrap-context'
 import { TASK_RUNTIME_DEFAULTS } from '../../shared/runtime-defaults'
+import { hasLiveTasks, isLiveTaskStatus } from '../../shared/task-status'
 import brandMark from '../../shared/brand-mark.png'
 import { V1_VISIBILITY, visibleInspectorTab } from '../../shared/v1-visibility'
 import { FileReviewProvider } from '../tasks/multi-file-review'
@@ -58,16 +59,6 @@ function ProjectWorkspace() {
   const { conversation: conversationSearch, inspector: inspectorSearch } = useSearch({ strict: false }) as { conversation?: string; inspector?: string; event?: string }
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const project = useQuery({ queryKey: ['project', projectId], queryFn: () => api.project(projectId) })
-  const tasks = useQuery({ queryKey: ['tasks', projectId], queryFn: () => api.tasks(projectId), refetchInterval: 1_500 })
-  const conversations = useQuery({ queryKey: ['conversations', projectId], queryFn: () => api.conversations(projectId), refetchInterval: 2_000 })
-  const activity = useQuery({ queryKey: ['project-activity', projectId], queryFn: () => api.projectActivity(projectId), refetchInterval: 1_500 })
-  const planItems = useQuery({ queryKey: ['plan-items', projectId], queryFn: () => api.planItems(projectId) })
-  const capabilities = useQuery({ queryKey: ['capabilities', projectId], queryFn: () => api.capabilities(projectId) })
-  const agents = useQuery({ queryKey: ['agents', projectId], queryFn: () => api.agents(projectId) })
-  const models = useQuery({ queryKey: ['models'], queryFn: () => api.models(), retry: false, staleTime: 60_000 })
-  const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers, retry: false, staleTime: 60_000 })
-  const diagnostics = useQuery({ queryKey: ['diagnostics'], queryFn: api.diagnostics, retry: false, staleTime: 30_000 })
   const [membersOpen, setMembersOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const inspectorStorageKey = `oktapod.inspector.${bootstrap.user.id}.${projectId}`
@@ -76,8 +67,23 @@ function ProjectWorkspace() {
   const [managementMoreOpen, setManagementMoreOpen] = useState(false)
   const [managementMaximized, setManagementMaximized] = useState(false)
   const [filesSection, setFilesSection] = useState<'workspace' | 'project' | 'outputs'>('workspace')
+  const project = useQuery({ queryKey: ['project', projectId], queryFn: () => api.project(projectId) })
+  const tasks = useQuery({ queryKey: ['tasks', projectId], queryFn: () => api.tasks(projectId), refetchInterval: (query) => hasLiveTasks(query.state.data?.items) ? 1_500 : false })
+  const conversations = useQuery({ queryKey: ['conversations', projectId], queryFn: () => api.conversations(projectId), staleTime: 15_000 })
+  const activity = useQuery({
+    queryKey: ['project-activity', projectId],
+    queryFn: () => api.projectActivity(projectId),
+    enabled: managementOpen && managementTab === 'activity',
+    refetchInterval: hasLiveTasks(tasks.data?.items) ? 1_500 : false,
+  })
+  const planItems = useQuery({ queryKey: ['plan-items', projectId], queryFn: () => api.planItems(projectId) })
+  const capabilities = useQuery({ queryKey: ['capabilities', projectId], queryFn: () => api.capabilities(projectId) })
+  const agents = useQuery({ queryKey: ['agents', projectId], queryFn: () => api.agents(projectId) })
+  const models = useQuery({ queryKey: ['models'], queryFn: () => api.models(), retry: false, staleTime: 60_000 })
+  const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers, retry: false, staleTime: 60_000 })
+  const diagnostics = useQuery({ queryKey: ['diagnostics'], queryFn: api.diagnostics, retry: false, staleTime: 30_000 })
   const activeConversationId = conversationSearch === 'new' ? undefined : threadId ?? conversationSearch ?? conversations.data?.items[0]?.id
-  const messages = useQuery({ queryKey: ['conversation-messages', activeConversationId], queryFn: () => api.conversationMessages(activeConversationId ?? ''), enabled: Boolean(activeConversationId), refetchInterval: 1_500 })
+  const messages = useQuery({ queryKey: ['conversation-messages', activeConversationId], queryFn: () => api.conversationMessages(activeConversationId ?? ''), enabled: Boolean(activeConversationId), refetchInterval: hasLiveTasks(tasks.data?.items.filter((task) => task.conversation_id === activeConversationId)) ? 1_500 : false })
   const usage = useQuery({ queryKey: ['project-usage', projectId], queryFn: () => api.projectUsage(projectId), enabled: managementOpen && managementTab === 'project_usage', staleTime: 15_000 })
   const [composerDraft, setComposerDraft] = useState<ComposerDraft | undefined>()
   const [resourceInstallDraft, setResourceInstallDraft] = useState<ResourceInstallDraft>()
@@ -101,10 +107,10 @@ function ProjectWorkspace() {
 
   const selectedConversation = conversations.data?.items.find((item) => item.id === activeConversationId)
   const conversationTasks = (tasks.data?.items ?? []).filter((task) => task.conversation_id === activeConversationId)
-  const activeConversationTasks = conversationTasks.filter((task) => !['succeeded', 'failed', 'blocked', 'canceled'].includes(task.status))
+  const activeConversationTasks = conversationTasks.filter((task) => isLiveTaskStatus(task.status) || task.status === 'paused')
   const allConversationTasks = [...activeConversationTasks, ...conversationTasks.filter((task) => ['succeeded', 'failed', 'blocked', 'canceled'].includes(task.status))]
   const inspectedTask = allConversationTasks[0]
-  const inspectedRunEvents = useRunEvents(inspectedTask?.run_id, Boolean(inspectedTask && managementOpen))
+  const inspectedRunEvents = useRunEvents(inspectedTask?.run_id, Boolean(inspectedTask && managementOpen && isLiveTaskStatus(inspectedTask.status)))
   const inspectedUsage = useQuery({ queryKey: ['run-usage', inspectedTask?.run_id], queryFn: () => api.runUsage(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'usage'].includes(managementTab)) })
   const inspectedArtifacts = useQuery({ queryKey: ['run-artifacts', inspectedTask?.run_id], queryFn: () => api.runArtifacts(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && managementOpen && ['run', 'changes', 'files'].includes(managementTab)) })
   const inspectedArtifactVersions = latestDeliverableArtifacts(inspectedArtifacts.data?.items ?? [])

@@ -3,18 +3,20 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { Link, useNavigate } from '@tanstack/react-router'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Activity, AlertCircle, ArrowRight, CheckCircle2, Clock3, Code2, FolderClosed, FolderOpen, FolderPlus, Gauge, LockKeyhole, Search, ShieldCheck, X } from 'lucide-react'
-import { api, type ModelDescriptor, type Scene } from '../../shared/api/client'
+import { api, type ModelDescriptor, type Scene, type TaskStatus } from '../../shared/api/client'
+import { backgroundInboxRefetchInterval } from '../../shared/query-refresh'
+import { hasLiveTasks } from '../../shared/task-status'
 
 export function ProjectsPage() {
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
   const models = useQuery({ queryKey: ['models'], queryFn: () => api.models(), retry: false, staleTime: 60_000 })
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers, retry: false })
-  const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: 5_000 })
+  const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: (query) => backgroundInboxRefetchInterval(query.state.data) })
   const taskQueries = useQueries({
     queries: (projects.data?.items ?? []).map((project) => ({
       queryKey: ['tasks', project.id],
       queryFn: () => api.tasks(project.id),
-      refetchInterval: 3_000,
+      refetchInterval: (query: { state: { data?: { items?: Array<{ status: TaskStatus }> } } }) => hasLiveTasks(query.state.data?.items) ? 3_000 : false,
     })),
   })
   const [query, setQuery] = useState('')

@@ -6,6 +6,7 @@ import { api, type Bootstrap } from '../shared/api/client'
 import { assistantExcerpt } from '../shared/assistant-segments'
 import { BootstrapContext } from '../shared/bootstrap-context'
 import { applyStoredPresentationPreferences } from '../shared/presentation-preferences'
+import { backgroundInboxRefetchInterval } from '../shared/query-refresh'
 import brandMark from '../shared/brand-mark.png'
 
 export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; children: ReactNode }) {
@@ -19,12 +20,12 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
   const location = useRouterState({ select: (state) => state.location })
   const queryClient = useQueryClient()
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
-  const inbox = useQuery({ queryKey: ['inbox', 'shell'], queryFn: api.inbox, refetchInterval: 5_000 })
+  const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: (query) => backgroundInboxRefetchInterval(query.state.data) })
   const diagnostics = useQuery({ queryKey: ['diagnostics', 'shell'], queryFn: api.diagnostics, refetchInterval: 10_000, retry: false })
   const logout = useMutation({ mutationFn: api.logout, onSuccess: () => { window.sessionStorage.removeItem('oktapod.authenticated'); queryClient.clear(); window.location.replace('/login') } })
   const currentProject = projects.data?.items.find((project) => location.pathname.includes(project.id))
-  const conversations = useQuery({ queryKey: ['conversations', currentProject?.id], queryFn: () => api.conversations(currentProject!.id), enabled: Boolean(currentProject?.id), refetchInterval: 2_000 })
-  const projectTasks = useQuery({ queryKey: ['tasks', currentProject?.id], queryFn: () => api.tasks(currentProject!.id), enabled: Boolean(currentProject?.id), refetchInterval: 2_000 })
+  const conversations = useQuery({ queryKey: ['conversations', currentProject?.id], queryFn: () => api.conversations(currentProject!.id), enabled: Boolean(currentProject?.id), staleTime: 15_000 })
+  const projectTasks = useQuery({ queryKey: ['tasks', currentProject?.id], queryFn: () => api.tasks(currentProject!.id), enabled: Boolean(currentProject?.id), staleTime: 5_000 })
   const threadMatch = location.pathname.match(/\/threads\/([^/]+)/)
   const queryConversation = new URLSearchParams(location.search).get('conversation') ?? undefined
   const activeThreadId = threadMatch?.[1] ?? queryConversation ?? conversations.data?.items[0]?.id
