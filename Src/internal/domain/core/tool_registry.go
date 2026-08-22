@@ -30,6 +30,31 @@ func BuiltinToolSpecs() []ToolSpec {
 	limit := map[string]any{"type": "integer", "minimum": 1, "maximum": 500}
 	specs := []ToolSpec{
 		{
+			Name: ToolReplacePlan, Description: "Create the initial semantic plan or replace only its unfinished portion. May accompany the first business tool batch in the same response.",
+			Sequential: true,
+			Parameters: objectSchema([]string{"items"}, map[string]any{
+				"explanation": map[string]any{"type": "string", "maxLength": 1000},
+				"items": map[string]any{
+					"type": "array", "minItems": 1, "maxItems": 12,
+					"items": map[string]any{
+						"type": "object", "additionalProperties": false,
+						"required": []string{"title", "description"},
+						"properties": map[string]any{
+							"title":       map[string]any{"type": "string", "minLength": 1, "maxLength": 160},
+							"description": map[string]any{"type": "string", "minLength": 1, "maxLength": 500},
+						},
+					},
+				},
+			}),
+		},
+		{
+			Name: ToolAdvancePlan, Description: "Declare the current semantic plan item complete and advance to the next item. May accompany the next business tool batch in the same response.",
+			Sequential: true,
+			Parameters: objectSchema(nil, map[string]any{
+				"summary": map[string]any{"type": "string", "maxLength": 1000},
+			}),
+		},
+		{
 			Name: ToolUpdatePlan, Description: "Publish or replace the complete semantic execution plan for the current Run. Use outcome-oriented user-visible steps, never raw tool calls. This control action must be called alone.",
 			Sequential: true,
 			Parameters: objectSchema([]string{"items"}, map[string]any{
@@ -119,7 +144,7 @@ func applyBuiltinToolMetadata(spec *ToolSpec) {
 	}
 	planned := PlanTool(ToolCall{Name: spec.Name, Arguments: minimumValidToolArguments(spec.Name)})
 	spec.Idempotent = planned.Idempotent
-	spec.ReadOnly = planned.RiskLevel == "L0" && spec.Name != ToolUpdatePlan && spec.Name != ToolRequestInput && spec.Name != ToolRequestPermission && spec.Name != ToolSkillInvoke
+	spec.ReadOnly = planned.RiskLevel == "L0" && spec.Name != ToolUpdatePlan && spec.Name != ToolReplacePlan && spec.Name != ToolAdvancePlan && spec.Name != ToolRequestInput && spec.Name != ToolRequestPermission && spec.Name != ToolSkillInvoke
 	spec.Destructive = planned.RiskLevel == "L2" || planned.RiskLevel == "L3"
 	spec.OpenWorld = spec.Name == ToolWebSearch || spec.Name == ToolWebFetch
 	if spec.PromptHint == "" {
@@ -217,6 +242,10 @@ func minimumValidToolArguments(name string) map[string]any {
 		return map[string]any{"path": "file.txt", "hunk_index": float64(0), "expected_status_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
 	case ToolUpdatePlan:
 		return map[string]any{"items": []any{map[string]any{"title": "step", "description": "step", "status": "in_progress"}}}
+	case ToolReplacePlan:
+		return map[string]any{"items": []any{map[string]any{"title": "step", "description": "step"}}}
+	case ToolAdvancePlan:
+		return map[string]any{}
 	case ToolRequestInput:
 		return map[string]any{"prompt": "input"}
 	case ToolRequestPermission:

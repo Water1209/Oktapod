@@ -85,17 +85,15 @@ func TestOHCSGoldenTraceTextTurn(t *testing.T) {
 	got := projectGoldenTrace(events, messages)
 	want := goldenTrace{
 		EventTypes: []string{
-			"plan.published",
 			"run.created",
 			"step.started",
 			"checkpoint.committed",
 			"budget.reserved",
 			"checkpoint.committed",
 			"model.message",
-			"plan.state_changed",
 			"step.succeeded",
 		},
-		EventSeqs:    []int64{1, 2, 3, 4, 5, 6, 7, 8, 9},
+		EventSeqs:    []int64{1, 2, 3, 4, 5, 6, 7},
 		MessageRoles: []string{"user", "assistant"},
 		MessageSeqs:  []int64{1, 2},
 	}

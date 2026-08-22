@@ -332,7 +332,7 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 	counts := map[string]int{}
 	for _, event := range events {
 		counts[event.EventType]++
-		if event.EventType == "tool.batch_created" && event.Payload["execution_mode"] != "parallel" {
+		if event.EventType == "tool.batch_created" && event.Payload["execution_mode"] != "barriered" {
 			t.Fatalf("batch event=%#v", event)
 		}
 	}

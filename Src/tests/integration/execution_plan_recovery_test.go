@@ -95,7 +95,11 @@ func TestFailedToolReplansAndContinues(t *testing.T) {
 		}
 	}
 	recovering, err := service.GetTask(context.Background(), task.ID)
-	if err != nil || recovering.Status != core.StatusRunning || search.calls != 2 {
+	// barrier_v2 cancels the unstarted sibling in the failed safe group before
+	// it queues recovery. The fourth iteration has already produced the next
+	// durable frontier, which may be queued or running depending on whether a
+	// worker has claimed it, but it must not replay the canceled search.
+	if err != nil || (recovering.Status != core.StatusQueued && recovering.Status != core.StatusRunning) || search.calls != 1 {
 		t.Fatalf("task=%#v search_calls=%d err=%v", recovering, search.calls, err)
 	}
 	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)

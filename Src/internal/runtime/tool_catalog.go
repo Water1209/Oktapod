@@ -1,10 +1,6 @@
 package runtime
 
-import (
-	"strings"
-
-	"github.com/oktapod/oktapod/Src/internal/domain/core"
-)
+import "github.com/oktapod/oktapod/Src/internal/domain/core"
 
 // ToolCatalog is one immutable view used for both provider definitions and
 // AllowedTools. No later phase may independently rebuild either list.
@@ -24,6 +20,12 @@ type ToolCatalogBuilder struct{}
 func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, userPrompt string, continuation []map[string]any, selectedContextPlan map[string]any) (ToolCatalog, *core.StepOutcome) {
 	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
 	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
+	if snapshotVersion(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
+		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolUpdatePlan)
+	} else {
+		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolReplacePlan)
+		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolAdvancePlan)
+	}
 	sections := make([]PromptSection, 0, 6)
 	contextPlan["builtin_tool_definitions"] = len(core.BuiltinToolSpecs())
 	contextPlan["selected_context"] = selectedContextPlan
@@ -99,9 +101,6 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 		allowedTools = filterToolNamesForExplicitMCP(allowedTools, preferredMCPID)
 	}
 	contextPlan["scene_policy"] = scenePolicy
-	if prompt := (PromptAssembler{}).ToolCatalog(toolDefinitions); strings.TrimSpace(prompt) != "" {
-		sections = append(sections, PromptSection{Name: "tool_catalog", Order: 1800, Text: prompt})
-	}
 	return ToolCatalog{
 		Definitions: toolDefinitions, AllowedTools: allowedTools, ToolScopeDeclared: toolScopeDeclared,
 		ContextPlan: contextPlan, PromptSections: sections, SearchBudget: searchBudget,

@@ -219,11 +219,8 @@ func TestConversationContextUsagePrefersLatestMeasuredAssistantCall(t *testing.T
 	}
 }
 
-func TestProjectTurnAutoChatDoesNotCreateTask(t *testing.T) {
-	service, databasePath, closeStore := newProjectTurnService(t, &projectTurnModelStub{results: []core.ModelResult{
-		turnModelResult("classification-chat", `{"route":"chat"}`),
-		turnModelResult("answer-chat", "这是一个纯会话回答。"),
-	}})
+func TestProjectTurnAutoCreatesPendingAgentTurnWithoutClassification(t *testing.T) {
+	service, databasePath, closeStore := newProjectTurnService(t, &projectTurnModelStub{})
 	defer closeStore()
 
 	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Private workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
@@ -234,22 +231,20 @@ func TestProjectTurnAutoChatDoesNotCreateTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit chat turn: %v", err)
 	}
-	if result.Route != application.TurnRouteChat || result.Task != nil || len(result.Messages) != 2 {
-		t.Fatalf("unexpected chat result: %#v", result)
+	if result.Route != application.TurnRouteTask || result.Task == nil || len(result.Messages) != 1 {
+		t.Fatalf("unexpected auto result: %#v", result)
 	}
-	for _, message := range result.Messages {
-		if message.TaskID != "" {
-			t.Fatalf("chat message unexpectedly linked to task: %#v", message)
-		}
+	if result.Task.Mode != core.ModeSingleAgent || result.Task.PresentationKind != core.TaskPresentationPendingAuto {
+		t.Fatalf("auto task did not freeze the v2 presentation contract: %#v", result.Task)
 	}
 	tasks, err := service.ListTasks(t.Context(), project.ID)
-	if err != nil || len(tasks) != 0 {
-		t.Fatalf("chat created tasks=%#v err=%v", tasks, err)
+	if err != nil || len(tasks) != 1 || tasks[0].ID != result.Task.ID {
+		t.Fatalf("auto task list=%#v err=%v", tasks, err)
 	}
-	assertConversationCallCount(t, databasePath, result.Conversation.ID, 2)
+	assertConversationCallCount(t, databasePath, result.Conversation.ID, 0)
 	usage, err := service.GetProjectUsage(t.Context(), project.ID, time.Now().Add(-time.Hour))
-	if err != nil || usage.ModelCalls != 2 || usage.InputTokens != 20 {
-		t.Fatalf("chat usage=%#v err=%v", usage, err)
+	if err != nil || usage.ModelCalls != 0 {
+		t.Fatalf("auto routing unexpectedly consumed model usage=%#v err=%v", usage, err)
 	}
 }
 
@@ -307,9 +302,7 @@ func TestProjectTurnWithSelectedAttachmentAlwaysCreatesFrozenTaskContext(t *test
 }
 
 func TestProjectTurnAutoTaskCreatesTaskWithoutConfirmationState(t *testing.T) {
-	service, databasePath, closeStore := newProjectTurnService(t, &projectTurnModelStub{results: []core.ModelResult{
-		turnModelResult("classification-task", `{"route":"task"}`),
-	}})
+	service, databasePath, closeStore := newProjectTurnService(t, &projectTurnModelStub{})
 	defer closeStore()
 
 	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Code workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
@@ -320,7 +313,7 @@ func TestProjectTurnAutoTaskCreatesTaskWithoutConfirmationState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit task turn: %v", err)
 	}
-	if result.Route != application.TurnRouteTask || result.Task == nil || result.Task.Status != core.StatusQueued {
+	if result.Route != application.TurnRouteTask || result.Task == nil || result.Task.Status != core.StatusQueued || result.Task.PresentationKind != core.TaskPresentationPendingAuto {
 		t.Fatalf("unexpected task result: %#v", result)
 	}
 	if len(result.Messages) != 1 || result.Messages[0].TaskID != result.Task.ID {
@@ -330,10 +323,10 @@ func TestProjectTurnAutoTaskCreatesTaskWithoutConfirmationState(t *testing.T) {
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("task list=%#v err=%v", tasks, err)
 	}
-	assertConversationCallCount(t, databasePath, result.Conversation.ID, 1)
+	assertConversationCallCount(t, databasePath, result.Conversation.ID, 0)
 	usage, err := service.GetProjectUsage(t.Context(), project.ID, time.Now().Add(-time.Hour))
-	if err != nil || usage.ModelCalls != 1 {
-		t.Fatalf("task classification usage=%#v err=%v", usage, err)
+	if err != nil || usage.ModelCalls != 0 {
+		t.Fatalf("auto task routing usage=%#v err=%v", usage, err)
 	}
 }
 
@@ -574,7 +567,7 @@ func TestProjectTurnNaturalLanguageMCPInstallReturnsReviewDraft(t *testing.T) {
 	}
 }
 
-func TestProjectTurnStreamEmitsRouteAndDeltasBeforePersisting(t *testing.T) {
+func TestProjectTurnAutoStreamDefersDeltasToDurableRunSSE(t *testing.T) {
 	model := &streamingProjectTurnModelStub{
 		classification: turnModelResult("classification-stream", `{"route":"chat"}`),
 		answer:         turnModelResult("answer-stream", "分段回答完成。"),
@@ -598,10 +591,10 @@ func TestProjectTurnStreamEmitsRouteAndDeltasBeforePersisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route != application.TurnRouteChat || strings.Join(deltas, "") != "分段回答完成。" {
+	if route != application.TurnRouteTask || len(deltas) != 0 {
 		t.Fatalf("route=%q deltas=%#v", route, deltas)
 	}
-	if len(result.Messages) != 2 || result.Messages[1].Content != "分段回答完成。" {
+	if result.Task == nil || result.Task.PresentationKind != core.TaskPresentationPendingAuto || len(result.Messages) != 1 {
 		t.Fatalf("result=%#v", result)
 	}
 }

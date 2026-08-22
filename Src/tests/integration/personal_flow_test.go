@@ -99,7 +99,7 @@ func TestPersonalTaskCompletesWithPersistedEventsAndUsage(t *testing.T) {
 		t.Fatalf("message tail=%#v err=%v", messageTail, err)
 	}
 	activity, err := service.ListProjectActivity(context.Background(), project.ID, "")
-	if err != nil || len(activity) != 9 || activity[0].EventType != "step.succeeded" || activity[len(activity)-1].EventType != "plan.published" {
+	if err != nil || len(activity) != 7 || activity[0].EventType != "step.succeeded" || activity[len(activity)-1].EventType != "run.created" {
 		t.Fatalf("activity=%#v err=%v", activity, err)
 	}
 
@@ -107,7 +107,7 @@ func TestPersonalTaskCompletesWithPersistedEventsAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	wantTypes := []string{"plan.published", "run.created", "step.started", "checkpoint.committed", "budget.reserved", "checkpoint.committed", "model.message", "plan.state_changed", "step.succeeded"}
+	wantTypes := []string{"run.created", "step.started", "checkpoint.committed", "budget.reserved", "checkpoint.committed", "model.message", "step.succeeded"}
 	if len(events) != len(wantTypes) {
 		t.Fatalf("events = %d, want %d: %#v", len(events), len(wantTypes), events)
 	}
@@ -142,8 +142,8 @@ func TestPersonalTaskCompletesWithPersistedEventsAndUsage(t *testing.T) {
 	if err != nil || acceptedTask.AcceptedOutcomeID != accepted.ID {
 		t.Fatalf("accepted task=%#v err=%v", acceptedTask, err)
 	}
-	acceptedEvents, err := service.ListRunEvents(context.Background(), completed.RunID, 9)
-	if err != nil || len(acceptedEvents) != 1 || acceptedEvents[0].EventType != "outcome.accepted" || acceptedEvents[0].StreamSeq != 10 {
+	acceptedEvents, err := service.ListRunEvents(context.Background(), completed.RunID, 7)
+	if err != nil || len(acceptedEvents) != 1 || acceptedEvents[0].EventType != "outcome.accepted" || acceptedEvents[0].StreamSeq != 8 {
 		t.Fatalf("accepted events=%#v err=%v", acceptedEvents, err)
 	}
 }
@@ -807,7 +807,7 @@ func TestExpiredLeaseCreatesRecoveryAttemptAndRejectsStaleCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"plan.published", "run.created", "step.started", "step.recovered", "step.started", "checkpoint.committed", "plan.state_changed", "step.succeeded"}
+	want := []string{"run.created", "step.started", "step.recovered", "step.started", "checkpoint.committed", "step.succeeded"}
 	if len(events) != len(want) {
 		t.Fatalf("event count=%d want=%d: %#v", len(events), len(want), events)
 	}

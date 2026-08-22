@@ -10,19 +10,21 @@ import (
 )
 
 type ModelRequest struct {
-	SystemPrompt      string
-	UserPrompt        string
-	Messages          []core.ModelMessage
-	RequestedModel    core.ModelRef
-	ThinkingLevel     string
-	MaxOutputTokens   int
-	EnableTools       bool
-	Model             string
-	FallbackModel     string
-	ToolDefinitions   []ToolDefinition
-	ToolScopeDeclared bool
-	AllowedTools      []string
-	ContextPlan       map[string]any
+	SystemPrompt       string
+	UserPrompt         string
+	Messages           []core.ModelMessage
+	RequestedModel     core.ModelRef
+	ThinkingLevel      string
+	MaxOutputTokens    int
+	EnableTools        bool
+	Model              string
+	FallbackModel      string
+	ToolDefinitions    []ToolDefinition
+	ToolScopeDeclared  bool
+	AllowedTools       []string
+	ContextPlan        map[string]any
+	ToolCallingKnown   bool
+	ToolCallingAllowed bool
 }
 
 type ToolDefinition struct {
@@ -62,6 +64,7 @@ const (
 
 type LoopState struct {
 	Request ModelRequest
+	OnDelta func(string) error
 }
 
 type LoopEvent struct {
@@ -86,7 +89,7 @@ func (l *Loop) Next(ctx context.Context, state LoopState) LoopEvent {
 	var result core.ModelResult
 	var err error
 	if streaming, ok := l.model.(StreamingModelGateway); ok {
-		result, err = streaming.Stream(ctx, state.Request, nil)
+		result, err = streaming.Stream(ctx, state.Request, state.OnDelta)
 	} else {
 		result, err = l.model.Complete(ctx, state.Request)
 	}

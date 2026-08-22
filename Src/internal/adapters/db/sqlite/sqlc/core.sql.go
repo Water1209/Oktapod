@@ -97,17 +97,61 @@ WHERE id = (
     WHERE (candidate.status = 'queued'
        OR (candidate.status = 'running' AND candidate.lease_until <> '' AND candidate.lease_until < ?))
       AND candidate_run.status IN ('queued', 'running')
+      AND (
+          EXISTS (
+              SELECT 1 FROM steps same_run
+              WHERE same_run.run_id = candidate.run_id
+                AND same_run.status = 'running'
+                AND same_run.lease_until >= ?5
+          )
+          OR (
+              SELECT COUNT(DISTINCT active.run_id)
+              FROM steps active
+              WHERE active.status = 'running'
+                AND active.lease_until >= ?6
+          ) < 4
+      )
       AND NOT EXISTS (
           SELECT 1
           FROM steps AS earlier
           WHERE earlier.run_id = candidate.run_id
             AND earlier.position < candidate.position
             AND earlier.status IN ('queued', 'running', 'waiting_approval')
+            AND NOT (
+                candidate.tool_batch_id <> ''
+                AND earlier.tool_batch_id = candidate.tool_batch_id
+                AND (
+                    (
+                        NOT EXISTS (SELECT 1 FROM tool_batch_schedulers scheduler WHERE scheduler.batch_id = candidate.tool_batch_id)
+                        AND EXISTS (
+                            SELECT 1 FROM tool_batches batch
+                            WHERE batch.id = candidate.tool_batch_id
+                              AND batch.execution_mode = 'parallel'
+                        )
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM tool_call_barriers candidate_barrier
+                        JOIN tool_call_barriers earlier_barrier
+                          ON earlier_barrier.step_id = earlier.id
+                        WHERE candidate_barrier.step_id = candidate.id
+                          AND candidate_barrier.barrier_group = earlier_barrier.barrier_group
+                    )
+                )
+            )
+      )
+      AND (
+          candidate.tool_batch_id = ''
+          OR NOT EXISTS (
+              SELECT 1 FROM steps batch_failure
+              WHERE batch_failure.tool_batch_id = candidate.tool_batch_id
+                AND batch_failure.status IN ('blocked', 'failed', 'canceled')
+          )
       )
     ORDER BY candidate.created_at ASC, candidate.id ASC
     LIMIT 1
 )
-RETURNING id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, lease_until, fence_token, error_code, created_at, updated_at, agent_id
+RETURNING id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, lease_until, fence_token, error_code, created_at, updated_at, agent_id, budget_reserved_tokens, tool_batch_id, batch_index, plan_revision_id, run_plan_item_id
 `
 
 type ClaimNextStepParams struct {
@@ -115,6 +159,8 @@ type ClaimNextStepParams struct {
 	LeaseUntil   string `json:"lease_until"`
 	UpdatedAt    string `json:"updated_at"`
 	LeaseUntil_2 string `json:"lease_until_2"`
+	NowActive    string `json:"now_active"`
+	NowCapacity  string `json:"now_capacity"`
 }
 
 func (q *Queries) ClaimNextStep(ctx context.Context, arg ClaimNextStepParams) (Step, error) {
@@ -123,6 +169,8 @@ func (q *Queries) ClaimNextStep(ctx context.Context, arg ClaimNextStepParams) (S
 		arg.LeaseUntil,
 		arg.UpdatedAt,
 		arg.LeaseUntil_2,
+		arg.NowActive,
+		arg.NowCapacity,
 	)
 	var i Step
 	err := row.Scan(
@@ -143,6 +191,11 @@ func (q *Queries) ClaimNextStep(ctx context.Context, arg ClaimNextStepParams) (S
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AgentID,
+		&i.BudgetReservedTokens,
+		&i.ToolBatchID,
+		&i.BatchIndex,
+		&i.PlanRevisionID,
+		&i.RunPlanItemID,
 	)
 	return i, err
 }
@@ -297,7 +350,7 @@ INSERT INTO steps (
     id, organization_id, project_id, run_id, step_type, position, status,
     input_json, agent_id, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
-RETURNING id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, lease_until, fence_token, error_code, created_at, updated_at, agent_id
+RETURNING id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, lease_until, fence_token, error_code, created_at, updated_at, agent_id, budget_reserved_tokens, tool_batch_id, batch_index, plan_revision_id, run_plan_item_id
 `
 
 type CreateAgentStepParams struct {
@@ -345,6 +398,11 @@ func (q *Queries) CreateAgentStep(ctx context.Context, arg CreateAgentStepParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AgentID,
+		&i.BudgetReservedTokens,
+		&i.ToolBatchID,
+		&i.BatchIndex,
+		&i.PlanRevisionID,
+		&i.RunPlanItemID,
 	)
 	return i, err
 }
@@ -664,7 +722,7 @@ func (q *Queries) CreateBlob(ctx context.Context, arg CreateBlobParams) error {
 const createCapability = `-- name: CreateCapability :one
 INSERT INTO capabilities (id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, created_at, updated_at
+RETURNING id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, created_at, updated_at, scope_type, scope_id, source_filename, bundle_storage_key, install_job_id, credential_ref
 `
 
 type CreateCapabilityParams struct {
@@ -714,6 +772,12 @@ func (q *Queries) CreateCapability(ctx context.Context, arg CreateCapabilityPara
 		&i.RiskLevel,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScopeType,
+		&i.ScopeID,
+		&i.SourceFilename,
+		&i.BundleStorageKey,
+		&i.InstallJobID,
+		&i.CredentialRef,
 	)
 	return i, err
 }
@@ -759,7 +823,7 @@ INSERT INTO conversations (
     id, organization_id, project_id, owner_user_id, title, visibility,
     next_message_seq, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-RETURNING id, organization_id, project_id, owner_user_id, title, visibility, next_message_seq, created_at, updated_at
+RETURNING id, organization_id, project_id, owner_user_id, title, visibility, next_message_seq, created_at, updated_at, active_leaf_entry_id, parent_session_id, forked_from_entry_id, next_entry_seq
 `
 
 type CreateConversationParams struct {
@@ -795,6 +859,10 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 		&i.NextMessageSeq,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ActiveLeafEntryID,
+		&i.ParentSessionID,
+		&i.ForkedFromEntryID,
+		&i.NextEntrySeq,
 	)
 	return i, err
 }
@@ -802,7 +870,7 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 const createInvitedUser = `-- name: CreateInvitedUser :one
 INSERT INTO users (id, display_name, email, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?)
-RETURNING id, display_name, created_at, updated_at, email
+RETURNING id, display_name, created_at, updated_at, email, password_hash, failed_login_attempts, locked_until, username
 `
 
 type CreateInvitedUserParams struct {
@@ -828,6 +896,10 @@ func (q *Queries) CreateInvitedUser(ctx context.Context, arg CreateInvitedUserPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.PasswordHash,
+		&i.FailedLoginAttempts,
+		&i.LockedUntil,
+		&i.Username,
 	)
 	return i, err
 }
@@ -1091,7 +1163,7 @@ const createProject = `-- name: CreateProject :one
 INSERT INTO projects (
     id, organization_id, owner_user_id, name, description, kind, scene, default_model, fallback_model, status, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-RETURNING id, organization_id, owner_user_id, name, description, kind, scene, status, created_at, updated_at, default_model, fallback_model
+RETURNING id, organization_id, owner_user_id, name, description, kind, scene, status, created_at, updated_at, default_model, fallback_model, model_provider_id
 `
 
 type CreateProjectParams struct {
@@ -1136,6 +1208,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.UpdatedAt,
 		&i.DefaultModel,
 		&i.FallbackModel,
+		&i.ModelProviderID,
 	)
 	return i, err
 }
@@ -1144,7 +1217,7 @@ const createRun = `-- name: CreateRun :one
 INSERT INTO runs (
     id, organization_id, project_id, task_id, status, config_snapshot_json, created_at, updated_at
 ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
-RETURNING id, organization_id, project_id, task_id, status, config_snapshot_json, created_at, updated_at
+RETURNING id, organization_id, project_id, task_id, status, config_snapshot_json, created_at, updated_at, requested_provider_id, requested_model_id, effective_provider_id, effective_model_id, thinking_level, model_fallback_reason, model_catalog_version
 `
 
 type CreateRunParams struct {
@@ -1177,6 +1250,13 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.ConfigSnapshotJson,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RequestedProviderID,
+		&i.RequestedModelID,
+		&i.EffectiveProviderID,
+		&i.EffectiveModelID,
+		&i.ThinkingLevel,
+		&i.ModelFallbackReason,
+		&i.ModelCatalogVersion,
 	)
 	return i, err
 }
@@ -1368,7 +1448,7 @@ const createStep = `-- name: CreateStep :one
 INSERT INTO steps (
     id, organization_id, project_id, run_id, step_type, position, status, input_json, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
-RETURNING id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, lease_until, fence_token, error_code, created_at, updated_at, agent_id
+RETURNING id, organization_id, project_id, run_id, step_type, position, status, input_json, output_json, attempt_count, owner_id, lease_until, fence_token, error_code, created_at, updated_at, agent_id, budget_reserved_tokens, tool_batch_id, batch_index, plan_revision_id, run_plan_item_id
 `
 
 type CreateStepParams struct {
@@ -1414,6 +1494,11 @@ func (q *Queries) CreateStep(ctx context.Context, arg CreateStepParams) (Step, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AgentID,
+		&i.BudgetReservedTokens,
+		&i.ToolBatchID,
+		&i.BatchIndex,
+		&i.PlanRevisionID,
+		&i.RunPlanItemID,
 	)
 	return i, err
 }
@@ -1585,7 +1670,7 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 }
 
 const findUserByEmail = `-- name: FindUserByEmail :one
-SELECT id, display_name, created_at, updated_at, email FROM users WHERE lower(email) = lower(?) AND email <> ''
+SELECT id, display_name, created_at, updated_at, email, password_hash, failed_login_attempts, locked_until, username FROM users WHERE lower(email) = lower(?) AND email <> ''
 `
 
 func (q *Queries) FindUserByEmail(ctx context.Context, lower string) (User, error) {
@@ -1597,6 +1682,10 @@ func (q *Queries) FindUserByEmail(ctx context.Context, lower string) (User, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.PasswordHash,
+		&i.FailedLoginAttempts,
+		&i.LockedUntil,
+		&i.Username,
 	)
 	return i, err
 }
@@ -1985,7 +2074,7 @@ func (q *Queries) GetPlanItemForUser(ctx context.Context, arg GetPlanItemForUser
 }
 
 const getProjectForUser = `-- name: GetProjectForUser :one
-SELECT p.id, p.organization_id, p.owner_user_id, p.name, p.description, p.kind, p.scene, p.status, p.created_at, p.updated_at, p.default_model, p.fallback_model
+SELECT p.id, p.organization_id, p.owner_user_id, p.name, p.description, p.kind, p.scene, p.status, p.created_at, p.updated_at, p.default_model, p.fallback_model, p.model_provider_id
 FROM projects p
 JOIN memberships m ON m.organization_id = p.organization_id
 JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = m.user_id
@@ -2019,6 +2108,7 @@ func (q *Queries) GetProjectForUser(ctx context.Context, arg GetProjectForUserPa
 		&i.UpdatedAt,
 		&i.DefaultModel,
 		&i.FallbackModel,
+		&i.ModelProviderID,
 	)
 	return i, err
 }
@@ -2679,7 +2769,7 @@ func (q *Queries) ListAssetsByParentForUser(ctx context.Context, arg ListAssetsB
 }
 
 const listCapabilitiesForUser = `-- name: ListCapabilitiesForUser :many
-SELECT c.id, c.organization_id, c.project_id, c.owner_user_id, c.kind, c.name, c.version, c.manifest_json, c.content_hash, c.status, c.risk_level, c.created_at, c.updated_at FROM capabilities c
+SELECT c.id, c.organization_id, c.project_id, c.owner_user_id, c.kind, c.name, c.version, c.manifest_json, c.content_hash, c.status, c.risk_level, c.created_at, c.updated_at, c.scope_type, c.scope_id, c.source_filename, c.bundle_storage_key, c.install_job_id, c.credential_ref FROM capabilities c
 JOIN project_memberships pm ON pm.project_id = c.project_id AND pm.user_id = ? AND pm.status = 'active'
 WHERE c.organization_id = ? AND c.project_id = ?
 ORDER BY c.updated_at DESC, c.id ASC LIMIT ?
@@ -2720,6 +2810,12 @@ func (q *Queries) ListCapabilitiesForUser(ctx context.Context, arg ListCapabilit
 			&i.RiskLevel,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ScopeType,
+			&i.ScopeID,
+			&i.SourceFilename,
+			&i.BundleStorageKey,
+			&i.InstallJobID,
+			&i.CredentialRef,
 		); err != nil {
 			return nil, err
 		}
@@ -2735,7 +2831,7 @@ func (q *Queries) ListCapabilitiesForUser(ctx context.Context, arg ListCapabilit
 }
 
 const listConversationsForUser = `-- name: ListConversationsForUser :many
-SELECT c.id, c.organization_id, c.project_id, c.owner_user_id, c.title, c.visibility, c.next_message_seq, c.created_at, c.updated_at,
+SELECT c.id, c.organization_id, c.project_id, c.owner_user_id, c.title, c.visibility, c.next_message_seq, c.created_at, c.updated_at, c.active_leaf_entry_id, c.parent_session_id, c.forked_from_entry_id, c.next_entry_seq,
        CAST(COALESCE((
            SELECT m.content FROM messages m
            WHERE m.conversation_id = c.id
@@ -2763,16 +2859,20 @@ type ListConversationsForUserParams struct {
 }
 
 type ListConversationsForUserRow struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	ProjectID      string `json:"project_id"`
-	OwnerUserID    string `json:"owner_user_id"`
-	Title          string `json:"title"`
-	Visibility     string `json:"visibility"`
-	NextMessageSeq int64  `json:"next_message_seq"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	LastMessage    string `json:"last_message"`
+	ID                string         `json:"id"`
+	OrganizationID    string         `json:"organization_id"`
+	ProjectID         string         `json:"project_id"`
+	OwnerUserID       string         `json:"owner_user_id"`
+	Title             string         `json:"title"`
+	Visibility        string         `json:"visibility"`
+	NextMessageSeq    int64          `json:"next_message_seq"`
+	CreatedAt         string         `json:"created_at"`
+	UpdatedAt         string         `json:"updated_at"`
+	ActiveLeafEntryID sql.NullString `json:"active_leaf_entry_id"`
+	ParentSessionID   sql.NullString `json:"parent_session_id"`
+	ForkedFromEntryID sql.NullString `json:"forked_from_entry_id"`
+	NextEntrySeq      int64          `json:"next_entry_seq"`
+	LastMessage       string         `json:"last_message"`
 }
 
 func (q *Queries) ListConversationsForUser(ctx context.Context, arg ListConversationsForUserParams) ([]ListConversationsForUserRow, error) {
@@ -2800,6 +2900,10 @@ func (q *Queries) ListConversationsForUser(ctx context.Context, arg ListConversa
 			&i.NextMessageSeq,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ActiveLeafEntryID,
+			&i.ParentSessionID,
+			&i.ForkedFromEntryID,
+			&i.NextEntrySeq,
 			&i.LastMessage,
 		); err != nil {
 			return nil, err
@@ -3168,7 +3272,7 @@ func (q *Queries) ListProjectMembersForUser(ctx context.Context, arg ListProject
 }
 
 const listProjectsForUser = `-- name: ListProjectsForUser :many
-SELECT p.id, p.organization_id, p.owner_user_id, p.name, p.description, p.kind, p.scene, p.status, p.created_at, p.updated_at, p.default_model, p.fallback_model
+SELECT p.id, p.organization_id, p.owner_user_id, p.name, p.description, p.kind, p.scene, p.status, p.created_at, p.updated_at, p.default_model, p.fallback_model, p.model_provider_id
 FROM projects p
 JOIN memberships m ON m.organization_id = p.organization_id
 JOIN project_memberships pm ON pm.project_id = p.id AND pm.user_id = m.user_id
@@ -3209,6 +3313,7 @@ func (q *Queries) ListProjectsForUser(ctx context.Context, arg ListProjectsForUs
 			&i.UpdatedAt,
 			&i.DefaultModel,
 			&i.FallbackModel,
+			&i.ModelProviderID,
 		); err != nil {
 			return nil, err
 		}
@@ -3783,7 +3888,7 @@ func (q *Queries) SetAgentDefinitionStatusAsOwner(ctx context.Context, arg SetAg
 const setCapabilityStatusAsOwner = `-- name: SetCapabilityStatusAsOwner :one
 UPDATE capabilities SET status = ?, updated_at = ?
 WHERE id = ? AND organization_id = ? AND owner_user_id = ?
-RETURNING id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, created_at, updated_at
+RETURNING id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, risk_level, created_at, updated_at, scope_type, scope_id, source_filename, bundle_storage_key, install_job_id, credential_ref
 `
 
 type SetCapabilityStatusAsOwnerParams struct {
@@ -3817,6 +3922,12 @@ func (q *Queries) SetCapabilityStatusAsOwner(ctx context.Context, arg SetCapabil
 		&i.RiskLevel,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ScopeType,
+		&i.ScopeID,
+		&i.SourceFilename,
+		&i.BundleStorageKey,
+		&i.InstallJobID,
+		&i.CredentialRef,
 	)
 	return i, err
 }

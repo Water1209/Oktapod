@@ -81,6 +81,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 	}
 	payload := anthropicPayload(request, model)
 	payload["stream"] = true
+	result.RequestBytes = serializedPayloadBytes(payload)
 	response, started, err := c.postAccept(ctx, c.endpoint+"/messages", payload, map[string]string{
 		"x-api-key": key, "anthropic-version": "2023-06-01",
 	}, "text/event-stream")
@@ -88,6 +89,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 		result.StopReason, result.ErrorCode = stopForError(err), errorCode(err)
 		return result, err
 	}
+	result.FirstByteLatency = time.Since(started)
 	defer response.Body.Close()
 	result.ProviderRequestID = firstNonEmpty(response.Header.Get("request-id"), response.Header.Get("x-request-id"))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -172,6 +174,9 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 			case "text_delta":
 				state.kind = "text"
 				state.text.WriteString(event.Delta.Text)
+				if event.Delta.Text != "" && result.FirstSafeLatency == 0 {
+					result.FirstSafeLatency = time.Since(started)
+				}
 				if onDelta != nil && event.Delta.Text != "" {
 					if deltaErr := onDelta(event.Delta.Text); deltaErr != nil {
 						result.StopReason = core.StopReasonAborted
@@ -246,11 +251,14 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 		return result, err
 	}
 	endpoint := c.endpoint + "/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse&key=" + url.QueryEscape(key)
-	response, started, err := c.postAccept(ctx, endpoint, geminiPayload(request), nil, "text/event-stream")
+	payload := geminiPayload(request)
+	result.RequestBytes = serializedPayloadBytes(payload)
+	response, started, err := c.postAccept(ctx, endpoint, payload, nil, "text/event-stream")
 	if err != nil {
 		result.StopReason, result.ErrorCode = stopForError(err), errorCode(err)
 		return result, err
 	}
+	result.FirstByteLatency = time.Since(started)
 	defer response.Body.Close()
 	result.ProviderRequestID = response.Header.Get("x-request-id")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -309,6 +317,9 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 				result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockThinking, Thinking: &core.ThinkingBlock{Text: part.Text}})
 			} else if part.Text != "" {
 				visible.WriteString(part.Text)
+				if result.FirstSafeLatency == 0 {
+					result.FirstSafeLatency = time.Since(started)
+				}
 				result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockText, Text: part.Text})
 				if onDelta != nil {
 					if deltaErr := onDelta(part.Text); deltaErr != nil {
@@ -446,6 +457,7 @@ func (c *Client) completeAnthropic(ctx context.Context, request okruntime.ModelR
 		return result, err
 	}
 	payload := anthropicPayload(request, model)
+	result.RequestBytes = serializedPayloadBytes(payload)
 	response, started, err := c.post(ctx, c.endpoint+"/messages", payload, map[string]string{
 		"x-api-key": key, "anthropic-version": "2023-06-01",
 	})
@@ -454,7 +466,8 @@ func (c *Client) completeAnthropic(ctx context.Context, request okruntime.ModelR
 		return result, err
 	}
 	defer response.Body.Close()
-	result.Latency = time.Since(started)
+	result.FirstByteLatency = time.Since(started)
+	result.Latency = result.FirstByteLatency
 	result.ProviderRequestID = firstNonEmpty(response.Header.Get("request-id"), response.Header.Get("x-request-id"))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		discardProviderBody(response.Body)
@@ -504,6 +517,10 @@ func (c *Client) completeAnthropic(ctx context.Context, request okruntime.ModelR
 		}
 	}
 	result.Content = strings.TrimSpace(text.String())
+	if result.Content != "" {
+		result.FirstSafeLatency = time.Since(started)
+	}
+	result.Latency = time.Since(started)
 	result.StopReason = nativeStopReason(decoded.StopReason, len(result.ToolCalls) > 0)
 	result.Usage = core.ModelUsage{
 		InputTokens: decoded.Usage.InputTokens, OutputTokens: decoded.Usage.OutputTokens,
@@ -525,6 +542,7 @@ func (c *Client) completeGemini(ctx context.Context, request okruntime.ModelRequ
 		return result, err
 	}
 	payload := geminiPayload(request)
+	result.RequestBytes = serializedPayloadBytes(payload)
 	endpoint := c.endpoint + "/models/" + url.PathEscape(model) + ":generateContent?key=" + url.QueryEscape(key)
 	response, started, err := c.post(ctx, endpoint, payload, nil)
 	if err != nil {
@@ -532,7 +550,8 @@ func (c *Client) completeGemini(ctx context.Context, request okruntime.ModelRequ
 		return result, err
 	}
 	defer response.Body.Close()
-	result.Latency = time.Since(started)
+	result.FirstByteLatency = time.Since(started)
+	result.Latency = result.FirstByteLatency
 	result.ProviderRequestID = response.Header.Get("x-request-id")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		discardProviderBody(response.Body)
@@ -579,6 +598,10 @@ func (c *Client) completeGemini(ctx context.Context, request okruntime.ModelRequ
 		}
 	}
 	result.Content = strings.TrimSpace(text.String())
+	if result.Content != "" {
+		result.FirstSafeLatency = time.Since(started)
+	}
+	result.Latency = time.Since(started)
 	result.StopReason = nativeStopReason(decoded.Candidates[0].FinishReason, len(result.ToolCalls) > 0)
 	inputTokens := decoded.Usage.PromptTokens - decoded.Usage.CachedTokens
 	if inputTokens < 0 {
@@ -611,6 +634,10 @@ func (c *Client) resultBase(request okruntime.ModelRequest) (core.ModelResult, s
 		RequestedModel: request.RequestedModel,
 		EffectiveModel: core.ModelRef{ProviderID: firstNonEmpty(request.RequestedModel.ProviderID, c.protocol), ModelID: model},
 		RoutingReason:  "provider_instance",
+	}
+	if request.EnableTools && request.ToolCallingKnown && !request.ToolCallingAllowed {
+		result.StopReason, result.ErrorCode = core.StopReasonError, "MODEL_CAPABILITY_MISMATCH"
+		return result, model, "", &GatewayError{Code: result.ErrorCode}
 	}
 	key := c.credential()
 	if key == "" {
@@ -659,6 +686,14 @@ func (c *Client) postAccept(ctx context.Context, endpoint string, payload any, h
 		return nil, started, &GatewayError{Code: "PROVIDER_UNAVAILABLE", Cause: err}
 	}
 	return response, started, nil
+}
+
+func serializedPayloadBytes(payload any) int64 {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return int64(len(body))
 }
 
 func anthropicPayload(request okruntime.ModelRequest, model string) map[string]any {

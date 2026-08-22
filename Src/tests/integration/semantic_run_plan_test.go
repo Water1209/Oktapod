@@ -55,7 +55,7 @@ func TestModelPublishesGoalSpecificSemanticPlanBeforeExecution(t *testing.T) {
 	}))
 	defer provider.Close()
 
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
 	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
@@ -67,6 +67,7 @@ func TestModelPublishesGoalSpecificSemanticPlanBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	worker := okruntime.NewWorker("semantic-plan-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
 		t.Fatalf("publish plan worked=%v err=%v", worked, runErr)
@@ -106,7 +107,7 @@ func TestSingleItemSemanticPlanReplacesInitialPlanningPlaceholder(t *testing.T) 
 	}))
 	defer provider.Close()
 
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
 	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Single Plan User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
@@ -118,6 +119,7 @@ func TestSingleItemSemanticPlanReplacesInitialPlanningPlaceholder(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	worker := okruntime.NewWorker("single-plan-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
 		t.Fatalf("publish single plan worked=%v err=%v", worked, runErr)
@@ -159,7 +161,7 @@ func TestInvalidInitialPlanQueuesModelRepair(t *testing.T) {
 	}))
 	defer provider.Close()
 
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
 	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan Repair User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
@@ -171,6 +173,7 @@ func TestInvalidInitialPlanQueuesModelRepair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	worker := okruntime.NewWorker("invalid-plan-repair-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
 		t.Fatalf("invalid plan worked=%v err=%v", worked, runErr)
@@ -213,7 +216,7 @@ func TestToolExecutionMaterializesGoalSpecificFallbackPlan(t *testing.T) {
 	}))
 	defer provider.Close()
 
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
 	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan Required User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
@@ -225,6 +228,7 @@ func TestToolExecutionMaterializesGoalSpecificFallbackPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	worker := okruntime.NewWorker("plan-required-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
 		t.Fatalf("premature tool worked=%v err=%v", worked, runErr)
@@ -279,6 +283,7 @@ func TestModelPlanRevisionContinuesAfterHistoricalPlanCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	db := openTaskControlDatabase(t, databasePath)
 	if _, err := db.Exec(`UPDATE run_plan_revisions SET status = 'completed' WHERE run_id = ?`, task.RunID); err != nil {
 		db.Close()
@@ -353,7 +358,7 @@ func TestRuntimePlanStructureRewriteProjectsProgressOntoStableRevision(t *testin
 	}))
 	defer provider.Close()
 
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
 	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan User"}, core.Organization{ID: testOrgID, Name: "Plan Org"}, func() string { return "fake-plan-key" })
@@ -365,6 +370,7 @@ func TestRuntimePlanStructureRewriteProjectsProgressOntoStableRevision(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	worker := okruntime.NewWorker("stable-plan-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil))).WithWebSearchExecutor(semanticPlanSearch{})
 	for iteration := 0; iteration < 5; iteration++ {
 		if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
@@ -458,7 +464,7 @@ func TestPlanStatusRegressionIsAutomaticallyRepaired(t *testing.T) {
 	}))
 	defer provider.Close()
 
-	repository, _ := newRepository(t)
+	repository, databasePath := newRepository(t)
 	defer repository.Close()
 	bootstrapRepository(t, repository)
 	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "Plan Recovery User"}, core.Organization{ID: testOrgID, Name: "Plan Recovery Org"}, func() string { return "fake-plan-key" })
@@ -470,6 +476,7 @@ func TestPlanStatusRegressionIsAutomaticallyRepaired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	freezeLegacyPlanProtocol(t, databasePath, task)
 	worker := okruntime.NewWorker("plan-regression-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-plan-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil))).WithWebSearchExecutor(semanticPlanSearch{})
 	var completed core.Task
 	for iteration := 0; iteration < 10; iteration++ {
@@ -509,5 +516,70 @@ func TestPlanStatusRegressionIsAutomaticallyRepaired(t *testing.T) {
 	}
 	if !foundRegressionRecovery || !foundModelRetry {
 		t.Fatalf("missing recovery events: %#v", events)
+	}
+}
+
+// freezeLegacyPlanProtocol turns a freshly-created test Run into the shape of
+// a pre-V2 persisted Run. These tests protect historical update_plan replay and
+// recovery semantics; new-Run transition_v2 behavior is covered separately.
+func freezeLegacyPlanProtocol(t *testing.T, databasePath string, task core.Task) {
+	t.Helper()
+	db := openTaskControlDatabase(t, databasePath)
+	defer db.Close()
+
+	var snapshotJSON string
+	if err := db.QueryRow(`SELECT config_snapshot_json FROM runs WHERE id = ?`, task.RunID).Scan(&snapshotJSON); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["plan_protocol_version"] = "legacy_update_v1"
+	encodedSnapshot, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionID := task.RunID + "-legacy-plan"
+	itemID := task.RunID + "-legacy-item"
+	now := task.CreatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")
+	if _, err := db.Exec(`UPDATE runs SET config_snapshot_json = ? WHERE id = ?`, string(encodedSnapshot), task.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO run_plan_revisions (
+			id, organization_id, project_id, task_id, run_id, revision, trigger,
+			goal_summary, status, created_by, created_at
+		) VALUES (?, ?, ?, ?, ?, 1, 'initial', ?, 'active', ?, ?)`,
+		revisionID, task.OrganizationID, task.ProjectID, task.ID, task.RunID, task.Goal, task.OwnerUserID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO run_plan_items (
+			id, organization_id, project_id, task_id, run_id, plan_revision_id,
+			position, title, description, status, started_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 1, '正在制定执行计划',
+			'模型正在生成完整语义子任务。', 'running', ?, ?, ?)`,
+		itemID, task.OrganizationID, task.ProjectID, task.ID, task.RunID, revisionID, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE run_id = ? AND position = 1`, revisionID, itemID, task.RunID); err != nil {
+		t.Fatal(err)
+	}
+	var inputJSON string
+	if err := db.QueryRow(`SELECT input_json FROM steps WHERE run_id = ? AND position = 1`, task.RunID).Scan(&inputJSON); err != nil {
+		t.Fatal(err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	input["stage"] = "plan"
+	encodedInput, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE steps SET input_json = ? WHERE run_id = ? AND position = 1`, string(encodedInput), task.RunID); err != nil {
+		t.Fatal(err)
 	}
 }

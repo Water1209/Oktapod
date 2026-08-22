@@ -720,13 +720,26 @@ WHERE id = (
           WHERE earlier.run_id = candidate.run_id
             AND earlier.position < candidate.position
             AND earlier.status IN ('queued', 'running', 'waiting_approval')
-            AND (
-                candidate.tool_batch_id = ''
-                OR earlier.tool_batch_id <> candidate.tool_batch_id
-                OR NOT EXISTS (
-                    SELECT 1 FROM tool_batches batch
-                    WHERE batch.id = candidate.tool_batch_id
-                      AND batch.execution_mode = 'parallel'
+            AND NOT (
+                candidate.tool_batch_id <> ''
+                AND earlier.tool_batch_id = candidate.tool_batch_id
+                AND (
+                    (
+                        NOT EXISTS (SELECT 1 FROM tool_batch_schedulers scheduler WHERE scheduler.batch_id = candidate.tool_batch_id)
+                        AND EXISTS (
+                            SELECT 1 FROM tool_batches batch
+                            WHERE batch.id = candidate.tool_batch_id
+                              AND batch.execution_mode = 'parallel'
+                        )
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM tool_call_barriers candidate_barrier
+                        JOIN tool_call_barriers earlier_barrier
+                          ON earlier_barrier.step_id = earlier.id
+                        WHERE candidate_barrier.step_id = candidate.id
+                          AND candidate_barrier.barrier_group = earlier_barrier.barrier_group
+                    )
                 )
             )
       )

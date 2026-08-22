@@ -35,6 +35,7 @@ type Server struct {
 	service   *application.Service
 	logger    *slog.Logger
 	activeSSE atomic.Int64
+	liveTurns core.LiveTurnSubscriber
 }
 
 type mcpOAuthHTMLResponse string
@@ -51,23 +52,30 @@ func int64Ptr(value int64) *int64    { return &value }
 func boolPtr(value bool) *bool       { return &value }
 func stringPtr(value string) *string { return &value }
 
-func NewHandler(service *application.Service, logger *slog.Logger) http.Handler {
-	return newHandler(service, logger, nil, true)
+func NewHandler(service *application.Service, logger *slog.Logger, live ...core.LiveTurnSubscriber) http.Handler {
+	return newHandler(service, logger, nil, true, firstLiveTurnSubscriber(live))
 }
 
-func NewHandlerWithUI(service *application.Service, logger *slog.Logger, ui http.Handler) http.Handler {
-	return newHandler(service, logger, ui, true)
+func NewHandlerWithUI(service *application.Service, logger *slog.Logger, ui http.Handler, live ...core.LiveTurnSubscriber) http.Handler {
+	return newHandler(service, logger, ui, true, firstLiveTurnSubscriber(live))
 }
 
 // NewTrustedHandler is for in-process contract tests that exercise API shape
 // with an already trusted service scope. Product servers must use NewHandler
 // or NewHandlerWithUI so authentication cannot depend on UI availability.
 func NewTrustedHandler(service *application.Service, logger *slog.Logger) http.Handler {
-	return newHandler(service, logger, nil, false)
+	return newHandler(service, logger, nil, false, nil)
 }
 
-func newHandler(service *application.Service, logger *slog.Logger, ui http.Handler, enforceSession bool) http.Handler {
-	server := &Server{service: service, logger: logger}
+func firstLiveTurnSubscriber(live []core.LiveTurnSubscriber) core.LiveTurnSubscriber {
+	if len(live) > 0 {
+		return live[0]
+	}
+	return nil
+}
+
+func newHandler(service *application.Service, logger *slog.Logger, ui http.Handler, enforceSession bool, live core.LiveTurnSubscriber) http.Handler {
+	server := &Server{service: service, logger: logger, liveTurns: live}
 	principalResolver := sessionPrincipalResolver{
 		service: service,
 		adminToken: func() string {
@@ -2697,24 +2705,30 @@ func (s *Server) GetRunUsage(ctx context.Context, request generated.GetRunUsageR
 		return nil, err
 	}
 	return generated.GetRunUsage200JSONResponse(generated.RunUsage{
-		RunId:           runID,
-		ModelCalls:      usage.ModelCalls,
-		InputTokens:     usage.InputTokens,
-		OutputTokens:    usage.OutputTokens,
-		CachedTokens:    usage.CachedTokens,
-		ReasoningTokens: usage.ReasoningTokens,
-		EstimatedCalls:  usage.EstimatedCalls,
-		LatencyMs:       usage.LatencyMS,
-		CostStatus:      generated.RunUsageCostStatus(usage.CostStatus),
-		Currency:        usage.Currency,
-		CostDecimal:     usage.CostDecimal,
-		BudgetMaxCalls:  usage.BudgetMaxCalls,
-		BudgetMaxTokens: usage.BudgetMaxTokens,
-		BudgetStatus:    generated.RunUsageBudgetStatus(usage.BudgetStatus),
-		RemainingCalls:  usage.RemainingCalls,
-		RemainingTokens: usage.RemainingTokens,
-		ReservedCalls:   int64Ptr(usage.ReservedCalls),
-		ReservedTokens:  int64Ptr(usage.ReservedTokens),
+		RunId:             runID,
+		ModelCalls:        usage.ModelCalls,
+		InputTokens:       usage.InputTokens,
+		OutputTokens:      usage.OutputTokens,
+		CachedTokens:      usage.CachedTokens,
+		CacheWriteTokens:  usage.CacheWriteTokens,
+		ReasoningTokens:   usage.ReasoningTokens,
+		EstimatedCalls:    usage.EstimatedCalls,
+		LatencyMs:         usage.LatencyMS,
+		FirstByteMs:       usage.FirstByteMS,
+		FirstSafeDeltaMs:  usage.FirstSafeDeltaMS,
+		AssemblyMs:        usage.AssemblyMS,
+		RequestBytes:      usage.RequestBytes,
+		ModelCallPurposes: usage.ModelCallPurposes,
+		CostStatus:        generated.RunUsageCostStatus(usage.CostStatus),
+		Currency:          usage.Currency,
+		CostDecimal:       usage.CostDecimal,
+		BudgetMaxCalls:    usage.BudgetMaxCalls,
+		BudgetMaxTokens:   usage.BudgetMaxTokens,
+		BudgetStatus:      generated.RunUsageBudgetStatus(usage.BudgetStatus),
+		RemainingCalls:    usage.RemainingCalls,
+		RemainingTokens:   usage.RemainingTokens,
+		ReservedCalls:     int64Ptr(usage.ReservedCalls),
+		ReservedTokens:    int64Ptr(usage.ReservedTokens),
 	}), nil
 }
 
@@ -3237,6 +3251,12 @@ func (s *Server) streamRunEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 	s.activeSSE.Add(1)
 	defer s.activeSSE.Add(-1)
+	var liveEvents <-chan core.LiveTurnEvent
+	cancelLive := func() {}
+	if s.liveTurns != nil {
+		liveEvents, cancelLive = s.liveTurns.SubscribeLiveTurn(runID)
+	}
+	defer cancelLive()
 
 	poll := time.NewTicker(500 * time.Millisecond)
 	heartbeat := time.NewTicker(15 * time.Second)
@@ -3246,6 +3266,14 @@ func (s *Server) streamRunEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case event, ok := <-liveEvents:
+			if !ok {
+				liveEvents = nil
+				continue
+			}
+			data, _ := json.Marshal(event)
+			_, _ = fmt.Fprintf(w, "event: run_live\ndata: %s\n\n", data)
+			flusher.Flush()
 		case <-heartbeat.C:
 			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
@@ -3421,7 +3449,13 @@ func taskResponse(task core.Task) (generated.Task, error) {
 	acceptance := task.Acceptance
 	errorCode := task.ErrorCode
 	resultSummary := task.ResultSummary
-	return generated.Task{Id: id, ProjectId: projectID, RunId: runID, ConversationId: conversationID, Title: task.Title, Goal: task.Goal, Acceptance: &acceptance, Mode: generated.TaskMode(task.Mode), Visibility: generated.TaskVisibility(task.Visibility), Status: generated.TaskStatus(task.Status), ErrorCode: &errorCode, ResultSummary: &resultSummary, Accepted: task.AcceptedOutcomeID != "", CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}, nil
+	presentationKind := task.PresentationKind
+	if presentationKind == "" {
+		// Idempotency records created before runtime-performance-v2 do not carry
+		// presentation metadata. Keep those replays on the durable task surface.
+		presentationKind = core.TaskPresentationTask
+	}
+	return generated.Task{Id: id, ProjectId: projectID, RunId: runID, ConversationId: conversationID, Title: task.Title, Goal: task.Goal, Acceptance: &acceptance, Mode: generated.TaskMode(task.Mode), PresentationKind: generated.TaskPresentationKind(presentationKind), Visibility: generated.TaskVisibility(task.Visibility), Status: generated.TaskStatus(task.Status), ErrorCode: &errorCode, ResultSummary: &resultSummary, Accepted: task.AcceptedOutcomeID != "", CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}, nil
 }
 
 func scheduleResponse(schedule core.Schedule) (generated.Schedule, error) {

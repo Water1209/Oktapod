@@ -71,6 +71,8 @@ const (
 	ToolWebFetch                = "web_fetch"
 	ToolSkillInvoke             = "skill_invoke"
 	ToolUpdatePlan              = "update_plan"
+	ToolReplacePlan             = "replace_plan"
+	ToolAdvancePlan             = "advance_plan"
 	ToolRequestInput            = "request_input"
 	ToolRequestPermission       = "request_permission"
 	ToolWorkspaceExtractArchive = "workspace_extract_archive"
@@ -386,6 +388,7 @@ type Task struct {
 	Goal              string
 	Acceptance        string
 	Mode              string
+	PresentationKind  string
 	Visibility        string
 	Status            string
 	ErrorCode         string
@@ -394,6 +397,12 @@ type Task struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
+
+const (
+	TaskPresentationPendingAuto = "pending_auto"
+	TaskPresentationAnswer      = "answer"
+	TaskPresentationTask        = "task"
+)
 
 type Conversation struct {
 	ID             string
@@ -1325,24 +1334,30 @@ type ModelUsage struct {
 }
 
 type RunUsage struct {
-	RunID           string
-	ModelCalls      int64
-	InputTokens     int64
-	OutputTokens    int64
-	CachedTokens    int64
-	ReasoningTokens int64
-	EstimatedCalls  int64
-	LatencyMS       int64
-	CostStatus      string
-	Currency        string
-	CostDecimal     string
-	BudgetMaxCalls  int64
-	BudgetMaxTokens int64
-	BudgetStatus    string
-	RemainingCalls  int64
-	RemainingTokens int64
-	ReservedCalls   int64
-	ReservedTokens  int64
+	RunID             string
+	ModelCalls        int64
+	InputTokens       int64
+	OutputTokens      int64
+	CachedTokens      int64
+	CacheWriteTokens  int64
+	ReasoningTokens   int64
+	EstimatedCalls    int64
+	LatencyMS         int64
+	FirstByteMS       int64
+	FirstSafeDeltaMS  int64
+	AssemblyMS        int64
+	RequestBytes      int64
+	ModelCallPurposes map[string]int64
+	CostStatus        string
+	Currency          string
+	CostDecimal       string
+	BudgetMaxCalls    int64
+	BudgetMaxTokens   int64
+	BudgetStatus      string
+	RemainingCalls    int64
+	RemainingTokens   int64
+	ReservedCalls     int64
+	ReservedTokens    int64
 }
 
 type RunChanges struct {
@@ -1509,6 +1524,10 @@ type ModelResult struct {
 	StopReason          StopReason
 	Usage               ModelUsage
 	Latency             time.Duration
+	FirstByteLatency    time.Duration
+	FirstSafeLatency    time.Duration
+	AssemblyLatency     time.Duration
+	RequestBytes        int64
 	ErrorCode           string
 	ToolCalls           []ToolCall
 	ToolArgumentRepairs int

@@ -87,6 +87,18 @@ type AgentTeamStream struct {
 	NextSeq int64  `json:"next_seq"`
 }
 
+type AiGovernanceSetting struct {
+	OrganizationID     string `json:"organization_id"`
+	ReviewerProviderID string `json:"reviewer_provider_id"`
+	ReviewerModelID    string `json:"reviewer_model_id"`
+	Enabled            int64  `json:"enabled"`
+	TimeoutSeconds     int64  `json:"timeout_seconds"`
+	FailClosed         int64  `json:"fail_closed"`
+	PolicyVersion      int64  `json:"policy_version"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
 type ApprovalRequest struct {
 	ID               string `json:"id"`
 	OrganizationID   string `json:"organization_id"`
@@ -106,6 +118,12 @@ type ApprovalRequest struct {
 	DecisionNote     string `json:"decision_note"`
 	RequestedAt      string `json:"requested_at"`
 	DecidedAt        string `json:"decided_at"`
+	ExpiresAt        string `json:"expires_at"`
+	ApprovalScope    string `json:"approval_scope"`
+	TargetOrigin     string `json:"target_origin"`
+	MatchedRuleID    string `json:"matched_rule_id"`
+	PolicyHash       string `json:"policy_hash"`
+	ApprovalGrantKey string `json:"approval_grant_key"`
 }
 
 type Artifact struct {
@@ -177,19 +195,53 @@ type Blob struct {
 }
 
 type Capability struct {
+	ID               string `json:"id"`
+	OrganizationID   string `json:"organization_id"`
+	ProjectID        string `json:"project_id"`
+	OwnerUserID      string `json:"owner_user_id"`
+	Kind             string `json:"kind"`
+	Name             string `json:"name"`
+	Version          string `json:"version"`
+	ManifestJson     string `json:"manifest_json"`
+	ContentHash      string `json:"content_hash"`
+	Status           string `json:"status"`
+	RiskLevel        string `json:"risk_level"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+	ScopeType        string `json:"scope_type"`
+	ScopeID          string `json:"scope_id"`
+	SourceFilename   string `json:"source_filename"`
+	BundleStorageKey string `json:"bundle_storage_key"`
+	InstallJobID     string `json:"install_job_id"`
+	CredentialRef    string `json:"credential_ref"`
+}
+
+type CapabilityInstallJob struct {
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organization_id"`
+	ProjectID      string         `json:"project_id"`
+	ActorUserID    string         `json:"actor_user_id"`
+	ScopeType      string         `json:"scope_type"`
+	ScopeID        string         `json:"scope_id"`
+	SourceFilename string         `json:"source_filename"`
+	BundleHash     string         `json:"bundle_hash"`
+	State          string         `json:"state"`
+	CapabilityID   sql.NullString `json:"capability_id"`
+	ErrorCode      string         `json:"error_code"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
+}
+
+type CapabilityReview struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`
 	ProjectID      string `json:"project_id"`
-	OwnerUserID    string `json:"owner_user_id"`
-	Kind           string `json:"kind"`
-	Name           string `json:"name"`
-	Version        string `json:"version"`
-	ManifestJson   string `json:"manifest_json"`
-	ContentHash    string `json:"content_hash"`
-	Status         string `json:"status"`
-	RiskLevel      string `json:"risk_level"`
+	CapabilityID   string `json:"capability_id"`
+	ReviewerUserID string `json:"reviewer_user_id"`
+	RequestedHash  string `json:"requested_hash"`
+	Decision       string `json:"decision"`
+	Note           string `json:"note"`
 	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
 }
 
 type Checkpoint struct {
@@ -206,15 +258,140 @@ type Checkpoint struct {
 }
 
 type Conversation struct {
+	ID                string         `json:"id"`
+	OrganizationID    string         `json:"organization_id"`
+	ProjectID         string         `json:"project_id"`
+	OwnerUserID       string         `json:"owner_user_id"`
+	Title             string         `json:"title"`
+	Visibility        string         `json:"visibility"`
+	NextMessageSeq    int64          `json:"next_message_seq"`
+	CreatedAt         string         `json:"created_at"`
+	UpdatedAt         string         `json:"updated_at"`
+	ActiveLeafEntryID sql.NullString `json:"active_leaf_entry_id"`
+	ParentSessionID   sql.NullString `json:"parent_session_id"`
+	ForkedFromEntryID sql.NullString `json:"forked_from_entry_id"`
+	NextEntrySeq      int64          `json:"next_entry_seq"`
+}
+
+type ConversationApprovalRule struct {
+	ID                    string `json:"id"`
+	OrganizationID        string `json:"organization_id"`
+	ProjectID             string `json:"project_id"`
+	ConversationID        string `json:"conversation_id"`
+	ToolName              string `json:"tool_name"`
+	RuleKey               string `json:"rule_key"`
+	CreatedFromApprovalID string `json:"created_from_approval_id"`
+	CreatedBy             string `json:"created_by"`
+	CreatedAt             string `json:"created_at"`
+	ExpiresAt             string `json:"expires_at"`
+	RuleVersion           int64  `json:"rule_version"`
+	MatchJson             string `json:"match_json"`
+	MatchHash             string `json:"match_hash"`
+	RiskLevel             string `json:"risk_level"`
+}
+
+type ConversationCompaction struct {
+	ID                  string `json:"id"`
+	OrganizationID      string `json:"organization_id"`
+	ProjectID           string `json:"project_id"`
+	ConversationID      string `json:"conversation_id"`
+	OwnerUserID         string `json:"owner_user_id"`
+	Summary             string `json:"summary"`
+	CompactedThroughSeq int64  `json:"compacted_through_seq"`
+	RetainedFromSeq     int64  `json:"retained_from_seq"`
+	SourceMessageCount  int64  `json:"source_message_count"`
+	SourceTokens        int64  `json:"source_tokens"`
+	Trigger             string `json:"trigger"`
+	SplitMessageID      string `json:"split_message_id"`
+	SplitPrefixRunes    int64  `json:"split_prefix_runes"`
+	CreatedAt           string `json:"created_at"`
+}
+
+type ConversationContextSetting struct {
+	OrganizationID   string `json:"organization_id"`
+	OwnerUserID      string `json:"owner_user_id"`
+	AutoCompact      int64  `json:"auto_compact"`
+	TriggerTokens    int64  `json:"trigger_tokens"`
+	RetainTokens     int64  `json:"retain_tokens"`
+	SummaryMaxTokens int64  `json:"summary_max_tokens"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+type ConversationMessageQueue struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`
 	ProjectID      string `json:"project_id"`
-	OwnerUserID    string `json:"owner_user_id"`
-	Title          string `json:"title"`
-	Visibility     string `json:"visibility"`
-	NextMessageSeq int64  `json:"next_message_seq"`
+	ConversationID string `json:"conversation_id"`
+	ActiveTaskID   string `json:"active_task_id"`
+	Content        string `json:"content"`
+	InputJson      string `json:"input_json"`
+	Kind           string `json:"kind"`
+	Status         string `json:"status"`
 	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	ClaimedAt      string `json:"claimed_at"`
+	ConsumedAt     string `json:"consumed_at"`
+	MessageID      string `json:"message_id"`
+}
+
+type ConversationModelCall struct {
+	ID                    string `json:"id"`
+	OrganizationID        string `json:"organization_id"`
+	ProjectID             string `json:"project_id"`
+	ConversationID        string `json:"conversation_id"`
+	OwnerUserID           string `json:"owner_user_id"`
+	Purpose               string `json:"purpose"`
+	Provider              string `json:"provider"`
+	Endpoint              string `json:"endpoint"`
+	Model                 string `json:"model"`
+	RoutingReason         string `json:"routing_reason"`
+	ProviderRequestID     string `json:"provider_request_id"`
+	InputTokens           int64  `json:"input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	CachedTokens          int64  `json:"cached_tokens"`
+	ReasoningTokens       int64  `json:"reasoning_tokens"`
+	UsageEstimated        int64  `json:"usage_estimated"`
+	LatencyMs             int64  `json:"latency_ms"`
+	ErrorCode             string `json:"error_code"`
+	CostDecimal           string `json:"cost_decimal"`
+	Currency              string `json:"currency"`
+	CreatedAt             string `json:"created_at"`
+	ThroughEntryID        string `json:"through_entry_id"`
+	RequestedProviderID   string `json:"requested_provider_id"`
+	RequestedModelID      string `json:"requested_model_id"`
+	EffectiveProviderID   string `json:"effective_provider_id"`
+	EffectiveModelID      string `json:"effective_model_id"`
+	StopReason            string `json:"stop_reason"`
+	ContextTokens         int64  `json:"context_tokens"`
+	CacheReadTokens       int64  `json:"cache_read_tokens"`
+	CacheWriteTokens      int64  `json:"cache_write_tokens"`
+	UsageSemanticsVersion string `json:"usage_semantics_version"`
+}
+
+type HumanActionRequest struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+	ConversationID string `json:"conversation_id"`
+	TaskID         string `json:"task_id"`
+	RunID          string `json:"run_id"`
+	StepID         string `json:"step_id"`
+	PlanRevisionID string `json:"plan_revision_id"`
+	RunPlanItemID  string `json:"run_plan_item_id"`
+	Kind           string `json:"kind"`
+	Status         string `json:"status"`
+	Reviewer       string `json:"reviewer"`
+	RiskLevel      string `json:"risk_level"`
+	Title          string `json:"title"`
+	Reason         string `json:"reason"`
+	RequestJson    string `json:"request_json"`
+	RequestHash    string `json:"request_hash"`
+	ResponseJson   string `json:"response_json"`
+	RequestedBy    string `json:"requested_by"`
+	DecidedBy      string `json:"decided_by"`
+	RequestedAt    string `json:"requested_at"`
+	ExpiresAt      string `json:"expires_at"`
+	DecidedAt      string `json:"decided_at"`
+	Version        int64  `json:"version"`
 }
 
 type IdempotencyRecord struct {
@@ -243,6 +420,9 @@ type McpConnection struct {
 	ConnectedAt    string `json:"connected_at"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
+	SchemaHash     string `json:"schema_hash"`
+	ConfigVersion  int64  `json:"config_version"`
+	HealthState    string `json:"health_state"`
 }
 
 type Membership struct {
@@ -284,28 +464,84 @@ type Message struct {
 	TaskID         string `json:"task_id"`
 }
 
+type MessagePresentation struct {
+	MessageID        string `json:"message_id"`
+	PresentationJson string `json:"presentation_json"`
+}
+
 type ModelCall struct {
-	ID                  string `json:"id"`
-	OrganizationID      string `json:"organization_id"`
-	ProjectID           string `json:"project_id"`
-	TaskID              string `json:"task_id"`
-	RunID               string `json:"run_id"`
-	StepID              string `json:"step_id"`
-	Provider            string `json:"provider"`
-	Endpoint            string `json:"endpoint"`
-	Model               string `json:"model"`
-	RoutingReason       string `json:"routing_reason"`
-	Status              string `json:"status"`
-	ProviderRequestID   string `json:"provider_request_id"`
-	InputTokens         int64  `json:"input_tokens"`
-	OutputTokens        int64  `json:"output_tokens"`
-	CachedTokens        int64  `json:"cached_tokens"`
-	ReasoningTokens     int64  `json:"reasoning_tokens"`
-	UsageEstimated      int64  `json:"usage_estimated"`
-	LatencyMs           int64  `json:"latency_ms"`
-	ErrorCode           string `json:"error_code"`
-	CreatedAt           string `json:"created_at"`
-	PricingSnapshotJson string `json:"pricing_snapshot_json"`
+	ID                    string `json:"id"`
+	OrganizationID        string `json:"organization_id"`
+	ProjectID             string `json:"project_id"`
+	TaskID                string `json:"task_id"`
+	RunID                 string `json:"run_id"`
+	StepID                string `json:"step_id"`
+	Provider              string `json:"provider"`
+	Endpoint              string `json:"endpoint"`
+	Model                 string `json:"model"`
+	RoutingReason         string `json:"routing_reason"`
+	Status                string `json:"status"`
+	ProviderRequestID     string `json:"provider_request_id"`
+	InputTokens           int64  `json:"input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	CachedTokens          int64  `json:"cached_tokens"`
+	ReasoningTokens       int64  `json:"reasoning_tokens"`
+	UsageEstimated        int64  `json:"usage_estimated"`
+	LatencyMs             int64  `json:"latency_ms"`
+	ErrorCode             string `json:"error_code"`
+	CreatedAt             string `json:"created_at"`
+	PricingSnapshotJson   string `json:"pricing_snapshot_json"`
+	Purpose               string `json:"purpose"`
+	ThroughEntryID        string `json:"through_entry_id"`
+	RequestedProviderID   string `json:"requested_provider_id"`
+	RequestedModelID      string `json:"requested_model_id"`
+	EffectiveProviderID   string `json:"effective_provider_id"`
+	EffectiveModelID      string `json:"effective_model_id"`
+	StopReason            string `json:"stop_reason"`
+	ContextTokens         int64  `json:"context_tokens"`
+	CacheReadTokens       int64  `json:"cache_read_tokens"`
+	CacheWriteTokens      int64  `json:"cache_write_tokens"`
+	UsageSemanticsVersion string `json:"usage_semantics_version"`
+}
+
+type ModelCallPerformance struct {
+	CallID           string `json:"call_id"`
+	Purpose          string `json:"purpose"`
+	FirstByteMs      int64  `json:"first_byte_ms"`
+	FirstSafeDeltaMs int64  `json:"first_safe_delta_ms"`
+	AssemblyMs       int64  `json:"assembly_ms"`
+	RequestBytes     int64  `json:"request_bytes"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	CreatedAt        string `json:"created_at"`
+}
+
+type ModelCatalogEntry struct {
+	ProviderID       string `json:"provider_id"`
+	ModelID          string `json:"model_id"`
+	CapabilitiesJson string `json:"capabilities_json"`
+	ContextWindow    int64  `json:"context_window"`
+	MaxOutput        int64  `json:"max_output"`
+	ThinkingMapJson  string `json:"thinking_map_json"`
+	PricingJson      string `json:"pricing_json"`
+	FetchedAt        string `json:"fetched_at"`
+	ExpiresAt        string `json:"expires_at"`
+	Etag             string `json:"etag"`
+	LastError        string `json:"last_error"`
+	CatalogVersion   string `json:"catalog_version"`
+}
+
+type ModelPricingVersion struct {
+	OrganizationID string `json:"organization_id"`
+	ProviderID     string `json:"provider_id"`
+	ModelID        string `json:"model_id"`
+	Currency       string `json:"currency"`
+	InputPer1k     string `json:"input_per_1k"`
+	OutputPer1k    string `json:"output_per_1k"`
+	EffectiveAt    string `json:"effective_at"`
+	Version        int64  `json:"version"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 type Organization struct {
@@ -343,18 +579,53 @@ type PlanItem struct {
 }
 
 type Project struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	OwnerUserID    string `json:"owner_user_id"`
-	Name           string `json:"name"`
-	Description    string `json:"description"`
-	Kind           string `json:"kind"`
-	Scene          string `json:"scene"`
-	Status         string `json:"status"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	DefaultModel   string `json:"default_model"`
-	FallbackModel  string `json:"fallback_model"`
+	ID              string `json:"id"`
+	OrganizationID  string `json:"organization_id"`
+	OwnerUserID     string `json:"owner_user_id"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	Kind            string `json:"kind"`
+	Scene           string `json:"scene"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+	DefaultModel    string `json:"default_model"`
+	FallbackModel   string `json:"fallback_model"`
+	ModelProviderID string `json:"model_provider_id"`
+}
+
+type ProjectApprovalRule struct {
+	ID                    string `json:"id"`
+	OrganizationID        string `json:"organization_id"`
+	ProjectID             string `json:"project_id"`
+	ToolName              string `json:"tool_name"`
+	RuleKey               string `json:"rule_key"`
+	CreatedFromApprovalID string `json:"created_from_approval_id"`
+	CreatedBy             string `json:"created_by"`
+	CreatedAt             string `json:"created_at"`
+	ExpiresAt             string `json:"expires_at"`
+	RevokedAt             string `json:"revoked_at"`
+	RevokedBy             string `json:"revoked_by"`
+	RuleVersion           int64  `json:"rule_version"`
+	MatchJson             string `json:"match_json"`
+	MatchHash             string `json:"match_hash"`
+	RiskLevel             string `json:"risk_level"`
+}
+
+type ProjectInvitation struct {
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organization_id"`
+	ProjectID      string         `json:"project_id"`
+	InvitedBy      string         `json:"invited_by"`
+	Email          string         `json:"email"`
+	DisplayName    string         `json:"display_name"`
+	Role           string         `json:"role"`
+	Status         string         `json:"status"`
+	TokenHash      string         `json:"token_hash"`
+	AcceptedUserID sql.NullString `json:"accepted_user_id"`
+	ExpiresAt      string         `json:"expires_at"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
 }
 
 type ProjectMembership struct {
@@ -366,24 +637,90 @@ type ProjectMembership struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type ProjectRuntimeSetting struct {
+	ProjectID     string `json:"project_id"`
+	MaxModelCalls int64  `json:"max_model_calls"`
+	MaxTokens     int64  `json:"max_tokens"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type ProviderEnabledModel struct {
+	OrganizationID string `json:"organization_id"`
+	ProviderID     string `json:"provider_id"`
+	ModelID        string `json:"model_id"`
+	Source         string `json:"source"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type ProviderInstance struct {
+	ProviderID     string `json:"provider_id"`
+	OrganizationID string `json:"organization_id"`
+	DisplayName    string `json:"display_name"`
+	ProtocolFamily string `json:"protocol_family"`
+	Endpoint       string `json:"endpoint"`
+	CredentialRef  string `json:"credential_ref"`
+	DefaultModelID string `json:"default_model_id"`
+	Status         string `json:"status"`
+	IsDefault      int64  `json:"is_default"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
 type Run struct {
-	ID                 string `json:"id"`
-	OrganizationID     string `json:"organization_id"`
-	ProjectID          string `json:"project_id"`
-	TaskID             string `json:"task_id"`
-	Status             string `json:"status"`
-	ConfigSnapshotJson string `json:"config_snapshot_json"`
-	CreatedAt          string `json:"created_at"`
-	UpdatedAt          string `json:"updated_at"`
+	ID                  string `json:"id"`
+	OrganizationID      string `json:"organization_id"`
+	ProjectID           string `json:"project_id"`
+	TaskID              string `json:"task_id"`
+	Status              string `json:"status"`
+	ConfigSnapshotJson  string `json:"config_snapshot_json"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+	RequestedProviderID string `json:"requested_provider_id"`
+	RequestedModelID    string `json:"requested_model_id"`
+	EffectiveProviderID string `json:"effective_provider_id"`
+	EffectiveModelID    string `json:"effective_model_id"`
+	ThinkingLevel       string `json:"thinking_level"`
+	ModelFallbackReason string `json:"model_fallback_reason"`
+	ModelCatalogVersion string `json:"model_catalog_version"`
+}
+
+type RunApprovalRule struct {
+	ID                    string `json:"id"`
+	OrganizationID        string `json:"organization_id"`
+	ProjectID             string `json:"project_id"`
+	RunID                 string `json:"run_id"`
+	ToolName              string `json:"tool_name"`
+	GrantType             string `json:"grant_type"`
+	GrantKey              string `json:"grant_key"`
+	PolicyHash            string `json:"policy_hash"`
+	CanonicalOrigin       string `json:"canonical_origin"`
+	CreatedFromApprovalID string `json:"created_from_approval_id"`
+	CreatedBy             string `json:"created_by"`
+	CreatedAt             string `json:"created_at"`
+	ExpiresAt             string `json:"expires_at"`
 }
 
 type RunBudget struct {
-	RunID         string `json:"run_id"`
-	MaxModelCalls int64  `json:"max_model_calls"`
-	MaxTokens     int64  `json:"max_tokens"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	RunID              string `json:"run_id"`
+	MaxModelCalls      int64  `json:"max_model_calls"`
+	MaxTokens          int64  `json:"max_tokens"`
+	Status             string `json:"status"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+	ReservedModelCalls int64  `json:"reserved_model_calls"`
+	ReservedTokens     int64  `json:"reserved_tokens"`
+}
+
+type RunContextCheckpoint struct {
+	RunID                 string `json:"run_id"`
+	ProjectionVersion     string `json:"projection_version"`
+	SourceThroughPosition int64  `json:"source_through_position"`
+	ContentJson           string `json:"content_json"`
+	ContentHash           string `json:"content_hash"`
+	CreatedAt             string `json:"created_at"`
+	UpdatedAt             string `json:"updated_at"`
 }
 
 type RunEvent struct {
@@ -406,6 +743,54 @@ type RunEvent struct {
 type RunEventStream struct {
 	RunID   string `json:"run_id"`
 	NextSeq int64  `json:"next_seq"`
+}
+
+type RunPlanItem struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+	TaskID         string `json:"task_id"`
+	RunID          string `json:"run_id"`
+	PlanRevisionID string `json:"plan_revision_id"`
+	Position       int64  `json:"position"`
+	Title          string `json:"title"`
+	Description    string `json:"description"`
+	Status         string `json:"status"`
+	ResultSummary  string `json:"result_summary"`
+	StartedAt      string `json:"started_at"`
+	CompletedAt    string `json:"completed_at"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type RunPlanRevision struct {
+	ID                   string `json:"id"`
+	OrganizationID       string `json:"organization_id"`
+	ProjectID            string `json:"project_id"`
+	TaskID               string `json:"task_id"`
+	RunID                string `json:"run_id"`
+	Revision             int64  `json:"revision"`
+	Trigger              string `json:"trigger"`
+	GoalSummary          string `json:"goal_summary"`
+	Status               string `json:"status"`
+	SupersedesRevisionID string `json:"supersedes_revision_id"`
+	CreatedBy            string `json:"created_by"`
+	CreatedAt            string `json:"created_at"`
+	SupersededAt         string `json:"superseded_at"`
+}
+
+type RunToolSnapshot struct {
+	RunID            string `json:"run_id"`
+	Revision         int64  `json:"revision"`
+	ToolIdentity     string `json:"tool_identity"`
+	InvocationName   string `json:"invocation_name"`
+	Source           string `json:"source"`
+	CapabilityID     string `json:"capability_id"`
+	SchemaHash       string `json:"schema_hash"`
+	CapabilitiesJson string `json:"capabilities_json"`
+	SelectionReason  string `json:"selection_reason"`
+	PolicyVersion    string `json:"policy_version"`
+	CreatedAt        string `json:"created_at"`
 }
 
 type Schedule struct {
@@ -454,43 +839,121 @@ type SchemaVersion struct {
 	AppliedAt string `json:"applied_at"`
 }
 
+type SecretRecord struct {
+	OrganizationID string `json:"organization_id"`
+	SecretRef      string `json:"secret_ref"`
+	SecretKind     string `json:"secret_kind"`
+	KeyVersion     int64  `json:"key_version"`
+	Nonce          string `json:"nonce"`
+	Ciphertext     string `json:"ciphertext"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type SecretVault struct {
+	OrganizationID     string `json:"organization_id"`
+	State              string `json:"state"`
+	Algorithm          string `json:"algorithm"`
+	KeyVersion         int64  `json:"key_version"`
+	LocalWrappedDek    string `json:"local_wrapped_dek"`
+	LocalNonce         string `json:"local_nonce"`
+	RecoveryWrappedDek string `json:"recovery_wrapped_dek"`
+	RecoveryNonce      string `json:"recovery_nonce"`
+	RecoverySalt       string `json:"recovery_salt"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
+type SessionEntry struct {
+	ID               string         `json:"id"`
+	OrganizationID   string         `json:"organization_id"`
+	ProjectID        string         `json:"project_id"`
+	ConversationID   string         `json:"conversation_id"`
+	ParentEntryID    sql.NullString `json:"parent_entry_id"`
+	Seq              int64          `json:"seq"`
+	Kind             string         `json:"kind"`
+	RefID            string         `json:"ref_id"`
+	Label            string         `json:"label"`
+	Summary          string         `json:"summary"`
+	Namespace        string         `json:"namespace"`
+	PayloadJson      string         `json:"payload_json"`
+	CreatedAt        string         `json:"created_at"`
+	EntrySeq         int64          `json:"entry_seq"`
+	SchemaVersion    int64          `json:"schema_version"`
+	ContextInjection string         `json:"context_injection"`
+}
+
+type SessionTreeEvent struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+	ConversationID string `json:"conversation_id"`
+	EntryID        string `json:"entry_id"`
+	Operation      string `json:"operation"`
+	ActorUserID    string `json:"actor_user_id"`
+	PayloadJson    string `json:"payload_json"`
+	CreatedAt      string `json:"created_at"`
+}
+
 type SideEffectReceipt struct {
+	ID              string `json:"id"`
+	OrganizationID  string `json:"organization_id"`
+	ProjectID       string `json:"project_id"`
+	TaskID          string `json:"task_id"`
+	RunID           string `json:"run_id"`
+	StepID          string `json:"step_id"`
+	ToolCallID      string `json:"tool_call_id"`
+	InvocationID    string `json:"invocation_id"`
+	InputHash       string `json:"input_hash"`
+	Idempotent      int64  `json:"idempotent"`
+	Status          string `json:"status"`
+	ExitCode        int64  `json:"exit_code"`
+	OutputJson      string `json:"output_json"`
+	ErrorCode       string `json:"error_code"`
+	StartedAt       string `json:"started_at"`
+	FinishedAt      string `json:"finished_at"`
+	NetworkClass    string `json:"network_class"`
+	MatchedRuleID   string `json:"matched_rule_id"`
+	PolicyHash      string `json:"policy_hash"`
+	AuthorizationID string `json:"authorization_id"`
+}
+
+type SideEffectResolution struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`
 	ProjectID      string `json:"project_id"`
 	TaskID         string `json:"task_id"`
 	RunID          string `json:"run_id"`
-	StepID         string `json:"step_id"`
-	ToolCallID     string `json:"tool_call_id"`
-	InvocationID   string `json:"invocation_id"`
-	InputHash      string `json:"input_hash"`
-	Idempotent     int64  `json:"idempotent"`
-	Status         string `json:"status"`
-	ExitCode       int64  `json:"exit_code"`
-	OutputJson     string `json:"output_json"`
-	ErrorCode      string `json:"error_code"`
-	StartedAt      string `json:"started_at"`
-	FinishedAt     string `json:"finished_at"`
+	ReceiptID      string `json:"receipt_id"`
+	Decision       string `json:"decision"`
+	Note           string `json:"note"`
+	ActorUserID    string `json:"actor_user_id"`
+	CreatedAt      string `json:"created_at"`
 }
 
 type Step struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	ProjectID      string `json:"project_id"`
-	RunID          string `json:"run_id"`
-	StepType       string `json:"step_type"`
-	Position       int64  `json:"position"`
-	Status         string `json:"status"`
-	InputJson      string `json:"input_json"`
-	OutputJson     string `json:"output_json"`
-	AttemptCount   int64  `json:"attempt_count"`
-	OwnerID        string `json:"owner_id"`
-	LeaseUntil     string `json:"lease_until"`
-	FenceToken     int64  `json:"fence_token"`
-	ErrorCode      string `json:"error_code"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	AgentID        string `json:"agent_id"`
+	ID                   string `json:"id"`
+	OrganizationID       string `json:"organization_id"`
+	ProjectID            string `json:"project_id"`
+	RunID                string `json:"run_id"`
+	StepType             string `json:"step_type"`
+	Position             int64  `json:"position"`
+	Status               string `json:"status"`
+	InputJson            string `json:"input_json"`
+	OutputJson           string `json:"output_json"`
+	AttemptCount         int64  `json:"attempt_count"`
+	OwnerID              string `json:"owner_id"`
+	LeaseUntil           string `json:"lease_until"`
+	FenceToken           int64  `json:"fence_token"`
+	ErrorCode            string `json:"error_code"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
+	AgentID              string `json:"agent_id"`
+	BudgetReservedTokens int64  `json:"budget_reserved_tokens"`
+	ToolBatchID          string `json:"tool_batch_id"`
+	BatchIndex           int64  `json:"batch_index"`
+	PlanRevisionID       string `json:"plan_revision_id"`
+	RunPlanItemID        string `json:"run_plan_item_id"`
 }
 
 type StepAttempt struct {
@@ -527,6 +990,52 @@ type Task struct {
 	ConversationID string `json:"conversation_id"`
 }
 
+type TaskPresentation struct {
+	TaskID           string `json:"task_id"`
+	PresentationKind string `json:"presentation_kind"`
+	ResolvedAt       string `json:"resolved_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+type TeamDefinition struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+	OwnerUserID    string `json:"owner_user_id"`
+	Name           string `json:"name"`
+	Version        string `json:"version"`
+	Status         string `json:"status"`
+	RolesJson      string `json:"roles_json"`
+	ConfigJson     string `json:"config_json"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type ToolBatch struct {
+	ID                  string `json:"id"`
+	OrganizationID      string `json:"organization_id"`
+	ProjectID           string `json:"project_id"`
+	TaskID              string `json:"task_id"`
+	RunID               string `json:"run_id"`
+	SourceStepID        string `json:"source_step_id"`
+	PlanIteration       int64  `json:"plan_iteration"`
+	ExecutionMode       string `json:"execution_mode"`
+	Status              string `json:"status"`
+	ToolCount           int64  `json:"tool_count"`
+	ContinuationClaimed int64  `json:"continuation_claimed"`
+	ContinuationStepID  string `json:"continuation_step_id"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+}
+
+type ToolBatchScheduler struct {
+	BatchID         string `json:"batch_id"`
+	ProtocolVersion string `json:"protocol_version"`
+	ExecutionMode   string `json:"execution_mode"`
+	GroupCount      int64  `json:"group_count"`
+	CreatedAt       string `json:"created_at"`
+}
+
 type ToolCall struct {
 	ID             string `json:"id"`
 	OrganizationID string `json:"organization_id"`
@@ -544,6 +1053,18 @@ type ToolCall struct {
 	ErrorCode      string `json:"error_code"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
+	ToolBatchID    string `json:"tool_batch_id"`
+	BatchIndex     int64  `json:"batch_index"`
+	CompletedAt    string `json:"completed_at"`
+	PlanRevisionID string `json:"plan_revision_id"`
+	RunPlanItemID  string `json:"run_plan_item_id"`
+}
+
+type ToolCallBarrier struct {
+	ToolCallID   string `json:"tool_call_id"`
+	StepID       string `json:"step_id"`
+	BarrierGroup int64  `json:"barrier_group"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type UsageLedger struct {
@@ -566,11 +1087,27 @@ type UsageLedger struct {
 }
 
 type User struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-	Email       string `json:"email"`
+	ID                  string `json:"id"`
+	DisplayName         string `json:"display_name"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+	Email               string `json:"email"`
+	PasswordHash        string `json:"password_hash"`
+	FailedLoginAttempts int64  `json:"failed_login_attempts"`
+	LockedUntil         string `json:"locked_until"`
+	Username            string `json:"username"`
+}
+
+type UserPreference struct {
+	OrganizationID    string `json:"organization_id"`
+	UserID            string `json:"user_id"`
+	Theme             string `json:"theme"`
+	Density           string `json:"density"`
+	DefaultPermission string `json:"default_permission"`
+	RecentProviderID  string `json:"recent_provider_id"`
+	RecentModelID     string `json:"recent_model_id"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
 }
 
 type ValidationResult struct {

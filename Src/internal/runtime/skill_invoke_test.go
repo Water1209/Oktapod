@@ -221,11 +221,16 @@ func TestExplicitSkillSurvivesSemanticPlanContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := &scriptedSkillModel{results: []core.ModelResult{
-		semanticPlanResult("explicit-skill-plan-call"),
+		{CallID: "explicit-skill-plan-call", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{
+			{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{
+				map[string]any{"title": "Collect verification evidence", "description": "Run the explicit Skill workflow and preserve evidence."},
+			}}},
+			{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "explicit skill verification"}},
+		}},
 		{CallID: "explicit-skill-final", Provider: "test", Model: "test-model", Content: "Skill workflow completed."},
 	}}
-	worker := NewWorker("explicit-skill-plan-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for iteration := 0; iteration < 2; iteration++ {
+	worker := NewWorker("explicit-skill-plan-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(successfulSkillSearch{})
+	for iteration := 0; iteration < 3; iteration++ {
 		if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
 			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
 		}
@@ -240,6 +245,11 @@ func TestExplicitSkillSurvivesSemanticPlanContinuation(t *testing.T) {
 	for index, request := range model.requests {
 		if !strings.Contains(request.SystemPrompt, marker) || !strings.Contains(request.SystemPrompt, "physical ai") {
 			t.Fatalf("request %d lost explicit Skill context: prompt_length=%d", index, len(request.SystemPrompt))
+		}
+		for _, definition := range request.ToolDefinitions {
+			if definition.Name == core.ToolSkillInvoke {
+				t.Fatalf("request %d exposed skill_invoke despite a frozen explicit Skill", index)
+			}
 		}
 	}
 }

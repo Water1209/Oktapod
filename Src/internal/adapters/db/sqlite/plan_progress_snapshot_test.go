@@ -38,6 +38,10 @@ func TestQueuedContinuationFreezesActivePlanProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	now := formatTime(task.UpdatedAt)
+	if _, _, err := createInitialRunPlan(ctx, tx, core.Scope{OrganizationID: org.ID, UserID: actor.ID}, project.ID, task.ID, task.RunID, core.CreateTaskInput{Goal: task.Goal}, now); err != nil {
+		t.Fatal(err)
+	}
 	var revisionID string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM run_plan_revisions WHERE run_id = ? AND status = 'active'`, task.RunID).Scan(&revisionID); err != nil {
 		t.Fatal(err)
@@ -45,7 +49,6 @@ func TestQueuedContinuationFreezesActivePlanProgress(t *testing.T) {
 	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET title = 'done', status = 'completed', completed_at = updated_at WHERE plan_revision_id = ?`, revisionID); err != nil {
 		t.Fatal(err)
 	}
-	now := formatTime(task.UpdatedAt)
 	for position, status := range []string{core.RunPlanItemRunning, core.RunPlanItemPending} {
 		itemID, idErr := newID()
 		if idErr != nil {

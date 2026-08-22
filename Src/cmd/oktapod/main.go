@@ -212,6 +212,7 @@ func run() error {
 	queuedTurnStarter := func(ctx context.Context, scope core.Scope, item core.ConversationQueueItem) (core.Task, error) {
 		return service.StartQueuedConversationTurn(ctx, item)
 	}
+	liveTurnHub := okruntime.NewLiveTurnHub()
 	workerCtx := application.WithScope(ctx, service.Scope())
 	hostname, _ := os.Hostname()
 	workerInstanceID := fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().UnixNano())
@@ -224,7 +225,8 @@ func run() error {
 			WithAssetStager(workspaceExecutor).
 			WithWebAccess(webAccessExecutor).
 			WithMCPSecretStore(credentials).
-			WithQueuedTurnStarter(queuedTurnStarter)
+			WithQueuedTurnStarter(queuedTurnStarter).
+			WithLiveTurnPublisher(liveTurnHub)
 		workerGroup.Add(1)
 		go func() {
 			defer workerGroup.Done()
@@ -246,9 +248,9 @@ func run() error {
 		}
 	}()
 
-	handler := httpapi.NewHandler(service, logger)
+	handler := httpapi.NewHandler(service, logger, liveTurnHub)
 	if ui, ok := webui.Handler(); ok {
-		handler = httpapi.NewHandlerWithUI(service, logger, ui)
+		handler = httpapi.NewHandlerWithUI(service, logger, ui, liveTurnHub)
 	}
 	httpServer := &http.Server{
 		Addr:              config.ListenAddress,

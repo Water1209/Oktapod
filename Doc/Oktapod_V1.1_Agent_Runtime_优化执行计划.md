@@ -1,14 +1,16 @@
 # Oktapod V1.1 Agent Runtime 优化执行计划
 
-> 版本：V1.3（Task 流式模型传输已实施并通过真实 Provider 回归）
-> 更新日期：2026-08-21
-> 实施分支：`codex/runtime-convergence-v1.1`
+> 版本：V1.4（Runtime 性能 V2 热路径已实施，真实 Provider 性能门禁待执行）
+> 更新日期：2026-08-22
+> 实施分支：`codex/runtime-performance-v2`
 > V1.0.0 关系：独立演进批次，不改变 V1.0.0 正式 tag 门禁
-> 发布状态：功能分支本地收口完成；未 tag、未合并，PR/Ubuntu/Windows 远端 CI 证据仍待产生
+> 发布状态：PERF-0～4、本地全量门禁、浏览器回归和 Windows 原生烟测已完成；真实 Provider 5 次、自动回放 30 次、Ubuntu race、远端双平台 CI、tag 与合并证据仍待产生
 
 ## 1. 执行结论
 
-本批次已经按“一个 Assembly、一个 Tool Pipeline、一个 Durable 真源”完成代码收敛。DeepSeek Harness 只作为原则参考，没有引入 Cordis、动态插件注册表、第二套 Receipt 或新的状态数据库。
+本批次已经按“一个 Assembly、一个 Tool Pipeline、一个 Durable 真源”完成代码收敛，并在同一边界内实施 Runtime 性能 V2。DeepSeek Harness 只作为原则参考，没有引入 Cordis、动态插件注册表、第二套 Receipt 或新的状态数据库。
+
+性能 V2 的决策是只优化 Agent Turn 热路径：Auto 不再先做模型分类；新 Run 使用可与业务工具同响应的 `replace_plan/advance_plan`；Task 正文经进程内 LiveTurnHub 临时可见；Provider 能力在 Run 创建时冻结；历史上下文按 Token 预算和工具组投影；工具批次按 concurrency-safe 连续段与 exclusive barrier 领取。旧 Run 缺少版本快照时保持旧路由、`update_plan`、上下文和整批调度语义。
 
 原计划的两项兼容修复已完成：
 
@@ -21,7 +23,7 @@
 
 同日原失败“贪吃蛇” Run 浏览器续跑进一步证明仅有阶段超时仍不充分：Provider 在 SSE 连接持续活跃时，用 430,298 ms 才形成首个完整工具调用，期间既不触发 60 秒流静默，也没有可执行结果。Worker 因此增加单次模型 Turn 120 秒总完成时限；超限归类为脱敏 `model_turn_timeout/model_turn`，沿用网络类最多 1 次检查点重试，不再让 reasoning 或心跳把用户等待无限延长。另修复完成合同的否定语义：按意图片段过滤“不要修改/禁止创建/只分析/only reply”等只读要求，同时保留“不要修改旧文件，但创建新文件”的正向动作；只读 Task 不再误报 `WORKSPACE_MUTATION_MISSING`。历史上已被该门禁阻塞且所有 Step 均成功的 Run，手动继续时会追加新的 `completion_validation_recovery` 模型检查点，保留原成功 Step 审计记录并按当前门禁重新收口。
 
-原 Runtime 收敛批次没有改变 HTTP/OpenAPI、数据库迁移或 ToolBatch 顺序规则。随后合入的 Web Access 扩展新增 `web_fetch`、Bootstrap 配置契约、000062～000063 与 Web Renderer，但继续复用同一个 ToolRuntime、ExecutionPolicy、Receipt 和 SQLite Durable 真源。任一 `Sequential` ToolCall 仍使整个批次串行；per-call barrier 不进入本批次。
+原 Runtime 收敛批次没有改变 HTTP/OpenAPI、数据库迁移或 ToolBatch 顺序规则。随后合入的 Web Access 扩展新增 `web_fetch`、Bootstrap 配置契约、000062～000063 与 Web Renderer，但继续复用同一个 ToolRuntime、ExecutionPolicy、Receipt 和 SQLite Durable 真源。性能 V2 再追加 000064 附属表和 per-call barrier；旧批次仍保持“任一 `Sequential` 使整批串行”，只有冻结 `tool_scheduler_version=barrier_v2` 的新 Run 使用分组领取。
 
 2026-08-21 Web 刷新收敛：项目页的任务、动态和消息查询改为仅在 live task 存在时有限轮询；动态面板未打开时不请求 activity；会话列表取消无条件定时刷新，Shell 保留共享缓存但不再创建重复轮询；项目库与会话树的任务刷新同样在无 live task 时停止；全局 inbox 统一 Query key，空列表退避至 15 秒，有待处理项时保持 5 秒。运行态仍以可恢复 SSE 为主，写操作通过 Query 失效保持列表一致。
 
@@ -102,6 +104,7 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 2026-08-20 Web Access | 本地工作树 | `WebAccess` 统一 Search/Fetch；私网精确 origin 配置、Run Hash 快照、`run_origin` 人工授权、安全 Transport、Web 卡片与 OpenAPI/UI 同步 |
 | 2026-08-21 浏览器收口 | 本地工作树 | 执行记录展开状态提升为按 `task_id` 管理，任务流从用户消息迁移到助手结果消息时不再意外折叠；真实 Chromium 并发套件 27/27 |
 | 2026-08-21 Web 刷新收敛 | 本地工作树 | 空闲项目停止任务/动态/消息轮询；活跃任务按状态启停有限刷新；Shell 与项目页共享缓存但不重复定时刷新；inbox 统一缓存并按是否有待处理项退避；Web 单测 50/50、lint、build 通过 |
+| 2026-08-22 Runtime 性能 V2 | 当前工作树 | Auto 单 Turn、Plan Transition V2、LiveTurnHub、冻结 Provider 能力、token-aware context projection、000064 barrier/performance 附属表和 12 场景隔离基准入口已落地；本地完整验证、浏览器回归和 Windows 原生烟测通过，真实 Provider 与 p95 性能数据待执行 |
 
 主要代码入口：
 
@@ -109,6 +112,7 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 - `Src/internal/runtime/tool_catalog.go`
 - `Src/internal/runtime/prompt_assembler.go`
 - `Src/internal/runtime/tool_runtime.go`
+- `Src/internal/runtime/live_turn_hub.go`
 - `Src/internal/application/context_snapshot.go`
 - `Src/internal/application/mcp_policy.go`
 - `Src/internal/adapters/db/sqlite/store.go`
@@ -130,6 +134,11 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | Workspace 取消终止真实进程树 | `TestWorkspaceCommandCancellationTerminatesProcessTree` |
 | OHCS 整批串行、并行收敛、审批、恢复不回退 | 既有 runtime/integration/Golden Trace 全套回归 |
 | continuation Step 的计划进度冻结且重组确定 | `TestQueuedContinuationFreezesActivePlanProgress` + `TestContinuationTurnUsesFrozenPlanProgressReminder` |
+| Auto 无分类且一次业务模型调用 | `TestAutoAnswerUsesOneBusinessModelCall` |
+| Plan V2 控制与业务工具同响应，工具成功不自动推进 | `TestTransitionPlanControlsShareBusinessResponses` |
+| 临时流式慢消费者不阻塞 Durable Worker | `TestLiveTurnHubDropsSlowSubscriberWithoutBlockingPublisher` + RunEventsProvider provisional 测试 |
+| per-call barrier 同组并发、后继隔离、unknown/MCP mutation 独占 | `TestBarrierSchedulerPreservesModelOrder` + `TestBarrierSchedulerTreatsUnknownAndMCPMutationAsExclusive` |
+| token-aware projection 按完整调用组裁剪旧 reasoning | `TestTokenProjectionDropsOldReasoningByWholeGroup` |
 | 已处理的 Policy Repair 不重复阻塞 Run | `TestDeriveRunStatusIgnoresSettledPolicyRepairs` |
 | 全局 Skill 按用户 Scope 跨自有项目可用 | `TestGlobalSkillInvocableFromOtherProject` |
 | SSE 保留确定性错误分类 | `TestTurnStreamErrorDetailPreservesDeterministicFailures` |
@@ -139,18 +148,19 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 每 Run 每 origin 授权，Full Access/Reviewer 不绕过 | `TestPrivateWebFetchApprovalIsRunOriginScoped` + `TestPrivateWebFetchIgnoresFullAccessAndAutoReviewer` |
 | 浏览器内一次私网授权复用同 origin、迁移后保持展开、两张文本卡与零控制台错误 | Playwright `私网 Web Fetch 每 Run 每 origin 只审批一次并以文本卡片重放` 1/1 |
 
-2026-08-21 收口先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 48/48、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
+2026-08-22 收口先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 14 文件 55/55、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
 
 ## 6. 合并与发布门禁
 
-2026-08-21 本地门禁已经全部重跑：
+2026-08-22 本地可执行门禁已经全部重跑：
 
 | 门禁 | 结果 |
 |---|---|
-| `pnpm verify` | `PASS`：Go、ESLint、Web 48/48、TypeScript/Vite/Go build、migration、OpenAPI drift |
-| `pnpm test:e2e` | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 27/27；私网场景同时覆盖审批前展开与终态消息迁移后状态保持 |
-| `pnpm release:build` | `PASS`：`oktapod-v1.0.0-windows-amd64.exe`，SHA256 `b094ba20cd96193aeb854b20f2d734e44bd7a06214698be4ca809683e3ee56fa` |
-| `pnpm release:smoke` | `PASS`：独立数据目录启动、health 200、项目创建与服务停止 |
+| `pnpm verify` | `PASS`：Go、ESLint、Web 14 文件 55/55、TypeScript/Vite/Go build、migration、OpenAPI drift |
+| Playwright | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 27/27；覆盖 Task Live 流、无计划 Run 零 404、Auto answer 最终消息刷新与既有恢复语义 |
+| `pnpm test:race` | `BLOCKED_ENV`：本机 `CGO_ENABLED=0` 且没有可用 C 编译器，`go test -race` 在测试启动前拒绝执行；Ubuntu CI 仍是正式证据 |
+| `pnpm release:build` | `PASS`：`oktapod-v1.0.0-windows-amd64.exe`，SHA256 `a02b931c193bf2775d8c7678e7fa2779c5b64ad55d2b1ba215736e7829c00790` |
+| `pnpm release:smoke` | `PASS`：隔离数据目录、端口 54543、health 200，烟测进程已停止 |
 
 远端还需 PR 触发 Ubuntu CI 的 `pnpm verify`、`pnpm test:race` 和原生 smoke，以及 Windows CI 的完整验证和原生 smoke。当前 workflow 只在 PR 或 `main` push 上运行，功能分支 push 本身不产生 CI 证据；Windows 本地结果不能替代 Ubuntu race 或远端双平台证据。
 
@@ -158,6 +168,6 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 
 - 不把 Agent Team、Reviewer、搜索综合塞入巨型 Assembler。
 - 不建立动态 Manager/Factory/Service Locator 或“万物插件”体系。
-- 不改变工具批次的整批串行覆盖合同。
-- per-call barrier、逐块 stdout/stderr 直播、强沙箱和跨 Provider 参数转换分别进入独立 RFC；只有基准数据、恢复语义和兼容方案齐全后才能排期。
+- 历史 Run 不改写原有 parallel/sequential 批次；新 Run 只通过 000064 附属投影启用 per-call barrier，不建立第二套 ToolRuntime。
+- 逐块 stdout/stderr 直播、强沙箱和跨 Provider 参数转换分别进入独立 RFC；只有基准数据、恢复语义和兼容方案齐全后才能排期。
 - 不因 Worker 或 ToolRuntime 行数达成某个数字就声明架构完成；验收以唯一入口、唯一真源与运行证据为准。

@@ -460,6 +460,22 @@ func (s *Service) freezeRunModelSnapshot(ctx context.Context, snapshot map[strin
 		for _, entry := range entries {
 			if entry.ModelID == modelID {
 				snapshot["model_catalog_version"] = entry.CatalogVersion
+				snapshot["model_context_window"] = entry.ContextWindow
+				snapshot["model_max_output"] = entry.MaxOutput
+				var capabilities map[string]any
+				if json.Unmarshal([]byte(entry.CapabilitiesJSON), &capabilities) == nil {
+					known, knownOK := capabilities["tool_calling_known"].(bool)
+					allowed, allowedOK := capabilities["tool_calling"].(bool)
+					if knownOK {
+						snapshot["model_tool_calling_known"] = known
+					}
+					if allowedOK {
+						snapshot["model_tool_calling"] = allowed
+					}
+					if known && allowedOK && !allowed {
+						return &core.ValidationError{Field: "model", Message: "does not support tool calling required by Agent Runtime"}
+					}
+				}
 				break
 			}
 		}

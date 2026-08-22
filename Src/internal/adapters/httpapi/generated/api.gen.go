@@ -971,6 +971,13 @@ const (
 	TaskModeSingleAgent TaskMode = "single_agent"
 )
 
+// Defines values for TaskPresentationKind.
+const (
+	TaskPresentationKindAnswer      TaskPresentationKind = "answer"
+	TaskPresentationKindPendingAuto TaskPresentationKind = "pending_auto"
+	TaskPresentationKindTask        TaskPresentationKind = "task"
+)
+
 // Defines values for TaskStatus.
 const (
 	TaskStatusBlocked         TaskStatus = "blocked"
@@ -2449,7 +2456,7 @@ type ProjectTurnRequest struct {
 	Scene     *ProjectTurnRequestScene     `json:"scene,omitempty"`
 	SkillArgs *string                      `json:"skill_args,omitempty"`
 
-	// SkillId 显式调用的项目 Skill；跳过 Auto 分类并创建任务
+	// SkillId 显式调用并冻结到新 Run 的项目 Skill；首个业务模型请求直接加载，不产生 skill_invoke 握手
 	SkillId          *openapi_types.UUID `json:"skill_id,omitempty"`
 	TeamDefinitionId *openapi_types.UUID `json:"team_definition_id,omitempty"`
 	TeamRoles        *[]struct {
@@ -2700,24 +2707,37 @@ type RunPlanRevisionTrigger string
 
 // RunUsage defines model for RunUsage.
 type RunUsage struct {
-	BudgetMaxCalls  int64                `json:"budget_max_calls"`
-	BudgetMaxTokens int64                `json:"budget_max_tokens"`
-	BudgetStatus    RunUsageBudgetStatus `json:"budget_status"`
-	CachedTokens    int64                `json:"cached_tokens"`
-	CostDecimal     string               `json:"cost_decimal"`
-	CostStatus      RunUsageCostStatus   `json:"cost_status"`
-	Currency        string               `json:"currency"`
-	EstimatedCalls  int64                `json:"estimated_calls"`
-	InputTokens     int64                `json:"input_tokens"`
-	LatencyMs       int64                `json:"latency_ms"`
-	ModelCalls      int64                `json:"model_calls"`
-	OutputTokens    int64                `json:"output_tokens"`
-	ReasoningTokens int64                `json:"reasoning_tokens"`
-	RemainingCalls  int64                `json:"remaining_calls"`
-	RemainingTokens int64                `json:"remaining_tokens"`
-	ReservedCalls   *int64               `json:"reserved_calls,omitempty"`
-	ReservedTokens  *int64               `json:"reserved_tokens,omitempty"`
-	RunId           openapi_types.UUID   `json:"run_id"`
+	// AssemblyMs Sum of AgentTurn assembly latency across Run model calls.
+	AssemblyMs       int64                `json:"assembly_ms"`
+	BudgetMaxCalls   int64                `json:"budget_max_calls"`
+	BudgetMaxTokens  int64                `json:"budget_max_tokens"`
+	BudgetStatus     RunUsageBudgetStatus `json:"budget_status"`
+	CacheWriteTokens int64                `json:"cache_write_tokens"`
+	CachedTokens     int64                `json:"cached_tokens"`
+	CostDecimal      string               `json:"cost_decimal"`
+	CostStatus       RunUsageCostStatus   `json:"cost_status"`
+	Currency         string               `json:"currency"`
+	EstimatedCalls   int64                `json:"estimated_calls"`
+
+	// FirstByteMs Sum of Provider time-to-first-response-byte across Run model calls.
+	FirstByteMs int64 `json:"first_byte_ms"`
+
+	// FirstSafeDeltaMs Sum of time-to-first-displayable assistant text across Run model calls.
+	FirstSafeDeltaMs  int64            `json:"first_safe_delta_ms"`
+	InputTokens       int64            `json:"input_tokens"`
+	LatencyMs         int64            `json:"latency_ms"`
+	ModelCallPurposes map[string]int64 `json:"model_call_purposes"`
+	ModelCalls        int64            `json:"model_calls"`
+	OutputTokens      int64            `json:"output_tokens"`
+	ReasoningTokens   int64            `json:"reasoning_tokens"`
+	RemainingCalls    int64            `json:"remaining_calls"`
+	RemainingTokens   int64            `json:"remaining_tokens"`
+
+	// RequestBytes Sum of serialized provider request bytes across Run model calls.
+	RequestBytes   int64              `json:"request_bytes"`
+	ReservedCalls  *int64             `json:"reserved_calls,omitempty"`
+	ReservedTokens *int64             `json:"reserved_tokens,omitempty"`
+	RunId          openapi_types.UUID `json:"run_id"`
 }
 
 // RunUsageBudgetStatus defines model for RunUsage.BudgetStatus.
@@ -2897,25 +2917,29 @@ type StorageDiagnostics struct {
 
 // Task defines model for Task.
 type Task struct {
-	Acceptance     *string            `json:"acceptance,omitempty"`
-	Accepted       bool               `json:"accepted"`
-	ConversationId openapi_types.UUID `json:"conversation_id"`
-	CreatedAt      time.Time          `json:"created_at"`
-	ErrorCode      *string            `json:"error_code,omitempty"`
-	Goal           string             `json:"goal"`
-	Id             openapi_types.UUID `json:"id"`
-	Mode           TaskMode           `json:"mode"`
-	ProjectId      openapi_types.UUID `json:"project_id"`
-	ResultSummary  *string            `json:"result_summary,omitempty"`
-	RunId          openapi_types.UUID `json:"run_id"`
-	Status         TaskStatus         `json:"status"`
-	Title          string             `json:"title"`
-	UpdatedAt      time.Time          `json:"updated_at"`
-	Visibility     TaskVisibility     `json:"visibility"`
+	Acceptance       *string              `json:"acceptance,omitempty"`
+	Accepted         bool                 `json:"accepted"`
+	ConversationId   openapi_types.UUID   `json:"conversation_id"`
+	CreatedAt        time.Time            `json:"created_at"`
+	ErrorCode        *string              `json:"error_code,omitempty"`
+	Goal             string               `json:"goal"`
+	Id               openapi_types.UUID   `json:"id"`
+	Mode             TaskMode             `json:"mode"`
+	PresentationKind TaskPresentationKind `json:"presentation_kind"`
+	ProjectId        openapi_types.UUID   `json:"project_id"`
+	ResultSummary    *string              `json:"result_summary,omitempty"`
+	RunId            openapi_types.UUID   `json:"run_id"`
+	Status           TaskStatus           `json:"status"`
+	Title            string               `json:"title"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	Visibility       TaskVisibility       `json:"visibility"`
 }
 
 // TaskMode defines model for Task.Mode.
 type TaskMode string
+
+// TaskPresentationKind defines model for Task.PresentationKind.
+type TaskPresentationKind string
 
 // TaskStatus defines model for Task.Status.
 type TaskStatus string

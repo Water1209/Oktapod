@@ -699,7 +699,8 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		classificationReason = "explicit_skill_invocation"
 	}
 	if input.Mode == core.ModeAuto {
-		input.Mode, classificationReason = classifyTaskMode(input)
+		input.Mode = core.ModeSingleAgent
+		classificationReason = "auto_agent_v2"
 	}
 	if err := core.ValidateCreateTask(input); err != nil {
 		return core.Task{}, err
@@ -757,6 +758,16 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		"scene":                  scene,
 		"permission_mode":        input.PermissionMode,
 		"prompt_profile_version": core.PromptProfileVersionCurrent,
+	}
+	if input.Mode == core.ModeSingleAgent {
+		snapshot["plan_protocol_version"] = "transition_v2"
+		snapshot["tool_scheduler_version"] = "barrier_v2"
+		snapshot["context_projection_version"] = "token_v2"
+	}
+	if requestedMode == core.ModeAuto {
+		snapshot["turn_router_version"] = "auto_agent_v2"
+	} else {
+		snapshot["turn_router_version"] = "explicit_v2"
 	}
 	s.webAccessPolicy.Snapshot().AddTo(snapshot)
 	if input.ProviderID != "" {
@@ -1238,34 +1249,17 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		return s.executeMCPInstallDirective(ctx, projectID, input, content, sourceInput, conversationID, visibility, idempotencyKey, onRoute, onDelta)
 	}
 
-	var classification core.ModelResult
 	route := TurnRouteTask
-	classificationReason := "user_selected_task"
 	hasSelectedAttachments := len(input.ContextAssetIDs) > 0
 	if hasSelectedAttachments {
 		// Selected attachments are immutable Run context. Keeping this turn on
 		// the chat-only path would discard that context and expose no governed
 		// tool for staging binary files such as PDF documents.
 		route = TurnRouteTask
-		classificationReason = "selected_attachments_require_task"
 	} else if mode == core.ModeAnswer {
 		route = TurnRouteChat
-		classificationReason = "user_selected_chat"
 	} else if mode == core.ModeAuto {
-		var classifyErr error
-		classification, classifyErr = s.classifyProjectTurn(ctx, project, content, input.Model, input.FallbackModel, input.ProviderID)
-		if classifyErr != nil {
-			// Auto routing must not lose the user's first message when the model
-			// is temporarily unavailable. A task is persisted before any worker
-			// model call, so the same Thread can be resumed after connectivity is
-			// restored instead of asking a context-free "继续" turn to guess.
-			route, classificationReason = TurnRouteTask, "classify_fallback_task"
-		} else {
-			route, classificationReason = parseTurnRoute(classification.Content)
-			if route == "" {
-				route, classificationReason = TurnRouteChat, "classify_unparsable_chat"
-			}
-		}
+		route = TurnRouteTask
 	}
 	if onRoute != nil {
 		if err := onRoute(route); err != nil {
@@ -1288,9 +1282,6 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 			return core.ProjectTurnResult{}, answerErr
 		}
 		calls := []core.ConversationModelCall{{Purpose: "answer", Model: answer}}
-		if classification.CallID != "" {
-			calls = append([]core.ConversationModelCall{{Purpose: "classification", Model: classification}}, calls...)
-		}
 		return s.repository.AppendChatTurn(ctx, s.ScopeFor(ctx), projectID, inputWithTurnDefaults(input, content, conversationID, visibility), answer.Content, calls, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(struct {
 			ProjectID string
 			Input     core.ProjectTurnInput
@@ -1349,11 +1340,6 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 	if taskErr != nil {
 		return core.ProjectTurnResult{}, taskErr
 	}
-	if classification.CallID != "" && task.ConversationID != "" {
-		if recordErr := s.repository.RecordConversationModelCalls(ctx, s.ScopeFor(ctx), projectID, task.ConversationID, []core.ConversationModelCall{{Purpose: "classification:" + classificationReason, Model: classification}}); recordErr != nil {
-			return core.ProjectTurnResult{}, recordErr
-		}
-	}
 	conversation, conversationErr := s.repository.GetConversation(ctx, s.ScopeFor(ctx), task.ConversationID)
 	if conversationErr != nil {
 		return core.ProjectTurnResult{}, conversationErr
@@ -1411,7 +1397,10 @@ func (s *Service) messagePresentationForTurn(ctx context.Context, projectID, con
 }
 
 func effectiveTaskMode(mode string, hasSelectedAttachments bool) string {
-	if mode == core.ModeAuto || hasSelectedAttachments {
+	if mode == core.ModeAuto {
+		return core.ModeAuto
+	}
+	if hasSelectedAttachments {
 		return core.ModeSingleAgent
 	}
 	return mode

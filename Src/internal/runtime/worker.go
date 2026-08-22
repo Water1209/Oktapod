@@ -65,6 +65,7 @@ type Worker struct {
 	modelCallTimeout  time.Duration
 	queuedTurnStarter QueuedTurnStarter
 	reviewerSettings  func(context.Context, string) (core.AIGovernanceSettings, error)
+	liveTurns         core.LiveTurnPublisher
 }
 
 func (w *Worker) WithWorkspaceExecutor(executor WorkspaceExecutor) *Worker {
@@ -133,6 +134,11 @@ func (w *Worker) WithQueuedTurnStarter(starter QueuedTurnStarter) *Worker {
 	return w
 }
 
+func (w *Worker) WithLiveTurnPublisher(publisher core.LiveTurnPublisher) *Worker {
+	w.liveTurns = publisher
+	return w
+}
+
 // WithLease overrides the step lease. The lease also bounds the crash-recovery
 // and retry window for claimed queue items; tests shorten it to exercise the
 // idle-drain backoff without waiting.
@@ -163,6 +169,10 @@ func NewWorker(id string, repository WorkerRepository, model ModelGateway, logge
 }
 
 func (w *Worker) completeModel(ctx context.Context, request ModelRequest) (core.ModelResult, error) {
+	return w.completeModelLive(ctx, request, nil)
+}
+
+func (w *Worker) completeModelLive(ctx context.Context, request ModelRequest, onDelta func(string) error) (core.ModelResult, error) {
 	loop := w.agentLoop
 	if loop == nil {
 		loop = agentloop.New(w.model)
@@ -174,7 +184,7 @@ func (w *Worker) completeModel(ctx context.Context, request ModelRequest) (core.
 	}
 	defer cancel()
 	started := time.Now()
-	event := loop.Next(callCtx, agentloop.LoopState{Request: request})
+	event := loop.Next(callCtx, agentloop.LoopState{Request: request, OnDelta: onDelta})
 	if event.Err != nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		event.Result.ErrorCode = "PROVIDER_UNAVAILABLE"
 		event.Result.StopReason = core.StopReasonError
@@ -402,17 +412,29 @@ func (w *Worker) execute(ctx context.Context, step core.ClaimedStep, run core.Ru
 		return w.toolRuntime().Execute(ctx, step, run)
 	}
 
+	assemblyStarted := time.Now()
 	assembly, assemblyFailure := NewAgentTurnAssembler(w.repository).Assemble(ctx, step, run)
 	if assemblyFailure != nil {
 		return *assemblyFailure
 	}
+	assemblyLatency := time.Since(assemblyStarted)
 	request := assembly.Request
 	contextPlan := request.ContextPlan
 	toolDefinitions := request.ToolDefinitions
 	searchBudget := assembly.SearchBudget
 	priorSearchCalls := assembly.PriorSearchCalls
 	continuation := assembly.Continuation
-	result, err := w.completeModel(ctx, request)
+	requestPayload, _ := json.Marshal(request)
+	emitter := newLiveDeltaEmitter(w.liveTurns, run.RunID, step.ID)
+	if w.liveTurns != nil {
+		w.liveTurns.PublishLiveTurn(core.LiveTurnEvent{RunID: run.RunID, ModelCallID: step.ID, Kind: "phase", Phase: "model_started"})
+	}
+	result, err := w.completeModelLive(ctx, request, emitter.Add)
+	emitter.Close()
+	result.AssemblyLatency = assemblyLatency
+	if result.RequestBytes == 0 {
+		result.RequestBytes = int64(len(requestPayload))
+	}
 	if err != nil {
 		status := core.StatusFailed
 		if result.ErrorCode == "MODEL_CREDENTIAL_MISSING" || result.ErrorCode == "PROVIDER_AUTH" {
@@ -807,7 +829,11 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 		hint += " 上一次 update_plan 试图把已完成项改回未完成，系统已拒绝并保留原计划。先读取当前持久化计划，再提交同一完整清单；所有 completed 项必须继续保持 completed，只推进当前项和后续项。"
 	}
 	if isRunPlanRepairReason(input.RetryReason) {
-		hint += " 请重新单独调用一次 update_plan：提交 1 到 12 个目标特定的完整语义步骤，每项包含具体 title、description 和合法 status；不要使用“制定执行计划”等占位文案，不要同时调用其他工具，也不要在尚无执行证据时把所有步骤标为 completed。"
+		if isTransitionPlanRepairReason(input.RetryReason) {
+			hint += " 请在同一响应中修正计划控制并调用下一批必要业务工具：初次或重规划使用 replace_plan，推进当前语义项使用 advance_plan；每个响应最多一个计划控制，不得单独发送计划控制。最后一项完成后直接返回最终答复，不要调用 advance_plan。"
+		} else {
+			hint += " 请重新单独调用一次 update_plan：提交 1 到 12 个目标特定的完整语义步骤，每项包含具体 title、description 和合法 status；不要使用“制定执行计划”等占位文案，不要同时调用其他工具，也不要在尚无执行证据时把所有步骤标为 completed。"
+		}
 	}
 	if input.RetryReason == "TOOL_POLICY_DENIED" || strings.HasPrefix(input.RetryReason, "SKILL_") || input.RetryReason == "UPDATE_PLAN_MUST_BE_EXCLUSIVE" {
 		hint += " 这是不可审批的确定性策略限制，不代表用户拒绝。请换用允许的工具或参数继续执行；不要再次调用相同的被拒动作，也不要把任务判失败。"
@@ -865,14 +891,30 @@ func modelRetryReasonLabel(reason string) string {
 		return "提交了会回退已完成进度的执行计划"
 	case "RUN_PLAN_INVALID":
 		return "提交了结构不完整的执行计划"
+	case "TRANSITION_RUN_PLAN_INVALID":
+		return "提交了结构不完整的新协议执行计划"
 	case "RUN_PLAN_PLACEHOLDER_DENIED":
 		return "提交了占位执行计划"
+	case "TRANSITION_RUN_PLAN_PLACEHOLDER_DENIED":
+		return "提交了占位的新协议执行计划"
 	case "RUN_PLAN_PREMATURE_COMPLETION":
 		return "在没有执行证据时提前完成了计划"
 	case "RUN_PLAN_REQUIRED":
 		return "在语义执行计划建立前尝试执行工具"
+	case "TRANSITION_RUN_PLAN_REQUIRED":
+		return "在语义执行计划建立前尝试推进"
 	case "UPDATE_PLAN_MUST_BE_EXCLUSIVE":
 		return "把计划更新与其他工具混在同一响应中"
+	case "PLAN_CONTROL_MULTIPLE":
+		return "在一个响应中提交了多个计划控制"
+	case "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL":
+		return "单独提交了计划控制而没有业务工具"
+	case "LEGACY_PLAN_CONTROL_DENIED":
+		return "在新协议 Run 中使用了旧计划控制"
+	case "RUN_PLAN_ITEM_HAS_UNFINISHED_WORK":
+		return "在当前计划项仍有未完成动作时尝试推进"
+	case "RUN_PLAN_ALREADY_AT_FINAL_ITEM":
+		return "在最后计划项应直接交付时尝试继续推进"
 	case "TOOL_POLICY_DENIED":
 		return "规划了不符合确定性策略的工具或参数"
 	case "SKILL_INVOKE_MUST_BE_EXCLUSIVE", "SKILL_RECURSIVE_INVOCATION_DENIED":
@@ -955,7 +997,19 @@ func searchCallsUsedFromSnapshot(snapshot string) int {
 
 func isRunPlanRepairReason(reason string) bool {
 	switch reason {
-	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_PREMATURE_COMPLETION", "RUN_PLAN_REQUIRED", "UPDATE_PLAN_MUST_BE_EXCLUSIVE":
+	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_PREMATURE_COMPLETION", "RUN_PLAN_REQUIRED", "UPDATE_PLAN_MUST_BE_EXCLUSIVE",
+		"PLAN_CONTROL_MULTIPLE", "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL", "LEGACY_PLAN_CONTROL_DENIED", "RUN_PLAN_ITEM_HAS_UNFINISHED_WORK", "RUN_PLAN_ALREADY_AT_FINAL_ITEM",
+		"TRANSITION_RUN_PLAN_INVALID", "TRANSITION_RUN_PLAN_PLACEHOLDER_DENIED", "TRANSITION_RUN_PLAN_REQUIRED":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTransitionPlanRepairReason(reason string) bool {
+	switch reason {
+	case "PLAN_CONTROL_MULTIPLE", "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL", "LEGACY_PLAN_CONTROL_DENIED", "RUN_PLAN_ITEM_HAS_UNFINISHED_WORK", "RUN_PLAN_ALREADY_AT_FINAL_ITEM",
+		"TRANSITION_RUN_PLAN_INVALID", "TRANSITION_RUN_PLAN_PLACEHOLDER_DENIED", "TRANSITION_RUN_PLAN_REQUIRED":
 		return true
 	default:
 		return false
@@ -1446,13 +1500,25 @@ func annotateToolCallExecutionMode(calls []core.ToolCall, definitions []ToolDefi
 		core.ToolWorkspaceWriteFile:  true,
 		core.ToolWorkspaceRunCommand: true,
 	}
+	definitionByName := make(map[string]ToolDefinition, len(definitions))
 	for _, definition := range definitions {
+		definitionByName[definition.Name] = definition
 		if definition.Sequential {
 			sequential[definition.Name] = true
 		}
 	}
 	for index := range calls {
-		calls[index].Sequential = calls[index].Sequential || sequential[calls[index].Name]
+		definition, known := definitionByName[calls[index].Name]
+		exclusive := !known || sequential[calls[index].Name]
+		if isMCPTool(calls[index].Name) {
+			// An MCP call participates in a safe parallel segment only when the
+			// frozen server annotations prove it is read-only and idempotent.
+			// Mutation and incomplete/unknown metadata form an exclusive barrier.
+			exclusive = exclusive || definition.ReadOnlyHint == nil || !*definition.ReadOnlyHint ||
+				definition.DestructiveHint == nil || *definition.DestructiveHint ||
+				definition.IdempotentHint == nil || !*definition.IdempotentHint
+		}
+		calls[index].Sequential = calls[index].Sequential || exclusive
 	}
 }
 

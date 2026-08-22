@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/oktapod/oktapod/Src/internal/application"
@@ -32,7 +33,7 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	sections, userPrompt := (PromptAssembler{}).BaseSections(run)
 	continuation := continuationHistoryForPrompt(step.InputJSON)
 	continuationInstruction := continuationInstructionForTurn(step, continuation)
-	if reminder := planProgressReminder(step, continuation); reminder != "" {
+	if reminder := planProgressReminder(step, continuation, run.ConfigSnapshotJSON); reminder != "" {
 		continuationInstruction += "\n\n" + reminder
 	}
 
@@ -44,7 +45,7 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	if core.InferTaskCompletionRequirements(run.Goal, run.Acceptance).RequiresSingleDeliverable {
 		sections = append(sections, PromptSection{Name: "single_deliverable", Order: 1100, Text: "单一主交付物规则：用户要求的是一份可独立阅读的完整报告，显式最低字数必须由同一个主文件满足，多个章节分片的合计不算完成。长文应分轮追加到同一个主文件：先用 workspace_write_file 创建包含 `<!-- OKTAPOD_CONTINUE -->` 尾部锚点的主文件；后续读取最新 preimage_hash，用 workspace_edit_file 把该锚点替换为下一段正文加同一锚点；全部写完后移除锚点，再读取主文件验证。过程材料可以另存，但最终总结必须首先给出主报告路径。"})
 	}
-	if stagePrompt := (PromptAssembler{}).Stage(modelStage(step.InputJSON)); stagePrompt != "" {
+	if stagePrompt := (PromptAssembler{}).Stage(modelStage(step.InputJSON), run.ConfigSnapshotJSON); stagePrompt != "" {
 		sections = append(sections, PromptSection{Name: "stage", Order: 1200, Text: "# Stage instructions\n" + stagePrompt})
 	}
 	selectedContext, selectedContextPlan := contextForPrompt(ctx, assembler.repository, run)
@@ -70,6 +71,8 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 		MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent,
 		ToolDefinitions: catalog.Definitions, ToolScopeDeclared: catalog.ToolScopeDeclared, AllowedTools: catalog.AllowedTools,
 		ContextPlan: catalog.ContextPlan, Model: modelName, FallbackModel: fallbackModel,
+		ToolCallingKnown:   snapshotBool(run.ConfigSnapshotJSON, "model_tool_calling_known"),
+		ToolCallingAllowed: snapshotBool(run.ConfigSnapshotJSON, "model_tool_calling"),
 	}
 	request.ContextPlan["assembly_hash"] = modelAssemblyHash(request)
 	return ModelAssembly{Request: request, SearchBudget: catalog.SearchBudget, PriorSearchCalls: catalog.PriorSearchCalls, Continuation: continuation}, nil
@@ -79,18 +82,39 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 // continuation turns. The plan_execute stage carries the update_plan duty for
 // exactly one turn; without a per-turn reminder the model stops reporting and
 // user-visible plan items freeze until the terminal bulk-complete.
-func planProgressReminder(step core.ClaimedStep, continuation []map[string]any) string {
+func planProgressReminder(step core.ClaimedStep, continuation []map[string]any, snapshots ...string) string {
 	if modelStage(step.InputJSON) != "continue" || len(continuation) == 0 || steeringInstructionForPrompt(step.InputJSON) != "" {
 		return ""
 	}
-	var snapshot struct {
+	var progress struct {
 		Total     int `json:"active_plan_total"`
 		Remaining int `json:"active_plan_remaining"`
 	}
-	if json.Unmarshal([]byte(step.InputJSON), &snapshot) != nil || snapshot.Total <= 1 || snapshot.Remaining == 0 {
+	if json.Unmarshal([]byte(step.InputJSON), &progress) != nil || progress.Total <= 1 || progress.Remaining == 0 {
 		return ""
 	}
+	if len(snapshots) > 0 && snapshotVersion(snapshots[0], "plan_protocol_version") == "transition_v2" {
+		return "当前任务存在未完成的语义计划。完成当前语义项后，在下一次需要调用业务工具时同时调用 advance_plan；它只声明语义推进，不替代工具、收据或完成门禁。最终无工具答复通过完成门禁后由 Runtime 收敛计划终态。"
+	}
 	return "当前任务存在未完成的语义计划。每完成一个计划项，必须单独调用 update_plan 提交同一完整清单：把已完成项标记 completed，并把下一项标记 in_progress；不要把工具调用写进计划。全部计划项完成后才返回不含工具调用的最终总结。"
+}
+
+func snapshotVersion(snapshot, key string) string {
+	var config map[string]any
+	if json.Unmarshal([]byte(snapshot), &config) == nil {
+		value, _ := config[key].(string)
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func snapshotBool(snapshot, key string) bool {
+	var config map[string]any
+	if json.Unmarshal([]byte(snapshot), &config) == nil {
+		value, _ := config[key].(bool)
+		return value
+	}
+	return false
 }
 
 func continuationInstructionForTurn(step core.ClaimedStep, continuation []map[string]any) string {
@@ -121,6 +145,27 @@ func continuationInstructionForTurn(step core.ClaimedStep, continuation []map[st
 			instruction += "\n\n" + hint
 		}
 	}
+	var planSnapshot struct {
+		ActivePlan []struct {
+			Position      int64  `json:"position"`
+			Title         string `json:"title"`
+			Description   string `json:"description"`
+			Status        string `json:"status"`
+			ResultSummary string `json:"result_summary"`
+		} `json:"active_plan"`
+	}
+	if json.Unmarshal([]byte(step.InputJSON), &planSnapshot) == nil && len(planSnapshot.ActivePlan) > 0 {
+		lines := make([]string, 0, len(planSnapshot.ActivePlan)+1)
+		lines = append(lines, "当前冻结语义计划（Runtime 状态为准）：")
+		for _, item := range planSnapshot.ActivePlan {
+			line := fmt.Sprintf("%d. [%s] %s — %s", item.Position, item.Status, item.Title, item.Description)
+			if strings.TrimSpace(item.ResultSummary) != "" {
+				line += "（结果：" + item.ResultSummary + "）"
+			}
+			lines = append(lines, line)
+		}
+		instruction += "\n\n" + strings.Join(lines, "\n")
+	}
 	return instruction
 }
 
@@ -132,23 +177,26 @@ func modelAssemblyHash(request ModelRequest) string {
 		}
 	}
 	payload := struct {
-		SystemPrompt      string
-		Messages          []core.ModelMessage
-		ToolDefinitions   []ToolDefinition
-		AllowedTools      []string
-		ToolScopeDeclared bool
-		RequestedModel    core.ModelRef
-		Model             string
-		FallbackModel     string
-		ThinkingLevel     string
-		MaxOutputTokens   int
-		EnableTools       bool
-		ContextPlan       map[string]any
+		SystemPrompt       string
+		Messages           []core.ModelMessage
+		ToolDefinitions    []ToolDefinition
+		AllowedTools       []string
+		ToolScopeDeclared  bool
+		RequestedModel     core.ModelRef
+		Model              string
+		FallbackModel      string
+		ThinkingLevel      string
+		MaxOutputTokens    int
+		EnableTools        bool
+		ToolCallingKnown   bool
+		ToolCallingAllowed bool
+		ContextPlan        map[string]any
 	}{
 		SystemPrompt: request.SystemPrompt, Messages: request.Messages, ToolDefinitions: request.ToolDefinitions,
 		AllowedTools: request.AllowedTools, ToolScopeDeclared: request.ToolScopeDeclared, RequestedModel: request.RequestedModel,
 		Model: request.Model, FallbackModel: request.FallbackModel, ThinkingLevel: request.ThinkingLevel,
 		MaxOutputTokens: request.MaxOutputTokens, EnableTools: request.EnableTools, ContextPlan: contextPlan,
+		ToolCallingKnown: request.ToolCallingKnown, ToolCallingAllowed: request.ToolCallingAllowed,
 	}
 	encoded, _ := json.Marshal(payload)
 	digest := sha256.Sum256(encoded)

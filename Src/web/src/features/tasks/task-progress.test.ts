@@ -4,7 +4,7 @@ import { buildTaskExecutionPlan, buildTaskTimeline, taskFailureInfo } from './ta
 
 const task: Task = {
   id: 'task-1', project_id: 'project-1', run_id: 'run-1', conversation_id: 'conversation-1',
-  title: '检索 Physical AI', goal: '检索资料', mode: 'single_agent', visibility: 'private',
+	title: '检索 Physical AI', goal: '检索资料', mode: 'single_agent', presentation_kind: 'task', visibility: 'private',
   status: 'failed', error_code: 'PROVIDER_UNAVAILABLE',
   result_summary: 'context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
   accepted: false, created_at: '2026-07-20T11:06:01Z', updated_at: '2026-07-20T11:08:01Z',

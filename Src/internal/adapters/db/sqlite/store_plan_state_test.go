@@ -38,6 +38,10 @@ func TestSucceededTaskReconcilesBlockedPlanRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	now := formatTime(task.UpdatedAt)
+	if _, _, err := createInitialRunPlan(ctx, tx, core.Scope{OrganizationID: organization.ID, UserID: actor.ID}, project.ID, task.ID, task.RunID, core.CreateTaskInput{Goal: task.Goal}, now); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'blocked' WHERE run_id = ?`, task.RunID); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,6 @@ func TestSucceededTaskReconcilesBlockedPlanRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := formatTime(task.UpdatedAt)
 	if err := store.syncRunPlanState(ctx, tx, store.queries.WithTx(tx), run, core.StatusSucceeded, "verified result", now, "plan-state-test"); err != nil {
 		t.Fatal(err)
 	}

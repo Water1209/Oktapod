@@ -266,6 +266,7 @@ export interface Task {
   goal: string
   acceptance?: string
   mode: TaskMode
+  presentation_kind: 'pending_auto' | 'answer' | 'task'
   visibility: Visibility
   status: TaskStatus
   error_code?: string
@@ -273,6 +274,16 @@ export interface Task {
   accepted: boolean
   created_at: string
   updated_at: string
+}
+
+export interface RunLiveEvent {
+  run_id: string
+  model_call_id: string
+  kind: 'assistant_delta' | 'phase'
+  delta?: string
+  phase?: string
+  ephemeral_seq: number
+  emitted_at: string
 }
 
 export interface Schedule {
@@ -571,9 +582,15 @@ export interface RunUsage {
   input_tokens: number
   output_tokens: number
   cached_tokens: number
+  cache_write_tokens: number
   reasoning_tokens: number
   estimated_calls: number
   latency_ms: number
+  first_byte_ms: number
+  first_safe_delta_ms: number
+  assembly_ms: number
+  request_bytes: number
+  model_call_purposes: Record<string, number>
   cost_status: 'unpriced' | 'estimated' | 'confirmed'
   currency: string
   cost_decimal: string

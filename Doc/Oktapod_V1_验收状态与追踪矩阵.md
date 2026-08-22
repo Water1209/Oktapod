@@ -1,9 +1,9 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.11
+> 版本：v1.12
 > 更新日期：2026-08-21
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
-> 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`
+> 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
 
 ## 1. 状态定义
 
@@ -34,9 +34,10 @@
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
 | B4 | MCP/Skill/Web Access | `PASS` | 通用 MCP/Skill 已落地；内建 `web_search` 与 `web_fetch` 共用 WebAccess，私网采用精确 origin、Run 冻结交集、每 Run 每 origin 强制人工审批和安全 Transport；全局 Skill 按用户 Scope 在其他自有项目中可调用 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、基线解释、文件/Hunk、行号、增删统计、折叠和受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
-| B6 | 发布收口 | `PARTIAL` | 2026-08-21 Windows `pnpm verify`（Web 48/48）、Web Access 定向 Playwright 1/1、既有 foundation 初始化 1/1 + 重启解锁 1/1、success 27/27、带版本工件和独立数据目录产品烟测通过；真实 Kimi Task 流式终态回归通过，进程 kill 恢复保留既有证据；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
+| B6 | 发布收口 | `PARTIAL` | 2026-08-22 Windows `pnpm verify`（Web 55/55）、foundation 初始化 1/1 + 重启解锁 1/1、success 27/27、带版本工件和独立数据目录产品烟测通过；真实 Kimi Task 流式终态回归通过，进程 kill 恢复保留既有证据；本机 race 因 `CGO_ENABLED=0` 且无 C 编译器未启动，Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 | B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；工作区/项目文件/任务输出三分类；Composer 附件/`asset_stage`；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
 | B8 | 统一配置与数据库密钥库 | `PASS` | 000058～000063、AES-256-GCM DatabaseSecretStore、两阶段恢复、严格 YAML、Web Access/数据库设置、配置/Vault API+CLI+UI、Backup V2 和浏览器重启自动解锁闭环已落地；无旧 Keyring 迁移 |
+| B9 | Agent Runtime 性能 V2 | `PARTIAL` | Auto 单 Turn、Plan Transition V2、Task 临时正文流、冻结 Provider 能力、token-aware projection、000064 per-call barrier 与性能字段已落地；本地完整验证、浏览器回归和 Windows 原生烟测通过，12 场景 30 次回放、真实 Provider 5 次和 p50/p95 报告待完成，不触发 Durable Fast Path |
 
 ## 2.2 V1 正式范围决策
 
@@ -58,8 +59,8 @@
 | ID | 验收项 | 状态 | 当前证据 |
 |---|---|---|---|
 | BASE-001 | `pnpm install --frozen-lockfile` 可复现依赖 | `PASS` | 2026-07-26 初始基线执行成功；随后为根目录 E2E import 补充 Playwright 依赖并更新锁文件，重新安装成功 |
-| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-21 最终执行通过：Go vet/test、ESLint、Web 48/48、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
-| BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-21 最终执行 success 27/27 通过；既有 foundation 初始化 1/1 + Vault 服务重启自动解锁 1/1、turn 1/1 证据继续有效。Changes 用例断言行级差异、折叠/展开、受治理提交和控制台零错误；私网用例断言任务流消息迁移后保持展开 |
+| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-22 最终执行通过：Go vet/test、ESLint、Web 14 文件 55/55、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
+| BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-22 最终执行 success 27/27 通过；foundation 初始化 1/1 + Vault 服务重启自动解锁 1/1、turn 1/1 证据继续有效。Runtime V2 回归同时覆盖无计划 Run 零合法 404 与 Auto answer 最终助手消息刷新 |
 | BASE-004 | auth/turn/approval E2E | `PASS` | auth desktop/mobile 2/2、turn 1/1、approval 1/1 通过 |
 | BASE-005 | Windows 与 Linux 构建边界 | `PASS` | Windows `pnpm verify`/浏览器套件通过；WSL Ubuntu Go 全量、Web 测试和生产构建已有证据。Linux 浏览器全视口已转后续加固 |
 | BASE-006 | 前端首包容量 | `PASS` | 主 JS 约 334KB；Terminal、Settings、Import/Export 已拆分为约 3.35KB、7.57KB、8.27KB 的懒加载路由块 |
@@ -74,7 +75,7 @@
 | `text_multi_turn` | Event Sequence、消息 Role、持久序号 | `PASS` | `TestOHCSGoldenTraceTextTurn`、`TestTranscriptAssemblerCarriesConversationIntoNewRun` 与 HTTP follow-up 序号测试共同覆盖 |
 | `tool_call_and_result` | Tool Call/Result 配对和下一 Turn | `PASS` | `TranscriptAssembler` 与 Skill/Tool continuation 测试断言同 ID 配对 |
 | `parallel_tool_batch` | 并行完成顺序与源结果顺序 | `PASS` | 并行领取、真实完成事件、源顺序回灌和单 continuation 测试通过 |
-| `sequential_tool_override` | 任一 sequential 使整批串行 | `PASS` | `TestSequentialDeclarationForcesWholeToolBatchToSourceOrder` |
+| `sequential_tool_override` | 历史批次整批串行；V2 按安全连续段与 exclusive barrier | `PASS` | 历史 Run 继续由 `TestSequentialDeclarationForcesWholeToolBatchToSourceOrder` 覆盖；新 Run 由 `TestBarrierSchedulerPreservesModelOrder` 和 unknown/MCP mutation exclusive 测试覆盖 |
 | `length_truncated_tool_calls` | length 截断时禁止执行并回灌错误 | `PASS` | 截断调用零执行、`tool.skipped`、错误 ToolResult 和恢复提示测试通过；未解析出完整 ToolCall 的单 Agent 截断也会自动递增额度重试，不再误报完成 |
 | `evidence_backed_completion` | 无 ToolCall 不等于目标完成 | `PASS` | 联网/MCP 检索、工作区写入/编辑、受控 Git 变更、变更后验证、交付 Artifact 与显式字数均由持久 Receipt/Artifact 门禁；自然语言续作可复用来源 Run 的最新写入/编辑 Artifact，并要求本 Run 新变更后的再次验证；文本完成声明、缺文件、缺验证和短报告反例测试通过 |
 | `skill_context_continuation` | 显式 Skill 跨所有续轮保留 | `PASS` | 长 Skill 的末尾 QA/交付门禁在语义计划后仍存在；计划、工具、长度截断和完成修复统一继承 `invoked_skill_ids` 与参数 |
@@ -95,21 +96,21 @@
 | R1A-001 | 注册用户与个人私有项目 | `PASS` | 登录、Session、Owner-only 项目和跨用户隔离测试通过 |
 | R1A-002 | 调用方端口和身份/授权/策略 | `PASS` | `WorkerRepository` 显式端口与唯一新增窄接口 `ToolExecutionLedger`；HTTP Principal 与无身份 401；Project/Task 显式 Authorizer；逐消息 Scope 过滤；规划、Store Begin 与 Runtime 复用同一 ExecutionPolicy/MCP 风险推导；全量 Go 与双用户隔离回归通过 |
 | R1A-003 | Provider-neutral 消息 | `PASS` | OpenAI-compatible 文本、Tool、Image、Thinking、StopReason、取消、流式工具分片和 Usage v2 Contract 全绿；原生 Anthropic/Gemini 按固定范围归 1B |
-| R1A-004 | 上下文与 Compaction | `PASS` | Active Leaf typed transcript、真实 usage、初次/增量六节模板、文件清单、ToolResult Artifact、split-turn 和失败不推进全绿；新 Run 把选中 Memory 的标题、内容与来源 Hash 冻结到快照（总计最多 24 KiB），后续编辑/删除不改变 ModelRequest；历史 Run 才走 live-ID fallback，并在 ContextPlan 标记 legacy |
-| R1A-005 | Durable ToolBatch | `PASS` | 000046 批次持久化；Skill/Web/Workspace/MCP 统一经过 Decode、Capability Preflight、Input Hash、Policy/Begin 与 Normalize；任一 sequential 仍使整批串行；源顺序、唯一 continuation、lease/并行兄弟失败恢复及“收据已提交但 continuation 未入队”的崩溃窗口均有回归 |
+| R1A-004 | 上下文与 Compaction | `PASS` | Active Leaf typed transcript、真实 usage、初次/增量六节模板、文件清单、ToolResult Artifact、split-turn 和失败不推进全绿；新 Run 冻结选中 Memory，并以 `token_v2` 按完整工具组、Context Window/Max Output 预算投影，旧 reasoning 仅保留最近一组，大结果使用摘要/Hash/Receipt/Artifact 引用；历史 Run 保持 96 KiB 兼容路径。第十轮 Token 降幅属于 B9 性能报告，尚未声明达标 |
+| R1A-005 | Durable ToolBatch | `PASS` | 000046 核心批次 + 000064 barrier 附属映射；Skill/Web/Workspace/MCP 仍统一经过 Decode、Capability Preflight、Input Hash、Policy/Begin 与 Normalize；新 Run 只领取最低未完成 barrier group，同安全组可并发，exclusive/unknown/MCP mutation 独占，失败禁止后继 claim；历史 Run 保持 parallel/sequential，源顺序、唯一 continuation、Lease/Fence 与恢复语义不变 |
 | R1A-006 | Session Tree V2 | `PASS` | 000047、独立 entry_seq、事务追加、Active Leaf 上下文、Navigate/Fork/Clone/Label/五节 Summary/CAS/Busy Guard/分页/循环检测/重启恢复及 OpenAPI 通过；PostgreSQL 已按 V1 范围决策排除 |
 | R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填、000056 启用模型真源；同协议多实例与同名模型按 Provider 隔离；API 目录显式刷新且不覆盖用户选择；手动模型能力未知；项目/会话/Agent 拒绝未启用模型，历史 Run 继续使用冻结 ModelRef |
 | R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write/capture/stage；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；Git 根目录以文件系统身份而非路径文本比较，兼容 Windows 短路径/规范路径别名；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、100 MiB、MIME/PDF 签名、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行与整批串行覆盖均保留；Begin 前取消不派发，Task Cancel 将遗留 `started` Receipt 原子收敛为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`，非幂等 unknown 禁止自动重试 |
 | R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出，品牌图形标/字标来自仓库唯一 Logo 源；项目空闲时不持续轮询任务、动态和消息列表 |
-| R1A-011 | 可恢复 SSE | `PASS` | 共享连接管理器覆盖单 Run 单连接、after、退避、去重、迟到订阅重放、auth/logout、可见性和 Query 失效；流式 Turn 将 Validation/Forbidden/State Conflict 与真实 Model Unavailable 分类，不再统一误报“模型响应中断” |
+| R1A-011 | 可恢复 SSE | `PASS` | Durable `run_event` 继续使用 stream_seq/after 重放；同一 SSE 追加无 cursor 的 `run_live`，只发布安全正文和粗粒度阶段，50ms/2KiB 合并、64 项慢消费者溢出不阻塞 Worker；前端以 `run_id + model_call_id` 保存 provisional text，并由持久 `model.message` 替换。共享连接、退避、去重、迟到订阅、auth/logout 与可见性回归通过 |
 | R1A-012 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
 | R1A-013 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；任务面板支持文件/Hunk 查看、基线说明卡片、行级差异高亮与行号、按文件增删统计、前 5 个文件默认展开且可一键折叠/展开、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环及控制台零错误通过 |
 | R1A-014 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-015 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt、真实命令进程树取消与 kill 后 Lease 恢复自动化通过；MCP 取消归类 `TOOL_CANCELED`、超时保留 Timeout Code；Finish commit failure、Lease/Fence 丢失继续由 Durable Recovery 收敛 |
 | R1A-016 | 语义计划与 Human Action | `PASS` | 持久计划、回退修复、Steering/Next Turn、统一 Human Action、请我审批/自动审查/完全访问和 Composer 邻接 UI 已实现；continuation Step 在创建时冻结活动计划计数，同一 Step 重组确定并持续要求逐项 `update_plan`；已驱动有界修复的 `POLICY_REPAIR_QUEUED` 不再永久阻塞 Run；Reviewer 与权限边界保持不变 |
 | R1A-017 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件 API 提供五类生命周期并在 UI 折叠过程/临时项，嵌套缓存、依赖和虚拟环境同样识别为临时；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
-| R1A-018 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；工具型主 Agent 的 Prompt、Messages、Tool Definitions、AllowedTools、ModelRef、Thinking、Token 上限和 ContextPlan 由同一次 Assembly 生成并写入 `assembly_hash`；Task/Auto 裸“继续”、逐项冻结审批与预算决策语义保持兼容 |
+| R1A-018 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；Auto 不再产生分类模型调用，首个业务响应可直接回答、规划或调用工具；Tool Schema 是工具元数据唯一模型来源，Prompt、Messages、Definitions、AllowedTools、ModelRef、Thinking、Token 上限和 ContextPlan 仍由同一次 Assembly 生成并写入 `assembly_hash`；Task/Auto 裸“继续”、逐项冻结审批与预算决策语义保持兼容 |
 | R1A-019 | Web Access 与受控私网 Fetch | `PASS` | Search 保持单 `query` 与 DDG→Bing RSS；Fetch 单 URL、GET-only、安全 DNS/Dial/重定向/代理隔离/内容上限已实现；精确私网 origin 配置、Run 冻结交集、`run_origin` 强制人工审批、Receipt/Web 卡片/OpenAPI 均有确定性测试。浏览器完成配置校验、保存待重启、重启生效、390px 无横向溢出，以及一次人工授权后同 origin 两页自动读取、执行流从用户消息迁移到助手结果消息仍保持展开、私网卡文本重放和控制台零错误闭环 |
 
 ## 6. Release 1B 验收矩阵
@@ -208,3 +209,4 @@
 | 2026-08-21 | Task 流式模型传输与工作台交互修复 | 根因确认 Task 走 `Complete/stream:false`，失败 Run 12 次精确 120 秒零 Token，而 Ask 流式 8.1 秒成功；Task 现优先消费 SSE，HTTP 总截止改为连接/TLS 各 10 秒、首包/流式静默各 60 秒，并脱敏区分 DNS、连接、TLS、首包与流中断。网络类只重试 1 次，语义修复保留 3 次。真实 Kimi Task `01a02228-5503-756e-8180-1d1f44475e9c` 以 11.2 秒/7.9 秒两次模型交互完成，终态 `succeeded`、结果 `OK`。执行步骤 Web 卡可折叠、来源标题可点击、工作台“新建项目”和完全访问权限卡同步完成；定向单测、健康检查和浏览器回归通过。 |
 | 2026-08-21 | Task 长流与只读完成门禁补充修复 | 原失败“贪吃蛇” Run 在浏览器续跑时出现一次 430,298 ms 的成功 SSE：连接持续活跃却迟迟没有完整工具调用，证明首包/流静默边界不能限制 reasoning 或心跳造成的假进展。Worker 新增单次模型 Turn 120 秒总完成时限，超限持久化为 `model_turn_timeout/model_turn`，网络类仍最多重试 1 次。完成合同改为按意图片段识别正向工作区动作，“不要修改任何文件；只需回复 OK”及中英文同类只读请求不再触发 `WORKSPACE_MUTATION_MISSING`，混合请求“不要修改旧文件，但创建新文件”仍要求真实变更；历史误判 Run 可从成功的 `completion_recovery` 审计检查点追加恢复 Step，不再因“没有 failed Step”而无法继续；领域单测与真实 Worker 集成回归通过。 |
 | 2026-08-21 | `main` 首次双平台 CI 与 Windows Git 根路径修复 | `main` 首次远端 CI 的 Ubuntu/Windows 原生发布构建与产品烟测均通过；Windows `pnpm verify` 暴露 Runner 临时目录短路径与 Git 规范路径文本不同，导致 Workspace Git/RunChanges 误报 `GIT_REPOSITORY_INVALID`。根目录校验改用 `os.SameFile` 文件系统身份，文本归一化仅作为路径不可访问时的保守回退，并新增别名身份回归；Workspace Git 全包、RunChanges 定向集成和本地 `pnpm verify`（Web 48/48）通过，远端修复提交的双平台 CI 待重跑确认。 |
+| 2026-08-22 | Agent Runtime 性能 V2 实施 | 基于 `main@f3fa78d` 在新 Run 冻结 `auto_agent_v2/transition_v2/barrier_v2/token_v2`；Auto 取消分类调用，计划控制与业务工具同响应；Bootstrap 共享 LiveTurnHub 并以无 cursor `run_live` 投影安全正文；活跃 Run 使用冻结模型能力且不访问目录；000064 保存 presentation/performance/barrier/context projection 附属数据。新旧协议、Auto 一次业务调用、显式 Skill 零握手、慢消费者、完整组裁剪、同组并发领取与 unknown/MCP mutation 独占定向测试通过；真实浏览器进一步修复无计划查询 404 和 Auto answer 消息刷新竞态。最终 `pnpm verify`（Web 55/55）、Playwright foundation 1/1 + 重启 1/1 + success 27/27、Windows release build 与隔离数据目录 smoke 通过，工件 SHA256 `a02b931c193bf2775d8c7678e7fa2779c5b64ad55d2b1ba215736e7829c00790`；本机 race 因缺少 CGO/C 编译器未启动。真实 Provider 和 30 次 p95 尚未执行，因此 B9 保持 `PARTIAL`，未 push/tag。 |

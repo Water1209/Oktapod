@@ -134,9 +134,9 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 		return result, err
 	}
 	if request.EnableTools {
-		if capabilityErr := c.validateToolCalling(ctx, key, model); capabilityErr != nil {
-			result.ErrorCode = capabilityErr.Code
-			return result, capabilityErr
+		if request.ToolCallingKnown && !request.ToolCallingAllowed {
+			result.ErrorCode = "MODEL_CAPABILITY_MISMATCH"
+			return result, &GatewayError{Code: result.ErrorCode, Message: "selected model does not support tool calling"}
 		}
 	}
 	payload := chatRequest{
@@ -165,6 +165,7 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 	if err != nil {
 		return result, err
 	}
+	result.RequestBytes = int64(len(body))
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return result, err
@@ -175,7 +176,8 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 	httpRequest.Header.Set("User-Agent", "Oktapod/0.1")
 	started := time.Now()
 	response, err := modeltransport.Do(c.httpClient, httpRequest)
-	result.Latency = time.Since(started)
+	result.FirstByteLatency = time.Since(started)
+	result.Latency = result.FirstByteLatency
 	if err != nil {
 		if ctx.Err() != nil {
 			result.ErrorCode = "MODEL_ABORTED"
@@ -208,6 +210,9 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 		}
 		if err := applyResponseMessage(&result, decoded.Choices[0].Message, decoded.Choices[0].FinishReason); err != nil {
 			return result, err
+		}
+		if strings.TrimSpace(result.Content) != "" && result.FirstSafeLatency == 0 {
+			result.FirstSafeLatency = time.Since(started)
 		}
 		if err := onDelta(result.Content); err != nil {
 			return result, err
@@ -261,6 +266,9 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 				}
 				if choice.Delta.Content != "" {
 					content.WriteString(choice.Delta.Content)
+					if result.FirstSafeLatency == 0 {
+						result.FirstSafeLatency = time.Since(started)
+					}
 					if err := onDelta(choice.Delta.Content); err != nil {
 						return err
 					}
@@ -346,9 +354,9 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 		return result, err
 	}
 	if request.EnableTools {
-		if capabilityErr := c.validateToolCalling(ctx, key, model); capabilityErr != nil {
-			result.ErrorCode = capabilityErr.Code
-			return result, capabilityErr
+		if request.ToolCallingKnown && !request.ToolCallingAllowed {
+			result.ErrorCode = "MODEL_CAPABILITY_MISMATCH"
+			return result, &GatewayError{Code: result.ErrorCode, Message: "selected model does not support tool calling"}
 		}
 	}
 
@@ -380,6 +388,7 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 	if err != nil {
 		return result, err
 	}
+	result.RequestBytes = int64(len(body))
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return result, err
@@ -391,7 +400,8 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 
 	started := time.Now()
 	response, err := modeltransport.Do(c.httpClient, httpRequest)
-	result.Latency = time.Since(started)
+	result.FirstByteLatency = time.Since(started)
+	result.Latency = result.FirstByteLatency
 	if err != nil {
 		if ctx.Err() != nil {
 			result.ErrorCode = "MODEL_ABORTED"
@@ -426,6 +436,9 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 	}
 	if err := applyResponseMessage(&result, message, decoded.Choices[0].FinishReason); err != nil {
 		return result, err
+	}
+	if strings.TrimSpace(result.Content) != "" {
+		result.FirstSafeLatency = time.Since(started)
 	}
 	if result.Usage.Estimated {
 		result.Usage.OutputTokens = estimateTokens(result.Content)

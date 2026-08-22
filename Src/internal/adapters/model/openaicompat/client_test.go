@@ -212,12 +212,12 @@ func TestSelectedSkillConstrainsVisibleBuiltInTools(t *testing.T) {
 	}
 }
 
-func TestToolCapabilityMismatchUsesCompatibleFallback(t *testing.T) {
-	var chatCalls int
+func TestActiveRunDoesNotReadModelCatalog(t *testing.T) {
+	var chatCalls, catalogCalls int
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/models" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"no-tools","tool_calling":false},{"id":"tools-ok","tool_calling":true}]}`))
+			catalogCalls++
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		chatCalls++
@@ -228,11 +228,11 @@ func TestToolCapabilityMismatchUsesCompatibleFallback(t *testing.T) {
 
 	client := New(provider.URL, "", func() string { return "fake-test-key" })
 	result, err := client.Complete(context.Background(), okruntime.ModelRequest{SystemPrompt: "system", UserPrompt: "user", EnableTools: true, ToolDefinitions: registryToolDefinitions(), Model: "no-tools", FallbackModel: "tools-ok"})
-	if err != nil || result.Model != "tools-ok" || result.RoutingReason != "fallback" || result.Content == "" {
+	if err != nil || result.Model != "no-tools" || result.RoutingReason != "agent_override" || result.Content == "" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	if chatCalls != 1 {
-		t.Fatalf("chat calls=%d; incompatible primary should be blocked before POST", chatCalls)
+	if chatCalls != 1 || catalogCalls != 0 {
+		t.Fatalf("chat calls=%d catalog calls=%d; active Run must use its frozen capability snapshot", chatCalls, catalogCalls)
 	}
 }
 

@@ -76,7 +76,7 @@ func PlanTool(call ToolCall) PlannedTool {
 	planned.InputHash = "sha256:" + hex.EncodeToString(sum[:])
 
 	switch resolvedName {
-	case ToolUpdatePlan:
+	case ToolUpdatePlan, ToolReplacePlan, ToolAdvancePlan:
 		planned.RiskLevel = "L0"
 		planned.Idempotent = true
 		planned.Decision = PolicyAllow

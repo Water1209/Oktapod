@@ -63,6 +63,7 @@ export function MessageTaskStream({ taskId, runId, active, detailsOpen, onDetail
   const artifactsQuery = useQuery({ queryKey: ['run-artifacts', runId], queryFn: () => api.runArtifacts(runId), refetchInterval: active ? 1000 : false, enabled: !!runId })
   if (!taskQuery.data) return null
   const liveEvents = eventsQuery.data.items
+	const provisionalText = eventsQuery.provisionalText
   const timeline = buildTaskTimeline(taskQuery.data, liveEvents)
   const failure = taskFailureInfo(taskQuery.data)
   const artifacts = latestDeliverableArtifacts(artifactsQuery.data?.items ?? [])
@@ -82,7 +83,7 @@ export function MessageTaskStream({ taskId, runId, active, detailsOpen, onDetail
     ? timeline.filter((step) => [step.label, step.detail, step.tool?.input, step.tool?.result, step.tool?.output]
       .some((value) => value?.toLocaleLowerCase('zh-CN').includes(normalizedQuery)))
     : timeline
-  const hasExecutionEvidence = taskOngoing || Boolean(failure) || artifacts.length > 0 || timeline.some((step) => Boolean(step.tool))
+  const hasExecutionEvidence = taskOngoing || Boolean(failure) || artifacts.length > 0 || timeline.some((step) => Boolean(step.tool)) || Boolean(provisionalText)
   if (!hasExecutionEvidence) return null
 
   return <>
@@ -107,6 +108,7 @@ export function MessageTaskStream({ taskId, runId, active, detailsOpen, onDetail
         <AlertTriangle size={14} />
         <div><p>{failure.detail}</p><small>{failure.action}</small></div>
       </div> : null}
+      {provisionalText ? <div className="message-task-live-assistant" aria-live="polite"><p>{provisionalText}</p><span className="stream-caret" aria-hidden="true" /></div> : null}
       {detailsOpen ? <div className="message-task-detail">
         {visibleTimeline.length > 0 ? <div className="message-execution-steps">
           {visibleTimeline.map((step) => <StepLine key={step.id} step={step} />)}
