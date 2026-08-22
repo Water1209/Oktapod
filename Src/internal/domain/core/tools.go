@@ -146,6 +146,26 @@ func PlanTool(call ToolCall) PlannedTool {
 		}
 		planned.Decision = PolicyAllow
 		planned.Reason = "Stages one Run-frozen Asset at a temporary read-only internal workspace path"
+	case ToolDocumentOpen, ToolDocumentRead, ToolDocumentRender:
+		planned.RiskLevel = "L0"
+		planned.Idempotent = true
+		if err := validateDocumentToolArguments(resolvedName, call.Arguments); err != nil {
+			planned.Decision = PolicyDeny
+			planned.Reason = err.Error()
+			return planned
+		}
+		planned.Decision = PolicyAllow
+		planned.Reason = "Read-only document runtime operation is bounded and remains inside the frozen Run authority"
+	case ToolDocumentCreate, ToolDocumentApply, ToolDocumentExport:
+		planned.RiskLevel = "L1"
+		planned.Idempotent = true
+		if err := validateDocumentToolArguments(resolvedName, call.Arguments); err != nil {
+			planned.Decision = PolicyDeny
+			planned.Reason = err.Error()
+			return planned
+		}
+		planned.Decision = PolicyAllow
+		planned.Reason = "Revision-bound document mutation is content-addressed and cannot overwrite the source"
 	case ToolWorkspaceReadFile, ToolWorkspaceListFiles, ToolWorkspaceFindFiles, ToolWorkspaceGrep:
 		planned.RiskLevel = "L0"
 		planned.Idempotent = true
@@ -470,6 +490,191 @@ func validateAssetStageArguments(arguments map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func validateDocumentToolArguments(name string, arguments map[string]any) error {
+	allowed := map[string]map[string]bool{
+		ToolDocumentOpen:   {"source_ref": true, "mode": true},
+		ToolDocumentRead:   {"document_ref": true, "selector": true, "cursor": true, "limit": true},
+		ToolDocumentCreate: {"format": true, "template_ref": true, "specification": true},
+		ToolDocumentApply:  {"document_ref": true, "expected_revision": true, "operations": true},
+		ToolDocumentRender: {"document_ref": true, "expected_revision": true, "selector": true},
+		ToolDocumentExport: {"document_ref": true, "expected_revision": true, "name": true, "format": true, "kind": true},
+	}[name]
+	for key := range arguments {
+		if !allowed[key] {
+			return fmt.Errorf("%s does not accept argument %q", name, key)
+		}
+	}
+	if source, exists := arguments["source_ref"]; exists {
+		if err := validateDocumentSourceRef(source); err != nil {
+			return err
+		}
+	}
+	if template, exists := arguments["template_ref"]; exists {
+		if err := validateDocumentSourceRef(template); err != nil {
+			return fmt.Errorf("template_ref: %w", err)
+		}
+	}
+	if reference, exists := arguments["document_ref"]; exists {
+		text, ok := reference.(string)
+		text = strings.TrimSpace(text)
+		if !ok || !strings.HasPrefix(text, "document:") || len(text) > 120 || strings.ContainsRune(text, 0) {
+			return fmt.Errorf("document_ref must be a bounded document reference")
+		}
+	}
+	if selector, exists := arguments["selector"]; exists {
+		text, ok := selector.(string)
+		if !ok || len([]rune(text)) > 500 || strings.ContainsRune(text, 0) {
+			return fmt.Errorf("selector must be a string no longer than 500 characters")
+		}
+	}
+	if revision, exists := arguments["expected_revision"]; exists {
+		if !validJSONInteger(revision, 1, 1_000_000) {
+			return fmt.Errorf("expected_revision must be a positive integer")
+		}
+	}
+	if cursor, exists := arguments["cursor"]; exists && !validJSONInteger(cursor, 0, 10_000_000) {
+		return fmt.Errorf("cursor must be a non-negative integer")
+	}
+	if limit, exists := arguments["limit"]; exists && !validJSONInteger(limit, 1, 200) {
+		return fmt.Errorf("limit must be an integer from 1 to 200")
+	}
+	switch name {
+	case ToolDocumentOpen:
+		mode, ok := arguments["mode"].(string)
+		if !ok || (mode != "structure" && mode != "full") || len(arguments) != 2 {
+			return fmt.Errorf("document_open requires source_ref and mode=structure|full")
+		}
+	case ToolDocumentRead:
+		if _, ok := arguments["document_ref"]; !ok {
+			return fmt.Errorf("document_read requires document_ref")
+		}
+	case ToolDocumentCreate:
+		format, ok := arguments["format"].(string)
+		if !ok || !supportedDocumentFormat(format) {
+			return fmt.Errorf("format must be pptx, pdf, docx, or xlsx")
+		}
+		specification, ok := arguments["specification"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("specification must be an object")
+		}
+		if err := validateDocumentPayload(specification); err != nil {
+			return fmt.Errorf("specification: %w", err)
+		}
+	case ToolDocumentApply:
+		raw, ok := arguments["operations"].([]any)
+		if !ok || len(raw) == 0 || len(raw) > 100 {
+			return fmt.Errorf("operations must contain 1 to 100 structured operations")
+		}
+		supportedOperations := map[string]bool{
+			"replace_text": true, "set_text": true, "insert_text": true, "add_image": true,
+			"add_slide": true, "delete_slide": true, "reorder_slide": true, "set_notes": true, "set_table_cell": true, "set_chart_data": true,
+			"add_paragraph": true, "insert_paragraph": true, "set_style": true, "set_page_setup": true, "set_header": true, "set_footer": true,
+			"set_cell": true, "set_range": true, "add_sheet": true, "delete_sheet": true, "rename_sheet": true, "set_formula": true, "add_table": true,
+			"merge_pages": true, "split_pages": true, "reorder_pages": true, "rotate_pages": true, "crop_pages": true, "add_annotation": true,
+			"add_watermark": true, "fill_form": true, "overlay_pages": true, "redact_regions": true,
+		}
+		for _, value := range raw {
+			operation, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("each operation must be an object")
+			}
+			op, _ := operation["op"].(string)
+			if !supportedOperations[op] {
+				return fmt.Errorf("operation %q is not in the fixed document protocol", op)
+			}
+			if err := validateDocumentPayload(operation); err != nil {
+				return fmt.Errorf("operation %s: %w", op, err)
+			}
+		}
+	case ToolDocumentRender:
+		if _, ok := arguments["document_ref"]; !ok {
+			return fmt.Errorf("document_render requires document_ref and expected_revision")
+		}
+	case ToolDocumentExport:
+		format, ok := arguments["format"].(string)
+		if !ok || !supportedDocumentFormat(format) {
+			return fmt.Errorf("format must be pptx, pdf, docx, or xlsx")
+		}
+		kind, ok := arguments["kind"].(string)
+		if !ok || (kind != "deliverable" && kind != "evidence") {
+			return fmt.Errorf("kind must be deliverable or evidence")
+		}
+		fileName, ok := arguments["name"].(string)
+		fileName = strings.TrimSpace(fileName)
+		if !ok || fileName == "" || len([]rune(fileName)) > 180 || filepath.Base(fileName) != fileName || strings.ContainsAny(fileName, "\x00/\\") || strings.ToLower(strings.TrimPrefix(filepath.Ext(fileName), ".")) != format {
+			return fmt.Errorf("name must be a safe file name whose extension matches format")
+		}
+	}
+	return nil
+}
+
+func validateDocumentSourceRef(value any) error {
+	text, ok := value.(string)
+	text = strings.TrimSpace(text)
+	if !ok || len(text) < 7 || len([]rune(text)) > 600 || strings.ContainsRune(text, 0) {
+		return fmt.Errorf("source_ref must be a bounded source reference")
+	}
+	kind, target, found := strings.Cut(text, ":")
+	if !found || (kind != "asset" && kind != "artifact" && kind != "workspace") || strings.TrimSpace(target) == "" {
+		return fmt.Errorf("source_ref must use asset:, artifact:, or workspace:")
+	}
+	if kind == "workspace" {
+		return validateRelativeToolPath(target, false)
+	}
+	if len(target) != 36 {
+		return fmt.Errorf("asset and artifact references require a UUID")
+	}
+	return nil
+}
+
+func validateDocumentPayload(value any) error {
+	body, err := json.Marshal(value)
+	if err != nil || len(body) > 256*1024 {
+		return fmt.Errorf("payload exceeds the 256 KiB limit or is not JSON serializable")
+	}
+	forbidden := map[string]bool{"code": true, "command": true, "commands": true, "script": true, "scripts": true, "exec": true, "executable": true, "macro": true, "network": true, "remote_template": true}
+	var walk func(any) error
+	walk = func(current any) error {
+		switch typed := current.(type) {
+		case map[string]any:
+			for key, nested := range typed {
+				if forbidden[strings.ToLower(strings.TrimSpace(key))] {
+					return fmt.Errorf("field %q is forbidden", key)
+				}
+				if err := walk(nested); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, nested := range typed {
+				if err := walk(nested); err != nil {
+					return err
+				}
+			}
+		case string:
+			if len([]rune(typed)) > 100_000 || strings.ContainsRune(typed, 0) {
+				return fmt.Errorf("string value exceeds the limit")
+			}
+		}
+		return nil
+	}
+	return walk(value)
+}
+
+func validJSONInteger(value any, minimum, maximum int64) bool {
+	number, ok := value.(float64)
+	return ok && number == float64(int64(number)) && int64(number) >= minimum && int64(number) <= maximum
+}
+
+func supportedDocumentFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "pptx", "pdf", "docx", "xlsx":
+		return true
+	default:
+		return false
+	}
 }
 
 func validSHA256Ref(value string) bool {

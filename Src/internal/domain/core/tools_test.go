@@ -162,6 +162,36 @@ func TestPlanToolClassifiesWorkspaceAndGitRegistry(t *testing.T) {
 	}
 }
 
+func TestPlanToolClassifiesFixedDocumentProtocolAndRejectsExecutablePayloads(t *testing.T) {
+	tests := []struct {
+		call ToolCall
+		risk string
+	}{
+		{ToolCall{Name: ToolDocumentOpen, Arguments: map[string]any{"source_ref": "asset:00000000-0000-7000-8000-000000000001", "mode": "structure"}}, "L0"},
+		{ToolCall{Name: ToolDocumentRead, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "limit": float64(20)}}, "L0"},
+		{ToolCall{Name: ToolDocumentRender, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1)}}, "L0"},
+		{ToolCall{Name: ToolDocumentCreate, Arguments: map[string]any{"format": "docx", "specification": map[string]any{"title": "Report"}}}, "L1"},
+		{ToolCall{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "replace_text", "find": "old", "replace": "new"}}}}, "L1"},
+		{ToolCall{Name: ToolDocumentExport, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "name": "report.docx", "format": "docx", "kind": "deliverable"}}, "L1"},
+	}
+	for _, test := range tests {
+		planned := PlanTool(test.call)
+		if planned.Decision != PolicyAllow || planned.RiskLevel != test.risk || !planned.Idempotent || planned.InputHash == "" {
+			t.Fatalf("document tool %s planned=%#v", test.call.Name, planned)
+		}
+	}
+	for _, call := range []ToolCall{
+		{Name: ToolDocumentOpen, Arguments: map[string]any{"source_ref": "workspace:../secret.pdf", "mode": "full"}},
+		{Name: ToolDocumentCreate, Arguments: map[string]any{"format": "pdf", "specification": map[string]any{"script": "open('secret')"}}},
+		{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "shell", "command": "calc.exe"}}}},
+		{Name: ToolDocumentExport, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "name": "../report.pdf", "format": "pdf", "kind": "deliverable"}},
+	} {
+		if planned := PlanTool(call); planned.Decision != PolicyDeny {
+			t.Fatalf("unsafe document tool payload was not denied: call=%#v planned=%#v", call, planned)
+		}
+	}
+}
+
 func TestPlanToolDeniesWorkspaceCASAndGitPreconditionErrors(t *testing.T) {
 	tests := []ToolCall{
 		{Name: ToolWorkspaceReadFile, Arguments: map[string]any{"path": "../secret"}},

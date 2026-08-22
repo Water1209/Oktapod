@@ -187,23 +187,67 @@ func (s *Store) migrate(ctx context.Context) error {
 		if readErr != nil {
 			return fmt.Errorf("read migration %s: %w", name, readErr)
 		}
-		tx, beginErr := s.db.BeginTx(ctx, nil)
+		tx, finishMigration, foreignKeysOff, beginErr := beginSQLiteMigration(ctx, s.db, body)
 		if beginErr != nil {
 			return fmt.Errorf("begin migration %s: %w", name, beginErr)
 		}
 		if _, execErr := tx.ExecContext(ctx, string(body)); execErr != nil {
 			_ = tx.Rollback()
+			finishMigration()
 			return fmt.Errorf("apply migration %s: %w", name, execErr)
+		}
+		if foreignKeysOff {
+			rows, checkErr := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+			if checkErr != nil {
+				_ = tx.Rollback()
+				finishMigration()
+				return fmt.Errorf("foreign key check migration %s: %w", name, checkErr)
+			}
+			violated := rows.Next()
+			_ = rows.Close()
+			if violated {
+				_ = tx.Rollback()
+				finishMigration()
+				return fmt.Errorf("foreign key check migration %s: violation detected", name)
+			}
 		}
 		if _, ledgerErr := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES (?, ?)`, version, formatTime(time.Now())); ledgerErr != nil {
 			_ = tx.Rollback()
+			finishMigration()
 			return fmt.Errorf("record migration %s: %w", name, ledgerErr)
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
+			finishMigration()
 			return fmt.Errorf("commit migration %s: %w", name, commitErr)
 		}
+		finishMigration()
 	}
 	return nil
+}
+
+func beginSQLiteMigration(ctx context.Context, db *sql.DB, body []byte) (*sql.Tx, func(), bool, error) {
+	if !bytes.Contains(body, []byte("-- oktapod:foreign-keys-off")) {
+		tx, err := db.BeginTx(ctx, nil)
+		return tx, func() {}, false, err
+	}
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return nil, func() {}, true, err
+	}
+	if _, err = connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		_ = connection.Close()
+		return nil, func() {}, true, err
+	}
+	finish := func() {
+		_, _ = connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+		_ = connection.Close()
+	}
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		finish()
+		return nil, func() {}, true, err
+	}
+	return tx, finish, true, nil
 }
 
 func (s *Store) Bootstrap(ctx context.Context, actor core.Actor, organization core.Organization) error {
@@ -4672,6 +4716,22 @@ func toolInputSummary(toolName string, arguments map[string]any) string {
 	case core.ToolSkillInvoke:
 		skill, _ := arguments["skill"].(string)
 		return "加载 " + skill
+	case core.ToolDocumentOpen:
+		return truncateToolText(stringValue(arguments["source_ref"]), 360)
+	case core.ToolDocumentRead:
+		selector := stringValue(arguments["selector"])
+		if selector == "" {
+			selector = "分页读取"
+		}
+		return selector
+	case core.ToolDocumentCreate:
+		return "创建 " + strings.ToUpper(stringValue(arguments["format"]))
+	case core.ToolDocumentApply:
+		return fmt.Sprintf("修订 %d · %d 个结构操作", integerMapValue(arguments, "expected_revision"), sliceLength(arguments["operations"]))
+	case core.ToolDocumentRender:
+		return fmt.Sprintf("修订 %d · 版式校验", integerMapValue(arguments, "expected_revision"))
+	case core.ToolDocumentExport:
+		return fmt.Sprintf("%s · %s", stringValue(arguments["name"]), strings.ToUpper(stringValue(arguments["format"])))
 	default:
 		keys := make([]string, 0, len(arguments))
 		for key := range arguments {
@@ -4741,6 +4801,16 @@ func toolOutputSummary(toolName, status, errorCode string, exitCode int64, outpu
 		name, _ := output["skill_name"].(string)
 		version, _ := output["version"].(string)
 		return strings.TrimSpace(fmt.Sprintf("%s · %s %s", result, name, version))
+	case core.ToolDocumentOpen, core.ToolDocumentCreate:
+		return fmt.Sprintf("%s · %s · 修订 %d%s", result, strings.ToUpper(stringValue(output["format"])), integerMapValue(output, "revision"), cacheSuffix(output))
+	case core.ToolDocumentRead:
+		return fmt.Sprintf("%s · 本页 %d 项 · 共 %d 项", result, sliceLength(output["items"]), integerMapValue(output, "total"))
+	case core.ToolDocumentApply:
+		return fmt.Sprintf("%s · 修订 %d · %d 个操作", result, integerMapValue(output, "revision"), sliceLength(output["applied"]))
+	case core.ToolDocumentRender:
+		return fmt.Sprintf("%s · %d 页 · 已通过版式校验%s", result, integerMapValue(output, "page_count"), cacheSuffix(output))
+	case core.ToolDocumentExport:
+		return fmt.Sprintf("%s · %s · 不可变 Artifact", result, stringValue(output["path"]))
 	default:
 		if tool, _ := output["tool_name"].(string); tool != "" {
 			return result + " · " + tool
@@ -4808,9 +4878,40 @@ func toolPresentation(toolName string, arguments, output map[string]any) map[str
 			"content_preview": truncateToolText(stringValue(output["content"]), 1600),
 			"truncated":       output["truncated"],
 		}
+	case core.ToolDocumentOpen, core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentRender, core.ToolDocumentExport:
+		phase := map[string]string{
+			core.ToolDocumentOpen: "structure", core.ToolDocumentCreate: "revision", core.ToolDocumentApply: "revision",
+			core.ToolDocumentRender: "render", core.ToolDocumentExport: "output",
+		}[toolName]
+		return map[string]any{
+			"kind": "document", "phase": phase, "document_ref": stringValue(output["document_ref"]),
+			"format": stringValue(output["format"]), "revision": output["revision"],
+			"page_count": output["page_count"], "previews": output["previews"],
+			"warnings": output["warnings"], "cache_hit": output["cache_hit"],
+			"path": stringValue(output["path"]), "media_type": stringValue(output["media_type"]),
+		}
 	default:
 		return nil
 	}
+}
+
+func sliceLength(value any) int {
+	if values, ok := value.([]any); ok {
+		return len(values)
+	}
+	return 0
+}
+
+func integerMapValue(value map[string]any, key string) int64 {
+	number, _ := numericToolValue(value[key])
+	return number
+}
+
+func cacheSuffix(output map[string]any) string {
+	if hit, _ := output["cache_hit"].(bool); hit {
+		return " · 缓存命中"
+	}
+	return ""
 }
 
 func redactToolValue(value any) any {
@@ -5876,7 +5977,16 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	if err != nil {
 		return core.Capability{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = ?, scope_id = ?, source_filename = ?, bundle_storage_key = ?, install_job_id = ?, credential_ref = ? WHERE id = ?`, input.ScopeType, scopeID, input.SourceFilename, bundleStorageKey, installJobID, input.CredentialRef, id); err != nil {
+	origin := input.Origin
+	if origin == "" {
+		origin = core.CapabilityOriginCustom
+	}
+	dependenciesJSON, _ := json.Marshal(input.Dependencies)
+	updateState := input.UpdateState
+	if updateState == "" {
+		updateState = core.CapabilityUpdateCurrent
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = ?, scope_id = ?, source_filename = ?, bundle_storage_key = ?, install_job_id = ?, credential_ref = ?, origin = ?, preset_key = ?, dependencies_json = ?, managed_version = ?, update_state = ? WHERE id = ?`, input.ScopeType, scopeID, input.SourceFilename, bundleStorageKey, installJobID, input.CredentialRef, origin, input.PresetKey, string(dependenciesJSON), input.ManagedVersion, updateState, id); err != nil {
 		return core.Capability{}, err
 	}
 	jobState := "succeeded"
@@ -5896,6 +6006,11 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	capability.BundleHash = contentHash
 	capability.InstallJobID = installJobID
 	capability.CredentialRef = input.CredentialRef
+	capability.Origin = origin
+	capability.PresetKey = input.PresetKey
+	capability.Dependencies = append([]string(nil), input.Dependencies...)
+	capability.ManagedVersion = input.ManagedVersion
+	capability.UpdateState = updateState
 	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusCreated, capability); err != nil {
 		return core.Capability{}, err
 	}
@@ -5909,6 +6024,118 @@ func (s *Store) GetCapability(ctx context.Context, scope core.Scope, capabilityI
 	return s.getCapabilityByID(ctx, scope, capabilityID)
 }
 
+func (s *Store) EnsurePresetCapability(ctx context.Context, scope core.Scope, projectID string, input core.CreateCapabilityInput, contentHash string, force bool) (core.Capability, bool, error) {
+	if input.Origin != core.CapabilityOriginPreset || input.PresetKey == "" || input.ScopeType != core.CapabilityScopeGlobal {
+		return core.Capability{}, false, &core.ValidationError{Field: "preset", Message: "requires a global preset capability"}
+	}
+	if err := core.ValidateCreateCapability(input); err != nil {
+		return core.Capability{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Capability{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.queries.WithTx(tx)
+	if _, err := q.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
+		return core.Capability{}, false, err
+	}
+	var rememberedState string
+	stateErr := tx.QueryRowContext(ctx, `SELECT state FROM preset_resource_states WHERE organization_id = ? AND owner_user_id = ? AND preset_key = ?`, scope.OrganizationID, scope.UserID, input.PresetKey).Scan(&rememberedState)
+	if stateErr != nil && !errors.Is(stateErr, sql.ErrNoRows) {
+		return core.Capability{}, false, stateErr
+	}
+	if rememberedState == "deleted" && !force {
+		return core.Capability{}, false, nil
+	}
+	now := formatTime(time.Now())
+	dependenciesJSON, _ := json.Marshal(input.Dependencies)
+	updateState := input.UpdateState
+	if updateState == "" {
+		updateState = core.CapabilityUpdateCurrent
+	}
+	var capabilityID, existingContentHash, existingManagedVersion, existingKind, existingName, existingVersion string
+	var existingManifestJSON, existingSourceFilename, existingDependenciesJSON, existingUpdateState string
+	existingErr := tx.QueryRowContext(ctx, `
+		SELECT id, content_hash, managed_version, kind, name, version, manifest_json,
+		       source_filename, dependencies_json, update_state
+		FROM capabilities
+		WHERE organization_id = ? AND owner_user_id = ? AND preset_key = ?`, scope.OrganizationID, scope.UserID, input.PresetKey).Scan(
+		&capabilityID, &existingContentHash, &existingManagedVersion, &existingKind, &existingName,
+		&existingVersion, &existingManifestJSON, &existingSourceFilename, &existingDependenciesJSON, &existingUpdateState,
+	)
+	created := false
+	if errors.Is(existingErr, sql.ErrNoRows) {
+		capabilityID, err = newID()
+		if err != nil {
+			return core.Capability{}, false, err
+		}
+		installJobID, idErr := newID()
+		if idErr != nil {
+			return core.Capability{}, false, idErr
+		}
+		if _, err = q.CreateCapability(ctx, sqlitegen.CreateCapabilityParams{
+			ID: capabilityID, OrganizationID: scope.OrganizationID, ProjectID: projectID, OwnerUserID: scope.UserID,
+			Kind: input.Kind, Name: input.Name, Version: input.Version, ManifestJson: input.ManifestJSON,
+			ContentHash: contentHash, Status: core.CapabilityStatusEnabled, RiskLevel: "low", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return core.Capability{}, false, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = 'global', scope_id = ?, source_filename = ?, install_job_id = ?, origin = 'preset', preset_key = ?, dependencies_json = ?, managed_version = ?, update_state = ? WHERE id = ?`, scope.UserID, input.SourceFilename, installJobID, input.PresetKey, string(dependenciesJSON), input.ManagedVersion, updateState, capabilityID); err != nil {
+			return core.Capability{}, false, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO capability_install_jobs (id, organization_id, project_id, actor_user_id, scope_type, scope_id, source_filename, bundle_hash, state, capability_id, error_code, created_at, updated_at) VALUES (?, ?, ?, ?, 'global', ?, ?, ?, 'succeeded', ?, '', ?, ?)`, installJobID, scope.OrganizationID, projectID, scope.UserID, scope.UserID, input.SourceFilename, contentHash, capabilityID, now, now); err != nil {
+			return core.Capability{}, false, err
+		}
+		created = true
+	} else if existingErr != nil {
+		return core.Capability{}, false, existingErr
+	} else {
+		if !force && rememberedState == "installed" && existingContentHash == contentHash &&
+			existingManagedVersion == input.ManagedVersion && existingKind == input.Kind &&
+			existingName == input.Name && existingVersion == input.Version &&
+			existingManifestJSON == input.ManifestJSON && existingSourceFilename == input.SourceFilename &&
+			existingDependenciesJSON == string(dependenciesJSON) && existingUpdateState == updateState {
+			capability, getErr := s.getCapabilityByIDTx(ctx, tx, scope, capabilityID)
+			if getErr != nil {
+				return core.Capability{}, false, getErr
+			}
+			if commitErr := tx.Commit(); commitErr != nil {
+				return core.Capability{}, false, commitErr
+			}
+			return capability, true, nil
+		}
+		// Preserve the user's enabled/disabled choice while advancing only the
+		// managed immutable content. Frozen Runs keep their snapshot version.
+		if _, err = tx.ExecContext(ctx, `UPDATE capabilities SET kind = ?, name = ?, version = ?, manifest_json = ?, content_hash = ?, source_filename = ?, origin = 'preset', dependencies_json = ?, managed_version = ?, update_state = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, input.Kind, input.Name, input.Version, input.ManifestJSON, contentHash, input.SourceFilename, string(dependenciesJSON), input.ManagedVersion, updateState, now, capabilityID, scope.OrganizationID, scope.UserID); err != nil {
+			return core.Capability{}, false, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO preset_resource_states (organization_id, owner_user_id, preset_key, state, capability_id, managed_version, created_at, updated_at) VALUES (?, ?, ?, 'installed', ?, ?, ?, ?) ON CONFLICT (organization_id, owner_user_id, preset_key) DO UPDATE SET state = 'installed', capability_id = excluded.capability_id, managed_version = excluded.managed_version, updated_at = excluded.updated_at`, scope.OrganizationID, scope.UserID, input.PresetKey, capabilityID, input.ManagedVersion, now, now); err != nil {
+		return core.Capability{}, false, err
+	}
+	auditID, err := newID()
+	if err != nil {
+		return core.Capability{}, false, err
+	}
+	action := "capability.preset_updated"
+	if created {
+		action = "capability.preset_installed"
+	}
+	detail, _ := json.Marshal(map[string]any{"preset_key": input.PresetKey, "managed_version": input.ManagedVersion, "content_hash": contentHash, "forced": force})
+	if err = q.CreateAuditEvent(ctx, sqlitegen.CreateAuditEventParams{ID: auditID, OrganizationID: scope.OrganizationID, ProjectID: projectID, ActorUserID: scope.UserID, Action: action, TargetType: "capability", TargetID: capabilityID, Outcome: "succeeded", DetailJson: string(detail), CorrelationID: auditID, OccurredAt: now}); err != nil {
+		return core.Capability{}, false, err
+	}
+	capability, err := s.getCapabilityByIDTx(ctx, tx, scope, capabilityID)
+	if err != nil {
+		return core.Capability{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return core.Capability{}, false, err
+	}
+	return capability, true, nil
+}
+
 func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Capability, error) {
 	if _, err := s.queries.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
 		return nil, err
@@ -5916,7 +6143,8 @@ func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectI
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, credential_ref, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, origin, preset_key,
+		       dependencies_json, managed_version, update_state, created_at, updated_at
 		FROM capabilities
 		WHERE organization_id = ?
 		  AND ((scope_type = 'project' AND scope_id = ?) OR (scope_type = 'global' AND owner_user_id = ?))
@@ -5929,10 +6157,11 @@ func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectI
 	items := make([]core.Capability, 0)
 	for rows.Next() {
 		var item core.Capability
-		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version, &item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID, &item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt); err != nil {
+		var dependenciesJSON, createdAt, updatedAt string
+		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version, &item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID, &item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &item.Origin, &item.PresetKey, &dependenciesJSON, &item.ManagedVersion, &item.UpdateState, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal([]byte(dependenciesJSON), &item.Dependencies)
 		item.BundleHash = item.ContentHash
 		item.PermissionDiff = core.CapabilityPermissionDiff(item.ManifestJSON)
 		item.CreatedAt = mustParseTime(createdAt)
@@ -5988,8 +6217,8 @@ func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabili
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var projectID, name, kind string
-	if err := tx.QueryRowContext(ctx, `SELECT project_id, name, kind FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &name, &kind); err != nil {
+	var projectID, name, kind, origin, presetKey, manifestJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id, name, kind, origin, preset_key, manifest_json FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &name, &kind, &origin, &presetKey, &manifestJSON); err != nil {
 		return err
 	}
 	var activeRuns int64
@@ -6004,6 +6233,33 @@ func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabili
 	if activeRuns > 0 {
 		return &core.StateConflictError{Status: "active_run", Command: "delete capability"}
 	}
+	provided := manifestCapabilityNames(manifestJSON)
+	if len(provided) > 0 {
+		rows, queryErr := tx.QueryContext(ctx, `SELECT id, name, dependencies_json FROM capabilities WHERE organization_id = ? AND owner_user_id = ? AND id <> ?`, scope.OrganizationID, scope.UserID, capabilityID)
+		if queryErr != nil {
+			return queryErr
+		}
+		dependents := make([]string, 0)
+		for rows.Next() {
+			var id, dependentName, dependenciesJSON string
+			if scanErr := rows.Scan(&id, &dependentName, &dependenciesJSON); scanErr != nil {
+				_ = rows.Close()
+				return scanErr
+			}
+			var dependencies []string
+			_ = json.Unmarshal([]byte(dependenciesJSON), &dependencies)
+			if stringSetsIntersect(provided, dependencies) {
+				dependents = append(dependents, dependentName)
+			}
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			return closeErr
+		}
+		if len(dependents) > 0 {
+			sort.Strings(dependents)
+			return &core.ResourceConflictError{Resource: "capability dependency", Reason: fmt.Sprintf("%s is required by %s; remove the dependents first or use the explicit cascade uninstall action", name, strings.Join(dependents, ", "))}
+		}
+	}
 	now := formatTime(time.Now())
 	auditID, err := newID()
 	if err != nil {
@@ -6013,12 +6269,235 @@ func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabili
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'capability.deleted', 'capability', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, capabilityID, string(detail), correlationID, now); err != nil {
 		return err
 	}
+	if origin == core.CapabilityOriginPreset && presetKey != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO preset_resource_states (organization_id, owner_user_id, preset_key, state, capability_id, managed_version, created_at, updated_at) VALUES (?, ?, ?, 'deleted', '', '', ?, ?) ON CONFLICT (organization_id, owner_user_id, preset_key) DO UPDATE SET state = 'deleted', capability_id = '', updated_at = excluded.updated_at`, scope.OrganizationID, scope.UserID, presetKey, now, now); err != nil {
+			return err
+		}
+	}
 	if result, err := tx.ExecContext(ctx, `DELETE FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID); err != nil {
 		return err
 	} else if affected, _ := result.RowsAffected(); affected != 1 {
 		return sql.ErrNoRows
 	}
 	return tx.Commit()
+}
+
+func manifestCapabilityNames(manifestJSON string) []string {
+	var manifest map[string]any
+	if json.Unmarshal([]byte(manifestJSON), &manifest) != nil {
+		return nil
+	}
+	raw, _ := manifest["capabilities"].([]any)
+	result := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			result = append(result, strings.TrimSpace(text))
+		}
+	}
+	return result
+}
+
+func stringSetsIntersect(left, right []string) bool {
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		values[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := values[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) GetDocumentSession(ctx context.Context, scope core.Scope, runID, documentID string) (core.DocumentSession, error) {
+	return scanDocumentSession(s.db.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions
+		WHERE id = ? AND run_id = ? AND organization_id = ? AND owner_user_id = ?`, documentID, runID, scope.OrganizationID, scope.UserID))
+}
+
+func (s *Store) GetDocumentSessionByOpenKey(ctx context.Context, scope core.Scope, runID, openKey string) (core.DocumentSession, error) {
+	return scanDocumentSession(s.db.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions
+		WHERE run_id = ? AND open_key = ? AND organization_id = ? AND owner_user_id = ?`, runID, openKey, scope.OrganizationID, scope.UserID))
+}
+
+func (s *Store) CreateDocumentSession(ctx context.Context, scope core.Scope, session core.DocumentSession, initial core.DocumentRevision) (core.DocumentSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.DocumentSession{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var marker int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT 1 FROM runs r
+		JOIN tasks t ON t.id = r.task_id
+		JOIN project_memberships pm ON pm.project_id = r.project_id AND pm.user_id = ? AND pm.status = 'active'
+		WHERE r.id = ? AND r.organization_id = ? AND r.project_id = ? AND r.task_id = ? AND t.owner_user_id = ?`,
+		scope.UserID, session.RunID, scope.OrganizationID, session.ProjectID, session.TaskID, scope.UserID).Scan(&marker); err != nil {
+		return core.DocumentSession{}, err
+	}
+	if existing, existingErr := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE run_id = ? AND open_key = ?`, session.RunID, session.OpenKey)); existingErr == nil {
+		return existing, nil
+	} else if !errors.Is(existingErr, sql.ErrNoRows) {
+		return core.DocumentSession{}, existingErr
+	}
+	now := formatTime(time.Now().UTC())
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = mustParseTime(now)
+	}
+	session.UpdatedAt = mustParseTime(now)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO document_sessions (
+			id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+			source_ref, source_content_hash, format, mode, runtime_version,
+			extraction_profile_hash, revision, revision_hash, working_handle,
+			structure_json, warnings_json, rendered_revision, render_hash,
+			render_manifest_json, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, '', '{}', ?, ?, ?)`,
+		session.ID, scope.OrganizationID, session.ProjectID, scope.UserID, session.TaskID, session.RunID, session.OpenKey,
+		session.SourceRef, session.SourceContentHash, session.Format, session.Mode, session.RuntimeVersion,
+		session.ExtractionProfileHash, initial.RevisionHash, initial.WorkingHandle,
+		initial.StructureJSON, initial.WarningsJSON, session.Status, now, now); err != nil {
+		return core.DocumentSession{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO document_revisions (document_id, revision, revision_hash, operation_hash, working_handle, structure_json, warnings_json, created_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)`, session.ID, initial.RevisionHash, initial.OperationHash, initial.WorkingHandle, initial.StructureJSON, initial.WarningsJSON, now); err != nil {
+		return core.DocumentSession{}, err
+	}
+	created, err := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE id = ?`, session.ID))
+	if err != nil {
+		return core.DocumentSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.DocumentSession{}, err
+	}
+	return created, nil
+}
+
+func (s *Store) AdvanceDocumentRevision(ctx context.Context, scope core.Scope, documentID string, expectedRevision int64, next core.DocumentRevision) (core.DocumentSession, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, documentID, scope.OrganizationID, scope.UserID))
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	var replayRevision int64
+	replayErr := tx.QueryRowContext(ctx, `SELECT revision FROM document_revisions WHERE document_id = ? AND operation_hash = ?`, documentID, next.OperationHash).Scan(&replayRevision)
+	if replayErr == nil {
+		return current, true, nil
+	}
+	if replayErr != nil && !errors.Is(replayErr, sql.ErrNoRows) {
+		return core.DocumentSession{}, false, replayErr
+	}
+	if current.Revision != expectedRevision {
+		return core.DocumentSession{}, false, &core.StateConflictError{Status: fmt.Sprintf("document_revision_%d", current.Revision), Command: fmt.Sprintf("apply document revision %d", expectedRevision)}
+	}
+	next.Revision = expectedRevision + 1
+	now := formatTime(time.Now().UTC())
+	result, err := tx.ExecContext(ctx, `
+		UPDATE document_sessions
+		SET revision = ?, revision_hash = ?, working_handle = ?, structure_json = ?, warnings_json = ?,
+		    rendered_revision = 0, render_hash = '', render_manifest_json = '{}', status = 'ready', updated_at = ?
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND revision = ?`,
+		next.Revision, next.RevisionHash, next.WorkingHandle, next.StructureJSON, next.WarningsJSON,
+		now, documentID, scope.OrganizationID, scope.UserID, expectedRevision)
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return core.DocumentSession{}, false, &core.StateConflictError{Status: "document_revision_changed", Command: "apply document revision"}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO document_revisions (document_id, revision, revision_hash, operation_hash, working_handle, structure_json, warnings_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, documentID, next.Revision, next.RevisionHash, next.OperationHash, next.WorkingHandle, next.StructureJSON, next.WarningsJSON, now); err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	updated, err := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE id = ?`, documentID))
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	return updated, false, nil
+}
+
+func (s *Store) MarkDocumentRendered(ctx context.Context, scope core.Scope, documentID string, expectedRevision int64, renderHash, manifestJSON, warningsJSON string) (core.DocumentSession, error) {
+	now := formatTime(time.Now().UTC())
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE document_sessions
+		SET rendered_revision = ?, render_hash = ?, render_manifest_json = ?, warnings_json = ?, updated_at = ?
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND revision = ?`,
+		expectedRevision, renderHash, manifestJSON, warningsJSON, now, documentID, scope.OrganizationID, scope.UserID, expectedRevision)
+	if err != nil {
+		return core.DocumentSession{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return core.DocumentSession{}, &core.StateConflictError{Status: "document_revision_changed", Command: "render document revision"}
+	}
+	return s.GetDocumentSession(ctx, scope, documentSessionRunID(ctx, s.db, documentID), documentID)
+}
+
+func documentSessionRunID(ctx context.Context, db *sql.DB, documentID string) string {
+	var runID string
+	_ = db.QueryRowContext(ctx, `SELECT run_id FROM document_sessions WHERE id = ?`, documentID).Scan(&runID)
+	return runID
+}
+
+type documentSessionScanner interface {
+	Scan(...any) error
+}
+
+func scanDocumentSession(row documentSessionScanner) (core.DocumentSession, error) {
+	var session core.DocumentSession
+	var createdAt, updatedAt string
+	if err := row.Scan(
+		&session.ID, &session.OrganizationID, &session.ProjectID, &session.OwnerUserID, &session.TaskID, &session.RunID, &session.OpenKey,
+		&session.SourceRef, &session.SourceContentHash, &session.Format, &session.Mode, &session.RuntimeVersion,
+		&session.ExtractionProfileHash, &session.Revision, &session.RevisionHash, &session.WorkingHandle,
+		&session.StructureJSON, &session.WarningsJSON, &session.RenderedRevision, &session.RenderHash,
+		&session.RenderManifestJSON, &session.Status, &createdAt, &updatedAt,
+	); err != nil {
+		return core.DocumentSession{}, err
+	}
+	session.CreatedAt = mustParseTime(createdAt)
+	session.UpdatedAt = mustParseTime(updatedAt)
+	return session, nil
 }
 
 func (s *Store) ReviewCapability(ctx context.Context, scope core.Scope, capabilityID string, input core.ReviewCapabilityInput, correlationID string, idempotency core.Idempotency) (core.Capability, error) {
@@ -6220,6 +6699,11 @@ func freezeRunToolSnapshots(ctx context.Context, tx *sql.Tx, runID string, confi
 		return err
 	}
 	for _, spec := range core.BuiltinToolSpecs() {
+		if isDocumentToolName(spec.Name) {
+			if runtimeSnapshot, ok := config["document_runtime"].(map[string]any); !ok || strings.TrimSpace(fmt.Sprint(runtimeSnapshot["runtime_version"])) == "" {
+				continue
+			}
+		}
 		if err := insert(spec.Identity, spec.Name, spec.Source, "", spec.Parameters, spec.Capabilities, "builtin_at_run_creation"); err != nil {
 			return err
 		}
@@ -6255,6 +6739,15 @@ func freezeRunToolSnapshots(ctx context.Context, tx *sql.Tx, runID string, confi
 		}
 	}
 	return nil
+}
+
+func isDocumentToolName(name string) bool {
+	switch name {
+	case core.ToolDocumentOpen, core.ToolDocumentRead, core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentRender, core.ToolDocumentExport:
+		return true
+	default:
+		return false
+	}
 }
 
 func nullableTime(value time.Time) string {
@@ -8706,6 +9199,13 @@ func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run 
 		if requirements.RequiresCompleteDeliverable && metrics.LargestIncomplete {
 			return completionInvariantResult{Reason: "DELIVERABLE_INCOMPLETE"}, nil
 		}
+		validDocumentExport, err := validDocumentExportEvidence(ctx, tx, evidenceRunIDs)
+		if err != nil {
+			return completionInvariantResult{}, err
+		}
+		if !validDocumentExport {
+			return completionInvariantResult{Reason: "DOCUMENT_EXPORT_INVALID", DeliverableFormat: requirements.DeliverableFormat}, nil
+		}
 	}
 	lastMutationPosition, currentMutationCount, mutationCount, err := successfulWorkspaceMutationEvidence(ctx, tx, run.RunID, evidenceRunIDs)
 	if err != nil {
@@ -8765,27 +9265,34 @@ func contextAssetNeedsStaging(mediaType, name string) bool {
 
 func successfulStagedAssetIDs(ctx context.Context, tx *sql.Tx, runIDs []string) (map[string]bool, error) {
 	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
-	args := make([]any, 0, len(runIDs)+1)
+	args := make([]any, 0, len(runIDs)+2)
 	for _, runID := range runIDs {
 		args = append(args, runID)
 	}
-	args = append(args, core.ToolAssetStage)
-	rows, err := tx.QueryContext(ctx, `SELECT arguments_json FROM tool_calls WHERE run_id IN (`+runFilter+`) AND tool_name = ? AND status = 'succeeded'`, args...)
+	args = append(args, core.ToolAssetStage, core.ToolDocumentOpen)
+	rows, err := tx.QueryContext(ctx, `SELECT tool_name, arguments_json FROM tool_calls WHERE run_id IN (`+runFilter+`) AND tool_name IN (?, ?) AND status = 'succeeded'`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	staged := make(map[string]bool)
 	for rows.Next() {
-		var argumentsJSON string
-		if err := rows.Scan(&argumentsJSON); err != nil {
+		var toolName, argumentsJSON string
+		if err := rows.Scan(&toolName, &argumentsJSON); err != nil {
 			return nil, err
 		}
-		var arguments struct {
-			AssetID string `json:"asset_id"`
-		}
-		if json.Unmarshal([]byte(argumentsJSON), &arguments) == nil && strings.TrimSpace(arguments.AssetID) != "" {
-			staged[arguments.AssetID] = true
+		var arguments map[string]any
+		if json.Unmarshal([]byte(argumentsJSON), &arguments) == nil {
+			assetID, _ := arguments["asset_id"].(string)
+			if toolName == core.ToolDocumentOpen {
+				sourceRef, _ := arguments["source_ref"].(string)
+				if strings.HasPrefix(sourceRef, "asset:") {
+					assetID = strings.TrimPrefix(sourceRef, "asset:")
+				}
+			}
+			if strings.TrimSpace(assetID) != "" {
+				staged[assetID] = true
+			}
 		}
 	}
 	return staged, rows.Err()
@@ -8821,6 +9328,7 @@ func completionEvidenceRunIDs(run core.RunContext) []string {
 func successfulWorkspaceMutationEvidence(ctx context.Context, tx *sql.Tx, runID string, evidenceRunIDs []string) (int64, int64, int64, error) {
 	mutationTools := []string{
 		core.ToolWorkspaceWriteFile, core.ToolWorkspaceEditFile, core.ToolArtifactCapture,
+		core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentExport,
 		core.ToolGitCommit, core.ToolGitCommitPaths,
 		core.ToolGitRestore, core.ToolGitRestoreHunk, core.ToolGitBranch,
 	}
@@ -8949,7 +9457,7 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 	err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM tool_calls
 		WHERE run_id = ? AND status = 'succeeded' AND position > ? AND (
-			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
+			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
 				tool_name LIKE 'mcp__%__%' AND (
 					lower(tool_name) LIKE '%playwright%' OR lower(tool_name) LIKE '%browser%' OR
 					lower(tool_name) LIKE '%test%' OR lower(tool_name) LIKE '%verify%' OR
@@ -8962,8 +9470,50 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell,
 		core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
 		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolArtifactCapture,
+		core.ToolDocumentRender, core.ToolDocumentExport,
 	).Scan(&count)
 	return count, err
+}
+
+func validDocumentExportEvidence(ctx context.Context, tx *sql.Tx, runIDs []string) (bool, error) {
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, 0, len(runIDs)*2+3)
+	for _, runID := range runIDs {
+		args = append(args, runID)
+	}
+	args = append(args, core.ToolDocumentCreate, core.ToolDocumentApply)
+	for _, runID := range runIDs {
+		args = append(args, runID)
+	}
+	args = append(args, core.ToolDocumentExport)
+	var mutatedDocuments, missingValidExports int64
+	err := tx.QueryRowContext(ctx, `
+		WITH mutated_documents AS (
+			SELECT DISTINCT replace(
+				COALESCE(json_extract(receipts.output_json, '$.document_ref'), json_extract(calls.arguments_json, '$.document_ref')),
+				'document:', ''
+			) AS document_id
+			FROM tool_calls calls
+			JOIN side_effect_receipts receipts ON receipts.tool_call_id = calls.id AND receipts.status = 'succeeded'
+			WHERE calls.run_id IN (`+runFilter+`) AND calls.status = 'succeeded' AND calls.tool_name IN (?, ?)
+		), valid_exports AS (
+			SELECT DISTINCT documents.id AS document_id
+			FROM tool_calls calls
+			JOIN side_effect_receipts receipts ON receipts.tool_call_id = calls.id AND receipts.status = 'succeeded'
+			JOIN document_sessions documents
+			  ON documents.id = replace(json_extract(calls.arguments_json, '$.document_ref'), 'document:', '')
+			JOIN artifacts outputs ON outputs.step_id = calls.step_id AND outputs.source_type = 'document_export'
+			WHERE calls.run_id IN (`+runFilter+`) AND calls.tool_name = ? AND calls.status = 'succeeded'
+			  AND documents.revision = CAST(json_extract(calls.arguments_json, '$.expected_revision') AS INTEGER)
+			  AND documents.rendered_revision = documents.revision
+			  AND documents.render_hash <> ''
+			  AND documents.render_hash = json_extract(receipts.output_json, '$.render_hash')
+			  AND outputs.content_hash = json_extract(receipts.output_json, '$.content_hash')
+		)
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN valid_exports.document_id IS NULL THEN 1 ELSE 0 END), 0)
+		FROM mutated_documents
+		LEFT JOIN valid_exports ON valid_exports.document_id = mutated_documents.document_id`, args...).Scan(&mutatedDocuments, &missingValidExports)
+	return err == nil && (mutatedDocuments == 0 || missingValidExports == 0), err
 }
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
@@ -11164,6 +11714,8 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		validator = "artifact_scope_hash_size_and_media_signature"
 	} else if step.StepType == core.ToolAssetStage {
 		validator = "run_frozen_asset_scope_hash_and_read_only_stage"
+	} else if isDocumentToolName(step.StepType) {
+		validator = "document_scope_revision_hash_render_and_runtime_receipt"
 	} else if step.StepType == core.ToolWorkspaceReadFile || step.StepType == core.ToolWorkspaceListFiles ||
 		step.StepType == core.ToolWorkspaceFindFiles || step.StepType == core.ToolWorkspaceGrep {
 		validator = "workspace_scope_pagination_binary_and_redaction"
@@ -11203,7 +11755,7 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "validation.completed", ActorType: "validator", ActorID: validator, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"validation_id": validationID, "tool_call_id": execution.ToolCallID, "validator": validator, "status": validationStatus, "input_hash": execution.InputHash}}); err != nil {
 		return err
 	}
-	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile || step.StepType == core.ToolArtifactCapture) && validationStatus == "passed" {
+	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile || step.StepType == core.ToolArtifactCapture || step.StepType == core.ToolDocumentExport) && validationStatus == "passed" {
 		return s.persistCapturedArtifact(ctx, tx, q, step, run, execution, now, correlationID)
 	}
 	return nil
@@ -11281,6 +11833,8 @@ func (s *Store) persistCapturedArtifact(ctx context.Context, tx *sql.Tx, q *sqli
 	sourceType := "workspace_file"
 	if step.StepType == core.ToolArtifactCapture {
 		sourceType = "artifact_capture"
+	} else if step.StepType == core.ToolDocumentExport {
+		sourceType = "document_export"
 	}
 	row, err := q.CreateArtifact(ctx, sqlitegen.CreateArtifactParams{ID: artifactID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, Name: path, Kind: kind, MediaType: persisted.MediaType, ContentHash: persisted.ContentHash, SizeBytes: persisted.SizeBytes, Visibility: run.Visibility, SourceType: sourceType, CreatedAt: now})
 	if err != nil {
@@ -12896,18 +13450,21 @@ func capabilityFromRow(row sqlitegen.Capability) core.Capability {
 
 func (s *Store) getCapabilityByIDTx(ctx context.Context, tx *sql.Tx, scope core.Scope, capabilityID string) (core.Capability, error) {
 	var item core.Capability
-	var createdAt, updatedAt string
+	var dependenciesJSON, createdAt, updatedAt string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, credential_ref, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, origin, preset_key,
+		       dependencies_json, managed_version, update_state, created_at, updated_at
 		FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(
 		&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version,
 		&item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID,
-		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt,
+		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &item.Origin, &item.PresetKey,
+		&dependenciesJSON, &item.ManagedVersion, &item.UpdateState, &createdAt, &updatedAt,
 	); err != nil {
 		return core.Capability{}, err
 	}
+	_ = json.Unmarshal([]byte(dependenciesJSON), &item.Dependencies)
 	item.BundleHash = item.ContentHash
 	item.PermissionDiff = core.CapabilityPermissionDiff(item.ManifestJSON)
 	item.CreatedAt = mustParseTime(createdAt)
@@ -12917,18 +13474,21 @@ func (s *Store) getCapabilityByIDTx(ctx context.Context, tx *sql.Tx, scope core.
 
 func (s *Store) getCapabilityByID(ctx context.Context, scope core.Scope, capabilityID string) (core.Capability, error) {
 	var item core.Capability
-	var createdAt, updatedAt string
+	var dependenciesJSON, createdAt, updatedAt string
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, credential_ref, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, origin, preset_key,
+		       dependencies_json, managed_version, update_state, created_at, updated_at
 		FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(
 		&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version,
 		&item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID,
-		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt,
+		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &item.Origin, &item.PresetKey,
+		&dependenciesJSON, &item.ManagedVersion, &item.UpdateState, &createdAt, &updatedAt,
 	); err != nil {
 		return core.Capability{}, err
 	}
+	_ = json.Unmarshal([]byte(dependenciesJSON), &item.Dependencies)
 	item.BundleHash = item.ContentHash
 	item.PermissionDiff = core.CapabilityPermissionDiff(item.ManifestJSON)
 	item.CreatedAt = mustParseTime(createdAt)

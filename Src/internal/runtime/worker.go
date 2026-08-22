@@ -58,6 +58,7 @@ type Worker struct {
 	workspace         WorkspaceExecutor
 	artifactCapture   application.ArtifactCapture
 	assetStager       application.AssetStager
+	documentRuntime   application.DocumentExecutor
 	webSearch         WebSearchExecutor
 	webAccess         WebAccess
 	mcpSecrets        application.ProviderSecretStore
@@ -93,6 +94,11 @@ func (w *Worker) WithArtifactCapture(capture application.ArtifactCapture) *Worke
 
 func (w *Worker) WithAssetStager(stager application.AssetStager) *Worker {
 	w.assetStager = stager
+	return w
+}
+
+func (w *Worker) WithDocumentRuntime(runtime application.DocumentExecutor) *Worker {
+	w.documentRuntime = runtime
 	return w
 }
 
@@ -382,7 +388,16 @@ func (w *Worker) drainIdleFollowUp(ctx context.Context) (bool, error) {
 }
 
 func isModelStep(stepType string) bool {
-	return !isWorkspaceTool(stepType) && stepType != core.ToolWebSearch && stepType != core.ToolSkillInvoke && !isMCPTool(stepType)
+	return !isWorkspaceTool(stepType) && !isDocumentTool(stepType) && stepType != core.ToolWebSearch && stepType != core.ToolSkillInvoke && !isMCPTool(stepType)
+}
+
+func isDocumentTool(stepType string) bool {
+	switch stepType {
+	case core.ToolDocumentOpen, core.ToolDocumentRead, core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentRender, core.ToolDocumentExport:
+		return true
+	default:
+		return false
+	}
 }
 
 func isWorkspaceTool(stepType string) bool {
@@ -1451,7 +1466,11 @@ func missingStrictSkillCapabilities(snapshot string, skillPlan map[string]any) [
 		return nil
 	}
 	available := make(map[string]struct{})
+	documentAvailable := documentRuntimeSnapshotted(snapshot)
 	for _, spec := range core.BuiltinToolSpecs() {
+		if isDocumentTool(spec.Name) && !documentAvailable {
+			continue
+		}
 		available[spec.Name] = struct{}{}
 		for _, alias := range spec.Aliases {
 			available[alias] = struct{}{}
@@ -1475,6 +1494,26 @@ func missingStrictSkillCapabilities(snapshot string, skillPlan map[string]any) [
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+func documentRuntimeSnapshotted(snapshotJSON string) bool {
+	var snapshot struct {
+		DocumentRuntime struct {
+			Protocol       string `json:"protocol"`
+			RuntimeVersion string `json:"runtime_version"`
+		} `json:"document_runtime"`
+	}
+	return json.Unmarshal([]byte(snapshotJSON), &snapshot) == nil && snapshot.DocumentRuntime.Protocol == "oktapod.document/v1" && strings.TrimSpace(snapshot.DocumentRuntime.RuntimeVersion) != ""
+}
+
+func filterOutDocumentToolDefinitions(definitions []ToolDefinition) []ToolDefinition {
+	result := make([]ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		if !isDocumentTool(definition.Name) {
+			result = append(result, definition)
+		}
+	}
+	return result
 }
 
 func skillInvokeToolDefinition() ToolDefinition {

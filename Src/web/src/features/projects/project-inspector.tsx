@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronRight, Clock3, ExternalLink, File as FileIcon, FileUp, GitCommit, Layers, LockKeyhole, RotateCcw, Workflow, XCircle } from 'lucide-react'
 import { api, type AgentTeamRoom, type Approval, type ApprovalRule, type Artifact, type RunEvent, type RunUsage, type Scene, type Task, type Visibility } from '../../shared/api/client'
-import { parseUnifiedDiff, type RunDiffFile, type RunDiffHunk } from './run-diff'
+import { isTemporaryDiffPath, parseUnifiedDiff, type RunDiffFile, type RunDiffHunk } from './run-diff'
 
 const statusLabels: Record<string, string> = {
   queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '执行受阻', succeeded: '已完成', failed: '失败', canceled: '已取消',
@@ -76,7 +76,9 @@ export function InspectorChanges({ task, artifacts, scene }: { task?: Task; arti
   const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({})
   const queryClient = useQueryClient()
   const changes = useQuery({ queryKey: ['run-changes', runId, baseline], queryFn: () => api.runChanges(runId!, baseline), enabled: Boolean(runId) })
-  const files = parseUnifiedDiff(changes.data?.diff ?? '')
+  const parsedFiles = parseUnifiedDiff(changes.data?.diff ?? '')
+  const files = parsedFiles.filter((file) => !isTemporaryDiffPath(file.path))
+  const temporaryFiles = parsedFiles.filter((file) => isTemporaryDiffPath(file.path))
   const selected = files.map((file) => file.path).filter((path) => selectedPaths.includes(path))
   const activeOption = baselineOptions.find((option) => option.value === baseline) ?? baselineOptions[0]
   const allSelected = files.length > 0 && files.every((file) => selectedPaths.includes(file.path))
@@ -163,6 +165,11 @@ export function InspectorChanges({ task, artifacts, scene }: { task?: Task; arti
           })}
         </div>
       </> : <div className="inspector-empty compact"><Check size={16} /><strong>{activeOption.empty}</strong></div>}
+      {temporaryFiles.length ? <details className="changes-temporary-files">
+        <summary><span>运行缓存与临时文件</span><em>{temporaryFiles.length}</em></summary>
+        <p>默认不计入成果审阅，也不会进入“全选、撤销、提交”操作。</p>
+        <div>{temporaryFiles.map((file) => <code key={file.path}>{file.path}</code>)}</div>
+      </details> : null}
       {baseline !== 'run_start' ? <p className="changes-baseline-note">基线只影响上方差异展示；“撤销所选”和“保存版本”始终作用于工作区文件，与所选基线无关。</p> : null}
       <div className="changes-actions">
         <button type="button" className="changes-accept" disabled={!task || task.accepted || accept.isPending} onClick={() => accept.mutate()}><Check size={13} />{task?.accepted ? '成果已接受' : '接受成果'}</button>

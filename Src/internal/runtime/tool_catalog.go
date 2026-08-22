@@ -20,6 +20,9 @@ type ToolCatalogBuilder struct{}
 func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, userPrompt string, continuation []map[string]any, selectedContextPlan map[string]any) (ToolCatalog, *core.StepOutcome) {
 	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
 	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
+	if !documentRuntimeSnapshotted(run.ConfigSnapshotJSON) {
+		toolDefinitions = filterOutDocumentToolDefinitions(toolDefinitions)
+	}
 	if snapshotVersion(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
 		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolUpdatePlan)
 	} else {

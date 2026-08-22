@@ -12,6 +12,8 @@ export type MemoryStatus = 'active' | 'inactive'
 export type CapabilityKind = 'skill' | 'plugin' | 'mcp' | 'agent'
 export type CapabilityStatus = 'enabled' | 'disabled' | 'quarantined'
 export type CapabilityScope = 'global' | 'project'
+export type CapabilityOrigin = 'system' | 'preset' | 'custom'
+export type CapabilityUpdateState = 'current' | 'update_available' | 'degraded'
 export type ResourceAvailability = 'available' | 'degraded' | 'disabled' | 'quarantined'
 export type TaskStatus =
   | 'queued'
@@ -328,8 +330,28 @@ export interface Capability {
   install_job_id: string
   credential_configured: boolean
   credential_state: 'ready' | 'locked' | 'missing' | 'corrupt'
+  origin: CapabilityOrigin
+  preset_key?: string
+  dependencies: string[]
+  managed_version?: string
+  update_state: CapabilityUpdateState
   created_at: string
   updated_at: string
+}
+
+export interface PresetResourceCatalogItem {
+  preset_key: string
+  kind: CapabilityKind
+  name: string
+  version: string
+  description: string
+  origin: 'preset'
+  dependencies: string[]
+  managed_version: string
+  update_state: CapabilityUpdateState
+  install_state: 'installed' | 'available'
+  capability_id?: string
+  availability: ResourceAvailability
 }
 
 export interface MCPHealth {
@@ -1108,6 +1130,9 @@ export const api = {
   setScheduleStatus: (scheduleId: string, status: ScheduleStatus) =>
     request<Schedule>(`/schedules/${scheduleId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
   capabilities: (projectId: string) => request<{ items: Capability[] }>(`/projects/${projectId}/capabilities`),
+  resourceCatalog: (projectId: string) => request<{ items: PresetResourceCatalogItem[] }>(`/resource-catalog?project_id=${encodeURIComponent(projectId)}`),
+  installPresetResource: (projectId: string, presetKey: string) =>
+    request<Capability>(`/resource-catalog/${encodeURIComponent(presetKey)}:install`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ project_id: projectId }) }),
   resolveResourceInstallDraft: (projectId: string, sourceInput: string) =>
     request<ResourceInstallDraft>(`/projects/${projectId}/resource-install-drafts:resolve`, { method: 'POST', body: JSON.stringify({ source_input: sourceInput }) }),
   createCapability: (projectId: string, input: { kind: CapabilityKind; name: string; version?: string; manifest_json: string; scope_type?: CapabilityScope; source_filename?: string; bundle_base64?: string; credential?: string; credentials?: Record<string, string> }) =>

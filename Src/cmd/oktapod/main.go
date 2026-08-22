@@ -20,6 +20,7 @@ import (
 	"time"
 
 	localblob "github.com/oktapod/oktapod/Src/internal/adapters/blob/localfs"
+	"github.com/oktapod/oktapod/Src/internal/adapters/documentruntime"
 	postgresdb "github.com/oktapod/oktapod/Src/internal/adapters/db/postgres"
 	"github.com/oktapod/oktapod/Src/internal/adapters/db/sqlite"
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
@@ -201,6 +202,23 @@ func run() error {
 		return err
 	}
 	service.WithArtifactCapture(artifactCapture)
+	var documentExecutor application.DocumentExecutor
+	var documentClient *documentruntime.Client
+	if discovered, discoverErr := documentruntime.Discover(config.DataRoot, trustedCapabilityKeys); discoverErr != nil {
+		logger.Info("document runtime is not available; preset document resources are degraded", "reason", discoverErr.Error())
+	} else if documentState, ok := store.(application.DocumentStateRepository); !ok {
+		_ = discovered.Close()
+		logger.Warn("document runtime state repository is unavailable")
+	} else if executor, executorErr := documentruntime.NewExecutor(discovered, documentState, store, workspaceExecutor, artifactCapture); executorErr != nil {
+		_ = discovered.Close()
+		logger.Warn("document runtime adapter initialization failed", "reason", executorErr.Error())
+	} else {
+		documentClient, documentExecutor = discovered, executor
+		service.WithDocumentRuntime(documentExecutor)
+	}
+	if documentClient != nil {
+		defer documentClient.Close()
+	}
 	webSearchExecutor, err := websearch.New("")
 	if err != nil {
 		return err
@@ -227,6 +245,9 @@ func run() error {
 			WithMCPSecretStore(credentials).
 			WithQueuedTurnStarter(queuedTurnStarter).
 			WithLiveTurnPublisher(liveTurnHub)
+		if documentExecutor != nil {
+			worker.WithDocumentRuntime(documentExecutor)
+		}
 		workerGroup.Add(1)
 		go func() {
 			defer workerGroup.Done()

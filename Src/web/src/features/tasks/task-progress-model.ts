@@ -67,7 +67,7 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
 
 export type TimelineState = 'pending' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'muted'
 
-export type WebToolPresentation = {
+export type ToolPresentation = {
   kind: 'web_search'
   query: string
   provider: string
@@ -83,6 +83,18 @@ export type WebToolPresentation = {
   content_format: string
   content_preview: string
   truncated: boolean
+} | {
+  kind: 'document'
+  phase: 'structure' | 'revision' | 'render' | 'output'
+  document_ref: string
+  format: string
+  revision: number
+  page_count: number
+  previews: string[]
+  warnings: string[]
+  cache_hit: boolean
+  path: string
+  media_type: string
 }
 
 export interface TaskTimelineItem {
@@ -97,7 +109,7 @@ export interface TaskTimelineItem {
     input: string
     result: string
     output: string
-    presentation?: WebToolPresentation
+    presentation?: ToolPresentation
   }
 }
 
@@ -142,7 +154,7 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
     const toolInput = [...stepEvents].reverse().map((event) => payloadString(event, 'input_summary')).find(Boolean) ?? ''
     const toolResult = [...stepEvents].reverse().map((event) => payloadString(event, 'output_summary')).find(Boolean) ?? ''
     const toolOutput = [...stepEvents].reverse().map((event) => payloadString(event, 'output_excerpt')).find(Boolean) ?? ''
-    const toolPresentation = toolCompleted ? parseWebToolPresentation(toolCompleted.payload.presentation) : undefined
+    const toolPresentation = toolCompleted ? parseToolPresentation(toolCompleted.payload.presentation) : undefined
     const modelProgress = [...stepEvents].reverse().map((event) => payloadString(event, 'content')).find(Boolean) ?? ''
     const code = final ? payloadString(final, 'error_code') : ''
     let state: TimelineState = 'pending'
@@ -176,7 +188,7 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
   return items
 }
 
-function parseWebToolPresentation(raw: unknown): WebToolPresentation | undefined {
+function parseToolPresentation(raw: unknown): ToolPresentation | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const value = raw as Record<string, unknown>
   if (value.kind === 'web_search') {
@@ -193,6 +205,16 @@ function parseWebToolPresentation(raw: unknown): WebToolPresentation | undefined
       kind: 'web_fetch', network_class: networkClass, rule_id: String(value.rule_id ?? ''), url: String(value.url ?? ''),
       status_code: typeof value.status_code === 'number' ? value.status_code : 0, media_type: String(value.media_type ?? ''),
       content_format: String(value.content_format ?? ''), content_preview: String(value.content_preview ?? ''), truncated: value.truncated === true,
+    }
+  }
+  if (value.kind === 'document') {
+    const phase = ['structure', 'revision', 'render', 'output'].includes(String(value.phase)) ? value.phase as 'structure' | 'revision' | 'render' | 'output' : 'structure'
+    const previews = Array.isArray(value.previews) ? value.previews.filter((item): item is string => typeof item === 'string' && /^\/api\/v1\/runs\/[0-9a-f-]+\/documents\/[0-9a-f-]+\/previews\/[A-Za-z0-9._-]+\.png$/i.test(item)).slice(0, 6) : []
+    const warnings = Array.isArray(value.warnings) ? value.warnings.filter((item): item is string => typeof item === 'string').slice(0, 12) : []
+    return {
+      kind: 'document', phase, document_ref: String(value.document_ref ?? ''), format: String(value.format ?? ''),
+      revision: typeof value.revision === 'number' ? value.revision : 0, page_count: typeof value.page_count === 'number' ? value.page_count : 0,
+      previews, warnings, cache_hit: value.cache_hit === true, path: String(value.path ?? ''), media_type: String(value.media_type ?? ''),
     }
   }
   return undefined
@@ -265,6 +287,6 @@ function roleLabel(role: string) {
 }
 
 function toolStepLabel(toolName: string) {
-  const labels: Record<string, string> = { workspace_write_file: '写入工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_run_command: '运行验证命令', web_search: '搜索互联网来源', web_fetch: '读取网页来源' }
+  const labels: Record<string, string> = { workspace_write_file: '写入工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_run_command: '运行验证命令', web_search: '搜索互联网来源', web_fetch: '读取网页来源', document_open: '结构读取', document_read: '分页读取文档', document_create: '创建文档工作副本', document_apply: '应用文档修订', document_render: '渲染与版式校验', document_export: '导出文档 Artifact' }
   return labels[toolName] ?? `执行工具：${toolName}`
 }

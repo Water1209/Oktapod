@@ -1,6 +1,6 @@
 # Oktapod V1.1 Agent Runtime 优化执行计划
 
-> 版本：V1.4（Runtime 性能 V2 热路径已实施，真实 Provider 性能门禁待执行）
+> 版本：V1.5（Runtime 性能 V2 与预置文档浏览器收口已实施，发布性能门禁待执行）
 > 更新日期：2026-08-22
 > 实施分支：`codex/runtime-performance-v2`
 > V1.0.0 关系：独立演进批次，不改变 V1.0.0 正式 tag 门禁
@@ -105,6 +105,7 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 2026-08-21 浏览器收口 | 本地工作树 | 执行记录展开状态提升为按 `task_id` 管理，任务流从用户消息迁移到助手结果消息时不再意外折叠；真实 Chromium 并发套件 27/27 |
 | 2026-08-21 Web 刷新收敛 | 本地工作树 | 空闲项目停止任务/动态/消息轮询；活跃任务按状态启停有限刷新；Shell 与项目页共享缓存但不重复定时刷新；inbox 统一缓存并按是否有待处理项退避；Web 单测 50/50、lint、build 通过 |
 | 2026-08-22 Runtime 性能 V2 | 当前工作树 | Auto 单 Turn、Plan Transition V2、LiveTurnHub、冻结 Provider 能力、token-aware context projection、000064 barrier/performance 附属表和 12 场景隔离基准入口已落地；本地完整验证、浏览器回归和 Windows 原生烟测通过，真实 Provider 与 p95 性能数据待执行 |
+| 2026-08-22 预置文档 Runtime | 当前工作树 | 000065～000067、预置目录/删除记忆、六个静态 `document_*` 工具、签名 stdio Runtime、解析/渲染缓存、CAS 修订、预览与 Artifact 完成门禁已落地；四格式 25 次真实 RPC 烟测通过。真实浏览器确认五个资源可用、依赖提示与代码任务输出正常，并据此修复开发渲染器透传和 Changes 缓存污染；跨平台签名发布和标准 P95 待 CI/夹具证明 |
 
 主要代码入口：
 
@@ -144,11 +145,17 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | SSE 保留确定性错误分类 | `TestTurnStreamErrorDetailPreservesDeterministicFailures` |
 | Changes 行级展示与受治理提交无浏览器错误 | Playwright `Changes 可按文件查看并通过原 Thread 受治理提交所选路径` |
 | 私网配置严格校验与旧 Run 不扩权 | `TestWebAccessPolicyValidation` + `TestWebAccessPolicyRunSnapshotIntersection` |
+| 预置资源删除后不静默恢复且 Runtime 依赖阻止删除 | `TestPresetDocumentResourcesRememberDeletionAndProtectDependencies` |
+| Runtime Manifest 签名、逐文件 Hash 与路径约束 | `TestSignedRuntimeManifestRejectsTamperingAndUnsafeHandles` + `TestRuntimeManifestRequiresHashesForEntrypointAndPython` |
+| 六个文档工具固定 L0/L1 且拒绝可执行载荷 | `TestPlanToolClassifiesFixedDocumentProtocolAndRejectsExecutablePayloads` |
+| 多文档修改不能由单一导出绕过完成门禁 | `TestDocumentCompletionRequiresEveryMutatedDocumentToHaveCurrentExport` |
+| 四格式创建、打开、修订、渲染、导出 | `pnpm test:document-runtime`：25 次真实 JSON-RPC |
+| 预置资源、Runtime 详情和代码场景无浏览器错误 | 本机真实浏览器：五资源 `available`、六工具可见、级联删除取消无变更、任务四输出可访问、Changes 19 个公开成果 + 82 个折叠临时项、`.oktapod` 0、控制台 `error/warn=0` |
 | DNS 混合地址、跨源重定向、代理隔离与内容边界 | `TestFetchPrivateHTMLUsesBoundedMarkdownConversion` + `TestFetchRejectsPrivateDNSAndCrossOriginRedirects` + `TestFetchHandlesSameOriginRedirectStatusAndContentBounds` |
 | 每 Run 每 origin 授权，Full Access/Reviewer 不绕过 | `TestPrivateWebFetchApprovalIsRunOriginScoped` + `TestPrivateWebFetchIgnoresFullAccessAndAutoReviewer` |
 | 浏览器内一次私网授权复用同 origin、迁移后保持展开、两张文本卡与零控制台错误 | Playwright `私网 Web Fetch 每 Run 每 origin 只审批一次并以文本卡片重放` 1/1 |
 
-2026-08-22 收口先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 14 文件 55/55、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
+2026-08-22 收口先运行 focused tests，再运行 `$env:GOCACHE="$env:TEMP\go-build-cache"; pnpm verify`。最近一次结果为 Go vet/test、ESLint、Web 14 文件 56/56、TypeScript/Vite/Go build、SQLite migration 与 OpenAPI drift 全绿。
 
 ## 6. 合并与发布门禁
 
@@ -156,11 +163,11 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 
 | 门禁 | 结果 |
 |---|---|
-| `pnpm verify` | `PASS`：Go、ESLint、Web 14 文件 55/55、TypeScript/Vite/Go build、migration、OpenAPI drift |
+| `pnpm verify` | `PASS`：Go、ESLint、Web 14 文件 56/56、TypeScript/Vite/Go build、migration、OpenAPI drift |
 | Playwright | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 27/27；覆盖 Task Live 流、无计划 Run 零 404、Auto answer 最终消息刷新与既有恢复语义 |
 | `pnpm test:race` | `BLOCKED_ENV`：本机 `CGO_ENABLED=0` 且没有可用 C 编译器，`go test -race` 在测试启动前拒绝执行；Ubuntu CI 仍是正式证据 |
-| `pnpm release:build` | `PASS`：`oktapod-v1.0.0-windows-amd64.exe`，SHA256 `a02b931c193bf2775d8c7678e7fa2779c5b64ad55d2b1ba215736e7829c00790` |
-| `pnpm release:smoke` | `PASS`：隔离数据目录、端口 54543、health 200，烟测进程已停止 |
+| `pnpm release:build` | `BLOCKED_ENV`：旧主程序工件 `a02b931c…` 只证明引入文档 Runtime 前的基线；当前严格门禁还需要发布用自包含 Python、LibreOffice、Tesseract `chi_sim + eng`、完整许可证和受保护 Ed25519 Key，本机未提供这些发布输入，不能沿用旧 `PASS` |
+| `pnpm release:smoke` | `BLOCKED_ENV`：旧隔离数据目录烟测不覆盖签名 Document Runtime；当前烟测已经强制信任并加载签名包、检查资源目录为 `available`，需在当前 `release:build` 产出后重跑 |
 
 远端还需 PR 触发 Ubuntu CI 的 `pnpm verify`、`pnpm test:race` 和原生 smoke，以及 Windows CI 的完整验证和原生 smoke。当前 workflow 只在 PR 或 `main` push 上运行，功能分支 push 本身不产生 CI 证据；Windows 本地结果不能替代 Ubuntu race 或远端双平台证据。
 

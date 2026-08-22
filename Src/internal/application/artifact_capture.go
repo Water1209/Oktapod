@@ -1,12 +1,14 @@
 package application
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -72,7 +74,40 @@ func (s *ArtifactCaptureService) Capture(ctx context.Context, projectID, relativ
 	if err != nil {
 		return ArtifactCaptureResult{}, err
 	}
-	descriptor, err := s.blobs.Put(ctx, reader, mediaType, MaxArtifactCaptureBytes)
+	var descriptor BlobDescriptor
+	if isOOXMLMediaType(mediaType) {
+		temporary, tempErr := os.CreateTemp("", "oktapod-ooxml-capture-*")
+		if tempErr != nil {
+			return ArtifactCaptureResult{}, tempErr
+		}
+		temporaryPath := temporary.Name()
+		defer os.Remove(temporaryPath)
+		written, copyErr := io.Copy(temporary, io.LimitReader(reader, MaxArtifactCaptureBytes+1))
+		if copyErr != nil {
+			_ = temporary.Close()
+			return ArtifactCaptureResult{}, copyErr
+		}
+		if written > MaxArtifactCaptureBytes {
+			_ = temporary.Close()
+			return ArtifactCaptureResult{}, fmt.Errorf("OOXML artifact exceeds %d bytes", MaxArtifactCaptureBytes)
+		}
+		if _, seekErr := temporary.Seek(0, io.SeekStart); seekErr != nil {
+			_ = temporary.Close()
+			return ArtifactCaptureResult{}, seekErr
+		}
+		if validateErr := validateOOXMLArchive(temporary, written, mediaType); validateErr != nil {
+			_ = temporary.Close()
+			return ArtifactCaptureResult{}, validateErr
+		}
+		if _, seekErr := temporary.Seek(0, io.SeekStart); seekErr != nil {
+			_ = temporary.Close()
+			return ArtifactCaptureResult{}, seekErr
+		}
+		descriptor, err = s.blobs.Put(ctx, temporary, mediaType, MaxArtifactCaptureBytes)
+		_ = temporary.Close()
+	} else {
+		descriptor, err = s.blobs.Put(ctx, reader, mediaType, MaxArtifactCaptureBytes)
+	}
 	if err != nil {
 		return ArtifactCaptureResult{}, err
 	}
@@ -104,6 +139,20 @@ func DetectArtifactMediaType(name string, prefix []byte) (string, error) {
 	if isPDF {
 		return "application/pdf", nil
 	}
+	isZIP := len(prefix) >= 4 && prefix[0] == 'P' && prefix[1] == 'K' && (prefix[2] == 3 || prefix[2] == 5 || prefix[2] == 7) && (prefix[3] == 4 || prefix[3] == 6 || prefix[3] == 8)
+	if extension == ".pptx" || extension == ".docx" || extension == ".xlsx" {
+		if !isZIP {
+			return "", fmt.Errorf("OOXML_SIGNATURE_INVALID: %s is not a ZIP package", name)
+		}
+		switch extension {
+		case ".pptx":
+			return "application/vnd.openxmlformats-officedocument.presentationml.presentation", nil
+		case ".docx":
+			return "application/vnd.openxmlformats-officedocument.wordprocessingml.document", nil
+		default:
+			return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", nil
+		}
+	}
 	detected := http.DetectContentType(prefix)
 	if strings.HasPrefix(detected, "image/png") || strings.HasPrefix(detected, "image/jpeg") || strings.HasPrefix(detected, "image/gif") || strings.HasPrefix(detected, "image/webp") {
 		return strings.Split(detected, ";")[0], nil
@@ -130,4 +179,51 @@ func DetectArtifactMediaType(name string, prefix []byte) (string, error) {
 	default:
 		return detected, nil
 	}
+}
+
+func isOOXMLMediaType(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "application/vnd.openxmlformats-officedocument.")
+}
+
+func validateOOXMLArchive(reader io.ReaderAt, size int64, mediaType string) error {
+	archive, err := zip.NewReader(reader, size)
+	if err != nil {
+		return fmt.Errorf("OOXML_ZIP_INVALID: %w", err)
+	}
+	if len(archive.File) > 20_000 {
+		return fmt.Errorf("OOXML_ZIP_BOMB: package contains too many entries")
+	}
+	required := map[string]bool{"[Content_Types].xml": false}
+	switch mediaType {
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		required["ppt/presentation.xml"] = false
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		required["word/document.xml"] = false
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		required["xl/workbook.xml"] = false
+	}
+	var expanded uint64
+	for _, file := range archive.File {
+		clean := filepath.ToSlash(filepath.Clean(file.Name))
+		if clean == "." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || strings.Contains(file.Name, "\\") || file.Flags&0x1 != 0 {
+			return fmt.Errorf("OOXML_PATH_INVALID: package contains an unsafe or encrypted entry")
+		}
+		expanded += file.UncompressedSize64
+		if expanded > 512<<20 || (file.CompressedSize64 > 0 && file.UncompressedSize64/file.CompressedSize64 > 2000) {
+			return fmt.Errorf("OOXML_ZIP_BOMB: expanded size or compression ratio exceeds the limit")
+		}
+		if _, ok := required[file.Name]; ok {
+			required[file.Name] = true
+		}
+		lower := strings.ToLower(file.Name)
+		if strings.HasSuffix(lower, "vbaproject.bin") || strings.HasSuffix(lower, ".xla") {
+			return fmt.Errorf("DOCUMENT_MACRO_UNSUPPORTED: macro-enabled output cannot be captured")
+		}
+	}
+	for name, present := range required {
+		if !present {
+			return fmt.Errorf("OOXML_PART_MISSING: %s", name)
+		}
+	}
+	return nil
 }

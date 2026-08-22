@@ -43,6 +43,8 @@ const digest = createHash('sha256').update(readFileSync(output)).digest('hex')
 const checksumPath = `${output}.sha256`
 writeFileSync(checksumPath, `${digest}  ${artifactName}\n`, 'utf8')
 
+execFileSync(process.execPath, [join(root, 'Test', 'build-document-runtime.mjs')], { cwd: root, stdio: 'inherit' })
+
 process.stdout.write(`Release artifact: ${output}\n`)
 process.stdout.write(`Version: ${reportedVersion}\n`)
 process.stdout.write(`SHA256: ${digest}\n`)

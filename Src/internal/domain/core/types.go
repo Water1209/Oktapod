@@ -58,6 +58,12 @@ const (
 	ToolWorkspaceShell          = "workspace_shell"
 	ToolArtifactCapture         = "artifact_capture"
 	ToolAssetStage              = "asset_stage"
+	ToolDocumentOpen            = "document_open"
+	ToolDocumentRead            = "document_read"
+	ToolDocumentCreate          = "document_create"
+	ToolDocumentApply           = "document_apply"
+	ToolDocumentRender          = "document_render"
+	ToolDocumentExport          = "document_export"
 	ToolGitStatus               = "git_status"
 	ToolGitDiff                 = "git_diff"
 	ToolGitLog                  = "git_log"
@@ -196,6 +202,12 @@ const (
 	CapabilityReviewRejected    = "rejected"
 	CapabilityScopeGlobal       = "global"
 	CapabilityScopeProject      = "project"
+	CapabilityOriginSystem      = "system"
+	CapabilityOriginPreset      = "preset"
+	CapabilityOriginCustom      = "custom"
+	CapabilityUpdateCurrent     = "current"
+	CapabilityUpdateAvailable   = "available"
+	CapabilityUpdateDegraded    = "degraded"
 
 	StepAgentCoordinatorPlan      = "agent_coordinator_plan"
 	StepAgentWorker               = "agent_worker"
@@ -1122,6 +1134,11 @@ type Capability struct {
 	CredentialExists bool
 	CredentialStatus string
 	Availability     string
+	Origin           string
+	PresetKey        string
+	Dependencies     []string
+	ManagedVersion   string
+	UpdateState      string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -1202,6 +1219,64 @@ type CreateCapabilityInput struct {
 	Credential     string
 	Credentials    map[string]string
 	CredentialRef  string
+	Origin         string
+	PresetKey      string
+	Dependencies   []string
+	ManagedVersion string
+	UpdateState    string
+}
+
+type PresetResourceCatalogItem struct {
+	PresetKey      string
+	Kind           string
+	Name           string
+	Version        string
+	Description    string
+	Origin         string
+	Dependencies   []string
+	ManagedVersion string
+	UpdateState    string
+	InstallState   string
+	CapabilityID   string
+	Availability   string
+}
+
+type DocumentSession struct {
+	ID                    string
+	OrganizationID        string
+	ProjectID             string
+	OwnerUserID           string
+	TaskID                string
+	RunID                 string
+	OpenKey               string
+	SourceRef             string
+	SourceContentHash     string
+	Format                string
+	Mode                  string
+	RuntimeVersion        string
+	ExtractionProfileHash string
+	Revision              int64
+	RevisionHash          string
+	WorkingHandle         string
+	StructureJSON         string
+	WarningsJSON          string
+	RenderedRevision      int64
+	RenderHash            string
+	RenderManifestJSON    string
+	Status                string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type DocumentRevision struct {
+	DocumentID    string
+	Revision      int64
+	RevisionHash  string
+	OperationHash string
+	WorkingHandle string
+	StructureJSON string
+	WarningsJSON  string
+	CreatedAt     time.Time
 }
 
 type Memory struct {

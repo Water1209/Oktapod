@@ -55,7 +55,7 @@ func TestMainAgentModelRequestContractMatchesBuiltinCatalog(t *testing.T) {
 	request := model.requests[0]
 	wantNames := make([]string, 0, len(core.BuiltinToolSpecs()))
 	for _, spec := range core.BuiltinToolSpecs() {
-		if spec.Name == core.ToolRequestPermission || spec.Name == core.ToolUpdatePlan {
+		if spec.Name == core.ToolRequestPermission || spec.Name == core.ToolUpdatePlan || isDocumentTool(spec.Name) {
 			continue
 		}
 		wantNames = append(wantNames, spec.Name)
@@ -74,7 +74,7 @@ func TestMainAgentModelRequestContractMatchesBuiltinCatalog(t *testing.T) {
 		t.Fatalf("new Run advertised legacy permission tool: %#v", gotNames)
 	}
 	if request.ContextPlan["builtin_tool_definitions"] != len(core.BuiltinToolSpecs()) ||
-		request.ContextPlan["tool_definitions_after_skill_scope"] != len(core.BuiltinToolSpecs())-1 {
+		request.ContextPlan["tool_definitions_after_skill_scope"] != len(wantNames)+1 {
 		t.Fatalf("context plan=%#v", request.ContextPlan)
 	}
 	if strings.Contains(request.SystemPrompt, "# Available tools") || !strings.Contains(request.SystemPrompt, "# Stage instructions") {

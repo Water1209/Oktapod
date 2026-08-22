@@ -23,6 +23,9 @@ const item = (id: string, kind: Capability['kind']): Capability => ({
   permission_diff: [],
   credential_state: 'ready',
   credential_configured: true,
+  origin: 'custom',
+  dependencies: [],
+  update_state: 'current',
   created_at: '2026-08-13T00:00:00Z',
   updated_at: '2026-08-13T00:00:00Z',
 })

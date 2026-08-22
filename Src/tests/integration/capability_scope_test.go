@@ -46,10 +46,12 @@ func TestCapabilityGlobalAndProjectScopesAreResolvedPerProject(t *testing.T) {
 		t.Fatalf("new version must coexist: upgrade=%#v err=%v", upgrade, err)
 	}
 	firstItems, err := service.ListCapabilities(context.Background(), first.ID)
+	firstItems = customCapabilities(firstItems)
 	if err != nil || len(firstItems) != 3 {
 		t.Fatalf("first items=%#v err=%v", firstItems, err)
 	}
 	secondItems, err := service.ListCapabilities(context.Background(), second.ID)
+	secondItems = customCapabilities(secondItems)
 	if err != nil || len(secondItems) != 2 {
 		t.Fatalf("second items=%#v err=%v", secondItems, err)
 	}

@@ -49,6 +49,7 @@ type ToolRuntime struct {
 	workspace       WorkspaceExecutor
 	artifactCapture application.ArtifactCapture
 	assetStager     application.AssetStager
+	documentRuntime application.DocumentExecutor
 	webSearch       WebSearchExecutor
 	webAccess       WebAccess
 	mcpSecrets      application.ProviderSecretStore
@@ -66,13 +67,13 @@ type preparedTool struct {
 func (w *Worker) toolRuntime() ToolRuntime {
 	return ToolRuntime{
 		ledger: w.repository, repository: w.repository, workspace: w.workspace,
-		artifactCapture: w.artifactCapture, assetStager: w.assetStager,
+		artifactCapture: w.artifactCapture, assetStager: w.assetStager, documentRuntime: w.documentRuntime,
 		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
 	}
 }
 
 func isToolRuntimeStep(stepType string) bool {
-	return stepType == core.ToolSkillInvoke || stepType == core.ToolWebSearch || stepType == core.ToolWebFetch || isWorkspaceTool(stepType) || isMCPTool(stepType)
+	return stepType == core.ToolSkillInvoke || stepType == core.ToolWebSearch || stepType == core.ToolWebFetch || isWorkspaceTool(stepType) || isDocumentTool(stepType) || isMCPTool(stepType)
 }
 
 func (runtime ToolRuntime) Execute(ctx context.Context, step core.ClaimedStep, run core.RunContext) core.StepOutcome {
@@ -208,12 +209,45 @@ func (runtime ToolRuntime) preflight(ctx context.Context, step core.ClaimedStep,
 		return runtime.preflightWeb(run, invocation)
 	case isWorkspaceTool(invocation.Name):
 		return runtime.preflightWorkspace(run, invocation, planned)
+	case isDocumentTool(invocation.Name):
+		return runtime.preflightDocument(run, invocation)
 	case isMCPTool(invocation.Name):
 		return runtime.preflightMCP(ctx, run, invocation)
 	default:
 		failure := toolPolicyFailure(step.StepType, "tool is not routed through ToolRuntime")
 		return preparedTool{}, &failure
 	}
+}
+
+func (runtime ToolRuntime) preflightDocument(run core.RunContext, invocation FrozenToolInvocation) (preparedTool, *core.StepOutcome) {
+	if runtime.documentRuntime == nil {
+		failure := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "DOCUMENT_RUNTIME_UNAVAILABLE", ResultSummary: "共享文档运行时未安装或健康检查失败。", Output: map[string]any{"retryable": false, "repair": "/resource-catalog/document-runtime:install"}}
+		return preparedTool{}, &failure
+	}
+	var snapshot struct {
+		DocumentRuntime struct {
+			Protocol       string `json:"protocol"`
+			RuntimeVersion string `json:"runtime_version"`
+		} `json:"document_runtime"`
+	}
+	if json.Unmarshal([]byte(run.ConfigSnapshotJSON), &snapshot) != nil || snapshot.DocumentRuntime.Protocol != "oktapod.document/v1" {
+		failure := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "DOCUMENT_RUNTIME_NOT_SNAPSHOTTED", ResultSummary: "文档运行时没有在 Run 创建时冻结，拒绝临时扩权。", Output: map[string]any{"retryable": false}}
+		return preparedTool{}, &failure
+	}
+	healthCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	health := runtime.documentRuntime.Health(healthCtx)
+	cancel()
+	if !health.Available || health.Version != snapshot.DocumentRuntime.RuntimeVersion || health.Protocol != snapshot.DocumentRuntime.Protocol {
+		failure := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "DOCUMENT_RUNTIME_VERSION_UNAVAILABLE", ResultSummary: "当前主机缺少该 Run 冻结的文档运行时版本。", Output: map[string]any{"retryable": true, "required_version": snapshot.DocumentRuntime.RuntimeVersion, "available_version": health.Version}}
+		return preparedTool{}, &failure
+	}
+	call := core.ToolCall{ID: invocation.ToolCallID, Name: invocation.Name, Arguments: invocation.Arguments}
+	return preparedTool{
+		dispatch:       func(ctx context.Context) core.ToolExecution { return runtime.documentRuntime.Execute(ctx, run, call) },
+		receiptUnknown: "文档操作收据状态未知，已停止可能重复的自动写入。",
+		successSummary: "文档操作已通过修订、Hash 与运行时协议校验。",
+		failureSummary: "文档操作失败，原件与已提交修订保持不变。",
+	}, nil
 }
 
 func (runtime ToolRuntime) preflightSkill(run core.RunContext, invocation FrozenToolInvocation) (preparedTool, *core.StepOutcome) {

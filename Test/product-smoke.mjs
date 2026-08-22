@@ -48,4 +48,12 @@ if (createProject.status !== 201) throw new Error(`project creation failed: ${cr
 const project = await createProject.json()
 if (!project.id) throw new Error('created project has no id')
 
+const resourceCatalog = await fetch(`${baseURL}/resource-catalog?project_id=${encodeURIComponent(project.id)}`, { headers: { Cookie: cookie } })
+if (!resourceCatalog.ok) throw new Error(`resource catalog failed: ${resourceCatalog.status} ${await resourceCatalog.text()}`)
+const resources = (await resourceCatalog.json()).items || []
+const documentRuntime = resources.find((item) => item.preset_key === 'document-runtime')
+if (!documentRuntime || documentRuntime.install_state !== 'installed' || documentRuntime.availability !== 'available') {
+  throw new Error(`signed Document Runtime is not active in release smoke: ${JSON.stringify(documentRuntime || null)}`)
+}
+
 process.stdout.write(`Oktapod ${runtime.version} smoke passed for project ${project.id}\n`)

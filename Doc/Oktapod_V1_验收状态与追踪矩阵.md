@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.12
-> 更新日期：2026-08-21
+> 版本：v1.15
+> 更新日期：2026-08-22
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
 
@@ -20,7 +20,7 @@
 
 | 发布 | 状态 | 判断 |
 |---|---|---|
-| V1.0.0 本地 Release Candidate | `RC_READY` | V1 个人版必选能力已关闭；Windows 全量门禁、带版本工件和独立数据目录产品烟测已通过 |
+| V1.0.0 本地 Release Candidate | `PARTIAL` | V1 原有个人版基线证据仍有效，但当前发行命令已纳入签名 Document Runtime 硬门禁；发布用自包含依赖、真实签名包和加载烟测未在本工作树重跑，暂不沿用旧 `RC_READY` |
 | V1.0.0 正式 tag | `BLOCKED` | 等待当前 `main` 进入 Ubuntu/Windows CI，完成双平台原生产品烟测与 Ubuntu race；只在用户明确授权时 push/tag |
 | 历史 Release 1A/1B | `ARCHIVED` | 原 Release 1A/1B 范围已并入 V1 统一规划，不再单独追踪 |
 
@@ -34,10 +34,11 @@
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
 | B4 | MCP/Skill/Web Access | `PASS` | 通用 MCP/Skill 已落地；内建 `web_search` 与 `web_fetch` 共用 WebAccess，私网采用精确 origin、Run 冻结交集、每 Run 每 origin 强制人工审批和安全 Transport；全局 Skill 按用户 Scope 在其他自有项目中可调用 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、基线解释、文件/Hunk、行号、增删统计、折叠和受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
-| B6 | 发布收口 | `PARTIAL` | 2026-08-22 Windows `pnpm verify`（Web 55/55）、foundation 初始化 1/1 + 重启解锁 1/1、success 27/27、带版本工件和独立数据目录产品烟测通过；真实 Kimi Task 流式终态回归通过，进程 kill 恢复保留既有证据；本机 race 因 `CGO_ENABLED=0` 且无 C 编译器未启动，Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
+| B6 | 发布收口 | `PARTIAL` | 2026-08-22 Windows `pnpm verify`、foundation 1/1 + 重启解锁 1/1、success 27/27 与原 V1 工件证据保留；当前 `release:build/smoke` 新增签名 Document Runtime、真实包内依赖/OCR 和资源 `available` 硬门禁，发布输入尚未提供，因此当前树的带版本工件需重新产生；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 | B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；工作区/项目文件/任务输出三分类；Composer 附件/`asset_stage`；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
 | B8 | 统一配置与数据库密钥库 | `PASS` | 000058～000063、AES-256-GCM DatabaseSecretStore、两阶段恢复、严格 YAML、Web Access/数据库设置、配置/Vault API+CLI+UI、Backup V2 和浏览器重启自动解锁闭环已落地；无旧 Keyring 迁移 |
 | B9 | Agent Runtime 性能 V2 | `PARTIAL` | Auto 单 Turn、Plan Transition V2、Task 临时正文流、冻结 Provider 能力、token-aware projection、000064 per-call barrier 与性能字段已落地；本地完整验证、浏览器回归和 Windows 原生烟测通过，12 场景 30 次回放、真实 Provider 5 次和 p50/p95 报告待完成，不触发 Durable Fast Path |
+| B10 | 预置文档能力与 Artifact Runtime | `PARTIAL` | 000065～000067、五个预置资源、删除记忆/恢复/依赖、六个静态工具、签名 Runtime 客户端、缓存/CAS 修订/预览/Artifact 完成门禁和四格式 25 次真实 RPC 已完成；真实浏览器确认五个资源可用、Runtime 工具/依赖提示、代码任务输出与 Changes 正常且控制台零错误；复杂编辑矩阵、恶意夹具、标准性能 P95、Windows/Linux 自包含签名包及升级回滚仍未关闭，禁止宣称完整办公套件发布可用 |
 
 ## 2.2 V1 正式范围决策
 
@@ -59,12 +60,15 @@
 | ID | 验收项 | 状态 | 当前证据 |
 |---|---|---|---|
 | BASE-001 | `pnpm install --frozen-lockfile` 可复现依赖 | `PASS` | 2026-07-26 初始基线执行成功；随后为根目录 E2E import 补充 Playwright 依赖并更新锁文件，重新安装成功 |
-| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-22 最终执行通过：Go vet/test、ESLint、Web 14 文件 55/55、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
+| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-22 最终执行通过：Go vet/test、ESLint、Web 14 文件 56/56、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
 | BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-22 最终执行 success 27/27 通过；foundation 初始化 1/1 + Vault 服务重启自动解锁 1/1、turn 1/1 证据继续有效。Runtime V2 回归同时覆盖无计划 Run 零合法 404 与 Auto answer 最终助手消息刷新 |
 | BASE-004 | auth/turn/approval E2E | `PASS` | auth desktop/mobile 2/2、turn 1/1、approval 1/1 通过 |
-| BASE-005 | Windows 与 Linux 构建边界 | `PASS` | Windows `pnpm verify`/浏览器套件通过；WSL Ubuntu Go 全量、Web 测试和生产构建已有证据。Linux 浏览器全视口已转后续加固 |
+| BASE-005 | Windows 与 Linux 构建边界 | `PARTIAL` | Windows `pnpm verify`/浏览器套件与旧 WSL Ubuntu Go/Web 证据保留；本批 Document Runtime 变更尚未产生 Windows/Linux 双平台签名包、原生加载烟测和 Ubuntu race，不能用旧证据覆盖新代码 |
 | BASE-006 | 前端首包容量 | `PASS` | 主 JS 约 334KB；Terminal、Settings、Import/Export 已拆分为约 3.35KB、7.57KB、8.27KB 的懒加载路由块 |
 | BASE-007 | Vault 与可移植配置 | `PASS` | Crypto/SQLite 覆盖篡改、互换、错误口令、旋转、Provider/MCP/OAuth CRUD、重启、Locked 恢复和明文 Sentinel 扫描；Playwright foundation 两阶段覆盖 UI 初始化确认及服务重启自动解锁，Success 覆盖 Reviewer 与 MCP 重录 |
+| BASE-008 | Document Runtime 四格式烟测 | `PASS_LOCAL` | 本机自包含 Python 依赖 + LibreOffice 执行 `pnpm test:document-runtime`，25 次 JSON-RPC 覆盖 PPTX/DOCX/XLSX/PDF 创建、打开、结构编辑、再次打开、渲染和导出；Tesseract 本机缺失，OCR 发布证据待签名包 |
+| BASE-009 | Document Runtime 双平台签名发布 | `PARTIAL` | 构建脚本已强制许可证、SPDX SBOM、逐文件 Hash、Ed25519 签名和平台归档，并在归档前以包内 Python 验证全部锁定依赖、LibreOffice、Tesseract `chi_sim + eng` 和四格式 25 次 RPC；release smoke 强制加载签名包且资源必须为 `available`。部署指南已补齐 Windows 版本目录/任务计划、Linux systemd、同渠道信任键、Hash、首次验收、旁路升级和空 DataRoot 回滚合同；真实 Windows/Linux 发布 Key、离线安装、卸载、升级回滚仍无 CI 工件证据，不能因文档完成改为 `PASS` |
+| BASE-010 | 预置资源与代码场景真实浏览器验收 | `PASS_LOCAL` | 最终本机构建在 `127.0.0.1:8787` 验证五个预置资源均可用、六个 Runtime 工具可见、级联删除提示准确且取消无变更；代码项目的已完成任务、四个不可变输出、下载/预览与 Changes 正常。`.oktapod` 在后端关闭式排除，82 个历史 pip/解析残留默认折叠且不进入变更操作，公开成果文件 19 个，控制台 `error/warn=0` |
 
 ## 4. OHCS Golden Trace
 
@@ -210,3 +214,4 @@
 | 2026-08-21 | Task 长流与只读完成门禁补充修复 | 原失败“贪吃蛇” Run 在浏览器续跑时出现一次 430,298 ms 的成功 SSE：连接持续活跃却迟迟没有完整工具调用，证明首包/流静默边界不能限制 reasoning 或心跳造成的假进展。Worker 新增单次模型 Turn 120 秒总完成时限，超限持久化为 `model_turn_timeout/model_turn`，网络类仍最多重试 1 次。完成合同改为按意图片段识别正向工作区动作，“不要修改任何文件；只需回复 OK”及中英文同类只读请求不再触发 `WORKSPACE_MUTATION_MISSING`，混合请求“不要修改旧文件，但创建新文件”仍要求真实变更；历史误判 Run 可从成功的 `completion_recovery` 审计检查点追加恢复 Step，不再因“没有 failed Step”而无法继续；领域单测与真实 Worker 集成回归通过。 |
 | 2026-08-21 | `main` 首次双平台 CI 与 Windows Git 根路径修复 | `main` 首次远端 CI 的 Ubuntu/Windows 原生发布构建与产品烟测均通过；Windows `pnpm verify` 暴露 Runner 临时目录短路径与 Git 规范路径文本不同，导致 Workspace Git/RunChanges 误报 `GIT_REPOSITORY_INVALID`。根目录校验改用 `os.SameFile` 文件系统身份，文本归一化仅作为路径不可访问时的保守回退，并新增别名身份回归；Workspace Git 全包、RunChanges 定向集成和本地 `pnpm verify`（Web 48/48）通过，远端修复提交的双平台 CI 待重跑确认。 |
 | 2026-08-22 | Agent Runtime 性能 V2 实施 | 基于 `main@f3fa78d` 在新 Run 冻结 `auto_agent_v2/transition_v2/barrier_v2/token_v2`；Auto 取消分类调用，计划控制与业务工具同响应；Bootstrap 共享 LiveTurnHub 并以无 cursor `run_live` 投影安全正文；活跃 Run 使用冻结模型能力且不访问目录；000064 保存 presentation/performance/barrier/context projection 附属数据。新旧协议、Auto 一次业务调用、显式 Skill 零握手、慢消费者、完整组裁剪、同组并发领取与 unknown/MCP mutation 独占定向测试通过；真实浏览器进一步修复无计划查询 404 和 Auto answer 消息刷新竞态。最终 `pnpm verify`（Web 55/55）、Playwright foundation 1/1 + 重启 1/1 + success 27/27、Windows release build 与隔离数据目录 smoke 通过，工件 SHA256 `a02b931c193bf2775d8c7678e7fa2779c5b64ad55d2b1ba215736e7829c00790`；本机 race 因缺少 CGO/C 编译器未启动。真实 Provider 和 30 次 p95 尚未执行，因此 B9 保持 `PARTIAL`，未 push/tag。 |
+| 2026-08-22 | 预置文档 Runtime 与浏览器收口 | 当前工作树完成五个预置资源、六个固定工具和四格式 Runtime 主链路；真实浏览器验证资源生命周期提示、代码任务输出与 Changes。实测修复开发渲染器路径未透传，以及 `.oktapod`/历史 pip 缓存污染公开 Changes 两个缺口；公开成果 19 个、临时残留 82 个折叠隔离、控制台零错误。双平台签名发布、标准 P95 与完整复杂编辑/恶意夹具仍保持 `PARTIAL`。 |

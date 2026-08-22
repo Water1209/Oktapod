@@ -24,6 +24,7 @@ Oktapod 是一套面向个人与企业团队的多用户 Agent OS，不按个人
 - `Src/web/`：React/TypeScript 前端；按业务 `features` 组织，生成 API 客户端放 `Src/web/src/shared/api/generated/`，仅 UI 浏览器闭环放 `Test/e2e/`。
 - `Src/tests/integration/`：跨模块契约、集成、故障、安全的白盒集成测试；`Test/e2e/`：Playwright 端到端测试。
 - `Deploy/`：原生发布配置示例和运维入口；示例不得包含真实 Secret。当前 V1 不提供 Docker 或 Compose 发布路径。
+- `Runtime/`：保存随发布包交付、但不嵌入 Go 主程序的受信运行时源码、锁定清单与打包入口；平台构建产物、缓存、临时用户目录和第三方工具二进制不得提交，统一输出到被忽略的 `Build/runtime/`。
 
 新增代码目录必须符合上述边界；如果确需新一级目录，先在这里说明用途、命名和清理规则。构建产物统一进入被忽略的 `Build/`、`dist/`、`bin/`、`coverage/` 或系统临时目录，不在源码目录生成临时文件。`sqlc` 生成代码固定写入 `Src/internal/adapters/db/sqlite/sqlc/`，仓库根目录的 `internal/` 视为旧配置产生的本机残留，不得提交。
 
@@ -91,11 +92,13 @@ Oktapod 是一套面向个人与企业团队的多用户 Agent OS，不按个人
 | 文档 | 版本 | 最后更新 | 说明 |
 |------|------|---------|------|
 | README.md | 最新 | 每次变更同步 | 项目门面，60 行内 |
-| `Doc/Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md` | V2.6 | 2026-08-20 | **当前执行基线**：V1 定位、范围、架构、ADR |
+| `Doc/Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md` | V2.7 | 2026-08-22 | **当前执行基线**：V1 定位、范围、架构、ADR |
 | `Doc/Oktapod_V1_执行计划与验收门禁_V1.0.md` | V1.7 | 2026-08-20 | **当前执行基线**：差距驱动批次、验收门禁 |
-| `Doc/Oktapod_V1.1_Agent_Runtime_优化执行计划.md` | V1.3 | 2026-08-21 | V1.1 Runtime、Web Access 与 Task 流式模型传输实施证据 |
-| `Doc/Oktapod_V1_验收状态与追踪矩阵.md` | V1.10 | 2026-08-21 | 发布状态与功能完成度唯一权威 |
-| `Doc/Oktapod_V1_发布说明_V1.0.0.md` | V1.0.0 RC | 2026-07-30 | 发布范围、限制、安装和回滚 |
+| `Doc/Oktapod_V1.1_Agent_Runtime_优化执行计划.md` | V1.5 | 2026-08-22 | V1.1 Runtime、Web Access、文档 Runtime 与 Task 流式模型传输实施证据 |
+| `Doc/Oktapod_预置文档能力与_Artifact_Runtime_实现说明_V1.0.md` | V1.0 | 2026-08-22 | 预置资源、固定文档协议、签名 Runtime、格式矩阵与未关闭门禁 |
+| `Doc/Oktapod_部署与运维指南_v1.0.md` | V1.1.0 | 2026-08-22 | Windows/Linux 原生部署、签名 Runtime、升级回滚与运维 |
+| `Doc/Oktapod_V1_验收状态与追踪矩阵.md` | V1.15 | 2026-08-22 | 发布状态与功能完成度唯一权威 |
+| `Doc/Oktapod_V1_发布说明_V1.0.0.md` | V1.0.0 RC | 2026-08-22 | 发布范围、限制、安装和回滚 |
 | `Doc/Oktapod_PRD_v1.1_轻量化架构优化版.md` | V1.1 | 历史产品蓝图 | 完整产品愿景，V1 范围以审定版为准 |
 | `Doc/Oktapod_三阶段递进式架构设计_V1.0.md` | V1.0 | 架构基线 | 长期演进路线图（Phase 1→2→3） |
 

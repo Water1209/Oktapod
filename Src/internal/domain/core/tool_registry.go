@@ -113,6 +113,12 @@ func BuiltinToolSpecs() []ToolSpec {
 		{Name: ToolWorkspaceWriteFile, Description: "Create a new file in the project workspace. Use workspace_edit_file to modify existing files.", Sequential: true, Parameters: objectSchema([]string{"path", "content"}, map[string]any{"path": path, "content": map[string]any{"type": "string", "maxLength": 1048576}})},
 		{Name: ToolArtifactCapture, Description: "Register one existing project-relative file as an immutable task output after validating its path, content hash, size, and media signature.", PromptHint: "Capture a script- or command-generated file as a deliverable or evidence. A generated file is not a task output until this succeeds.", Sequential: true, Parameters: objectSchema([]string{"path", "kind"}, map[string]any{"path": path, "kind": map[string]any{"type": "string", "enum": []string{"deliverable", "evidence"}}})},
 		{Name: ToolAssetStage, Description: "Materialize one attachment frozen into this Run at a read-only internal workspace path for script or command processing.", PromptHint: "Stage a selected binary or large attachment before processing it with workspace tools.", Sequential: true, Parameters: objectSchema([]string{"asset_id"}, map[string]any{"asset_id": map[string]any{"type": "string", "minLength": 36, "maxLength": 36}})},
+		{Name: ToolDocumentOpen, Description: "Authorize and parse one frozen Asset, immutable Artifact, or project Workspace document through the shared document runtime.", PromptHint: "Open a PPTX, PDF, DOCX, or XLSX directly; do not create a parsing script.", Sequential: true, Parameters: objectSchema([]string{"source_ref", "mode"}, map[string]any{"source_ref": map[string]any{"type": "string", "minLength": 7, "maxLength": 600, "pattern": "^(asset|artifact|workspace):.+$"}, "mode": map[string]any{"type": "string", "enum": []string{"structure", "full"}}})},
+		{Name: ToolDocumentRead, Description: "Read a bounded page of structured document content from an authorized document revision.", Parameters: objectSchema([]string{"document_ref"}, map[string]any{"document_ref": map[string]any{"type": "string", "minLength": 8, "maxLength": 120}, "selector": map[string]any{"type": "string", "maxLength": 500}, "cursor": cursor, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}})},
+		{Name: ToolDocumentCreate, Description: "Create a new Run-bound document working copy from a blank document or an authorized template.", Sequential: true, Parameters: objectSchema([]string{"format", "specification"}, map[string]any{"format": map[string]any{"type": "string", "enum": []string{"pptx", "pdf", "docx", "xlsx"}}, "template_ref": map[string]any{"type": "string", "maxLength": 600, "pattern": "^(asset|artifact|workspace):.+$"}, "specification": map[string]any{"type": "object", "maxProperties": 64, "additionalProperties": true}})},
+		{Name: ToolDocumentApply, Description: "Apply bounded structural document operations using a compare-and-swap revision number; code and commands are never accepted.", Sequential: true, Parameters: objectSchema([]string{"document_ref", "expected_revision", "operations"}, map[string]any{"document_ref": map[string]any{"type": "string", "minLength": 8, "maxLength": 120}, "expected_revision": map[string]any{"type": "integer", "minimum": 1}, "operations": map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": map[string]any{"type": "object", "required": []string{"op"}, "maxProperties": 12, "additionalProperties": true, "properties": map[string]any{"op": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}}}}})},
+		{Name: ToolDocumentRender, Description: "Render previews and deterministic layout diagnostics for the current document revision.", Sequential: true, Parameters: objectSchema([]string{"document_ref", "expected_revision"}, map[string]any{"document_ref": map[string]any{"type": "string", "minLength": 8, "maxLength": 120}, "expected_revision": map[string]any{"type": "integer", "minimum": 1}, "selector": map[string]any{"type": "string", "maxLength": 500}})},
+		{Name: ToolDocumentExport, Description: "Validate, render, and export the current document revision as a new immutable Task Artifact.", PromptHint: "Use only after the final revision has a successful document_render receipt.", Sequential: true, Parameters: objectSchema([]string{"document_ref", "expected_revision", "name", "format", "kind"}, map[string]any{"document_ref": map[string]any{"type": "string", "minLength": 8, "maxLength": 120}, "expected_revision": map[string]any{"type": "integer", "minimum": 1}, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 180}, "format": map[string]any{"type": "string", "enum": []string{"pptx", "pdf", "docx", "xlsx"}}, "kind": map[string]any{"type": "string", "enum": []string{"deliverable", "evidence"}}})},
 		{Name: ToolWorkspaceRunCommand, Description: "Run a single command (e.g. 'go build', 'npm test'). For shell pipes and redirects, use workspace_shell.", Sequential: true, Parameters: objectSchema([]string{"program", "args"}, map[string]any{"program": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "args": map[string]any{"type": "array", "maxItems": 64, "items": map[string]any{"type": "string", "maxLength": 2000}}})},
 		{Name: ToolWorkspaceShell, Description: "Execute a shell command in the project workspace. Supports pipes, redirects, and command chaining. Use for compound operations like 'git clone xxx && npm install'. Destructive commands are rejected.", Sequential: true, Parameters: objectSchema([]string{"command"}, map[string]any{"command": map[string]any{"type": "string", "minLength": 1, "maxLength": 10000}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300}})},
 		{Name: ToolGitStatus, Description: "Read bounded Git status and return a precondition hash.", Parameters: emptyObjectSchema()},
@@ -168,6 +174,22 @@ func applyBuiltinToolMetadata(spec *ToolSpec) {
 	case ToolAssetStage:
 		spec.Capabilities = []string{"asset.stage"}
 		spec.Guidelines = []string{"Only asset ids frozen into the current Run are accepted; staged copies are read-only and temporary."}
+	case ToolDocumentOpen, ToolDocumentRead:
+		spec.Capabilities = []string{"document.runtime", "document.read"}
+		spec.RendererKind = "document"
+		spec.Guidelines = []string{"Use document_open once, retain its document_ref, then page through document_read; every cache hit rechecks source authority."}
+	case ToolDocumentCreate, ToolDocumentApply:
+		spec.Capabilities = []string{"document.runtime", "document.write"}
+		spec.RendererKind = "document"
+		spec.Guidelines = []string{"Edits create immutable revisions and require expected_revision; never pass source code, commands, macros, or external links."}
+	case ToolDocumentRender:
+		spec.Capabilities = []string{"document.runtime", "document.render"}
+		spec.RendererKind = "document"
+		spec.Guidelines = []string{"Render after the last edit and inspect returned layout warnings before export."}
+	case ToolDocumentExport:
+		spec.Capabilities = []string{"document.runtime", "document.export", "artifact.capture"}
+		spec.RendererKind = "document"
+		spec.Guidelines = []string{"Export never overwrites the source; it requires a successful render for the exact final revision and registers the output through ArtifactCapture."}
 	case ToolWorkspaceListFiles:
 		spec.Aliases, spec.Capabilities = []string{"ls"}, []string{"repository.read"}
 	case ToolWorkspaceFindFiles:
@@ -224,6 +246,18 @@ func minimumValidToolArguments(name string) map[string]any {
 		return map[string]any{"path": "output.pdf", "kind": "deliverable"}
 	case ToolAssetStage:
 		return map[string]any{"asset_id": "00000000-0000-7000-8000-000000000001"}
+	case ToolDocumentOpen:
+		return map[string]any{"source_ref": "asset:00000000-0000-7000-8000-000000000001", "mode": "structure"}
+	case ToolDocumentRead:
+		return map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001"}
+	case ToolDocumentCreate:
+		return map[string]any{"format": "docx", "specification": map[string]any{}}
+	case ToolDocumentApply:
+		return map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "replace_text", "find": "a", "replace": "b"}}}
+	case ToolDocumentRender:
+		return map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1)}
+	case ToolDocumentExport:
+		return map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "name": "output.docx", "format": "docx", "kind": "deliverable"}
 	case ToolWorkspaceFindFiles:
 		return map[string]any{"pattern": "*"}
 	case ToolWorkspaceGrep:

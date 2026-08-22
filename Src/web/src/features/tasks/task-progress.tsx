@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, Clock3, ExternalLink, Files, Globe2, LoaderCircle, LockKeyhole, RotateCw, Workflow } from 'lucide-react'
 import { api, type RunEvent, type Task } from '../../shared/api/client'
-import { buildTaskExecutionPlan, buildTaskTimeline, taskFailureInfo, taskStatusView, type TimelineState, type WebToolPresentation } from './task-progress-model'
+import { buildTaskExecutionPlan, buildTaskTimeline, taskFailureInfo, taskStatusView, type TimelineState, type ToolPresentation } from './task-progress-model'
 import { ApprovalCard } from '../approvals/approval-inbox'
 import { MultiFileReviewDialog } from './multi-file-review'
 import { useRunEvents } from '../runs/use-run-events'
@@ -40,12 +40,16 @@ export function TaskTimeline({ task, events, compact = false }: { task: Task; ev
   </>
 }
 
-export function WebAccessResultCard({ presentation }: { presentation: WebToolPresentation }) {
+export function WebAccessResultCard({ presentation }: { presentation: ToolPresentation }) {
   if (presentation.kind === 'web_search') {
     return <div className="web-result-card web-search-card"><header><Globe2 size={14} /><span><strong>搜索来源</strong><small>{presentation.provider || 'Web'} · {presentation.sources.length} 条{presentation.truncated ? ' · 已截断' : ''}</small></span></header><div className="web-source-list">{presentation.sources.map((source, index) => {
       const href = safeExternalURL(source.url)
       return <div className="web-source-item" key={`${source.url}:${index}`}><span><strong>{source.title || source.domain || '未命名来源'}</strong><small>{source.domain}</small></span>{source.snippet ? <p>{source.snippet}</p> : null}{href ? <a href={href} target="_blank" rel="noreferrer">打开来源<ExternalLink size={11} /></a> : null}</div>
     })}</div></div>
+  }
+  if (presentation.kind === 'document') {
+    const phaseLabel = { structure: '结构读取', revision: '文档修订', render: '渲染校验', output: '最终输出' }[presentation.phase]
+    return <div className="document-result-card"><header><Files size={14} /><span><strong>{phaseLabel}</strong><small>{presentation.format ? presentation.format.toUpperCase() : '文档'}{presentation.revision ? ` · 修订 ${presentation.revision}` : ''}{presentation.page_count ? ` · ${presentation.page_count} 页` : ''}{presentation.cache_hit ? ' · 缓存命中' : ''}</small></span></header>{presentation.previews.length ? <div className="document-preview-grid">{presentation.previews.map((preview, index) => <img key={preview} src={preview} loading="lazy" alt={`文档预览 ${index + 1}`} />)}</div> : null}{presentation.warnings.length ? <div className="document-layout-warnings"><strong>版式警告</strong>{presentation.warnings.map((warning) => <small key={warning}>{warning}</small>)}</div> : null}{presentation.path ? <code>{presentation.path}</code> : null}</div>
   }
   const privateTarget = presentation.network_class === 'private'
   const href = privateTarget ? '' : safeExternalURL(presentation.url)

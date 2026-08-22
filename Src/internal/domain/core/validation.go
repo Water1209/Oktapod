@@ -18,6 +18,27 @@ func ValidateCreateCapability(input CreateCapabilityInput) error {
 	if input.ScopeType != CapabilityScopeGlobal && input.ScopeType != CapabilityScopeProject {
 		return &ValidationError{Field: "scope_type", Message: "must be global or project"}
 	}
+	if input.Origin == "" {
+		input.Origin = CapabilityOriginCustom
+	}
+	if input.Origin != CapabilityOriginCustom && input.Origin != CapabilityOriginPreset && input.Origin != CapabilityOriginSystem {
+		return &ValidationError{Field: "origin", Message: "must be system, preset, or custom"}
+	}
+	if input.Origin == CapabilityOriginPreset && strings.TrimSpace(input.PresetKey) == "" {
+		return &ValidationError{Field: "preset_key", Message: "is required for preset capabilities"}
+	}
+	if input.Origin != CapabilityOriginPreset && strings.TrimSpace(input.PresetKey) != "" {
+		return &ValidationError{Field: "preset_key", Message: "is reserved for preset capabilities"}
+	}
+	if len(input.PresetKey) > 120 || len(input.ManagedVersion) > 64 || len(input.Dependencies) > 32 {
+		return &ValidationError{Field: "preset", Message: "preset metadata exceeds size limits"}
+	}
+	for _, dependency := range input.Dependencies {
+		dependency = strings.TrimSpace(dependency)
+		if dependency == "" || len(dependency) > 200 || strings.ContainsAny(dependency, " \t\r\n/\\:@?#") {
+			return &ValidationError{Field: "dependencies", Message: "must contain portable capability identifiers"}
+		}
+	}
 	if len(input.SourceFilename) > 255 || strings.ContainsRune(input.SourceFilename, 0) {
 		return &ValidationError{Field: "source_filename", Message: "must be a bounded file name"}
 	}

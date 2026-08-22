@@ -292,6 +292,12 @@ V1 只保留一套 Executor。`scene=work|code` 是工作流配置，只影响 P
 
 Reviewer 只审查 Policy 已判为 `Ask` 的普通 L2 动作，输入只有脱敏目标、工具、冻结参数摘要、Scope、风险和策略理由；没有工具、凭据或完整执行输出。结构版本为 `reviewer-decision-v1`，超时、非法输出、未配置或 L3 全部 fail-closed 并转人工/拒绝。私网 `web_fetch` 虽为 L2，但带 `ForceHumanApproval`，禁止 Reviewer 与 Full Access 代替人工建立 `run_origin` 授权。
 
+#### 4.6.1 预置文档能力与共享 Artifact Runtime
+
+PPTX/PDF/DOCX/XLSX 不再走“模型生成脚本 → 临时安装库 → 每次重新解析”路径。四个格式 Skill 是用户级全局预置 Capability，可停用、删除和手动恢复；`document-runtime` 是主机共享、独立签名的 Plugin。Skill 只声明触发、工作流、格式和固定工具白名单，Runtime 只能通过六个静态 `document_*` 工具进入统一 ToolRuntime，不建立通用动态插件执行注册表。
+
+资源状态按用户隔离，物理 Runtime 按主机共享；预置删除 tombstone 是升级/登录/重启的权威输入。文档输入只接受冻结 Asset、不可变 Artifact 或已授权 Workspace；解析/渲染缓存是可清理派生数据，缓存命中仍重做 Principal 授权。编辑使用 Run 绑定 CAS 修订，最终修订必须成功渲染后才能 `document_export`，输出继续由 ArtifactCapture 登记。完整合同、格式矩阵与发布缺口见 `Oktapod_预置文档能力与_Artifact_Runtime_实现说明_V1.0.md`。
+
 ### 4.7 Workspace、Asset、Artifact 与 Changes
 
 缓存、依赖、测试覆盖率和虚拟环境即使嵌套在其他目录中，也归入默认收起的 `temporary`，避免重建型文件淹没项目内容；该分类只影响治理展示，不移动或删除旧文件。
@@ -546,6 +552,7 @@ V1 本地 RC 执行 Windows Playwright 主链路；正式 tag 由 Ubuntu 与 Win
 | ADR-013 | **Scene 不授权** | Work/Code 共用执行内核，只改工作流；授权与风险判定独立 |
 | ADR-014 | **Artifact Capture 是唯一产物登记口** | 不扫描整个 Workspace，完成必须有可审计、可校验的新 Artifact |
 | ADR-015 | **文件类型不混储** | Workspace、Asset、Artifact 分别表示可变工作、可复用输入和不可变交付；Changes 只派生 Git |
+| ADR-016 | **文档 Skill 与执行 Runtime 分层** | 可删除 Skill 负责意图与流程；签名 Runtime 只暴露固定结构操作，所有 Receipt/Policy/Artifact 不变量继续由主内核掌握 |
 | ADR-016 | **私网 Web Access 三层授权** | 启动精确白名单 + Run Hash 快照 + 每 Run 每 origin 人工授权；当前策略只能收权不能给旧 Run 扩权 |
 
 ---

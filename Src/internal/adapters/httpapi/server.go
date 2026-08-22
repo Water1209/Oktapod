@@ -113,6 +113,7 @@ func newHandler(service *application.Service, logger *slog.Logger, ui http.Handl
 	router.Post("/api/v1/projects/{project_id}/turns/stream", server.streamProjectTurn)
 	router.Get("/api/v1/artifacts/{artifact_id}/preview", server.previewArtifactContent)
 	router.Get("/api/v1/assets/{asset_id}/preview", server.previewAssetContent)
+	router.Get("/api/v1/runs/{run_id}/documents/{document_id}/previews/{preview_name}", server.previewDocumentRender)
 	if ui == nil {
 		router.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -156,6 +157,24 @@ func (s *Server) previewAssetContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeInlinePreview(w, content, asset.Name, asset.MediaType, asset.SizeBytes, asset.ContentHash)
+}
+
+func (s *Server) previewDocumentRender(w http.ResponseWriter, r *http.Request) {
+	runID, documentID := chi.URLParam(r, "run_id"), chi.URLParam(r, "document_id")
+	if _, err := uuid.Parse(runID); err != nil {
+		s.writeProblem(w, r, http.StatusBadRequest, "INVALID_RUN_ID", "Invalid Run ID", "run_id must be a UUID")
+		return
+	}
+	if _, err := uuid.Parse(documentID); err != nil {
+		s.writeProblem(w, r, http.StatusBadRequest, "INVALID_DOCUMENT_ID", "Invalid document ID", "document_id must be a UUID")
+		return
+	}
+	preview, err := s.service.OpenDocumentPreview(r.Context(), runID, documentID, chi.URLParam(r, "preview_name"))
+	if err != nil {
+		s.writeProblem(w, r, http.StatusNotFound, "DOCUMENT_PREVIEW_NOT_FOUND", "Document preview not found", err.Error())
+		return
+	}
+	writeInlinePreview(w, preview.Content, preview.Name, preview.MediaType, preview.SizeBytes, preview.ContentHash)
 }
 
 func writeInlinePreview(w http.ResponseWriter, content io.ReadCloser, name, mediaType string, size int64, contentHash string) {
@@ -1970,6 +1989,37 @@ func (s *Server) ListProjectCapabilities(ctx context.Context, request generated.
 	return generated.ListProjectCapabilities200JSONResponse{Items: items}, nil
 }
 
+func (s *Server) ListResourceCatalog(ctx context.Context, request generated.ListResourceCatalogRequestObject) (generated.ListResourceCatalogResponseObject, error) {
+	items, err := s.service.ListResourceCatalog(ctx, request.Params.ProjectId.String())
+	if err != nil {
+		return nil, err
+	}
+	response := make([]generated.PresetResourceCatalogItem, 0, len(items))
+	for _, item := range items {
+		converted, convertErr := presetResourceCatalogResponse(item)
+		if convertErr != nil {
+			return nil, convertErr
+		}
+		response = append(response, converted)
+	}
+	return generated.ListResourceCatalog200JSONResponse{Items: response}, nil
+}
+
+func (s *Server) InstallPresetResource(ctx context.Context, request generated.InstallPresetResourceRequestObject) (generated.InstallPresetResourceResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	capability, err := s.service.InstallPresetResource(ctx, request.Body.ProjectId.String(), request.PresetKey)
+	if err != nil {
+		return nil, err
+	}
+	response, err := capabilityResponse(capability)
+	if err != nil {
+		return nil, err
+	}
+	return generated.InstallPresetResource200JSONResponse(response), nil
+}
+
 func (s *Server) CreateCapability(ctx context.Context, request generated.CreateCapabilityRequestObject) (generated.CreateCapabilityResponseObject, error) {
 	if request.Body == nil {
 		return nil, &core.ValidationError{Field: "body", Message: "is required"}
@@ -3546,7 +3596,37 @@ func capabilityResponse(capability core.Capability) (generated.Capability, error
 			credentialStatus = core.CredentialMissing
 		}
 	}
-	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), Availability: generated.ResourceAvailability(availability), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CredentialConfigured: capability.CredentialExists, CredentialState: generated.CapabilityCredentialState(credentialStatus), CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
+	origin := capability.Origin
+	if origin == "" {
+		origin = core.CapabilityOriginCustom
+	}
+	updateState := capability.UpdateState
+	if updateState == "" {
+		updateState = core.CapabilityUpdateCurrent
+	}
+	dependencies := capability.Dependencies
+	if dependencies == nil {
+		dependencies = []string{}
+	}
+	return generated.Capability{Id: id, OrganizationId: organizationID, ProjectId: projectID, OwnerUserId: ownerID, Kind: generated.CapabilityKind(capability.Kind), Name: capability.Name, Version: capability.Version, ManifestJson: capability.ManifestJSON, ContentHash: capability.ContentHash, Status: generated.CapabilityStatus(capability.Status), Availability: generated.ResourceAvailability(availability), RiskLevel: capability.RiskLevel, PermissionDiff: core.CapabilityPermissionDiff(capability.ManifestJSON), ScopeType: generated.CapabilityScopeType(scopeType), ScopeId: scopeID, SourceFilename: capability.SourceFilename, BundleHash: bundleHash, InstallJobId: installJobID, CredentialConfigured: capability.CredentialExists, CredentialState: generated.CapabilityCredentialState(credentialStatus), Origin: generated.CapabilityOrigin(origin), PresetKey: capability.PresetKey, Dependencies: dependencies, ManagedVersion: capability.ManagedVersion, UpdateState: generated.CapabilityUpdateState(updateState), CreatedAt: capability.CreatedAt, UpdatedAt: capability.UpdatedAt}, nil
+}
+
+func presetResourceCatalogResponse(item core.PresetResourceCatalogItem) (generated.PresetResourceCatalogItem, error) {
+	response := generated.PresetResourceCatalogItem{
+		PresetKey: item.PresetKey, Kind: generated.PresetResourceCatalogItemKind(item.Kind), Name: item.Name,
+		Version: item.Version, Description: item.Description, Origin: generated.PresetResourceCatalogItemOrigin(item.Origin),
+		Dependencies: append([]string(nil), item.Dependencies...), ManagedVersion: item.ManagedVersion,
+		UpdateState: generated.PresetResourceCatalogItemUpdateState(item.UpdateState), InstallState: generated.PresetResourceCatalogItemInstallState(item.InstallState),
+		Availability: generated.ResourceAvailability(item.Availability),
+	}
+	if item.CapabilityID != "" {
+		id, err := uuid.Parse(item.CapabilityID)
+		if err != nil {
+			return generated.PresetResourceCatalogItem{}, err
+		}
+		response.CapabilityId = &id
+	}
+	return response, nil
 }
 
 func resourceInstallDraftResponse(draft core.ResourceInstallDraft) (generated.ResourceInstallDraft, error) {

@@ -130,6 +130,7 @@ type ResourceRepository interface {
 	ListCapabilities(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Capability, error)
 	SetCapabilityStatus(ctx context.Context, scope core.Scope, capabilityID, status string, idempotency core.Idempotency) (core.Capability, error)
 	DeleteCapability(ctx context.Context, scope core.Scope, capabilityID, correlationID string) error
+	EnsurePresetCapability(ctx context.Context, scope core.Scope, projectID string, input core.CreateCapabilityInput, contentHash string, force bool) (core.Capability, bool, error)
 	SetCapabilityCredentialRef(ctx context.Context, scope core.Scope, capabilityID, credentialRef string) error
 	ReviewCapability(ctx context.Context, scope core.Scope, capabilityID string, input core.ReviewCapabilityInput, correlationID string, idempotency core.Idempotency) (core.Capability, error)
 	ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential string, credentialUpdater func(context.Context, string) error, correlationID string) (core.MCPHealth, error)

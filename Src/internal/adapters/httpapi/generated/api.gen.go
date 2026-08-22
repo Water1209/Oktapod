@@ -197,6 +197,13 @@ const (
 	CapabilityKindSkill  CapabilityKind = "skill"
 )
 
+// Defines values for CapabilityOrigin.
+const (
+	CapabilityOriginCustom CapabilityOrigin = "custom"
+	CapabilityOriginPreset CapabilityOrigin = "preset"
+	CapabilityOriginSystem CapabilityOrigin = "system"
+)
+
 // Defines values for CapabilityScopeType.
 const (
 	CapabilityScopeTypeGlobal  CapabilityScopeType = "global"
@@ -208,6 +215,13 @@ const (
 	CapabilityStatusDisabled    CapabilityStatus = "disabled"
 	CapabilityStatusEnabled     CapabilityStatus = "enabled"
 	CapabilityStatusQuarantined CapabilityStatus = "quarantined"
+)
+
+// Defines values for CapabilityUpdateState.
+const (
+	CapabilityUpdateStateAvailable CapabilityUpdateState = "available"
+	CapabilityUpdateStateCurrent   CapabilityUpdateState = "current"
+	CapabilityUpdateStateDegraded  CapabilityUpdateState = "degraded"
 )
 
 // Defines values for CaptureWorkspaceArtifactRequestKind.
@@ -620,9 +634,33 @@ const (
 
 // Defines values for PortableTranscriptMessageRole.
 const (
-	PortableTranscriptMessageRoleAssistant PortableTranscriptMessageRole = "assistant"
-	PortableTranscriptMessageRoleTool      PortableTranscriptMessageRole = "tool"
-	PortableTranscriptMessageRoleUser      PortableTranscriptMessageRole = "user"
+	Assistant PortableTranscriptMessageRole = "assistant"
+	Tool      PortableTranscriptMessageRole = "tool"
+	User      PortableTranscriptMessageRole = "user"
+)
+
+// Defines values for PresetResourceCatalogItemInstallState.
+const (
+	PresetResourceCatalogItemInstallStateAvailable PresetResourceCatalogItemInstallState = "available"
+	PresetResourceCatalogItemInstallStateInstalled PresetResourceCatalogItemInstallState = "installed"
+)
+
+// Defines values for PresetResourceCatalogItemKind.
+const (
+	Plugin PresetResourceCatalogItemKind = "plugin"
+	Skill  PresetResourceCatalogItemKind = "skill"
+)
+
+// Defines values for PresetResourceCatalogItemOrigin.
+const (
+	Preset PresetResourceCatalogItemOrigin = "preset"
+)
+
+// Defines values for PresetResourceCatalogItemUpdateState.
+const (
+	PresetResourceCatalogItemUpdateStateAvailable PresetResourceCatalogItemUpdateState = "available"
+	PresetResourceCatalogItemUpdateStateCurrent   PresetResourceCatalogItemUpdateState = "current"
+	PresetResourceCatalogItemUpdateStateDegraded  PresetResourceCatalogItemUpdateState = "degraded"
 )
 
 // Defines values for ProjectKind.
@@ -1126,14 +1164,14 @@ const (
 
 // Defines values for ListHumanActionsParamsStatus.
 const (
-	All         ListHumanActionsParamsStatus = "all"
-	Answered    ListHumanActionsParamsStatus = "answered"
-	Approved    ListHumanActionsParamsStatus = "approved"
-	Expired     ListHumanActionsParamsStatus = "expired"
-	Rejected    ListHumanActionsParamsStatus = "rejected"
-	Reviewing   ListHumanActionsParamsStatus = "reviewing"
-	Superseded  ListHumanActionsParamsStatus = "superseded"
-	WaitingUser ListHumanActionsParamsStatus = "waiting_user"
+	ListHumanActionsParamsStatusAll         ListHumanActionsParamsStatus = "all"
+	ListHumanActionsParamsStatusAnswered    ListHumanActionsParamsStatus = "answered"
+	ListHumanActionsParamsStatusApproved    ListHumanActionsParamsStatus = "approved"
+	ListHumanActionsParamsStatusExpired     ListHumanActionsParamsStatus = "expired"
+	ListHumanActionsParamsStatusRejected    ListHumanActionsParamsStatus = "rejected"
+	ListHumanActionsParamsStatusReviewing   ListHumanActionsParamsStatus = "reviewing"
+	ListHumanActionsParamsStatusSuperseded  ListHumanActionsParamsStatus = "superseded"
+	ListHumanActionsParamsStatusWaitingUser ListHumanActionsParamsStatus = "waiting_user"
 )
 
 // Defines values for ListProjectAssetsParamsKind.
@@ -1529,20 +1567,25 @@ type Capability struct {
 	// CredentialConfigured Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
 	CredentialConfigured bool                      `json:"credential_configured"`
 	CredentialState      CapabilityCredentialState `json:"credential_state"`
+	Dependencies         []string                  `json:"dependencies"`
 	Id                   openapi_types.UUID        `json:"id"`
 	InstallJobId         openapi_types.UUID        `json:"install_job_id"`
 	Kind                 CapabilityKind            `json:"kind"`
+	ManagedVersion       string                    `json:"managed_version"`
 	ManifestJson         string                    `json:"manifest_json"`
 	Name                 string                    `json:"name"`
 	OrganizationId       openapi_types.UUID        `json:"organization_id"`
+	Origin               CapabilityOrigin          `json:"origin"`
 	OwnerUserId          openapi_types.UUID        `json:"owner_user_id"`
 	PermissionDiff       []string                  `json:"permission_diff"`
+	PresetKey            string                    `json:"preset_key"`
 	ProjectId            openapi_types.UUID        `json:"project_id"`
 	RiskLevel            string                    `json:"risk_level"`
 	ScopeId              openapi_types.UUID        `json:"scope_id"`
 	ScopeType            CapabilityScopeType       `json:"scope_type"`
 	SourceFilename       string                    `json:"source_filename"`
 	Status               CapabilityStatus          `json:"status"`
+	UpdateState          CapabilityUpdateState     `json:"update_state"`
 	UpdatedAt            time.Time                 `json:"updated_at"`
 	Version              string                    `json:"version"`
 }
@@ -1553,11 +1596,17 @@ type CapabilityCredentialState string
 // CapabilityKind defines model for Capability.Kind.
 type CapabilityKind string
 
+// CapabilityOrigin defines model for Capability.Origin.
+type CapabilityOrigin string
+
 // CapabilityScopeType defines model for Capability.ScopeType.
 type CapabilityScopeType string
 
 // CapabilityStatus defines model for Capability.Status.
 type CapabilityStatus string
+
+// CapabilityUpdateState defines model for Capability.UpdateState.
+type CapabilityUpdateState string
 
 // CaptureWorkspaceArtifactRequest defines model for CaptureWorkspaceArtifactRequest.
 type CaptureWorkspaceArtifactRequest struct {
@@ -2316,6 +2365,35 @@ type PortableTranscriptMessage struct {
 
 // PortableTranscriptMessageRole defines model for PortableTranscriptMessage.Role.
 type PortableTranscriptMessageRole string
+
+// PresetResourceCatalogItem defines model for PresetResourceCatalogItem.
+type PresetResourceCatalogItem struct {
+	// Availability Stable user-facing availability. MCP is available only after a successful health check.
+	Availability   ResourceAvailability                  `json:"availability"`
+	CapabilityId   *openapi_types.UUID                   `json:"capability_id,omitempty"`
+	Dependencies   []string                              `json:"dependencies"`
+	Description    string                                `json:"description"`
+	InstallState   PresetResourceCatalogItemInstallState `json:"install_state"`
+	Kind           PresetResourceCatalogItemKind         `json:"kind"`
+	ManagedVersion string                                `json:"managed_version"`
+	Name           string                                `json:"name"`
+	Origin         PresetResourceCatalogItemOrigin       `json:"origin"`
+	PresetKey      string                                `json:"preset_key"`
+	UpdateState    PresetResourceCatalogItemUpdateState  `json:"update_state"`
+	Version        string                                `json:"version"`
+}
+
+// PresetResourceCatalogItemInstallState defines model for PresetResourceCatalogItem.InstallState.
+type PresetResourceCatalogItemInstallState string
+
+// PresetResourceCatalogItemKind defines model for PresetResourceCatalogItem.Kind.
+type PresetResourceCatalogItemKind string
+
+// PresetResourceCatalogItemOrigin defines model for PresetResourceCatalogItem.Origin.
+type PresetResourceCatalogItemOrigin string
+
+// PresetResourceCatalogItemUpdateState defines model for PresetResourceCatalogItem.UpdateState.
+type PresetResourceCatalogItemUpdateState string
 
 // PricingDiagnostics defines model for PricingDiagnostics.
 type PricingDiagnostics struct {
@@ -3487,6 +3565,17 @@ type DownloadWorkspaceFileContentParams struct {
 	Path string `form:"path" json:"path"`
 }
 
+// ListResourceCatalogParams defines parameters for ListResourceCatalog.
+type ListResourceCatalogParams struct {
+	// ProjectId Project used to authorize the current user and anchor global preset installation.
+	ProjectId openapi_types.UUID `form:"project_id" json:"project_id"`
+}
+
+// InstallPresetResourceJSONBody defines parameters for InstallPresetResource.
+type InstallPresetResourceJSONBody struct {
+	ProjectId openapi_types.UUID `json:"project_id"`
+}
+
 // GetRunChangesParams defines parameters for GetRunChanges.
 type GetRunChangesParams struct {
 	Baseline *GetRunChangesParamsBaseline `form:"baseline,omitempty" json:"baseline,omitempty"`
@@ -3682,6 +3771,9 @@ type UpdateProviderJSONRequestBody = SaveProviderRequest
 
 // SaveProviderModelsJSONRequestBody defines body for SaveProviderModels for application/json ContentType.
 type SaveProviderModelsJSONRequestBody = SaveProviderModelsRequest
+
+// InstallPresetResourceJSONRequestBody defines body for InstallPresetResource for application/json ContentType.
+type InstallPresetResourceJSONRequestBody InstallPresetResourceJSONBody
 
 // CreateAdvisorReportJSONRequestBody defines body for CreateAdvisorReport for application/json ContentType.
 type CreateAdvisorReportJSONRequestBody = CreateAdvisorReportRequest
@@ -4083,6 +4175,12 @@ type ServerInterface interface {
 
 	// (POST /providers/{provider_id}/test)
 	TestProvider(w http.ResponseWriter, r *http.Request, providerId string)
+
+	// (GET /resource-catalog)
+	ListResourceCatalog(w http.ResponseWriter, r *http.Request, params ListResourceCatalogParams)
+
+	// (POST /resource-catalog/{preset_key}:install)
+	InstallPresetResource(w http.ResponseWriter, r *http.Request, presetKey string)
 
 	// (POST /runs/{run_id}/advisor)
 	CreateAdvisorReport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
@@ -4680,6 +4778,16 @@ func (_ Unimplemented) RefreshProviderModels(w http.ResponseWriter, r *http.Requ
 
 // (POST /providers/{provider_id}/test)
 func (_ Unimplemented) TestProvider(w http.ResponseWriter, r *http.Request, providerId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /resource-catalog)
+func (_ Unimplemented) ListResourceCatalog(w http.ResponseWriter, r *http.Request, params ListResourceCatalogParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /resource-catalog/{preset_key}:install)
+func (_ Unimplemented) InstallPresetResource(w http.ResponseWriter, r *http.Request, presetKey string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -8248,6 +8356,65 @@ func (siw *ServerInterfaceWrapper) TestProvider(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// ListResourceCatalog operation middleware
+func (siw *ServerInterfaceWrapper) ListResourceCatalog(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListResourceCatalogParams
+
+	// ------------- Required query parameter "project_id" -------------
+
+	if paramValue := r.URL.Query().Get("project_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "project_id"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "project_id", r.URL.Query(), &params.ProjectId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListResourceCatalog(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InstallPresetResource operation middleware
+func (siw *ServerInterfaceWrapper) InstallPresetResource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "preset_key" -------------
+	var presetKey string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "preset_key", chi.URLParam(r, "preset_key"), &presetKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "preset_key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InstallPresetResource(w, r, presetKey)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateAdvisorReport operation middleware
 func (siw *ServerInterfaceWrapper) CreateAdvisorReport(w http.ResponseWriter, r *http.Request) {
 
@@ -9421,6 +9588,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/providers/{provider_id}/test", wrapper.TestProvider)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/resource-catalog", wrapper.ListResourceCatalog)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/resource-catalog/{preset_key}:install", wrapper.InstallPresetResource)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/runs/{run_id}/advisor", wrapper.CreateAdvisorReport)
@@ -12580,6 +12753,67 @@ func (response TestProviderdefaultApplicationProblemPlusJSONResponse) VisitTestP
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type ListResourceCatalogRequestObject struct {
+	Params ListResourceCatalogParams
+}
+
+type ListResourceCatalogResponseObject interface {
+	VisitListResourceCatalogResponse(w http.ResponseWriter) error
+}
+
+type ListResourceCatalog200JSONResponse struct {
+	Items []PresetResourceCatalogItem `json:"items"`
+}
+
+func (response ListResourceCatalog200JSONResponse) VisitListResourceCatalogResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListResourceCatalogdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListResourceCatalogdefaultApplicationProblemPlusJSONResponse) VisitListResourceCatalogResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type InstallPresetResourceRequestObject struct {
+	PresetKey string `json:"preset_key"`
+	Body      *InstallPresetResourceJSONRequestBody
+}
+
+type InstallPresetResourceResponseObject interface {
+	VisitInstallPresetResourceResponse(w http.ResponseWriter) error
+}
+
+type InstallPresetResource200JSONResponse Capability
+
+func (response InstallPresetResource200JSONResponse) VisitInstallPresetResourceResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type InstallPresetResourcedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response InstallPresetResourcedefaultApplicationProblemPlusJSONResponse) VisitInstallPresetResourceResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreateAdvisorReportRequestObject struct {
 	RunId openapi_types.UUID `json:"run_id"`
 	Body  *CreateAdvisorReportJSONRequestBody
@@ -13743,6 +13977,12 @@ type StrictServerInterface interface {
 
 	// (POST /providers/{provider_id}/test)
 	TestProvider(ctx context.Context, request TestProviderRequestObject) (TestProviderResponseObject, error)
+
+	// (GET /resource-catalog)
+	ListResourceCatalog(ctx context.Context, request ListResourceCatalogRequestObject) (ListResourceCatalogResponseObject, error)
+
+	// (POST /resource-catalog/{preset_key}:install)
+	InstallPresetResource(ctx context.Context, request InstallPresetResourceRequestObject) (InstallPresetResourceResponseObject, error)
 
 	// (POST /runs/{run_id}/advisor)
 	CreateAdvisorReport(ctx context.Context, request CreateAdvisorReportRequestObject) (CreateAdvisorReportResponseObject, error)
@@ -16775,6 +17015,65 @@ func (sh *strictHandler) TestProvider(w http.ResponseWriter, r *http.Request, pr
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(TestProviderResponseObject); ok {
 		if err := validResponse.VisitTestProviderResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListResourceCatalog operation middleware
+func (sh *strictHandler) ListResourceCatalog(w http.ResponseWriter, r *http.Request, params ListResourceCatalogParams) {
+	var request ListResourceCatalogRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListResourceCatalog(ctx, request.(ListResourceCatalogRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListResourceCatalog")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListResourceCatalogResponseObject); ok {
+		if err := validResponse.VisitListResourceCatalogResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InstallPresetResource operation middleware
+func (sh *strictHandler) InstallPresetResource(w http.ResponseWriter, r *http.Request, presetKey string) {
+	var request InstallPresetResourceRequestObject
+
+	request.PresetKey = presetKey
+
+	var body InstallPresetResourceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InstallPresetResource(ctx, request.(InstallPresetResourceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InstallPresetResource")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InstallPresetResourceResponseObject); ok {
+		if err := validResponse.VisitInstallPresetResourceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

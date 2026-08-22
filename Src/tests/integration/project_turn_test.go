@@ -254,6 +254,7 @@ func TestProjectTurnWithSelectedAttachmentAlwaysCreatesFrozenTaskContext(t *test
 	}}
 	service, databasePath, closeStore := newProjectTurnService(t, model)
 	defer closeStore()
+	service.WithDocumentRuntime(healthyDocumentRuntime{})
 
 	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Attachment workspace", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
 	if err != nil {

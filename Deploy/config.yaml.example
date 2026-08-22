@@ -1,11 +1,13 @@
 profile: personal
 listen_address: 127.0.0.1:8787
-# 留空时使用当前系统的用户配置目录/Oktapod，迁移配置文件时不会绑定原机器路径。
+# 源码开发可留空并使用当前用户配置目录/Oktapod。
+# 正式部署使用绝对路径：Windows 可用 C:/ProgramData/Oktapod/data，Linux 可用 /var/lib/oktapod。
 data_root: ""
 run_concurrency: 4
 database:
   driver: sqlite
 capabilities:
+  # 相对路径按 config.yaml 所在目录解析；正式部署也可填写绝对路径。
   trusted_keys_file: trusted-keys.json
 web_access:
   private_fetch:
