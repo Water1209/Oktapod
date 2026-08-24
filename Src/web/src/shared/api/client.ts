@@ -730,6 +730,7 @@ export interface Approval {
   step_id: string
   tool_call_id: string
   tool_name: string
+  tool_display_name: string
   risk_level: 'L0' | 'L1' | 'L2' | 'L3'
   approval_scope: ApprovalScope
   target_origin: string
@@ -746,7 +747,7 @@ export interface Approval {
   decided_at?: string
 }
 
-export type ApprovalScope = 'once' | 'conversation' | 'project' | 'run_origin'
+export type ApprovalScope = 'once' | 'conversation' | 'project' | 'run_origin' | 'run_tool'
 
 export interface RunPlanItem {
   id: string
@@ -948,7 +949,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		.split('; ')
 		.find((item) => item.startsWith('oktapod_csrf='))
 		?.slice('oktapod_csrf='.length)
-	const response = await fetch(`/api/v1${path}`, {
+  const requestInit: RequestInit = {
     credentials: 'same-origin',
     ...init,
     headers: {
@@ -957,7 +958,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		...(csrf && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) ? { 'X-CSRF-Token': decodeURIComponent(csrf) } : {}),
       ...init?.headers,
     },
-  })
+  }
+	const response = await fetchWithIdempotentNetworkRetry(`/api/v1${path}`, requestInit)
   if (!response.ok) {
     let problem: ProblemDetails
     try {
@@ -975,6 +977,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+async function fetchWithIdempotentNetworkRetry(input: RequestInfo | URL, init: RequestInit) {
+  try {
+    return await fetch(input, init)
+  } catch (error) {
+    const retryable = error instanceof TypeError && !init.signal?.aborted && new Headers(init.headers).has('Idempotency-Key')
+    if (!retryable) throw error
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    return fetch(input, init)
+  }
 }
 
 async function streamProjectTurn(path: string, input: ProjectTurnInput, handlers: StreamProjectTurnHandlers): Promise<ProjectTurnResult> {

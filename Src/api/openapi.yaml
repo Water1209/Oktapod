@@ -4342,14 +4342,14 @@ components:
       additionalProperties: false
       properties:
         decision: { type: string, enum: [approved, rejected, answered, confirm_applied, confirm_not_applied] }
-        scope: { type: string, enum: [once, conversation, project, run_origin], default: once }
+        scope: { type: string, enum: [once, conversation, project, run_origin, run_tool], default: once }
         answer: {}
         note: { type: string, maxLength: 2000, default: "" }
         confirmed: { type: boolean, default: false }
         version: { type: integer, format: int64, minimum: 1 }
     Approval:
       type: object
-      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, approval_scope, target_origin, matched_rule_id, policy_hash, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
+      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, tool_display_name, risk_level, approval_scope, target_origin, matched_rule_id, policy_hash, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
       properties:
         id: { type: string, format: uuid }
         project_id: { type: string, format: uuid }
@@ -4358,8 +4358,9 @@ components:
         step_id: { type: string, format: uuid }
         tool_call_id: { type: string, format: uuid }
         tool_name: { type: string }
+        tool_display_name: { type: string, description: "Human-readable capability and tool name derived from the immutable Run snapshot; tool_name remains the authorization identity." }
         risk_level: { type: string, enum: [L0, L1, L2, L3] }
-        approval_scope: { type: string, enum: [once, conversation, project, run_origin] }
+        approval_scope: { type: string, enum: [once, conversation, project, run_origin, run_tool] }
         target_origin: { type: string }
         matched_rule_id: { type: string }
         policy_hash: { type: string }
@@ -4378,7 +4379,7 @@ components:
       additionalProperties: false
       properties:
         decision: { type: string, enum: [approved, rejected] }
-        scope: { type: string, enum: [once, conversation, project, run_origin], default: once, description: "Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule." }
+        scope: { type: string, enum: [once, conversation, project, run_origin, run_tool], default: once, description: "Approval lifetime. run_origin is reserved for one private web origin in the current Run; run_tool grants one exact MCP tool identity only for the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule." }
         note: { type: string, maxLength: 1000, default: "" }
         confirmed: { type: boolean, default: false, description: "Must be true when scope is project; UI must require a second explicit confirmation." }
     ApprovalRule:

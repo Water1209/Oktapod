@@ -1,6 +1,6 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.20
+> 版本：v1.21
 > 更新日期：2026-08-24
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
@@ -32,13 +32,13 @@
 | B1 | 内核端口与运行时拆分 | `PASS` | Repository 窄端口、`agentloop`/`harness`、唯一主 Agent `AgentTurnAssembler`、固定 `StepDispatcher`、统一 `ModelInvoker`、五类 `ToolPreparer` 和独立任务面板已落地；Worker 只协调 Durable 生命周期，Receipt/Authorization/Artifact/Completion 仍以 Durable Harness/SQLite 为唯一真源；SQLite 仅按 Runtime、Tool/Receipt、Context/Conversation 做同 package 源码拆分 |
 | B2 | 执行安全与工程门禁 | `PARTIAL` | `ExecutionAuthorization`、宿主 Git/Secret 隔离、CI/OpenAPI/迁移门禁已落地；受控 Git 环境只信任已校验的项目根目录，race 全量套件超时为 20 分钟；双平台原生构建与产品烟测、Ubuntu race 仍待 CI 证据 |
 | B3 | ToolSpec 与 Pi 语义 | `PASS` | ToolSpec 元数据、简洁别名/旧名兼容、受限摘要和完整长输出 Artifact 已通过定向测试；逐块命令直播转 V1.1 |
-| B4 | MCP/Skill/Web Access | `PASS` | 通用 MCP/Skill 已落地；内建 `web_search` 与 `web_fetch` 共用 WebAccess，私网采用精确 origin、Run 冻结交集、每 Run 每 origin 强制人工审批和安全 Transport；全局 Skill 按用户 Scope 在其他自有项目中可调用 |
+| B4 | MCP/Skill/Web Access | `PASS` | 通用 MCP/Skill 已落地；内建 `web_search` 与 `web_fetch` 共用 WebAccess，私网采用精确 origin、Run 冻结交集、每 Run 每 origin 强制人工审批和安全 Transport；L3 MCP 支持逐次批准或仅绑定当前 Run 与完整工具身份的 `run_tool`，不扩权到 Server/会话/项目，每次调用仍独立 Authorization/Receipt；全局 Skill 按用户 Scope 在其他自有项目中可调用 |
 | B5 | Codex 用户闭环 | `PASS` | Composer 邻接治理；Changes 支持 Run/HEAD/Index、基线解释、文件/Hunk、行号、增删统计、折叠和受治理撤销/选择提交；中文未跟踪文件主链路已由浏览器验证 |
 | B6 | 发布收口 | `PARTIAL` | 2026-08-22 Windows `pnpm verify`、foundation 1/1 + 重启解锁 1/1、success 27/27 与原 V1 工件证据保留；当前 `release:build/smoke` 新增签名 Document Runtime、真实包内依赖/OCR 和资源 `available` 硬门禁，发布输入尚未提供，因此当前树的带版本工件需重新产生；Ubuntu race 与双平台原生 CI 仍是正式 tag 门禁 |
 | B7 | 场景、文件产物与审核收口 | `PASS` | Work/Code 共用执行内核；Artifact Capture/PDF 完成合同；工作区/项目文件/任务输出三分类；Composer 附件/`asset_stage`；Reviewer L2 Ask/fail-closed 均已落地，`pnpm verify` 通过 |
 | B8 | 统一配置与数据库密钥库 | `PASS` | 000058～000063、AES-256-GCM DatabaseSecretStore、两阶段恢复、严格 YAML、Web Access/数据库设置、配置/Vault API+CLI+UI、Backup V2 和浏览器重启自动解锁闭环已落地；无旧 Keyring 迁移 |
 | B9 | Agent Runtime 性能 V2 | `PARTIAL` | Auto 单 Turn、Plan Transition V2、Task 临时正文流、冻结 Provider 能力、token-aware projection、000064 per-call barrier、性能字段与 12 场景脚本已落地；30 次回放、真实 Provider 5 次和 p50/p95 报告已从本轮范围删除，只有出现明确延迟问题或准备性能承诺时恢复，不触发 Durable Fast Path，也不声明性能达标 |
-| B10 | 预置文档能力与 Artifact Runtime | `PARTIAL` | 000065～000067、五个预置资源、删除记忆/恢复/依赖、六个静态工具、签名 Runtime 客户端、缓存/CAS 修订/预览/Artifact 完成门禁和四格式 25 次真实 RPC 已完成；真实浏览器确认五个资源可用、Runtime 工具/依赖提示、代码任务输出与 Changes 正常且控制台零错误；复杂编辑矩阵、恶意夹具、标准性能 P95、Windows/Linux 自包含签名包及升级回滚仍未关闭，禁止宣称完整办公套件发布可用 |
+| B10 | 预置文档能力与 Artifact Runtime | `PARTIAL` | 000065～000067、五个预置资源、删除记忆/恢复/依赖、六个静态工具、签名 Runtime 客户端、缓存/CAS 修订/预览/Artifact 完成门禁和四格式 25 次真实 RPC 已完成；安装/修复现先验证当前进程已加载且健康的 Runtime，缺失时保持 degraded，禁止只改目录记录伪装成功；开发 Runtime 重启后五个资源保持可用。复杂编辑矩阵、恶意夹具、标准性能 P95、Windows/Linux 自包含签名包及升级回滚仍未关闭，禁止宣称完整办公套件发布可用 |
 
 ## 2.2 V1 正式范围决策
 
@@ -60,7 +60,7 @@
 | ID | 验收项 | 状态 | 当前证据 |
 |---|---|---|---|
 | BASE-001 | `pnpm install --frozen-lockfile` 可复现依赖 | `PASS` | 2026-07-26 初始基线执行成功；随后为根目录 E2E import 补充 Playwright 依赖并更新锁文件，重新安装成功 |
-| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-24 最终执行通过：Go vet/test、ESLint、Web 15 文件 61/61、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
+| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-24 最终执行通过：Go vet/test、ESLint、Web 16 文件 67/67、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
 | BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-24 最终执行 success 27/27 通过；foundation 初始化 1/1 + Vault 服务重启自动解锁 1/1、turn 1/1 证据继续有效。Runtime V2 回归同时覆盖无计划 Run 零合法 404、Auto answer 最终助手消息刷新和并行项目资料上传后的即时可见性 |
 | BASE-004 | auth/turn/approval E2E | `PASS` | auth desktop/mobile 2/2、turn 1/1、approval 1/1 通过 |
 | BASE-005 | Windows 与 Linux 构建边界 | `PARTIAL` | Windows `pnpm verify`/浏览器套件与旧 WSL Ubuntu Go/Web 证据保留；本批 Document Runtime 变更尚未产生 Windows/Linux 双平台签名包、原生加载烟测和 Ubuntu race，不能用旧证据覆盖新代码 |
@@ -112,8 +112,8 @@
 | R1A-013 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
 | R1A-014 | Changes 与 Diff | `PASS` | 冻结 Git HEAD/状态；三基线 API；任务面板支持文件/Hunk 查看、基线说明卡片、行级差异高亮与行号、按文件增删统计、前 5 个文件默认展开且可一键折叠/展开、接受、受治理撤销和选择提交；中文未跟踪文件的展示、选择、审批和提交 Playwright 闭环及控制台零错误通过 |
 | R1A-015 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
-| R1A-016 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt、真实命令进程树取消与 kill 后 Lease 恢复自动化通过；项目创建后的预置资源确保复用幂等 BUSY/BUSY_SNAPSHOT 有界重试，不再出现“项目已创建但 HTTP 500”；项目资料上传只持久化一次不可变 Blob，并对后续 SQLite 登记事务有界重试，不重放一次性上传 Reader；MCP 取消归类 `TOOL_CANCELED`、超时保留 Timeout Code；Finish commit failure、Lease/Fence 丢失继续由 Durable Recovery 收敛 |
-| R1A-017 | 语义计划与 Human Action | `PASS` | 新 Run 用 `replace_plan/advance_plan` 将目标级步骤与首批业务工具放在同一响应；计划只表达结果和验收，工具、审批与 Receipt 只进入执行记录；continuation 冻结活动进度且工具成功不自动推进。历史 Run 保持 `update_plan`；Steering/Next Turn、统一 Human Action、三种权限模式和有界修复保持兼容 |
+| R1A-016 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt、真实命令进程树取消与 kill 后 Lease 恢复自动化通过；工具恢复次数按 source model Step 的连续失败 lineage 继承，成功后的普通 continuation 会重置，下一项无关失败从 1/5 开始；项目/Agent 创建和预置资源确保复用幂等 BUSY/BUSY_SNAPSHOT 有界重试，浏览器只对携带同一 `Idempotency-Key` 且未收到响应的连接失败重试一次；项目资料上传只持久化一次不可变 Blob，并对后续登记事务有界重试；MCP 取消归类 `TOOL_CANCELED`、超时保留 Timeout Code；Finish commit failure、Lease/Fence 丢失继续由 Durable Recovery 收敛 |
+| R1A-017 | 语义计划与 Human Action | `PASS` | 新 Run 用 `replace_plan/advance_plan` 将目标级步骤与首批业务工具放在同一响应；计划只表达结果和验收，工具、审批与 Receipt 只进入执行记录；continuation 冻结活动进度且工具成功不自动推进。MCP Human Action 使用 Capability 名称与工具短名，并提供“批准一次/本任务允许此工具”；后者只授权同一 Run 的同一工具。历史 Run 保持 `update_plan`；Steering/Next Turn、统一 Human Action、三种权限模式和有界修复保持兼容 |
 | R1A-018 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件 API 提供五类生命周期并在 UI 折叠过程/临时项，嵌套缓存、依赖和虚拟环境同样识别为临时；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
 | R1A-019 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；Auto 不再产生分类模型调用，首个业务响应可直接回答、规划或调用工具；Tool Schema 是工具元数据唯一模型来源，Prompt、Messages、Definitions、AllowedTools、ModelRef、Thinking、Token 上限和 ContextPlan 仍由同一次 Assembly 生成并写入 `assembly_hash`；Task/Auto 裸“继续”、逐项冻结审批与预算决策语义保持兼容 |
 | R1A-020 | Web Access 与受控私网 Fetch | `PASS` | Search 保持单 `query` 与 DDG→Bing RSS；Fetch 单 URL、GET-only、安全 DNS/Dial/重定向/代理隔离/内容上限已实现；精确私网 origin 配置、Run 冻结交集、`run_origin` 强制人工审批、Receipt/Web 卡片/OpenAPI 均有确定性测试。浏览器完成配置校验、保存待重启、重启生效、390px 无横向溢出，以及一次人工授权后同 origin 两页自动读取、执行流从用户消息迁移到助手结果消息仍保持展开、私网卡文本重放和控制台零错误闭环 |
@@ -125,7 +125,7 @@
 |---|---|---|---|
 | R1B-001 | 受控命令执行 | `PASS` | 命令在 Thread 内通过 Policy/审批/Receipt 持久 Task 执行，支持状态、结果、取消和上下文回填；交互式 xterm 已按 V1 范围决策排除 |
 | R1B-002 | Oktapod 导入导出 | `PASS` | 浏览器预览、原始敏感字段 fail-closed、正文模式脱敏、JSON/JSONL/HTML、Oktapod JSONL Thread round-trip、事务化重建/幂等和 E2E 通过；Pi 精确兼容已转 V1.1 |
-| R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；详情展示真实工具/工作流、适用场景与治理边界。进程级 `SessionBroker` 按 Run/Capability 隔离有状态 MCP 会话且每次调用仍独立授权/收据。真正活跃 Run 与含凭据 blocked Run 阻止删除，无凭据历史 blocked Run 不再错误锁死。Playwright `0.0.78` 已完成删除、固定版重装、24 工具发现，并由 DeepSeek 两轮 `navigate → snapshot` 证明状态连续；`frontend-design` 完成删除与 ZIP 重装。OAuth/Secret/ZIP/故障矩阵继续保持原合同。 |
+| R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；单一输入框只接收来源，解析后再展示版本、传输、工具与凭据。详情从 Skill Manifest/instructions 与 MCP 在线发现生成真实能力、场景、用法和治理边界，前端不按资源身份维护第二份事实表。内部 `mcp__<uuid>__<tool>` 仅用于冻结身份，界面使用 Capability 名称与工具短名。进程级 `SessionBroker` 按 Run/Capability 隔离有状态 MCP 会话且每次调用仍独立授权/收据。Playwright `0.0.78` 已完成删除、固定版重装、24 工具发现；DeepSeek 真实百度任务在验证码后改用移动版并打开 `https://www.znv.com.cn/`，计划 `3/3` 完成。`frontend-design` 完成删除与 ZIP 重装。OAuth/Secret/ZIP/故障矩阵继续保持原合同。 |
 | R1B-004 | Provider 协议与真实主链路 | `PASS` | 原生 Anthropic/Gemini 增量合同通过；OpenAI 兼容通道已经真实 MiniMax 端到端验证可见流式、工具、文件修改和回读哈希；更多原生真实凭据已按 V1 范围决策排除 |
 | R1B-005 | 高级 Git | `PASS` | `git_conflicts`、按 Hunk 恢复、选择路径提交具备状态 Hash、Policy、审批与 Receipt；Changes UI 通过原 Thread 创建受治理动作。远程 Git 不进入 V1 |
 | R1B-006 | V1 设置 | `PASS` | 配置中心按七类职责拆分；运行与上下文提供 Owner/Admin 精确私网 origin 编辑、普通成员脱敏计数和重启提示；Provider 一次保存并自动验证，Reviewer 不再混入模型连接。系统 Backup 与单项目交换明确分界；设置页深链与主题恢复保持稳定 |
@@ -223,3 +223,4 @@
 | 2026-08-24 | 项目创建与预置资源并发恢复 | 双 Worker E2E 稳定复现项目主记录已提交后，自动确保五个预置资源的读写事务遭遇 `SQLITE_BUSY/BUSY_SNAPSHOT`，导致 UI 收到 500。Application 现将所有预置资源确保、依赖安装和显式安装统一放入同一幂等瞬态重试入口，最长约 2.55 秒且尊重取消，不吞持续故障；4 Worker 并发“创建项目 + 执行 Task”定向压测 10/10 通过。 |
 | 2026-08-24 | 语义计划、内部工作文件与否定约束完成门禁 | DeepSeek `deepseek-v4-flash` 真实 Task 实际加载重装后的 `frontend-design`，只用 Workspace 工具核对 `skill-regression.html`，生成并登记 `skill-regression-check-v2.md`；执行计划始终只有“核对页面/登记验收结果”两项并终态 `2/2`，具体工具仅在执行记录。“不联网、不调用 MCP”正确冻结零搜索预算，不再产生错误 Human Action；`.oktapod/` 内部写入跳过自动 Capture。`pnpm verify`（Web 61/61、Integration 全包）、Playwright foundation 1/1 + 重启 1/1 + success 27/27 通过；签名文档 Runtime 发布输入仍缺失，release build/smoke 保持 `BLOCKED_ENV`。 |
 | 2026-08-24 | 并行项目资料上传恢复 | 双 Worker Success E2E 捕获项目资料上传在并发 SQLite 写入时偶发返回 500；单用例串行通过，确认不是 React Query 列表失效。修复将重试边界放在 SQLite Adapter：文件内容只写入一次不可变 Blob，随后仅重试资产登记事务，避免重放一次性 Reader 或重复上传。定向 SQLite 测试、foundation 初始化/重启解锁和 success 27/27 通过。 |
+| 2026-08-24 | MCP 授权、资源能力与失败链收口 | L3 MCP 增加“本任务允许此工具”，复用既有 `run_approval_rules` 严格绑定当前 Run、完整动态工具和冻结策略，不新增授权事实表；同一计划项 12 个终态 MCP 调用后进入无工具收尾。资源中心从 Skill Manifest/instructions 与 MCP 在线发现生成能力和场景，显示 Playwright MCP 等人类可读名称；预置修复先验证真实 Runtime。DeepSeek + Playwright 真实百度任务复用导航授权，在桌面验证码后切换移动版、打开 `https://www.znv.com.cn/` 并终态 `3/3`；最终最小回归只调用 `browser_navigate` 打开本地站点，审批与执行记录均隐藏 UUID，标题 `Oktapod · Agent OS`，终态 `1/1`。双 Worker E2E 同时暴露一次 `ERR_NETWORK_CHANGED`，现仅对同一幂等键的连接失败重试一次，Agent JSON 用例与 success 27/27 通过。 |

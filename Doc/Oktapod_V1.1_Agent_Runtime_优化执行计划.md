@@ -1,6 +1,6 @@
 # Oktapod V1.1 Agent Runtime 优化执行计划
 
-> 版本：V1.9（语义计划与完成门禁否定约束已收口）
+> 版本：V1.10（MCP 授权、资源能力真源与恢复链已收口）
 > 更新日期：2026-08-24
 > 实施分支：`codex/runtime-performance-v2`
 > V1.0.0 关系：独立演进批次，不改变 V1.0.0 正式 tag 门禁
@@ -122,6 +122,7 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 2026-08-22 Runtime 轻量职责收敛 | 当前工作树 | 扩展纯文本与计划/工具/审批/Artifact Golden Trace；Context 配对清理覆盖截断、取消、Compaction、rollback 与 unknown；新增固定 StepDispatcher、ModelInvoker 和五类 ToolPreparer；SQLite Store 按 Runtime、Tool/Receipt、Context/Conversation 同 package 拆分。未新增迁移、API、工具 Schema、第二真源或 Feature Flag |
 | 2026-08-24 资源与真实 Provider/MCP 收口 | 当前工作树 | 移除无项目上下文的全局“新建任务”；Provider 删除事务性回退可变引用且历史 ModelRef 不变；资源中心展示能力定位、真实工具、适用场景和治理边界；无凭据 Capability 不再被历史 blocked Run 错误锁死；Playwright MCP 删除、固定版重装、24 工具发现和 DeepSeek 两轮 `navigate → snapshot` 状态连续性通过 |
 | 2026-08-24 计划与完成门禁回归 | 当前工作树 | 已绑定计划的普通续轮禁止 `replace_plan`，显式重规划保留完成项并去重；“不联网/离线”关闭新 Web 收据要求；`.oktapod/` 内部写入跳过自动 Capture；DeepSeek + `frontend-design` 真实 Task 以固定两项计划完成文件核对与 Artifact 登记 |
+| 2026-08-24 MCP 治理与资源真源收口 | 当前工作树 | L3 MCP 增加仅绑定当前 Run 与完整动态工具身份的 `run_tool` 授权，继续保留逐调用 Authorization/Receipt；同一计划项 12 个终态 MCP 调用后无工具收尾。资源详情由 Skill Manifest/instructions 与 MCP 在线工具发现生成，不按资源身份写第二份能力表；预置修复先验证当前进程真实 Runtime，工具失败恢复计数按连续失败 lineage 重置。DeepSeek + Playwright 真实任务在百度验证码后切换移动版，复用已授权工具并打开 `https://www.znv.com.cn/`，最终计划 `3/3` 完成。 |
 
 主要代码入口：
 
@@ -150,6 +151,9 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 24 KiB 聚合上限与 UTF-8 完整 | `TestSelectedMemorySnapshotBoundsAggregateUTF8Payload` |
 | 历史 Run live fallback 可恢复且有标记 | `TestHistoricalSelectedMemoryUsesMarkedLiveFallback` |
 | MCP 缺少凭据不创建 Receipt | `TestMCPMissingCredentialFailsBeforeReceiptBegin` |
+| MCP 当前任务授权只复用同一完整工具身份，其他工具仍需审批 | `TestMCPRunToolApprovalReusesExactToolOnly` + DeepSeek/Playwright 真实浏览器回归 |
+| 同一计划项 MCP 调用达到上限后无工具收尾 | `TestContinuationTurnBoundsRepeatedMCPCallsPerPlanItem` |
+| 工具恢复次数按连续失败链计数并在成功后重置 | `TestToolRecoveryEpisodeResetsAfterOrdinaryContinuation` |
 | 全部 Durable 工具族共用严格解码并 fail-before-Begin | `TestToolRuntimeStrictDecoderRejectsEveryToolFamilyBeforeReceipt` |
 | 派发前取消不创建 Receipt | `TestToolRuntimeCanceledBeforeDispatchDoesNotBeginReceipt` |
 | MCP 取消、超时、普通失败分类独立 | `TestMCPCallErrorSeparatesCancelTimeoutAndFailure` |
@@ -182,8 +186,8 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 | 六个文档工具固定 L0/L1 且拒绝可执行载荷 | `TestPlanToolClassifiesFixedDocumentProtocolAndRejectsExecutablePayloads` |
 | 多文档修改不能由单一导出绕过完成门禁 | `TestDocumentCompletionRequiresEveryMutatedDocumentToHaveCurrentExport` |
 | 四格式创建、打开、修订、渲染、导出 | `pnpm test:document-runtime`：25 次真实 JSON-RPC |
-| 资源能力详情与 Skill/MCP 生命周期真实可用 | 本机真实浏览器：资源详情分层展示真实能力；`frontend-design` 删除/ZIP 重装可用；Playwright MCP 删除/固定版重装、审核连接与 24 工具发现通过 |
-| 项目创建与预置资源并发确保 | `TestRetryTransientSQLiteValueRetriesBusySnapshot` + 4 Worker“创建项目 + Task 执行”定向压测 10/10；预置确保/依赖/显式安装共享幂等有界重试 |
+| 资源能力详情与 Skill/MCP 生命周期真实可用 | `resource-profile.test.ts`：Skill 从 Manifest/instructions、MCP 从在线工具发现生成说明；本机真实浏览器确认 `frontend-design` 与 Playwright MCP 的真实能力、单一来源输入说明、预置 Runtime 重启后可用，并完成删除/重装/24 工具发现闭环 |
+| 项目/Agent 创建与预置资源并发确保 | `TestRetryTransientSQLiteValueRetriesBusySnapshot` + 4 Worker“创建项目 + Task 执行”定向压测 10/10；预置确保/依赖/显式安装及 Agent 创建共享幂等有界重试；浏览器只对同一 `Idempotency-Key` 的连接级失败重试一次 |
 | DNS 混合地址、跨源重定向、代理隔离与内容边界 | `TestFetchPrivateHTMLUsesBoundedMarkdownConversion` + `TestFetchRejectsPrivateDNSAndCrossOriginRedirects` + `TestFetchHandlesSameOriginRedirectStatusAndContentBounds` |
 | 每 Run 每 origin 授权，Full Access/Reviewer 不绕过 | `TestPrivateWebFetchApprovalIsRunOriginScoped` + `TestPrivateWebFetchIgnoresFullAccessAndAutoReviewer` |
 | 浏览器内一次私网授权复用同 origin、迁移后保持展开、两张文本卡与零控制台错误 | Playwright `私网 Web Fetch 每 Run 每 origin 只审批一次并以文本卡片重放` 1/1 |
@@ -196,8 +200,8 @@ Web Access 追加同样向后兼容且不含明文 origin 的字段：
 
 | 门禁 | 结果 |
 |---|---|
-| `pnpm verify` | `PASS`：Go、ESLint、Web 15 文件 61/61、TypeScript/Vite/Go build、migration、OpenAPI drift |
-| Playwright | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 27/27；覆盖 Task Live 流、无计划 Run 零 404、Auto answer 最终消息刷新与既有恢复语义 |
+| `pnpm verify` | `PASS`：Go、ESLint、Web 16 文件 67/67、TypeScript/Vite/Go build、migration、OpenAPI drift |
+| Playwright | `PASS`：foundation 初始化 1/1、Vault 重启解锁 1/1、success 27/27；覆盖 Task Live 流、幂等网络重试、Agent JSON 创建、MCP/资源入口与既有恢复语义 |
 | `pnpm test:race` | `BLOCKED_ENV`：本机 `CGO_ENABLED=0` 且没有可用 C 编译器，`go test -race` 在测试启动前拒绝执行；Ubuntu CI 仍是正式证据 |
 | `pnpm release:build` | `BLOCKED_ENV`：当前命令明确报告缺少 `OKTAPOD_DOCUMENT_RUNTIME_STAGE`；旧主程序工件 `a02b931c…` 只证明引入文档 Runtime 前的基线，不能沿用旧 `PASS` |
 | `pnpm release:smoke` | `BLOCKED_ENV`：本轮没有生成 `Build/document-runtime-trusted-keys.json` 和签名 Runtime 包；当前烟测强制信任并加载签名包、检查资源目录为 `available`，需在 release build 获得发布输入后重跑 |

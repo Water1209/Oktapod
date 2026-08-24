@@ -16,11 +16,14 @@ import (
 func (s *Store) ListApprovals(ctx context.Context, scope core.Scope, status string, limit int) ([]core.Approval, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ar.id, ar.organization_id, ar.project_id, ar.task_id, ar.run_id,
-		       ar.step_id, ar.tool_call_id, ar.tool_name, ar.risk_level, ar.status,
+		       ar.step_id, ar.tool_call_id, ar.tool_name,
+		       COALESCE(NULLIF(ha.title, ''), ar.tool_name) AS tool_display_name,
+		       ar.risk_level, ar.status,
 		       ar.reason, ar.frozen_params_json, ar.input_hash, ar.requested_by,
 		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at,
 		       ar.approval_scope, ar.target_origin, ar.matched_rule_id, ar.policy_hash
 		FROM approval_requests ar
+		LEFT JOIN human_action_requests ha ON ha.id = ar.id
 		JOIN tasks t ON t.id = ar.task_id
 		JOIN memberships m ON m.organization_id = ar.organization_id
 		JOIN project_memberships pm ON pm.project_id = ar.project_id AND pm.user_id = m.user_id
@@ -264,6 +267,9 @@ func inboxHistorySummary(eventType string, payload map[string]any) (kind, status
 			if stringValue("approval_scope") == core.ApprovalScopeRunOrigin {
 				return "approval", decision, "当前 Run 已允许访问同一私网 origin，终态或 24 小时后自动失效"
 			}
+			if stringValue("approval_scope") == core.ApprovalScopeRunTool {
+				return "approval", decision, "当前任务已允许使用同一个 MCP 工具，任务终态或 24 小时后自动失效"
+			}
 			return "approval", decision, "审批已批准一次，冻结参数保持不变"
 		}
 		return "approval", decision, "审批已拒绝，风险动作未执行"
@@ -490,6 +496,7 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 	}
 	var runOriginPlan core.PlannedTool
 	var runOriginAuthorizationID string
+	var runToolGrantKey, runToolPolicyHash, runToolAuthorizationID string
 	if input.Decision == core.ApprovalApproved && approval.ToolName == core.ToolWebFetch {
 		if input.Scope != core.ApprovalScopeRunOrigin {
 			return core.Approval{}, &core.ValidationError{Field: "scope", Message: "private web_fetch approvals must use the current Run and origin scope"}
@@ -520,8 +527,31 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 	} else if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunOrigin {
 		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "Run origin approval is only valid for private web_fetch calls"}
 	}
-	if input.Decision == core.ApprovalApproved && input.Scope != core.ApprovalScopeOnce && strings.HasPrefix(approval.ToolName, "mcp__") {
-		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "MCP tools only support one-time approval"}
+	if input.Decision == core.ApprovalApproved && strings.HasPrefix(approval.ToolName, "mcp__") {
+		switch input.Scope {
+		case core.ApprovalScopeOnce:
+		case core.ApprovalScopeRunTool:
+			run, runErr := getRunContextTx(ctx, tx, approval.RunID)
+			if runErr != nil {
+				return core.Approval{}, runErr
+			}
+			var ok bool
+			runToolGrantKey, runToolPolicyHash, ok = application.MCPRunToolGrant(run.ConfigSnapshotJSON, approval.ToolName)
+			if !ok {
+				return core.Approval{}, &core.StateConflictError{Status: "snapshot_mismatch", Command: "approve current Run MCP tool"}
+			}
+			var storedGrantKey, storedPolicyHash string
+			if err := tx.QueryRowContext(ctx, `SELECT approval_grant_key, policy_hash FROM approval_requests WHERE id = ?`, approval.ID).Scan(&storedGrantKey, &storedPolicyHash); err != nil {
+				return core.Approval{}, err
+			}
+			if approval.ApprovalScope != core.ApprovalScopeRunTool || storedGrantKey != runToolGrantKey || storedPolicyHash != runToolPolicyHash {
+				return core.Approval{}, &core.StateConflictError{Status: "policy_changed", Command: "approve current Run MCP tool"}
+			}
+		default:
+			return core.Approval{}, &core.ValidationError{Field: "scope", Message: "MCP tools support one-time approval or exact-tool approval for the current Run"}
+		}
+	} else if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunTool {
+		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "run_tool approval is only valid for MCP tools"}
 	}
 	var projectRole string
 	if err := tx.QueryRowContext(ctx, `SELECT role FROM project_memberships WHERE project_id = ? AND user_id = ? AND status = 'active'`, approval.ProjectID, scope.UserID).Scan(&projectRole); err != nil {
@@ -637,6 +667,28 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 			return core.Approval{}, err
 		}
 	}
+	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunTool {
+		ruleID, err := newID()
+		if err != nil {
+			return core.Approval{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO run_approval_rules
+			(id, organization_id, project_id, run_id, tool_name, grant_type, grant_key,
+			 policy_hash, canonical_origin, created_from_approval_id, created_by, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, 'run_tool', ?, ?, '', ?, ?, ?, ?)`,
+			ruleID, approval.OrganizationID, approval.ProjectID, approval.RunID, approval.ToolName,
+			runToolGrantKey, runToolPolicyHash, approval.ID, scope.UserID, now, formatTime(approval.ExpiresAt)); err != nil {
+			return core.Approval{}, err
+		}
+		if err := tx.QueryRowContext(ctx, `
+			SELECT id FROM run_approval_rules
+			WHERE run_id = ? AND tool_name = ? AND grant_type = 'run_tool'
+			  AND grant_key = ? AND policy_hash = ? LIMIT 1`, approval.RunID, approval.ToolName,
+			runToolGrantKey, runToolPolicyHash).Scan(&runToolAuthorizationID); err != nil {
+			return core.Approval{}, err
+		}
+	}
 	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeConversation {
 		var conversationID, argumentsJSON string
 		if err := tx.QueryRowContext(ctx, `
@@ -692,7 +744,11 @@ func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID
 			}
 		}
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "approval.decided", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"approval_id": approval.ID, "tool_call_id": approval.ToolCallID, "step_id": approval.StepID, "decision": input.Decision, "approval_scope": input.Scope, "input_hash": approval.InputHash, "parameters_changed": false, "target_origin": approval.TargetOrigin, "matched_rule_id": approval.MatchedRuleID, "policy_hash": approval.PolicyHash, "authorization_id": runOriginAuthorizationID}}); err != nil {
+	decisionAuthorizationID := runOriginAuthorizationID
+	if runToolAuthorizationID != "" {
+		decisionAuthorizationID = runToolAuthorizationID
+	}
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "approval.decided", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"approval_id": approval.ID, "tool_call_id": approval.ToolCallID, "step_id": approval.StepID, "decision": input.Decision, "approval_scope": input.Scope, "input_hash": approval.InputHash, "parameters_changed": false, "target_origin": approval.TargetOrigin, "matched_rule_id": approval.MatchedRuleID, "policy_hash": approval.PolicyHash, "authorization_id": decisionAuthorizationID}}); err != nil {
 		return core.Approval{}, err
 	}
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "human_action.resolved", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"human_action_id": approval.ID, "kind": core.HumanActionToolApproval, "status": humanStatus, "decision": input.Decision, "scope": input.Scope}}); err != nil {

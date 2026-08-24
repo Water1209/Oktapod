@@ -227,7 +227,7 @@ func PlanTool(call ToolCall) PlannedTool {
 	default:
 		if strings.HasPrefix(call.Name, "mcp__") && strings.Count(call.Name, "__") >= 2 {
 			// MCP calls are external side effects. They are always persisted,
-			// require one-time approval, and are never retried automatically.
+			// require explicit approval, and are never retried automatically.
 			planned.RiskLevel = "L2"
 			planned.Decision = PolicyAsk
 			planned.Reason = "MCP tool execution requires explicit approval and a side-effect receipt"

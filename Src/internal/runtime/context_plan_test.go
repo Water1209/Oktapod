@@ -218,6 +218,9 @@ func TestExplicitMCPProviderSuppressesHeuristicSkillScope(t *testing.T) {
 	for _, definition := range catalog.Definitions {
 		if definition.Name == "mcp__playwright__browser_navigate" {
 			found = true
+			if !strings.Contains(definition.Description, "@playwright/mcp") || !strings.Contains(definition.Description, "页面快照") {
+				t.Fatalf("Playwright tool description lacks provider and safe workflow guidance: %q", definition.Description)
+			}
 		}
 	}
 	if !found {

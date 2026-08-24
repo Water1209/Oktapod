@@ -111,6 +111,17 @@ describe('task progress presentation', () => {
     expect(timeline[1]?.tool?.output).toContain('reports/final.md')
   })
 
+  it('uses the frozen MCP capability name for execution labels', () => {
+    const events: RunEvent[] = [
+      { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'run.created', occurred_at: '2026-08-24T11:06:01Z', payload: {} },
+      { id: 'event-2', run_id: 'run-1', stream_seq: 2, event_type: 'tool.planned', occurred_at: '2026-08-24T11:06:02Z', payload: { step_id: 'step-browser', tool_name: 'mcp__capability-id__browser_navigate', tool_display_name: '@playwright/mcp · browser_navigate' } },
+      { id: 'event-3', run_id: 'run-1', stream_seq: 3, event_type: 'step.succeeded', occurred_at: '2026-08-24T11:06:03Z', payload: { step_id: 'step-browser', result_summary: '完成' } },
+    ]
+
+    const timeline = buildTaskTimeline({ ...task, status: 'succeeded', error_code: '', result_summary: '完成' }, events)
+    expect(timeline[1]).toMatchObject({ label: 'Playwright MCP 打开网页', state: 'succeeded' })
+  })
+
   it('presents an automatic compatibility retry as a model recovery step', () => {
     const events: RunEvent[] = [
       { id: 'event-1', run_id: 'run-1', stream_seq: 1, event_type: 'run.created', occurred_at: '2026-07-20T11:06:01Z', payload: {} },

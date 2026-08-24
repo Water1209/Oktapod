@@ -1,6 +1,6 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.11（语义计划稳定性与否定约束完成合同收口）
+> **文档版本**：V2.12（MCP 授权收敛、资源能力真源与恢复链收口）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
 > **编制日期**：2026-08-24
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
@@ -237,7 +237,7 @@ TurnCompleted / TurnFailed / ContextLimitReached
 
 模型停止调用工具只表示当前 Turn 结束，不等于用户目标已经完成。Domain 根据 `goal + acceptance` 推导最小 `TaskCompletionRequirements`，Durable Harness 在进入成功终态前核对持久证据：联网调研必须有成功的内建或 MCP 搜索/研究 Receipt；创建、修改或修复必须有工作区写入/编辑 Receipt，提交、建分支或撤销必须有对应的受控 Git 变更 Receipt；明确测试或验证时必须有最后一次变更之后的命令、文件、Git、浏览器或同类 MCP 验证 Receipt；文件交付必须有最新 `deliverable` Artifact。用户要求“一份/单一/完整报告”时，显式字数按最大的单一最新 UTF-8 Artifact 核验，不能用多个分片求和；显式来源要求检查主文件中的可点击 URL，完整性要求拒绝续写锚点、TODO、TBD 和“待补充”。自然语言继任 Run 可复用受限来源链的搜索、变更与最新 Artifact，若本 Run 又产生新变更，验证仍必须发生在该变更之后。任何一项缺失都进入一次 `completion_recovery`，再次缺失才以可行动错误阻塞，不允许用自然语言完成声明覆盖事实。
 
-用户显式声明“最多 N 次搜索”或“禁止再搜索”时，Domain 将其冻结为可区分“未限制/零次”的工具预算；继任 Run 汇总来源证据链中的成功调用数。预算耗尽后，Harness 同时从 Tool Schema 与允许列表移除 `search/research/crawl/extract/map/browse/discover` 语义族，漏网提案仍在落库执行前拒绝，避免模型换同义工具或反复触发审批；禁止新增搜索也会关闭“必须产生新联网收据”的完成要求，复用来源 Run 证据。完全访问自动放行经冻结快照确定为 L0-L2 的动作；已启用的语义搜索 MCP 即使缺少可选 Annotation，也按只读幂等 L2 留存收据，非只读、破坏性、非幂等或快照外工具仍为 L3 并要求逐次确认。模型的请求 `Thinking` 级别随 Run 冻结；新工具型 Run 的版本化 `auto` 策略采用 action-first 有效级别，显式 Off/Low/Medium/High 与历史 Run 保持原语义，请求值与有效值进入 ContextPlan/Assembly Hash。OpenAI-compatible 适配器按 Provider 能力映射 `thinking` / `reasoning_effort`；模型返回的 `reasoning_content` 与 ToolCall 同消息持久续接，避免 GLM 等交错思考模型在工具轮后丢失推理状态。模型传输从请求发出到首个正文、推理或工具 Token、首 Token 后流空闲、以及整轮完成分别设独立有界截止；默认 15 秒、60 秒与 Auto/Off/Low/Medium/High 120/120/180/300/600 秒，均由严格 `config.yaml` 配置并在启动时校验。只有推理且因长度终止、工具参数截断和空响应均进入有界恢复，默认输出预算为 8192，恢复为 16384/32768；新项目任务级默认保险丝为 80 次模型调用与 1,000,000 Token，用户显式不限额仍保留；MCP 单次调用有 10 分钟硬截止。
+用户显式声明“最多 N 次搜索”或“禁止再搜索”时，Domain 将其冻结为可区分“未限制/零次”的工具预算；继任 Run 汇总来源证据链中的成功调用数。预算耗尽后，Harness 同时从 Tool Schema 与允许列表移除 `search/research/crawl/extract/map/browse/discover` 语义族，漏网提案仍在落库执行前拒绝，避免模型换同义工具或反复触发审批；禁止新增搜索也会关闭“必须产生新联网收据”的完成要求，复用来源 Run 证据。完全访问自动放行经冻结快照确定为 L0-L2 的动作；已启用的语义搜索 MCP 即使缺少可选 Annotation，也按只读幂等 L2 留存收据，非只读、破坏性、非幂等或快照外工具仍为 L3。L3 默认逐次确认；用户也可显式建立 `run_tool`，只允许当前 Run 继续调用同一个冻结 MCP 工具身份，不授权整个 Server、其他工具、会话或项目，每次参数仍生成独立 ToolCall、Authorization 检查和 Receipt。模型的请求 `Thinking` 级别随 Run 冻结；新工具型 Run 的版本化 `auto` 策略采用 action-first 有效级别，显式 Off/Low/Medium/High 与历史 Run 保持原语义，请求值与有效值进入 ContextPlan/Assembly Hash。OpenAI-compatible 适配器按 Provider 能力映射 `thinking` / `reasoning_effort`；模型返回的 `reasoning_content` 与 ToolCall 同消息持久续接，避免 GLM 等交错思考模型在工具轮后丢失推理状态。模型传输从请求发出到首个正文、推理或工具 Token、首 Token 后流空闲、以及整轮完成分别设独立有界截止；默认 15 秒、60 秒与 Auto/Off/Low/Medium/High 120/120/180/300/600 秒，均由严格 `config.yaml` 配置并在启动时校验。只有推理且因长度终止、工具参数截断和空响应均进入有界恢复，默认输出预算为 8192，恢复为 16384/32768；新项目任务级默认保险丝为 80 次模型调用与 1,000,000 Token，用户显式不限额仍保留；MCP 单次调用有 10 分钟硬截止，同一语义计划项累计 12 个终态 MCP 调用后进入无工具 `bounded_finish`，必须基于现有证据收尾并明确缺口。
 
 Skill 属于 Run 冻结的执行状态，不是首轮 Prompt 装饰。显式选择或 `skill_invoke` 后，`invoked_skill_ids`、参数与完整工作流正文必须继承到计划续轮、工具续轮、长度截断恢复和完成修复；自动匹配仍使用较小上下文预算。`workspace_edit_file` 的验证后内容会以私有适配器交接字段生成新 Artifact，该字段在 Receipt、事件和模型上下文持久化前删除，确保长度与交付校验读取的是编辑后的文件。
 
@@ -265,7 +265,7 @@ run_id / step_id / tool_call_id / tool_identity /
 input_hash / scope / risk / expires_at / policy_version
 ```
 
-Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存在、Input Hash、Tool、Risk、Policy Version、有效期和 Scope。任一字段变化即 fail-closed。私网 `web_fetch` 使用窄化的 `run_approval_rules`：授权只绑定 Organization/Project/Run、`web_fetch`、canonical origin、Web 策略 Hash 和最长 24 小时 TTL；每个 ToolCall 仍绑定完整 URL 与 Input Hash。`run_origin` 不升级为 Conversation/Project 规则，Full Access 与 Reviewer 均不能创建它。当前同进程、同数据库威胁模型下，额外 HMAC 不能防止拥有数据库写权限的攻击者伪造审批，反而引入密钥生命周期和重启恢复故障，因此 V1 不新增 HMAC Grant 表。
+Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存在、Input Hash、Tool、Risk、Policy Version、有效期和 Scope。任一字段变化即 fail-closed。私网 `web_fetch` 使用窄化的 `run_approval_rules`：`run_origin` 只绑定 Organization/Project/Run、`web_fetch`、canonical origin、Web 策略 Hash 和最长 24 小时 TTL；每个 ToolCall 仍绑定完整 URL 与 Input Hash。MCP 的 `run_tool` 复用同表但只绑定 Organization/Project/Run、完整动态工具身份、冻结快照策略 Hash 和最长 24 小时 TTL；不能匹配同 Server 的其他工具，也不改变每次调用的冻结参数与 Input Hash。两种 Run Grant 都不升级为 Conversation/Project 规则，Full Access 与 Reviewer 均不能代替用户创建。当前同进程、同数据库威胁模型下，额外 HMAC 不能防止拥有数据库写权限的攻击者伪造审批，反而引入密钥生命周期和重启恢复故障，因此 V1 不新增 HMAC Grant 表。
 
 #### 4.4.1 ToolRuntime 与 Receipt 边界
 
@@ -274,6 +274,8 @@ Executor 在副作用发生前重新运行 ExecutionPolicy，并验证授权存�
 通用层不吸收 Capability 私有语义：Artifact 自动 Capture、Workspace CAS/Git Status Hash、外部不可信 Envelope、MCP OAuth/Secret、Web DNS/Dial/内容边界和进程树终止仍在对应 Handler/Adapter。Planning、Begin 与 Runtime 共用同一 MCP 或 Web Access 快照风险/幂等性推导；SQLite `BeginToolExecution` 使用 Store 注入的同一 `ExecutionPolicy`，并继续验证 Lease/Fence、Scope、Risk、Policy Version、Input Hash 和审批绑定。Web Receipt 额外记录 `network_class`、匹配配置规则 ID、策略 Hash 与授权 ID。
 
 取消边界单调收敛：Begin 前取消不派发也不创建 Receipt；Begin 后等待 executor 完成进程树终止或网络调用收敛，Workspace/MCP 取消均返回 `TOOL_CANCELED`，超时保留各自 Timeout Code。Task Cancel 事务将仍为 `started` 的 Receipt 标记为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`；迟到的 Finish 因 Fence 失效不能覆盖，非幂等 unknown 禁止自动重试。
+
+浏览器 API 客户端只对已经携带 `Idempotency-Key` 的写请求，在未收到 HTTP 响应的连接级失败时重用同一 Key 自动重试一次；普通读取、没有幂等键的写入、已收到 HTTP 错误以及用户主动取消均不自动重试。服务端 Agent 创建继续使用同一幂等请求合同，并与项目/任务创建一样只对 SQLite `BUSY/BUSY_SNAPSHOT` 做有界退避；这不会新增状态事实或绕过 Validation、Repository 事务与审计。
 
 ### 4.5 Project Sandbox（V1 最小可行）
 
@@ -300,7 +302,7 @@ Reviewer 只审查 Policy 已判为 `Ask` 的普通 L2 动作，输入只有脱�
 
 PPTX/PDF/DOCX/XLSX 不再走“模型生成脚本 → 临时安装库 → 每次重新解析”路径。四个格式 Skill 是用户级全局预置 Capability，可停用、删除和手动恢复；`document-runtime` 是主机共享、独立签名的 Plugin。Skill 只声明触发、工作流、格式和固定工具白名单，Runtime 只能通过六个静态 `document_*` 工具进入统一 ToolRuntime，不建立通用动态插件执行注册表。
 
-资源状态按用户隔离，物理 Runtime 按主机共享；预置删除 tombstone 是升级/登录/重启的权威输入。文档输入只接受冻结 Asset、不可变 Artifact 或已授权 Workspace；解析/渲染缓存是可清理派生数据，缓存命中仍重做 Principal 授权。编辑使用 Run 绑定 CAS 修订，最终修订必须成功渲染后才能 `document_export`，输出继续由 ArtifactCapture 登记。完整合同、格式矩阵与发布缺口见 `Oktapod_预置文档能力与_Artifact_Runtime_实现说明_V1.0.md`。
+资源状态按用户隔离，物理 Runtime 按主机共享；预置删除 tombstone 是升级/登录/重启的权威输入。预置“安装或修复”必须先验证当前进程已加载且健康检查通过的签名 Runtime；缺包、协议不匹配或健康失败时返回冲突并保持 `degraded`，禁止只重写 Capability 目录记录后伪装成修复成功。签名 Runtime 一旦持久安装到 DataRoot 版本目录或产品二进制同级目录，后续启动由同一发现合同自动加载，不要求重复修复。文档输入只接受冻结 Asset、不可变 Artifact 或已授权 Workspace；解析/渲染缓存是可清理派生数据，缓存命中仍重做 Principal 授权。编辑使用 Run 绑定 CAS 修订，最终修订必须成功渲染后才能 `document_export`，输出继续由 ArtifactCapture 登记。完整合同、格式矩阵与发布缺口见 `Oktapod_预置文档能力与_Artifact_Runtime_实现说明_V1.0.md`。
 
 ### 4.7 Workspace、Asset、Artifact 与 Changes
 
@@ -329,7 +331,7 @@ Agent 创建多个文件前必须先检查项目约定并给出简洁文件计�
 
 Provider、MCP 多字段 Secret 与 OAuth Token 统一经 Application `SecretStore` Port 进入 `DatabaseSecretStore`。SQLite Repository 只保存 AES-256-GCM 密文：每组织随机 256-bit DEK，每条记录独立 Nonce，AAD 绑定 Schema、Organization、Secret Ref、Kind 和 Key Version。业务层只观察 `ready | locked | missing | corrupt`；解密或认证失败必须返回 `SECRET_CIPHERTEXT_INVALID`，不得回退为空值或继续调用外部系统。正常运行路径不读取 Windows Credential Manager、Linux Secret Service 或 macOS Keychain，也不接受模型 Key、Reviewer 和价格环境变量作为第二真源。
 
-配置中心按用户职责而非存储位置组织：模型服务负责连接、密钥与启用模型并一次保存；治理与审批负责 Reviewer；运行与上下文、费用与用量分别承载启动/压缩和版本化价格；数据与备份必须显式区分系统级 Backup/Restore 与不含 Secret 的单项目交换。诊断返回非敏感 `credential_issues` 清单，使缺失 Provider/MCP 可定位、可跳转修复，不暴露 `credential_ref`。Provider 按组织配置，MCP 诊断必须使用当前 Principal 可访问的项目 Scope，与资源中心读取合同一致；资源中心先选择“项目资源/系统能力”，类型筛选只属于项目资源，禁止形成“系统能力 + MCP”之类无业务含义的组合状态。资源列表必须提供一句话能力说明，详情按“能力定位、真实工具或工作流、适用场景、治理边界”分层展示；展示数据来自当前 Capability Manifest 与在线工具发现，不维护第二份手写能力事实表。
+配置中心按用户职责而非存储位置组织：模型服务负责连接、密钥与启用模型并一次保存；治理与审批负责 Reviewer；运行与上下文、费用与用量分别承载启动/压缩和版本化价格；数据与备份必须显式区分系统级 Backup/Restore 与不含 Secret 的单项目交换。诊断返回非敏感 `credential_issues` 清单，使缺失 Provider/MCP 可定位、可跳转修复，不暴露 `credential_ref`。Provider 按组织配置，MCP 诊断必须使用当前 Principal 可访问的项目 Scope，与资源中心读取合同一致；资源中心先选择“项目资源/系统能力”，类型筛选只属于项目资源，禁止形成“系统能力 + MCP”之类无业务含义的组合状态。资源列表必须提供一句话能力说明，详情按“能力定位、真实工具或工作流、适用场景、怎么使用、治理边界”分层展示；Skill 明细从冻结 Manifest 的 description/instructions 章节生成，MCP 明细从在线工具名称和服务端 description 生成，前端只做人类可读名称与版式投影，不维护按某个 Skill/MCP 身份硬编码的第二份能力事实表。
 
 `VaultKeyManager` 将 DEK 分别用本地 KEK 和恢复 KEK 包装。本地 KEK 位于 `$DATA_ROOT/vault/bootstrap.key`，只负责无人值守重启自动解锁；恢复 KEK 由一次性 Base64url 恢复口令经 HKDF-SHA256 派生。初始化采用 `pending → active` 两阶段，必须重新输入恢复口令确认。跨机器恢复缺少本地 KEK 时服务保持可登录和可恢复，但模型、MCP、OAuth 与计划任务关闭式阻塞；成功恢复后生成新的本地 KEK。正式 Backup V2 带数据库密文与恢复包装，不带本地 KEK或恢复口令；项目逻辑导出不带 Secret，并清空 Capability `credential_ref`。
 
@@ -361,7 +363,7 @@ run_command / artifact_capture / asset_stage / update_plan
 
 互联网搜索、网页提取、GitHub 远程数据、Jira/Confluence、数据库、浏览器、企业内部系统、知识库和第三方研究工具统一通过 ToolSpec 接入；新增第三方能力优先走 MCP。内建 `web_search` 与 `web_fetch` 共同实现 `WebAccess`，前者只向模型暴露单个 `query` 并保持 DDG → Bing RSS 零凭据链路，后者只向模型暴露单个 URL 参数。
 
-现有内建 Search/Fetch 注册为 Web Renderer ToolSpec，提供无外部凭据的最低可用能力。Fetch 固定 GET-only、30 秒、解压后 2 MiB、转换输入 256 KiB、模型正文 24 KiB、HTML 深度 512；支持 HTML/text/JSON/XML，HTML 经固定 `html-to-markdown/v2@v2.5.2` 转为 CommonMark/table 并移除脚本，失败降级受限纯文本。最多 5 次同源重定向；跨 origin 不访问，只返回目标供新的受治理调用。网页输出标记 `external_untrusted`，模型 Prompt 禁止把页面指令当作权限或策略。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。需要跨调用保留页面、终端等协议状态的本地 MCP，由进程级 `SessionBroker` 按组织、项目、Run 和 Capability 隔离复用同一协议会话；同一会话串行调用，空闲 15 分钟或超过 32 个会话时有界回收，进程退出时统一关闭。Broker 不是事实源，不保存授权、Receipt 或恢复状态；每次调用仍独立执行 Policy、Authorization、Receipt Begin/Finish，传输失败只驱逐会话且不自动重试非幂等调用。多项 Secret 以一个不透明加密集合经 SecretStore Port 写入数据库 Vault，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情；SQLite 只保存应用层密文。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：同时过滤内建 `web_search`、`web_fetch` 和其他 MCP，防止静默改用或混用其他外部数据源；工作区、Git、计划、输入和审批等本地交付能力继续可用，使 Agent 能把指定 MCP 的证据写成文件并验证。Tavily 是可选首选，不进入核心依赖。
+现有内建 Search/Fetch 注册为 Web Renderer ToolSpec，提供无外部凭据的最低可用能力。Fetch 固定 GET-only、30 秒、解压后 2 MiB、转换输入 256 KiB、模型正文 24 KiB、HTML 深度 512；支持 HTML/text/JSON/XML，HTML 经固定 `html-to-markdown/v2@v2.5.2` 转为 CommonMark/table 并移除脚本，失败降级受限纯文本。最多 5 次同源重定向；跨 origin 不访问，只返回目标供新的受治理调用。网页输出标记 `external_untrusted`，模型 Prompt 禁止把页面指令当作权限或策略。V1 验收插件：**Tavily MCP**（`tavily_search` / `tavily_extract`）。菜单与自然语言入口都只生成 `ResourceInstallDraft`，由同一 Application 用例完成“来源解析 → 版本固定 → 用户确认 → 审核 → 启用 → 连接”；Agent Loop 不包含 Tavily 正则、包管理器或安装业务。来源解析支持官方 MCP Registry、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包和本地命令；单一输入框只接收来源标识，解析后才展示版本、传输、工具和凭据要求，安装后由对话按名称或能力触发。Registry 返回多个候选时必须由用户明确选择，不能把社区结果当作可信官方包。`MCPDefinition v1` 用 `transport.type` 区分本地 stdio 与远端 Streamable HTTP，并由固定版本 MCP Go SDK 处理协议协商、工具发现和调用。模型可见动态名 `mcp__<capability-id>__<tool>` 只用于冻结唯一身份和审计；Prompt 与界面使用 Capability 名称、工具短名和服务端 description，不把 UUID 当作用户能力名称。需要跨调用保留页面、终端等协议状态的本地 MCP，由进程级 `SessionBroker` 按组织、项目、Run 和 Capability 隔离复用同一协议会话；同一会话串行调用，空闲 15 分钟或超过 32 个会话时有界回收，进程退出时统一关闭。Broker 不是事实源，不保存授权、Receipt 或恢复状态；每次调用仍独立执行 Policy、Authorization、Receipt Begin/Finish，传输失败只驱逐会话且不自动重试非幂等调用。多项 Secret 以一个不透明加密集合经 SecretStore Port 写入数据库 Vault，执行时只注入声明过的 `env:` 或受控 `header:` 目标，不进入 Manifest、API 响应或审计详情；SQLite 只保存应用层密文。用户在目标中明确点名某个已连接 MCP 时，属于确定性 Provider 选择：同时过滤内建 `web_search`、`web_fetch` 和其他 MCP，防止静默改用或混用其他外部数据源；工作区、Git、计划、输入和审批等本地交付能力继续可用，使 Agent 能把指定 MCP 的证据写成文件并验证。Tavily 是可选首选，不进入核心依赖。
 
 用户安装的 Skill、MCP 与 Agent 使用统一的启用、停用和永久删除语义。`queued / running / waiting_approval / waiting_input / paused` Run 引用时拒绝删除；`blocked` Run 只有在 Capability 仍绑定凭据时继续保护，防止删除 Secret 使恢复失真。无凭据 Capability 仅被历史 `blocked` Run 引用时允许删除，因为 Run 已冻结 Manifest，历史快照和脱敏审计继续保留。资源中心只展示 `available / degraded / disabled / quarantined` 四种稳定可用性，MCP 的协议、会话与进程状态留在诊断详情，避免“已启用但要求连接”的冲突状态。Skill 菜单入口只接受单 Skill ZIP；ZIP 必须包含唯一 `SKILL.md`，禁止路径穿越、嵌套 Skill、缓存、依赖目录和隐藏执行载荷。前端只能声明“客户端预检通过”，必须等服务端完整扫描通过后才能进入审批；失败时展示结构化原因，并可将修复上下文带入新对话交给内置只读 Skill Creator 生成兼容副本。所有草稿仍进入同一 ZIP 校验、权限差异和人工审批链。
 
@@ -440,6 +442,8 @@ web.search / web.extract / repository.search / repository.read
 | Rate Limit | 429/额度耗尽 | 允许同能力候选，必须显示 Provider 限流 |
 | Empty Result | 结果为空 | 模型决定：改写查询/放宽条件/换工具/说明无结果 |
 | Invalid Input | 参数校验失败 | 返回模型重新构造，不允许系统跨 Schema 静默转换 |
+
+自动修复次数按一条连续失败链计算：失败工具的 source model Step 继承 `tool_recovery_count`，同一链最多 5 次；任一工具成功后生成的普通 continuation 不携带该字段，下一项无关失败重新从 1/5 开始。显示层只投影这一持久 lineage，不按 Run 全局累计失败事件。
 
 ---
 

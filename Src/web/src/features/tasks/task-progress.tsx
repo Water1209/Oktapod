@@ -26,7 +26,7 @@ export function TaskTimeline({ task, events, compact = false }: { task: Task; ev
       {items.map((item) => <li className={item.state} key={item.id}>
       <span className="task-timeline-glyph" aria-hidden="true">{timelineIcon(item.state)}</span>
       <span className="task-timeline-copy">
-        <span className="task-timeline-title"><strong>{item.label}</strong>{item.tool ? <code>{item.tool.name}</code> : null}</span>
+        <span className="task-timeline-title"><strong>{item.label}</strong>{item.tool ? <code>{technicalToolName(item.tool.name)}</code> : null}</span>
         {item.tool ? <>
           {item.tool.input ? <small className="task-tool-input">{item.tool.input}</small> : null}
           <span className={`task-tool-result ${item.state}`}><span aria-hidden="true" />{item.tool.result || item.detail}</span>
@@ -38,6 +38,10 @@ export function TaskTimeline({ task, events, compact = false }: { task: Task; ev
       </li>)}
     </ol>
   </>
+}
+
+function technicalToolName(name: string) {
+  return name.startsWith('mcp__') ? name.split('__').at(-1) || 'mcp_tool' : name
 }
 
 export function WebAccessResultCard({ presentation }: { presentation: ToolPresentation }) {

@@ -31,7 +31,9 @@ func NewAgentTurnAssembler(repository WorkerRepository) AgentTurnAssembler {
 
 func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.ClaimedStep, run core.RunContext) (ModelAssembly, *core.StepOutcome) {
 	sections, userPrompt := (PromptAssembler{}).BaseSections(run)
-	enableTools := run.Mode == core.ModeSingleAgent
+	stage := modelStage(step.InputJSON)
+	boundedFinish := stage == "bounded_finish"
+	enableTools := run.Mode == core.ModeSingleAgent && !boundedFinish
 	continuation := continuationHistoryForPrompt(step.InputJSON)
 	continuationInstruction := continuationInstructionForTurn(step, continuation)
 	if reminder := planProgressReminder(step, continuation, run.ConfigSnapshotJSON); reminder != "" {
@@ -46,7 +48,7 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	if core.InferTaskCompletionRequirements(run.Goal, run.Acceptance).RequiresSingleDeliverable {
 		sections = append(sections, PromptSection{Name: "single_deliverable", Order: 1100, Text: "单一主交付物规则：用户要求的是一份可独立阅读的完整报告，显式最低字数必须由同一个主文件满足，多个章节分片的合计不算完成。长文应分轮追加到同一个主文件：先用 workspace_write_file 创建包含 `<!-- OKTAPOD_CONTINUE -->` 尾部锚点的主文件；后续读取最新 preimage_hash，用 workspace_edit_file 把该锚点替换为下一段正文加同一锚点；全部写完后移除锚点，再读取主文件验证。过程材料可以另存，但最终总结必须首先给出主报告路径。"})
 	}
-	if stagePrompt := (PromptAssembler{}).Stage(modelStage(step.InputJSON), run.ConfigSnapshotJSON); stagePrompt != "" {
+	if stagePrompt := (PromptAssembler{}).Stage(stage, run.ConfigSnapshotJSON); stagePrompt != "" {
 		sections = append(sections, PromptSection{Name: "stage", Order: 1200, Text: "# Stage instructions\n" + stagePrompt})
 	}
 	actionFirst := mainAgentActionFirst(run.ConfigSnapshotJSON, enableTools)
@@ -64,6 +66,12 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	sections = append(sections, catalog.PromptSections...)
 	if catalog.ContinuationInstructionTail != "" {
 		continuationInstruction += "\n\n" + catalog.ContinuationInstructionTail
+	}
+	if boundedFinish {
+		catalog.Definitions = nil
+		catalog.AllowedTools = nil
+		catalog.ToolScopeDeclared = false
+		catalog.ContextPlan["bounded_finish"] = true
 	}
 	conversationMessages := conversationMessagesFromSnapshot(run.ConfigSnapshotJSON)
 	catalog.ContextPlan["conversation_messages"] = len(conversationMessages)
@@ -159,6 +167,13 @@ func continuationInstructionForTurn(step core.ClaimedStep, continuation []map[st
 		instruction = "用户选择用现有结果收尾。不得继续扩展搜索、重复读取或重复统计；基于已有证据、文件和校验结果立即交付最终答复，并明确任何尚未完成的缺口。"
 	case "budget_resume":
 		instruction = "用户已按界面中明确显示的额度扩展本次 Run 预算。继续原目标，但不得重复已经成功的工具和校验；在本次额度内完成剩余工作并及时收尾。"
+	case "bounded_finish":
+		var bounded struct {
+			Used  int `json:"mcp_tool_calls_used"`
+			Limit int `json:"mcp_tool_call_limit"`
+		}
+		_ = json.Unmarshal([]byte(step.InputJSON), &bounded)
+		instruction = fmt.Sprintf("同一个语义计划项已经完成 %d 次 MCP 工具调用，达到 %d 次收敛上限。当前 Turn 不再提供工具；请基于已有页面证据立即给出最佳可用结论，明确已核验网址、来源和仍存在的缺口，不得继续声称正在查找或等待下一步。", bounded.Used, bounded.Limit)
 	}
 	if len(continuation) > 0 || steering != "" {
 		instruction += "\n\n长文交付必须主动分段：单次 workspace_write_file / workspace_edit_file 的新增正文建议不超过 3000 个字符。用户要求一份或一个完整报告时，必须维护一个可独立阅读的主文件：先创建带稳定尾部锚点的主文件，再读取最新 preimage_hash，用 workspace_edit_file 替换该锚点为下一段正文加同一锚点；完成时移除锚点。过程章节可以保留，但不能用多个分片的合计字数冒充主报告字数。不要等待参数截断后再拆分。"

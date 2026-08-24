@@ -3,6 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Clock3, Gauge, Infinity as InfinityIcon, LockKeyhole, ShieldAlert, Square, X } from 'lucide-react'
 import { api, type ApprovalScope, type HumanAction } from '../../shared/api/client'
+import { mcpToolDisplayLabel } from '../../shared/mcp-display'
 
 export function HumanActionCard({ action }: { action: HumanAction }) {
   const queryClient = useQueryClient()
@@ -32,8 +33,9 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
   const impact = String(action.request.impact_scope ?? action.request.scope ?? '仅当前计划项')
   const toolName = String(action.request.tool_name ?? '')
   const approval = action.kind === 'tool_approval'
+  const mcpApproval = approval && toolName.startsWith('mcp__')
   const privateWebFetch = approval && toolName === 'web_fetch' && action.request.approval_scope === 'run_origin'
-	const persistentApprovalSupported = approval && !toolName.startsWith('mcp__') && !privateWebFetch
+  const persistentApprovalSupported = approval && !mcpApproval && !privateWebFetch
   const input = action.kind === 'input_request'
   const permission = action.kind === 'permission_escalation'
   const budget = action.kind === 'budget_request'
@@ -56,7 +58,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       <em>{statusLabel(action.status)}</em>
     </header>
     <p>{action.reason}</p>
-	{waiting && approval && toolName.startsWith('mcp__') ? <small className="human-action-error">外部 MCP 的参数与返回边界由服务端决定，为避免静默扩大权限，仅支持逐次批准。</small> : null}
+    {waiting && mcpApproval ? <small className="human-action-error">这是已安装 MCP Server 的真实工具调用。可只批准当前参数一次，也可仅在本任务内允许后续调用同一个工具；不会授权整个 MCP、其他任务或项目。</small> : null}
     {privateWebFetch ? <div className="private-origin-approval"><ShieldAlert size={16} /><span><strong>受控私网读取</strong><small>只读 GET · 当前 Run · 最长 24 小时</small><code>{String(action.request.target_origin ?? '未知 origin')}</code>{action.request.matched_rule_id ? <small>匹配规则：{String(action.request.matched_rule_id)}</small> : null}<p>批准后，模型可读取此 origin 的其他路径，并可能把页面数据带入模型上下文；不会授权其他端口、协议或 Run。</p></span></div> : null}
 	{!input && !budget ? <div className="human-action-frozen"><LockKeyhole size={14} /><span><small>{approval ? '冻结参数' : '请求内容'}</small><code>{formatRequest(toolName, frozen)}</code></span></div> : null}
     {budget ? <div className="human-action-budget-summary">
@@ -74,9 +76,10 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
 
     {waiting && (approval || permission) ? <div className="human-action-actions">
       <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-	  {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => approve('run_origin')}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />批准一次</button>}
-	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
-	  {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
+      {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => approve('run_origin')}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />批准一次</button>}
+      {mcpApproval ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => approve('run_tool')}><Check size={14} />本任务允许此工具</button> : null}
+      {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
+      {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
     </div> : null}
 
     {waiting && budget ? <div className="human-action-actions budget-actions">
@@ -128,6 +131,7 @@ function actionTitle(action: HumanAction) {
   if (action.kind === 'permission_escalation') return action.title || '申请运行权限'
   if (action.kind === 'budget_request') return action.title || '确认扩展本次运行预算'
   if (action.kind === 'side_effect_resolution') return action.title || '确认动作是否生效'
+  if (tool.startsWith('mcp__')) return mcpToolDisplayLabel(tool, String(action.request.tool_display_name ?? action.title ?? ''))
   return action.title
 }
 

@@ -51,4 +51,32 @@ describe('API client', () => {
       expect(error.problem).toMatchObject({ code: 'VALIDATION_FAILED', correlation_id: 'correlation-test' })
     }
   })
+
+  it('retries a connection failure once with the same idempotency key', async () => {
+    const agent = {
+      id: 'agent-id', organization_id: 'org-id', project_id: 'project-id', owner_user_id: 'user-id',
+      name: 'Reviewer', version: '1.0.0', instructions: 'Review evidence.', model: 'model-e2e', fallback_model: '',
+      config_json: '{}', status: 'enabled', created_at: '2026-08-24T00:00:00Z', updated_at: '2026-08-24T00:00:00Z',
+    }
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify(agent), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.createAgent('project-id', { name: 'Reviewer', version: '1.0.0', instructions: 'Review evidence.' })).resolves.toMatchObject({ id: 'agent-id' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const firstHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+    const secondHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
+    expect(firstHeaders.get('Idempotency-Key')).toBeTruthy()
+    expect(secondHeaders.get('Idempotency-Key')).toBe(firstHeaders.get('Idempotency-Key'))
+  })
+
+  it('does not retry a read without an idempotency key', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.projects()).rejects.toThrow('Failed to fetch')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })

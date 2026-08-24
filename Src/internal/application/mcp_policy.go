@@ -1,10 +1,69 @@
 package application
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
+
+type MCPToolDescriptor struct {
+	CapabilityID   string
+	CapabilityName string
+	ToolName       string
+	Description    string
+}
+
+func MCPToolDescriptorFromSnapshot(snapshot, fullToolName string) (MCPToolDescriptor, bool) {
+	var config struct {
+		Capabilities []struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"tools"`
+		} `json:"mcp_capabilities"`
+	}
+	if json.Unmarshal([]byte(snapshot), &config) != nil {
+		return MCPToolDescriptor{}, false
+	}
+	for _, capability := range config.Capabilities {
+		for _, tool := range capability.Tools {
+			if "mcp__"+capability.ID+"__"+tool.Name != fullToolName {
+				continue
+			}
+			name := strings.TrimSpace(capability.Name)
+			if name == "" {
+				name = "MCP"
+			}
+			return MCPToolDescriptor{CapabilityID: capability.ID, CapabilityName: name, ToolName: tool.Name, Description: tool.Description}, true
+		}
+	}
+	return MCPToolDescriptor{}, false
+}
+
+func MCPToolDisplayName(snapshot, fullToolName string) string {
+	descriptor, ok := MCPToolDescriptorFromSnapshot(snapshot, fullToolName)
+	if !ok {
+		return fullToolName
+	}
+	return descriptor.CapabilityName + " · " + descriptor.ToolName
+}
+
+// MCPRunToolGrant binds an explicit approval to one frozen MCP tool identity
+// in one immutable Run. It does not grant a whole server, conversation, or
+// project, so newly installed tools cannot inherit the authorization.
+func MCPRunToolGrant(snapshot, fullToolName string) (string, string, bool) {
+	if _, ok := MCPToolDescriptorFromSnapshot(snapshot, fullToolName); !ok {
+		return "", "", false
+	}
+	grantSum := sha256.Sum256([]byte("mcp-run-tool/v1\n" + fullToolName))
+	policySum := sha256.Sum256([]byte("mcp-run-tool/v1\n" + fullToolName + "\n" + snapshot))
+	return "sha256:" + hex.EncodeToString(grantSum[:]), "sha256:" + hex.EncodeToString(policySum[:]), true
+}
 
 // MCPPolicyFromSnapshot derives the execution contract from the immutable Run
 // snapshot. Planning, durable authorization, and ToolRuntime preflight must all
@@ -35,13 +94,13 @@ func MCPPolicyFromSnapshot(snapshot, fullToolName string) (string, bool, string)
 			annotations := tool.Annotations
 			idempotent := annotations.IdempotentHint != nil && *annotations.IdempotentHint
 			if annotations.ReadOnlyHint != nil && !*annotations.ReadOnlyHint {
-				return "L3", idempotent, "MCP tool declares non-read-only behavior; one-time manual approval is required"
+				return "L3", idempotent, "MCP tool declares non-read-only behavior; explicit approval is required"
 			}
 			if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
-				return "L3", idempotent, "Destructive MCP execution always requires one-time manual approval"
+				return "L3", idempotent, "Destructive MCP execution always requires explicit manual approval"
 			}
 			if annotations.IdempotentHint != nil && !*annotations.IdempotentHint {
-				return "L3", false, "Non-idempotent MCP execution always requires one-time manual approval"
+				return "L3", false, "Non-idempotent MCP execution always requires explicit manual approval"
 			}
 			if annotations.ReadOnlyHint == nil || annotations.DestructiveHint == nil || annotations.IdempotentHint == nil || annotations.OpenWorldHint == nil {
 				if core.IsSearchEvidenceTool(fullToolName) {

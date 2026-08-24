@@ -536,8 +536,8 @@ func ValidateDecideApproval(input DecideApprovalInput) error {
 	if input.Scope == "" {
 		input.Scope = ApprovalScopeOnce
 	}
-	if input.Scope != ApprovalScopeOnce && input.Scope != ApprovalScopeConversation && input.Scope != ApprovalScopeProject && input.Scope != ApprovalScopeRunOrigin {
-		return &ValidationError{Field: "scope", Message: "must be once, conversation, project, or run_origin"}
+	if input.Scope != ApprovalScopeOnce && input.Scope != ApprovalScopeConversation && input.Scope != ApprovalScopeProject && input.Scope != ApprovalScopeRunOrigin && input.Scope != ApprovalScopeRunTool {
+		return &ValidationError{Field: "scope", Message: "must be once, conversation, project, run_origin, or run_tool"}
 	}
 	if input.Decision == ApprovalRejected && input.Scope != ApprovalScopeOnce {
 		return &ValidationError{Field: "scope", Message: "rejected decisions must use once"}

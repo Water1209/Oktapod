@@ -8773,6 +8773,14 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			if reason != "" {
 				plan.Reason = reason
 			}
+			if risk == "L3" && plan.Decision == core.PolicyAsk {
+				if grantKey, policyHash, ok := application.MCPRunToolGrant(run.ConfigSnapshotJSON, call.Name); ok {
+					plan.ApprovalScope = core.ApprovalScopeRunTool
+					plan.ApprovalGrantKey = grantKey
+					plan.ApprovalPolicyHash = policyHash
+					plan.ForceHumanApproval = true
+				}
+			}
 		}
 		if violationCode != "" {
 			plan.Decision = core.PolicyDeny
@@ -8803,13 +8811,14 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		stepIDs[index] = stepID
 		plans[index].Call.ID = toolCallID
 		planItems = append(planItems, map[string]any{
-			"index":         index + 1,
-			"step_id":       stepID,
-			"tool_call_id":  toolCallID,
-			"tool_name":     plans[index].Call.Name,
-			"input_summary": toolInputSummary(plans[index].Call.Name, plans[index].Call.Arguments),
-			"position":      maxPosition + int64(index) + 1,
-			"barrier_group": barrierGroups[index],
+			"index":             index + 1,
+			"step_id":           stepID,
+			"tool_call_id":      toolCallID,
+			"tool_name":         plans[index].Call.Name,
+			"tool_display_name": application.MCPToolDisplayName(run.ConfigSnapshotJSON, plans[index].Call.Name),
+			"input_summary":     toolInputSummary(plans[index].Call.Name, plans[index].Call.Arguments),
+			"position":          maxPosition + int64(index) + 1,
+			"barrier_group":     barrierGroups[index],
 		})
 	}
 	var planIteration int64
@@ -8871,6 +8880,8 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				plan.Decision = core.PolicyAllow
 				if plan.ApprovalScope == core.ApprovalScopeRunOrigin {
 					plan.Reason = "当前 Run 已批准访问相同私网 origin，继续使用冻结 URL 执行"
+				} else if plan.ApprovalScope == core.ApprovalScopeRunTool {
+					plan.Reason = "当前任务已批准使用同一个冻结 MCP 工具，仍按本次参数生成独立收据"
 				} else {
 					plan.Reason = "本会话已批准同类动作，继续使用冻结参数执行"
 				}
@@ -8879,6 +8890,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		toolCallID := toolCallIDs[index]
 		stepID := stepIDs[index]
 		plan.Call.ID = toolCallID
+		toolDisplayName := application.MCPToolDisplayName(run.ConfigSnapshotJSON, plan.Call.Name)
 		position := maxPosition + int64(index) + 1
 		toolStatus := "queued"
 		stepStatus := core.StatusQueued
@@ -8920,7 +8932,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				return "", "", err
 			}
 		}
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.planned", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "position": position, "risk_level": plan.RiskLevel, "policy_decision": plan.Decision, "input_hash": plan.InputHash, "reason": plan.Reason}}); err != nil {
+		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.planned", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "tool_display_name": toolDisplayName, "position": position, "risk_level": plan.RiskLevel, "policy_decision": plan.Decision, "input_hash": plan.InputHash, "reason": plan.Reason}}); err != nil {
 			return "", "", err
 		}
 		if !hasDeny && plan.Decision == core.PolicyAsk {
@@ -8942,14 +8954,15 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				hasQueued = true
 			}
 			actionRequest, err := json.Marshal(map[string]any{
-				"tool_name":       plan.Call.Name,
-				"frozen_params":   plan.Call.Arguments,
-				"impact_scope":    "当前计划项",
-				"policy_reason":   plan.Reason,
-				"policy_decision": plan.Decision,
-				"approval_scope":  approvalScope,
-				"target_origin":   plan.ApprovalOrigin,
-				"matched_rule_id": plan.ApprovalRuleID,
+				"tool_name":         plan.Call.Name,
+				"tool_display_name": toolDisplayName,
+				"frozen_params":     plan.Call.Arguments,
+				"impact_scope":      "当前计划项",
+				"policy_reason":     plan.Reason,
+				"policy_decision":   plan.Decision,
+				"approval_scope":    approvalScope,
+				"target_origin":     plan.ApprovalOrigin,
+				"matched_rule_id":   plan.ApprovalRuleID,
 			})
 			if err != nil {
 				return "", "", err
@@ -8969,7 +8982,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 					requested_at, expires_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'tool_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				approvalID, run.OrganizationID, run.ProjectID, run.ConversationID, run.TaskID, run.RunID,
-				stepID, planRevisionID, executionPlanItemID, actionStatus, actionReviewer, plan.RiskLevel, plan.Call.Name,
+				stepID, planRevisionID, executionPlanItemID, actionStatus, actionReviewer, plan.RiskLevel, toolDisplayName,
 				plan.Reason, string(actionRequest), plan.InputHash, modelStep.OwnerID, now, expiresAt,
 			); err != nil {
 				return "", "", err
@@ -8983,10 +8996,10 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 					return "", "", err
 				}
 			}
-			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "approval.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"approval_id": approvalID, "tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "risk_level": plan.RiskLevel, "approval_scope": approvalScope, "input_hash": plan.InputHash, "reason": plan.Reason, "target_origin": plan.ApprovalOrigin, "matched_rule_id": plan.ApprovalRuleID}}); err != nil {
+			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "approval.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"approval_id": approvalID, "tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "tool_display_name": toolDisplayName, "risk_level": plan.RiskLevel, "approval_scope": approvalScope, "input_hash": plan.InputHash, "reason": plan.Reason, "target_origin": plan.ApprovalOrigin, "matched_rule_id": plan.ApprovalRuleID}}); err != nil {
 				return "", "", err
 			}
-			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": approvalID, "kind": core.HumanActionToolApproval, "status": actionStatus, "reviewer": actionReviewer, "plan_revision_id": planRevisionID, "run_plan_item_id": executionPlanItemID, "risk_level": plan.RiskLevel, "title": plan.Call.Name, "reason": plan.Reason}}); err != nil {
+			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": approvalID, "kind": core.HumanActionToolApproval, "status": actionStatus, "reviewer": actionReviewer, "plan_revision_id": planRevisionID, "run_plan_item_id": executionPlanItemID, "risk_level": plan.RiskLevel, "title": toolDisplayName, "reason": plan.Reason}}); err != nil {
 				return "", "", err
 			}
 			if toolAutoReview {
@@ -10064,19 +10077,20 @@ func activeExecutionPlanBinding(ctx context.Context, tx *sql.Tx, runID string) (
 }
 
 func approvalRuleMatches(ctx context.Context, tx *sql.Tx, run core.RunContext, planned core.PlannedTool, now string) (bool, error) {
-	if planned.ApprovalScope == core.ApprovalScopeRunOrigin {
+	if planned.ApprovalScope == core.ApprovalScopeRunOrigin || planned.ApprovalScope == core.ApprovalScopeRunTool {
 		if planned.ApprovalGrantKey == "" || planned.ApprovalPolicyHash == "" {
 			return false, nil
 		}
+		grantType := planned.ApprovalScope
 		var marker int
 		err := tx.QueryRowContext(ctx, `
 			SELECT 1
 			FROM run_approval_rules
 			WHERE organization_id = ? AND project_id = ? AND run_id = ?
-			  AND tool_name = ? AND grant_type = 'run_origin' AND grant_key = ?
+			  AND tool_name = ? AND grant_type = ? AND grant_key = ?
 			  AND policy_hash = ? AND expires_at > ?
 			LIMIT 1`, run.OrganizationID, run.ProjectID, run.RunID, planned.Call.Name,
-			planned.ApprovalGrantKey, planned.ApprovalPolicyHash, now).Scan(&marker)
+			grantType, planned.ApprovalGrantKey, planned.ApprovalPolicyHash, now).Scan(&marker)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -10300,7 +10314,7 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	}
 	arguments := map[string]any{}
 	_ = json.Unmarshal([]byte(argumentsJSON), &arguments)
-	completedPayload := map[string]any{"tool_call_id": execution.ToolCallID, "step_id": step.ID, "tool_name": toolName, "input_summary": toolInputSummary(toolName, arguments), "output_summary": toolOutputSummary(toolName, receiptStatus, execution.ErrorCode, int64(execution.ExitCode), execution.Output), "output_excerpt": toolOutputExcerpt(toolName, execution.Output), "invocation_id": execution.InvocationID, "status": receiptStatus, "error_code": execution.ErrorCode, "exit_code": execution.ExitCode, "input_hash": execution.InputHash}
+	completedPayload := map[string]any{"tool_call_id": execution.ToolCallID, "step_id": step.ID, "tool_name": toolName, "tool_display_name": application.MCPToolDisplayName(run.ConfigSnapshotJSON, toolName), "input_summary": toolInputSummary(toolName, arguments), "output_summary": toolOutputSummary(toolName, receiptStatus, execution.ErrorCode, int64(execution.ExitCode), execution.Output), "output_excerpt": toolOutputExcerpt(toolName, execution.Output), "invocation_id": execution.InvocationID, "status": receiptStatus, "error_code": execution.ErrorCode, "exit_code": execution.ExitCode, "input_hash": execution.InputHash}
 	if presentation := toolPresentation(toolName, arguments, execution.Output); presentation != nil {
 		completedPayload["presentation"] = presentation
 	}
@@ -10911,6 +10925,25 @@ func (s *Store) queueModelContinuation(ctx context.Context, tx *sql.Tx, q *sqlit
 	}
 
 	input := map[string]any{"history": history, "stage": "continue", "source_step_id": sourceStep.ID}
+	var runPlanItemID string
+	if err := tx.QueryRowContext(ctx, `SELECT run_plan_item_id FROM steps WHERE id = ? AND run_id = ?`, sourceStep.ID, run.RunID).Scan(&runPlanItemID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if strings.TrimSpace(runPlanItemID) != "" {
+		var terminalMCPCalls int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tool_calls
+			WHERE run_id = ? AND run_plan_item_id = ? AND tool_name GLOB 'mcp__*__*'
+			  AND status IN ('succeeded', 'failed', 'blocked', 'rejected')`, run.RunID, runPlanItemID).Scan(&terminalMCPCalls); err != nil {
+			return "", err
+		}
+		if terminalMCPCalls >= core.DefaultMCPCallsPerPlanItem {
+			input["stage"] = "bounded_finish"
+			input["mcp_tool_calls_used"] = terminalMCPCalls
+			input["mcp_tool_call_limit"] = core.DefaultMCPCallsPerPlanItem
+			input["run_plan_item_id"] = runPlanItemID
+		}
+	}
 	if len(invokedSkillIDs) > 0 {
 		input["invoked_skill_ids"] = invokedSkillIDs
 		input["skill_args"] = skillArgs
@@ -10919,7 +10952,7 @@ func (s *Store) queueModelContinuation(ctx context.Context, tx *sql.Tx, q *sqlit
 	if err != nil {
 		return "", err
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.continuation_queued", ActorType: "system", ActorID: sourceStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": stepID, "source_step_id": sourceStep.ID, "history_items": len(history)}}); err != nil {
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.continuation_queued", ActorType: "system", ActorID: sourceStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": stepID, "source_step_id": sourceStep.ID, "history_items": len(history), "stage": input["stage"], "mcp_tool_calls_used": input["mcp_tool_calls_used"]}}); err != nil {
 		return "", err
 	}
 	return stepID, nil
@@ -10976,20 +11009,31 @@ func isRecoverableToolExecutionFailure(code string) bool {
 }
 
 func (s *Store) queueToolFailureRecovery(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, sourceStep core.ClaimedStep, run core.RunContext, reason, now, correlationID string) (string, int, string, bool, error) {
-	var recoveryCount int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM run_events WHERE run_id = ? AND event_type = 'tool.recovery_queued'`, run.RunID).Scan(&recoveryCount); err != nil {
-		return "", 0, "", false, err
-	}
-	if recoveryCount >= core.DefaultToolRetryLimit {
-		return "", recoveryCount, "", false, nil
-	}
 	var sourceInput map[string]any
 	if json.Unmarshal([]byte(sourceStep.InputJSON), &sourceInput) != nil {
-		return "", recoveryCount, "", false, fmt.Errorf("TOOL_RECOVERY_INPUT_INVALID: source step input is not JSON")
+		return "", 0, "", false, fmt.Errorf("TOOL_RECOVERY_INPUT_INVALID: source step input is not JSON")
 	}
 	toolCallID, _ := sourceInput["tool_call_id"].(string)
 	toolName, _ := sourceInput["name"].(string)
 	modelSourceStepID, _ := sourceInput["model_source_step_id"].(string)
+
+	// Retry limits belong to one consecutive recovery episode, not the whole
+	// Run. A successful tool queues an ordinary continuation without this
+	// lineage field, so the next unrelated failure starts again at 1/5.
+	recoveryCount := 0
+	if strings.TrimSpace(modelSourceStepID) != "" {
+		var modelInputJSON string
+		err := tx.QueryRowContext(ctx, `SELECT input_json FROM steps WHERE id = ? AND run_id = ?`, modelSourceStepID, run.RunID).Scan(&modelInputJSON)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", 0, toolCallID, false, err
+		}
+		if err == nil {
+			recoveryCount = toolRecoveryEpisodeCount(modelInputJSON)
+		}
+	}
+	if recoveryCount >= core.DefaultToolRetryLimit {
+		return "", recoveryCount, toolCallID, false, nil
+	}
 
 	var sourcePosition int64
 	if err := tx.QueryRowContext(ctx, `SELECT position FROM steps WHERE id = ? AND run_id = ?`, sourceStep.ID, run.RunID).Scan(&sourcePosition); err != nil {
@@ -11051,6 +11095,18 @@ func (s *Store) queueToolFailureRecovery(ctx context.Context, tx *sql.Tx, q *sql
 		return "", recoveryCount, toolCallID, false, err
 	}
 	return recoveryStepID, recoveryCount, toolCallID, true, nil
+}
+
+func toolRecoveryEpisodeCount(modelInputJSON string) int {
+	var modelInput map[string]any
+	if json.Unmarshal([]byte(modelInputJSON), &modelInput) != nil {
+		return 0
+	}
+	value, ok := numericToolValue(modelInput["tool_recovery_count"])
+	if !ok || value <= 0 {
+		return 0
+	}
+	return int(value)
 }
 
 func isRetryableModelInteractionError(code string) bool {
@@ -12139,11 +12195,14 @@ func scanHumanAction(scanner rowScanner) (core.HumanAction, error) {
 func getApprovalForUser(ctx context.Context, runner idempotencyRunner, scope core.Scope, approvalID string) (core.Approval, error) {
 	row := runner.QueryRowContext(ctx, `
 		SELECT ar.id, ar.organization_id, ar.project_id, ar.task_id, ar.run_id,
-		       ar.step_id, ar.tool_call_id, ar.tool_name, ar.risk_level, ar.status,
+		       ar.step_id, ar.tool_call_id, ar.tool_name,
+		       COALESCE(NULLIF(ha.title, ''), ar.tool_name) AS tool_display_name,
+		       ar.risk_level, ar.status,
 		       ar.reason, ar.frozen_params_json, ar.input_hash, ar.requested_by,
 		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at,
 		       ar.approval_scope, ar.target_origin, ar.matched_rule_id, ar.policy_hash
 		FROM approval_requests ar
+		LEFT JOIN human_action_requests ha ON ha.id = ar.id
 		JOIN tasks t ON t.id = ar.task_id
 		JOIN memberships m ON m.organization_id = ar.organization_id
 		JOIN project_memberships pm ON pm.project_id = ar.project_id AND pm.user_id = m.user_id
@@ -12163,7 +12222,7 @@ func scanApproval(scanner rowScanner) (core.Approval, error) {
 	var decidedAt string
 	if err := scanner.Scan(
 		&approval.ID, &approval.OrganizationID, &approval.ProjectID, &approval.TaskID, &approval.RunID,
-		&approval.StepID, &approval.ToolCallID, &approval.ToolName, &approval.RiskLevel, &approval.Status,
+		&approval.StepID, &approval.ToolCallID, &approval.ToolName, &approval.ToolDisplayName, &approval.RiskLevel, &approval.Status,
 		&approval.Reason, &frozenJSON, &approval.InputHash, &approval.RequestedBy,
 		&approval.DecidedBy, &requestedAt, &expiresAt, &decidedAt,
 		&approval.ApprovalScope, &approval.TargetOrigin, &approval.MatchedRuleID, &approval.PolicyHash,

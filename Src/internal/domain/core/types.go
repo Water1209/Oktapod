@@ -96,6 +96,7 @@ const (
 	ApprovalScopeConversation = "conversation"
 	ApprovalScopeProject      = "project"
 	ApprovalScopeRunOrigin    = "run_origin"
+	ApprovalScopeRunTool      = "run_tool"
 
 	HumanActionToolApproval         = "tool_approval"
 	HumanActionPermissionEscalation = "permission_escalation"
@@ -145,6 +146,7 @@ const (
 	// deterministic progress; repeating an unavailable network call cannot.
 	DefaultModelTransportRetryLimit = 1
 	DefaultToolRetryLimit           = 5
+	DefaultMCPCallsPerPlanItem      = 12
 	DefaultModelOutputTokens        = 8_192
 
 	SideEffectReceiptStarted   = "started"
@@ -859,28 +861,29 @@ type ToolExecution struct {
 }
 
 type Approval struct {
-	ID             string
-	OrganizationID string
-	ProjectID      string
-	TaskID         string
-	RunID          string
-	StepID         string
-	ToolCallID     string
-	ToolName       string
-	RiskLevel      string
-	ApprovalScope  string
-	TargetOrigin   string
-	MatchedRuleID  string
-	PolicyHash     string
-	Status         string
-	Reason         string
-	FrozenParams   map[string]any
-	InputHash      string
-	RequestedBy    string
-	DecidedBy      string
-	RequestedAt    time.Time
-	ExpiresAt      time.Time
-	DecidedAt      *time.Time
+	ID              string
+	OrganizationID  string
+	ProjectID       string
+	TaskID          string
+	RunID           string
+	StepID          string
+	ToolCallID      string
+	ToolName        string
+	ToolDisplayName string
+	RiskLevel       string
+	ApprovalScope   string
+	TargetOrigin    string
+	MatchedRuleID   string
+	PolicyHash      string
+	Status          string
+	Reason          string
+	FrozenParams    map[string]any
+	InputHash       string
+	RequestedBy     string
+	DecidedBy       string
+	RequestedAt     time.Time
+	ExpiresAt       time.Time
+	DecidedAt       *time.Time
 }
 
 type RunPlanRevision struct {

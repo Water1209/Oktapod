@@ -391,6 +391,27 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 			}
 		}
 	}
+	if strings.HasPrefix(call.Name, "mcp__") && planned.RiskLevel == "L3" {
+		grantKey, currentPolicyHash, ok := application.MCPRunToolGrant(run.ConfigSnapshotJSON, call.Name)
+		if !ok {
+			return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: MCP tool is absent from the immutable Run snapshot")
+		}
+		ruleErr := tx.QueryRowContext(ctx, `
+			SELECT id FROM run_approval_rules
+			WHERE organization_id = ? AND project_id = ? AND run_id = ? AND tool_name = ?
+			  AND grant_type = 'run_tool' AND grant_key = ? AND policy_hash = ? AND expires_at > ?
+			LIMIT 1`, run.OrganizationID, run.ProjectID, run.RunID, call.Name,
+			grantKey, currentPolicyHash, formatTime(time.Now())).Scan(&authorizationID)
+		if ruleErr != nil && !errors.Is(ruleErr, sql.ErrNoRows) {
+			return "", ruleErr
+		}
+		if storedDecision == core.PolicyAllow && errors.Is(ruleErr, sql.ErrNoRows) {
+			return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: current-Run MCP tool approval is missing or expired")
+		}
+		if ruleErr == nil {
+			policyHash = currentPolicyHash
+		}
+	}
 
 	var receiptID string
 	var invocationID string
@@ -472,11 +493,12 @@ func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, r
 	if unknown {
 		eventType = "tool.side_effect_unknown"
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: eventType, ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": call.ID, "step_id": step.ID, "tool_name": call.Name, "input_summary": toolInputSummary(call.Name, call.Arguments), "invocation_id": invocationID, "input_hash": inputHash, "idempotent": idempotent}}); err != nil {
+	toolDisplayName := application.MCPToolDisplayName(run.ConfigSnapshotJSON, call.Name)
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: eventType, ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": call.ID, "step_id": step.ID, "tool_name": call.Name, "tool_display_name": toolDisplayName, "input_summary": toolInputSummary(call.Name, call.Arguments), "invocation_id": invocationID, "input_hash": inputHash, "idempotent": idempotent}}); err != nil {
 		return "", err
 	}
 	if unknown {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": receiptID, "kind": core.HumanActionSideEffectResolution, "status": core.HumanActionWaitingUser, "title": call.Name}}); err != nil {
+		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": receiptID, "kind": core.HumanActionSideEffectResolution, "status": core.HumanActionWaitingUser, "title": toolDisplayName}}); err != nil {
 			return "", err
 		}
 	}

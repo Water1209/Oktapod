@@ -1,4 +1,5 @@
 import type { RunEvent, Task, TaskStatus } from '../../shared/api/client'
+import { mcpToolStepLabel } from '../../shared/mcp-display'
 
 export const taskStatusView: Record<TaskStatus, { label: string; tone: string }> = {
   queued: { label: '等待执行', tone: 'pending' },
@@ -151,6 +152,7 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
     const toolEvent = stepEvents.find((event) => event.event_type.startsWith('tool.'))
     const toolCompleted = [...stepEvents].reverse().find((event) => event.event_type === 'tool.completed')
     const toolName = (toolCompleted ? payloadString(toolCompleted, 'tool_name') : '') || (toolEvent ? payloadString(toolEvent, 'tool_name') : '')
+    const toolDisplayName = [...stepEvents].reverse().map((event) => payloadString(event, 'tool_display_name')).find(Boolean) ?? ''
     const toolInput = [...stepEvents].reverse().map((event) => payloadString(event, 'input_summary')).find(Boolean) ?? ''
     const toolResult = [...stepEvents].reverse().map((event) => payloadString(event, 'output_summary')).find(Boolean) ?? ''
     const toolOutput = [...stepEvents].reverse().map((event) => payloadString(event, 'output_excerpt')).find(Boolean) ?? ''
@@ -165,7 +167,7 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
     if (!final && ['succeeded', 'failed', 'blocked', 'canceled'].includes(task.status)) state = 'muted'
 
     const failure = code ? taskFailureInfo({ error_code: code, result_summary: payloadString(final!, 'result_summary') || task.result_summary }) : undefined
-    const label = toolName ? toolStepLabel(toolName) : modelStepLabel(stepEvents, groups.size)
+    const label = toolName ? toolStepLabel(toolName, toolDisplayName) : modelStepLabel(stepEvents, groups.size)
     let detail = state === 'muted' ? '任务已经结束，这个排队步骤没有执行。' : '已进入执行队列，等待系统开始。'
     if (state === 'running') detail = toolName ? toolInput || '工具正在受控环境中执行。' : modelProgress || '正在分析目标并生成下一步动作。'
     if (state === 'succeeded') detail = toolResult || modelProgress || payloadString(final!, 'result_summary') || (toolName ? '工具动作已完成并记录收据。' : '分析与执行步骤已完成。')
@@ -231,12 +233,13 @@ export function buildTaskExecutionPlan(events: RunEvent[], timeline: TaskTimelin
     const value = raw as Record<string, unknown>
     const stepID = typeof value.step_id === 'string' ? value.step_id : ''
     const toolName = typeof value.tool_name === 'string' ? value.tool_name : ''
+    const toolDisplayName = typeof value.tool_display_name === 'string' ? value.tool_display_name : ''
     if (!stepID || !toolName) return []
     const current = timeline.find((item) => item.id === stepID)
     return [{
       id: stepID,
       index: typeof value.index === 'number' ? value.index : position + 1,
-      label: toolStepLabel(toolName),
+      label: toolStepLabel(toolName, toolDisplayName),
       detail: typeof value.input_summary === 'string' ? value.input_summary : '',
       state: current?.state ?? 'pending',
     } satisfies TaskExecutionPlanItem]
@@ -286,7 +289,8 @@ function roleLabel(role: string) {
   return labels[role] ?? role
 }
 
-function toolStepLabel(toolName: string) {
+function toolStepLabel(toolName: string, displayName = '') {
   const labels: Record<string, string> = { skill_invoke: '加载并应用 Skill', workspace_write_file: '写入工作区文件', workspace_edit_file: '修改工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_grep: '检索工作区内容', workspace_run_command: '运行验证命令', workspace_shell: '运行工作区命令', artifact_capture: '登记交付文件', web_search: '搜索互联网来源', web_fetch: '读取网页来源', document_open: '结构读取', document_read: '分页读取文档', document_create: '创建文档工作副本', document_apply: '应用文档修订', document_render: '渲染与版式校验', document_export: '导出文档 Artifact' }
+  if (toolName.startsWith('mcp__')) return mcpToolStepLabel(toolName, displayName)
   return labels[toolName] ?? `执行工具：${toolName}`
 }

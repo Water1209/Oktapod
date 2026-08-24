@@ -4158,7 +4158,7 @@ func approvalResponse(approval core.Approval) (generated.Approval, error) {
 	}
 	response := generated.Approval{
 		Id: id, ProjectId: projectID, TaskId: taskID, RunId: runID, StepId: stepID,
-		ToolCallId: toolCallID, ToolName: approval.ToolName, RiskLevel: generated.ApprovalRiskLevel(approval.RiskLevel),
+		ToolCallId: toolCallID, ToolName: approval.ToolName, ToolDisplayName: approval.ToolDisplayName, RiskLevel: generated.ApprovalRiskLevel(approval.RiskLevel),
 		ApprovalScope: generated.ApprovalApprovalScope(approval.ApprovalScope), TargetOrigin: approval.TargetOrigin,
 		MatchedRuleId: approval.MatchedRuleID, PolicyHash: approval.PolicyHash,
 		Status: generated.ApprovalStatus(approval.Status), Reason: approval.Reason, FrozenParams: approval.FrozenParams,

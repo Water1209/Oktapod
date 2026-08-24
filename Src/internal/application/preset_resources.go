@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -167,6 +168,11 @@ func (s *Service) InstallPresetResource(ctx context.Context, projectID, presetKe
 		if definition.Key != presetKey {
 			continue
 		}
+		if definition.Key == "document-runtime" || slicesContain(definition.Dependencies, "document.runtime") {
+			if err := s.requireDocumentRuntimeForPresetInstall(ctx); err != nil {
+				return core.Capability{}, err
+			}
+		}
 		// Dependencies are installed first. This is an explicit user resource
 		// management action, never a model-triggered repair.
 		for _, dependency := range definition.Dependencies {
@@ -191,6 +197,32 @@ func (s *Service) InstallPresetResource(ctx context.Context, projectID, presetKe
 		return capability, nil
 	}
 	return core.Capability{}, &core.ValidationError{Field: "preset_key", Message: "is not in the signed preset catalog"}
+}
+
+func (s *Service) requireDocumentRuntimeForPresetInstall(ctx context.Context) error {
+	if s.documentRuntime == nil {
+		return &core.ResourceConflictError{Resource: "document-runtime", Reason: "the host has not loaded a signed document runtime package; install it under DataRoot/runtimes/document-runtime/current (or beside the executable) and restart before validating preset resources"}
+	}
+	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	health := s.documentRuntime.Health(healthCtx)
+	if !health.Available || health.Protocol != "oktapod.document/v1" {
+		reason := strings.TrimSpace(health.DegradedReason)
+		if reason == "" {
+			reason = "the loaded runtime failed its health or protocol check"
+		}
+		return &core.ResourceConflictError{Resource: "document-runtime", Reason: reason}
+	}
+	return nil
+}
+
+func slicesContain(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func decorateDependencyAvailability(items []core.Capability) {

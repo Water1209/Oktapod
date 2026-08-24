@@ -40,12 +40,13 @@ describe('resource capability profile', () => {
     }) }))
 
     expect(profile.summary).toBe('发布前完成测试与证据核对。')
-    expect(profile.abilities.map((ability) => ability.title)).toEqual(['git_status', 'run_command'])
-    expect(profile.useCases).toEqual(['对话提到“发布检查”时按需调用'])
+    expect(profile.abilities.map((ability) => ability.title)).toEqual(['专业工作流', '稳定交付'])
+    expect(profile.useCases).toEqual(['发布检查'])
+    expect(profile.usage[0]).toContain('release-check')
   })
 
   it('uses connected MCP tool descriptions as the detailed capability list', () => {
-    const profile = resourceProfile(item({ kind: 'mcp', name: '@playwright/mcp', manifest_json: JSON.stringify({
+    const profile = resourceProfile(item({ kind: 'mcp', name: 'custom-browser-mcp', manifest_json: JSON.stringify({
       schema_version: 'oktapod.mcp/v1',
       description: '在真实浏览器中验证页面。',
     }) }), JSON.stringify([
@@ -55,9 +56,36 @@ describe('resource capability profile', () => {
 
     expect(profile.summary).toBe('在真实浏览器中验证页面。')
     expect(profile.abilities).toEqual([
-      { title: 'browser_navigate', detail: 'Navigate to a URL.' },
-      { title: 'browser_snapshot', detail: 'Read the accessibility snapshot.' },
+      { title: '打开网页', technicalName: 'browser_navigate', detail: 'Navigate to a URL.' },
+      { title: '读取页面结构', technicalName: 'browser_snapshot', detail: 'Read the accessibility snapshot.' },
     ])
+    expect(profile.useCases).toContain('访问目标页面并读取结构、文本、链接或当前状态')
+  })
+
+  it('describes Playwright and frontend-design by their actual user capabilities', () => {
+    const playwright = resourceProfile(item({ kind: 'mcp', name: '@playwright/mcp', source_filename: '@playwright/mcp' }), JSON.stringify([
+      { name: 'browser_navigate', description: 'Navigate to a URL.' },
+      { name: 'browser_snapshot', description: 'Capture an accessibility snapshot.' },
+      { name: 'browser_click', description: 'Click a page element.' },
+    ]))
+    expect(playwright.displayName).toBe('Playwright MCP')
+    expect(playwright.summary).toContain('真实浏览器')
+    expect(playwright.abilities.map((ability) => ability.title)).toEqual(['打开网页', '读取页面结构', '点击元素'])
+    expect(playwright.abilities.map((ability) => ability.detail)).toContain('Capture an accessibility snapshot.')
+    expect(playwright.useCases).toEqual([
+      '访问目标页面并读取结构、文本、链接或当前状态',
+      '自动执行点击、输入、表单、键盘或文件交互',
+    ])
+
+    const frontend = resourceProfile(item({ name: 'frontend-design', manifest_json: JSON.stringify({
+      description: 'Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one.',
+      instructions: '# Frontend Design\n\n## Ground it in the subject\nChoose one concrete subject and audience.\n\n## Design principles\nTypography carries the personality of the page.\n\n## Process\nBrainstorm, critique, build, and critique again.',
+    }) }))
+    expect(frontend.displayName).toBe('Frontend Design')
+    expect(frontend.abilities.map((ability) => ability.title)).toEqual(['Ground it in the subject', 'Design principles', 'Process'])
+    expect(frontend.abilities[1]?.detail).toContain('Typography')
+    expect(frontend.summary).not.toContain('触发')
+    expect(frontend.useCases[0]).toContain('distinctive, intentional visual design')
   })
 
   it('gives built-in tools a concrete purpose instead of generic metadata', () => {

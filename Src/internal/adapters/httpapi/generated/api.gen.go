@@ -120,6 +120,7 @@ const (
 	ApprovalApprovalScopeOnce         ApprovalApprovalScope = "once"
 	ApprovalApprovalScopeProject      ApprovalApprovalScope = "project"
 	ApprovalApprovalScopeRunOrigin    ApprovalApprovalScope = "run_origin"
+	ApprovalApprovalScopeRunTool      ApprovalApprovalScope = "run_tool"
 )
 
 // Defines values for ApprovalRiskLevel.
@@ -411,6 +412,7 @@ const (
 	DecideApprovalRequestScopeOnce         DecideApprovalRequestScope = "once"
 	DecideApprovalRequestScopeProject      DecideApprovalRequestScope = "project"
 	DecideApprovalRequestScopeRunOrigin    DecideApprovalRequestScope = "run_origin"
+	DecideApprovalRequestScopeRunTool      DecideApprovalRequestScope = "run_tool"
 )
 
 // Defines values for DecideHumanActionRequestDecision.
@@ -428,6 +430,7 @@ const (
 	DecideHumanActionRequestScopeOnce         DecideHumanActionRequestScope = "once"
 	DecideHumanActionRequestScopeProject      DecideHumanActionRequestScope = "project"
 	DecideHumanActionRequestScopeRunOrigin    DecideHumanActionRequestScope = "run_origin"
+	DecideHumanActionRequestScopeRunTool      DecideHumanActionRequestScope = "run_tool"
 )
 
 // Defines values for DiagnosticsStatus.
@@ -1419,7 +1422,10 @@ type Approval struct {
 	TargetOrigin  string                 `json:"target_origin"`
 	TaskId        openapi_types.UUID     `json:"task_id"`
 	ToolCallId    openapi_types.UUID     `json:"tool_call_id"`
-	ToolName      string                 `json:"tool_name"`
+
+	// ToolDisplayName Human-readable capability and tool name derived from the immutable Run snapshot; tool_name remains the authorization identity.
+	ToolDisplayName string `json:"tool_display_name"`
+	ToolName        string `json:"tool_name"`
 }
 
 // ApprovalApprovalScope defines model for Approval.ApprovalScope.
@@ -1907,14 +1913,14 @@ type DecideApprovalRequest struct {
 	Decision  DecideApprovalRequestDecision `json:"decision"`
 	Note      *string                       `json:"note,omitempty"`
 
-	// Scope Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
+	// Scope Approval lifetime. run_origin is reserved for one private web origin in the current Run; run_tool grants one exact MCP tool identity only for the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
 	Scope *DecideApprovalRequestScope `json:"scope,omitempty"`
 }
 
 // DecideApprovalRequestDecision defines model for DecideApprovalRequest.Decision.
 type DecideApprovalRequestDecision string
 
-// DecideApprovalRequestScope Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
+// DecideApprovalRequestScope Approval lifetime. run_origin is reserved for one private web origin in the current Run; run_tool grants one exact MCP tool identity only for the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
 type DecideApprovalRequestScope string
 
 // DecideHumanActionRequest defines model for DecideHumanActionRequest.

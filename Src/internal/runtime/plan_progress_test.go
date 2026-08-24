@@ -55,3 +55,20 @@ func TestContinuationTurnUsesFrozenPlanProgressReminder(t *testing.T) {
 		t.Fatal("plan_execute turn duplicated the update_plan instruction")
 	}
 }
+
+func TestBoundedFinishDisablesFurtherToolRequests(t *testing.T) {
+	step := core.ClaimedStep{InputJSON: `{"stage":"bounded_finish","mcp_tool_calls_used":12,"mcp_tool_call_limit":12}`}
+	instruction := continuationInstructionForTurn(step, []map[string]any{{"kind": "tool_result"}})
+	if !strings.Contains(instruction, "达到 12 次收敛上限") || !strings.Contains(instruction, "不再提供工具") {
+		t.Fatalf("bounded finish instruction=%q", instruction)
+	}
+	step.StepType = core.StepModelContinue
+	run := core.RunContext{RunID: "bounded-mcp-run", Goal: "summarize the verified site", Mode: core.ModeSingleAgent, ConfigSnapshotJSON: `{"schema_version":2,"mcp_capabilities":[{"id":"playwright","name":"@playwright/mcp","tools":[{"name":"browser_navigate"}]}]}`}
+	assembly, failure := NewAgentTurnAssembler(nil).Assemble(context.Background(), step, run)
+	if failure != nil {
+		t.Fatalf("bounded finish assembly failed: %#v", *failure)
+	}
+	if assembly.Request.EnableTools || len(assembly.Request.ToolDefinitions) != 0 || len(assembly.Request.AllowedTools) != 0 {
+		t.Fatalf("bounded finish exposed tools: enable=%v definitions=%d allowed=%d", assembly.Request.EnableTools, len(assembly.Request.ToolDefinitions), len(assembly.Request.AllowedTools))
+	}
+}

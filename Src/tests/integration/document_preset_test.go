@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/oktapod/oktapod/Src/internal/application"
@@ -12,6 +13,24 @@ type healthyDocumentRuntime struct{}
 
 func (healthyDocumentRuntime) Health(context.Context) application.DocumentRuntimeHealth {
 	return application.DocumentRuntimeHealth{Available: true, Version: "1.0.0-test", Protocol: "oktapod.document/v1", Renderer: "test"}
+}
+
+func TestPresetRepairDoesNotReportSuccessWithoutHostRuntime(t *testing.T) {
+	t.Parallel()
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://example.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Degraded document presets", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.InstallPresetResource(t.Context(), project.ID, "spreadsheets")
+	var conflict *core.ResourceConflictError
+	if !errors.As(err, &conflict) || conflict.Resource != "document-runtime" {
+		t.Fatalf("repair without host runtime error=%v want document-runtime conflict", err)
+	}
 }
 
 func (healthyDocumentRuntime) Execute(_ context.Context, _ core.RunContext, call core.ToolCall) core.ToolExecution {

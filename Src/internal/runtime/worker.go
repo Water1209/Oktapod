@@ -902,7 +902,7 @@ func mcpToolDefinitionsForPrompt(snapshot, prompt string) ([]ToolDefinition, map
 			}
 			allCandidates = append(allCandidates, ToolDefinition{
 				Name:        "mcp__" + capability.ID + "__" + tool.Name,
-				Description: "MCP " + capability.ID + " tool: " + tool.Description,
+				Description: mcpToolPromptDescription(capability, tool),
 				Parameters:  parameters, Sequential: tool.Sequential,
 				ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
 				DestructiveHint: tool.Annotations.DestructiveHint,
@@ -939,6 +939,33 @@ func mcpToolDefinitionsForPrompt(snapshot, prompt string) ([]ToolDefinition, map
 		"estimated_tokens_saved":  maxInt64(0, beforeTokens-afterTokens),
 		"max_tool_definitions":    maxDefinitions,
 	}
+}
+
+func mcpToolPromptDescription(capability mcpSnapshot, tool mcpToolInfo) string {
+	provider := strings.TrimSpace(capability.Name)
+	if provider == "" {
+		provider = "MCP Server"
+	}
+	description := strings.TrimSpace(tool.Description)
+	if description == "" {
+		description = "由已安装 MCP Server 提供的工具。"
+	}
+	identity := strings.ToLower(provider + " " + capability.ManifestJSON)
+	if !strings.Contains(identity, "playwright") {
+		return provider + " 的 " + tool.Name + "：" + description
+	}
+	hint := ""
+	switch tool.Name {
+	case "browser_snapshot", "browser_find":
+		hint = "优先用它读取和定位页面内容。"
+	case "browser_navigate":
+		hint = "只负责打开明确网址；导航后优先用页面快照或查找读取内容。"
+	case "browser_evaluate":
+		hint = "仅在页面快照和查找无法获得所需结构时使用，并保持脚本只读且最小。"
+	case "browser_run_code_unsafe":
+		hint = "高风险兜底能力；普通导航、搜索和读取任务不得使用。"
+	}
+	return provider + " 浏览器自动化工具 " + tool.Name + "：" + description + " " + hint
 }
 
 func contextTokens(prompt string) map[string]struct{} {

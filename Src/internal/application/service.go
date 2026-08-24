@@ -2867,7 +2867,10 @@ func (s *Service) CreateAgentDefinition(ctx context.Context, projectID string, i
 		ProjectID string                `json:"project_id"`
 		Input     core.CreateAgentInput `json:"input"`
 	}{ProjectID: projectID, Input: input}
-	return s.repository.CreateAgentDefinition(ctx, s.ScopeFor(ctx), projectID, input, status, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	idempotency := core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)}
+	return retryTransientSQLiteValue(ctx, func() (core.AgentDefinition, error) {
+		return s.repository.CreateAgentDefinition(ctx, s.ScopeFor(ctx), projectID, input, status, idempotency)
+	})
 }
 
 func (s *Service) ListAgentDefinitions(ctx context.Context, projectID string) ([]core.AgentDefinition, error) {
