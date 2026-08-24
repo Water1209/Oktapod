@@ -163,11 +163,10 @@ func ConnectWithOptions(ctx context.Context, manifestJSON, credential string, op
 	return Health{Transport: canonicalTransport(spec.Transport), Protocol: protocol, Tools: tools, ConnectedAt: time.Now().UTC()}, nil
 }
 
-// Call performs one explicitly requested MCP tools/call invocation. A fresh
-// short-lived transport is used for every invocation so a crashed or
-// compromised server process cannot retain a long-lived broker handle. The
-// caller must enforce approval, capability scope and receipt semantics before
-// invoking this adapter.
+// Call performs one explicitly requested MCP tools/call invocation using a
+// short-lived transport. Production Runtime calls that need protocol session
+// continuity use SessionBroker instead; both paths rely on the caller to
+// enforce approval, capability scope and receipt semantics before dispatch.
 func Call(ctx context.Context, manifestJSON, credential, toolName string, arguments map[string]any) (CallResult, error) {
 	return CallWithCredentialUpdater(ctx, manifestJSON, credential, toolName, arguments, nil)
 }
@@ -223,6 +222,10 @@ func CallWithCredentialUpdater(ctx context.Context, manifestJSON, credential, to
 		return CallResult{}, err
 	}
 	defer closeSession()
+	return callSDKTool(ctx, session, toolName, arguments)
+}
+
+func callSDKTool(ctx context.Context, session *sdkmcp.ClientSession, toolName string, arguments map[string]any) (CallResult, error) {
 	result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: toolName, Arguments: arguments})
 	if err != nil {
 		return CallResult{}, err

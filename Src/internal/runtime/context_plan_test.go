@@ -59,6 +59,17 @@ func TestSkillContextLoadsRelevantInstructionBodyLazily(t *testing.T) {
 	}
 }
 
+func TestSkillContextDoesNotMatchGenericWordsInsideInstructionBodies(t *testing.T) {
+	snapshot := `{"skill_capabilities":[{"id":"skill-frontend","name":"frontend-design","version":"1.0.0","content_hash":"sha256:x","manifest_json":"{\"description\":\"distinctive frontend design\",\"instructions\":\"Create a polished webpage and verify files.\"}"},{"id":"skill-research","name":"researchpilot","version":"1.0.0","content_hash":"sha256:y","manifest_json":"{\"description\":\"deep research workflow\",\"instructions\":\"Use this skill to create files and verify delivery.\"}"}]}`
+	context, plan := skillContextForPrompt(snapshot, "use the frontend-design skill to create a webpage")
+	if !strings.Contains(context, "frontend-design@1.0.0") || strings.Contains(context, "researchpilot@1.0.0") {
+		t.Fatalf("context=%q plan=%#v", context, plan)
+	}
+	if plan["loaded"] != 1 {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
 func TestSkillContextMatchesChineseTriggersAndListsMetadataOnlyCatalog(t *testing.T) {
 	snapshot := `{"skill_capabilities":[{"id":"skill-1","name":"release-check","version":"1.0.0","content_hash":"sha256:x","manifest_json":"{\"description\":\"发布前验证\",\"triggers\":[\"发布检查\"],\"allowed_tools\":[\"web_search\"],\"instructions\":\"运行发布检查并引用证据。\"}"},{"id":"skill-2","name":"finance","version":"1.0.0","content_hash":"sha256:y","manifest_json":"{\"description\":\"预算规划\",\"instructions\":\"制定预算。\"}"}]}`
 	context, plan := skillContextForPrompt(snapshot, "请帮我做一次发布检查并确认最新版本")
@@ -194,6 +205,27 @@ func TestExplicitMCPProviderChoiceOverridesBuiltinSearch(t *testing.T) {
 	definitions := filterToolsForExplicitMCP([]ToolDefinition{{Name: core.ToolRequestInput}, {Name: core.ToolWebSearch}, {Name: core.ToolWorkspaceWriteFile}, {Name: core.ToolWorkspaceListFiles}, {Name: "mcp__cap-1__tavily_search"}, {Name: "mcp__cap-2__other"}}, "cap-1")
 	if len(definitions) != 4 || definitions[0].Name != core.ToolRequestInput || definitions[1].Name != core.ToolWorkspaceWriteFile || definitions[2].Name != core.ToolWorkspaceListFiles || definitions[3].Name != "mcp__cap-1__tavily_search" {
 		t.Fatalf("definitions=%#v", definitions)
+	}
+}
+
+func TestExplicitMCPProviderSuppressesHeuristicSkillScope(t *testing.T) {
+	snapshot := `{"schema_version":2,"plan_protocol_version":"transition_v2","mcp_capabilities":[{"id":"playwright","name":"@playwright/mcp","tools":[{"name":"browser_navigate","description":"Navigate to a URL","inputSchema":{"type":"object"}}]}],"skill_capabilities":[{"id":"pdf","name":"pdf","version":"1.0.0","content_hash":"sha256:x","manifest_json":"{\"description\":\"读取和编辑 PDF，并完成页面渲染校验\",\"allowed_tools\":[\"document_open\"],\"instructions\":\"处理 PDF。\"}"}]}`
+	catalog, failure := (ToolCatalogBuilder{}).Build(core.ClaimedStep{}, core.RunContext{Mode: core.ModeSingleAgent, ConfigSnapshotJSON: snapshot}, "必须使用 @playwright/mcp 打开页面", nil, map[string]any{})
+	if failure != nil {
+		t.Fatalf("unexpected failure: %#v", failure)
+	}
+	found := false
+	for _, definition := range catalog.Definitions {
+		if definition.Name == "mcp__playwright__browser_navigate" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("explicit MCP tool was removed by heuristic Skill scope: %#v", catalog.Definitions)
+	}
+	skills, _ := catalog.ContextPlan["skills"].(map[string]any)
+	if skills["strategy"] != "suppressed_by_explicit_mcp_v1" || skills["loaded"] != 0 || catalog.ToolScopeDeclared {
+		t.Fatalf("skills=%#v scope_declared=%v allowed=%#v", skills, catalog.ToolScopeDeclared, catalog.AllowedTools)
 	}
 }
 

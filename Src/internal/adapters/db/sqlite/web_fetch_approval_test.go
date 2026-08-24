@@ -237,7 +237,16 @@ func planWebFetchForTest(t *testing.T, ctx context.Context, store *Store, runID,
 		t.Fatal(err)
 	}
 	modelStep := core.ClaimedStep{ID: stepID, RunID: runID, StepType: "model_response", InputJSON: "{}", OwnerID: "web-planner-" + label}
-	status, _, err := store.planToolSteps(ctx, tx, store.queries.WithTx(tx), modelStep, run, []core.ToolCall{{Name: core.ToolWebFetch, Arguments: map[string]any{"url": rawURL}}}, now, "web-plan-"+label)
+	calls := []core.ToolCall{{Name: core.ToolWebFetch, Arguments: map[string]any{"url": rawURL}}}
+	if planRevisionID, planItemID := activeExecutionPlanBinding(ctx, tx, runID); planRevisionID == "" || planItemID == "" {
+		calls = append([]core.ToolCall{{
+			Name: core.ToolReplacePlan,
+			Arguments: map[string]any{"items": []any{
+				map[string]any{"title": "Read the governed web source", "description": "Fetch the requested private origin under the frozen Run policy."},
+			}},
+		}}, calls...)
+	}
+	status, _, err := store.planToolSteps(ctx, tx, store.queries.WithTx(tx), modelStep, run, calls, now, "web-plan-"+label)
 	if err != nil {
 		t.Fatal(err)
 	}

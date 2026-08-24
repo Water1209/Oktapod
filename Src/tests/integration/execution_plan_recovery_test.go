@@ -145,6 +145,7 @@ func executionPlanProvider(t *testing.T, recoverAfterFailure bool) *httptest.Ser
 			return
 		}
 		calls := []map[string]any{
+			transitionPlanToolCall("execution-plan-control", "收集两项独立证据", "并行取得两项证据，并在失败时依据收据恢复。"),
 			{"id": "search-one", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"first evidence"}`}},
 			{"id": "search-two", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"second evidence"}`}},
 		}

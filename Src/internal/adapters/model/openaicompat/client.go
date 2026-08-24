@@ -25,6 +25,8 @@ type Client struct {
 	explicit   string
 	key        func() string
 	httpClient *http.Client
+	firstToken time.Duration
+	streamIdle time.Duration
 
 	mu              sync.Mutex
 	discoveredModel string
@@ -53,11 +55,18 @@ func (e *GatewayError) ErrorCode() string { return e.Code }
 func (e *GatewayError) Unwrap() error { return e.Cause }
 
 func New(endpoint, model string, key func() string) *Client {
+	return NewWithTimeouts(endpoint, model, key, modeltransport.DefaultTimeouts())
+}
+
+func NewWithTimeouts(endpoint, model string, key func() string, timeouts modeltransport.Timeouts) *Client {
+	timeouts = timeouts.Normalized()
 	return &Client{
 		endpoint:   strings.TrimRight(endpoint, "/"),
 		explicit:   strings.TrimSpace(model),
 		key:        key,
-		httpClient: modeltransport.NewHTTPClient(),
+		httpClient: modeltransport.NewHTTPClientWithTimeouts(timeouts),
+		firstToken: timeouts.FirstToken,
+		streamIdle: timeouts.StreamIdle,
 	}
 }
 
@@ -139,9 +148,10 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 			return result, &GatewayError{Code: result.ErrorCode, Message: "selected model does not support tool calling"}
 		}
 	}
+	toolNames := newProviderToolNameCodec()
 	payload := chatRequest{
 		Model: model, MaxTokens: request.MaxOutputTokens, Stream: true,
-		Messages: chatMessagesFromRequest(request),
+		Messages: chatMessagesFromRequest(request, toolNames),
 	}
 	applyThinkingControl(&payload, c.endpoint, model, request.ThinkingLevel)
 	if request.EnableTools {
@@ -151,11 +161,14 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 				continue
 			}
 			payload.Tools = append(payload.Tools, chatTool{Type: "function", Function: chatToolFunction{
-				Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters,
+				Name: definition.Name, Description: definition.Description, Parameters: providerToolParameters(definition.Parameters),
 			}})
 		}
 		if request.ToolScopeDeclared {
 			payload.Tools = filterBuiltinTools(payload.Tools, request.AllowedTools)
+		}
+		for index := range payload.Tools {
+			payload.Tools[index].Function.Name = toolNames.encode(payload.Tools[index].Function.Name)
 		}
 		if len(payload.Tools) > 0 {
 			payload.ToolChoice = "auto"
@@ -208,7 +221,7 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 			result.ErrorCode = "PROVIDER_PROTOCOL_ERROR"
 			return result, &GatewayError{Code: result.ErrorCode, Message: "invalid chat completion response"}
 		}
-		if err := applyResponseMessage(&result, decoded.Choices[0].Message, decoded.Choices[0].FinishReason); err != nil {
+		if err := applyResponseMessage(&result, decoded.Choices[0].Message, decoded.Choices[0].FinishReason, toolNames); err != nil {
 			return result, err
 		}
 		if strings.TrimSpace(result.Content) != "" && result.FirstSafeLatency == 0 {
@@ -222,20 +235,21 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 			result.ProviderRequestID = decoded.Id
 		}
 	} else {
-		scanErr := modeltransport.ScanLines(ctx, response.Body, response.Body, 2<<20, modeltransport.StreamIdleTimeout, func(rawLine string) error {
+		scanErr := modeltransport.ScanLinesWithProgress(ctx, response.Body, response.Body, 2<<20, modeltransport.Remaining(c.firstToken, started), c.streamIdle, func(rawLine string) (bool, error) {
 			line := strings.TrimSpace(rawLine)
 			if !strings.HasPrefix(line, "data:") {
-				return nil
+				return false, nil
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				return errStreamComplete
+				return false, errStreamComplete
 			}
 			var chunk chatStreamResponse
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				result.ErrorCode = "PROVIDER_PROTOCOL_ERROR"
-				return &GatewayError{Code: result.ErrorCode, Message: "invalid streaming chat completion chunk"}
+				return false, &GatewayError{Code: result.ErrorCode, Message: "invalid streaming chat completion chunk"}
 			}
+			progressed := false
 			if chunk.Id != "" {
 				result.ProviderRequestID = chunk.Id
 			}
@@ -248,9 +262,13 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 					finishReason = choice.FinishReason
 				}
 				if choice.Delta.ReasoningContent != "" {
+					progressed = true
 					thinking.WriteString(choice.Delta.ReasoningContent)
 				}
 				for _, delta := range choice.Delta.ToolCalls {
+					if delta.ID != "" || delta.Function.Name != "" || delta.Function.Arguments != "" {
+						progressed = true
+					}
 					current := streamedTools[delta.Index]
 					if current == nil {
 						current = &streamedTool{}
@@ -265,16 +283,17 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 					current.arguments.WriteString(delta.Function.Arguments)
 				}
 				if choice.Delta.Content != "" {
+					progressed = true
 					content.WriteString(choice.Delta.Content)
 					if result.FirstSafeLatency == 0 {
 						result.FirstSafeLatency = time.Since(started)
 					}
 					if err := onDelta(choice.Delta.Content); err != nil {
-						return err
+						return progressed, err
 					}
 				}
 			}
-			return nil
+			return progressed, nil
 		})
 		if scanErr != nil && !errors.Is(scanErr, errStreamComplete) {
 			if ctx.Err() != nil {
@@ -310,7 +329,7 @@ func (c *Client) streamOnce(ctx context.Context, request okruntime.ModelRequest,
 			call.Function.Arguments = chatFunctionArguments(item.arguments.String())
 			streamMessage.ToolCalls = append(streamMessage.ToolCalls, call)
 		}
-		if err := applyResponseMessage(&result, streamMessage, finishReason); err != nil {
+		if err := applyResponseMessage(&result, streamMessage, finishReason, toolNames); err != nil {
 			return result, err
 		}
 	}
@@ -360,10 +379,11 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 		}
 	}
 
+	toolNames := newProviderToolNameCodec()
 	payload := chatRequest{
 		Model:     model,
 		MaxTokens: request.MaxOutputTokens,
-		Messages:  chatMessagesFromRequest(request),
+		Messages:  chatMessagesFromRequest(request, toolNames),
 		Stream:    false,
 	}
 	applyThinkingControl(&payload, c.endpoint, model, request.ThinkingLevel)
@@ -374,11 +394,14 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 				continue
 			}
 			payload.Tools = append(payload.Tools, chatTool{Type: "function", Function: chatToolFunction{
-				Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters,
+				Name: definition.Name, Description: definition.Description, Parameters: providerToolParameters(definition.Parameters),
 			}})
 		}
 		if request.ToolScopeDeclared {
 			payload.Tools = filterBuiltinTools(payload.Tools, request.AllowedTools)
+		}
+		for index := range payload.Tools {
+			payload.Tools[index].Function.Name = toolNames.encode(payload.Tools[index].Function.Name)
 		}
 		if len(payload.Tools) > 0 {
 			payload.ToolChoice = "auto"
@@ -434,7 +457,7 @@ func (c *Client) completeOnce(ctx context.Context, request okruntime.ModelReques
 	if decoded.Id != "" {
 		result.ProviderRequestID = decoded.Id
 	}
-	if err := applyResponseMessage(&result, message, decoded.Choices[0].FinishReason); err != nil {
+	if err := applyResponseMessage(&result, message, decoded.Choices[0].FinishReason, toolNames); err != nil {
 		return result, err
 	}
 	if strings.TrimSpace(result.Content) != "" {
@@ -642,6 +665,9 @@ func applyThinkingControl(payload *chatRequest, endpoint, model, rawLevel string
 	if level == "" || level == "auto" {
 		return
 	}
+	if modelRejectsExplicitThinkingControl(model) {
+		return
+	}
 	providerUsesThinkingObject := strings.Contains(strings.ToLower(endpoint), "volces.com") ||
 		strings.Contains(strings.ToLower(endpoint), "volcengine.com") ||
 		strings.Contains(strings.ToLower(endpoint), "bigmodel.cn") ||
@@ -660,6 +686,11 @@ func applyThinkingControl(payload *chatRequest, endpoint, model, rawLevel string
 		}
 		payload.ReasoningEffort = level
 	}
+}
+
+func modelRejectsExplicitThinkingControl(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return normalized == "glm-5.3" || strings.HasPrefix(normalized, "glm-5.3-")
 }
 
 type chatUsage struct {
@@ -723,7 +754,7 @@ type streamDeltaToolCall struct {
 	} `json:"function"`
 }
 
-func chatMessagesFromRequest(request okruntime.ModelRequest) []chatMessage {
+func chatMessagesFromRequest(request okruntime.ModelRequest, toolNames *providerToolNameCodec) []chatMessage {
 	messages := make([]chatMessage, 0, len(request.Messages)+1)
 	if strings.TrimSpace(request.SystemPrompt) != "" {
 		messages = append(messages, chatMessage{Role: "system", Content: request.SystemPrompt})
@@ -733,7 +764,7 @@ func chatMessagesFromRequest(request okruntime.ModelRequest) []chatMessage {
 		return messages
 	}
 	for _, message := range request.Messages {
-		mapped := chatMessage{Role: string(message.Role), ToolCallID: message.ToolCallID, Name: message.ToolName}
+		mapped := chatMessage{Role: string(message.Role), ToolCallID: message.ToolCallID, Name: toolNames.encode(message.ToolName)}
 		parts := make([]chatContentPart, 0, len(message.Content))
 		var text strings.Builder
 		for _, block := range message.Content {
@@ -768,14 +799,14 @@ func chatMessagesFromRequest(request okruntime.ModelRequest) []chatMessage {
 				if err != nil {
 					continue
 				}
-				mapped.ToolCalls = append(mapped.ToolCalls, chatMessageToolCall{ID: block.ToolCall.ID, Type: "function", Function: chatMessageToolFunction{Name: block.ToolCall.Name, Arguments: string(body)}})
+				mapped.ToolCalls = append(mapped.ToolCalls, chatMessageToolCall{ID: block.ToolCall.ID, Type: "function", Function: chatMessageToolFunction{Name: toolNames.encode(block.ToolCall.Name), Arguments: string(body)}})
 			case core.ContentBlockToolResult:
 				if block.ToolResult == nil {
 					continue
 				}
 				mapped.Role = "tool"
 				mapped.ToolCallID = block.ToolResult.ToolCallID
-				mapped.Name = block.ToolResult.ToolName
+				mapped.Name = toolNames.encode(block.ToolResult.ToolName)
 				text.WriteString(block.ToolResult.Content)
 			}
 		}
@@ -852,7 +883,7 @@ func normalizeModelError(result *core.ModelResult, err error) {
 	result.StopReason = core.StopReasonError
 }
 
-func applyResponseMessage(result *core.ModelResult, message responseChatMessage, finishReason string) error {
+func applyResponseMessage(result *core.ModelResult, message responseChatMessage, finishReason string, toolNames *providerToolNameCodec) error {
 	if message.Content != nil && strings.TrimSpace(*message.Content) != "" {
 		result.Content = strings.TrimSpace(*message.Content)
 		result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockText, Text: result.Content})
@@ -894,7 +925,7 @@ func applyResponseMessage(result *core.ModelResult, message responseChatMessage,
 			}
 			callID = generated.String()
 		}
-		call := core.ToolCall{ID: callID, Name: strings.TrimSpace(item.Function.Name), Arguments: arguments}
+		call := core.ToolCall{ID: callID, Name: toolNames.decode(item.Function.Name), Arguments: arguments}
 		result.ToolCalls = append(result.ToolCalls, call)
 		result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: call.ID, Name: call.Name, Arguments: call.Arguments}})
 	}

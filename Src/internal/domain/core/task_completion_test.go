@@ -38,6 +38,8 @@ func TestInferTaskCompletionRequirements(t *testing.T) {
 		{name: "long chat answer", goal: "解释这个架构，回答至少100字", mutation: false, deliverable: false},
 		{name: "answer only", goal: "解释什么是 Physical AI", web: false, deliverable: false},
 		{name: "continue with existing evidence", goal: "现有 Tavily 检索证据已经足够，禁止再检索；补足报告并核对", mutation: false, verification: true, web: false},
+		{name: "explicit compact no network", goal: "读取并核对现有页面，不联网、不调用 MCP、不修改该 HTML", web: false, mutation: false, verification: true, deliverable: false},
+		{name: "offline verification", goal: "离线核对现有报告并返回结果", web: false, mutation: false, verification: true, deliverable: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -69,6 +71,10 @@ func TestInferMaximumSearchCalls(t *testing.T) {
 	}
 	if requirements := InferTaskCompletionRequirements("继续调研，现有报告已经完成，禁止联网", ""); requirements.RequiresWebEvidence {
 		t.Fatalf("forbidden network successor still required a new web receipt: %#v", requirements)
+	}
+	budget = InferSearchCallBudget("读取现有文件，不联网、不调用 MCP", "")
+	if !budget.Enforced || budget.Limit != 0 {
+		t.Fatalf("compact no-network budget=%#v", budget)
 	}
 	budget = InferSearchCallBudget("完成一份市场调研报告", "")
 	if budget.Enforced {

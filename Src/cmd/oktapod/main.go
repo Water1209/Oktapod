@@ -20,13 +20,14 @@ import (
 	"time"
 
 	localblob "github.com/oktapod/oktapod/Src/internal/adapters/blob/localfs"
-	"github.com/oktapod/oktapod/Src/internal/adapters/documentruntime"
 	postgresdb "github.com/oktapod/oktapod/Src/internal/adapters/db/postgres"
 	"github.com/oktapod/oktapod/Src/internal/adapters/db/sqlite"
+	"github.com/oktapod/oktapod/Src/internal/adapters/documentruntime"
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
 	mcpadapter "github.com/oktapod/oktapod/Src/internal/adapters/mcp"
 	"github.com/oktapod/oktapod/Src/internal/adapters/mcpregistry"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/databaseconfigured"
+	"github.com/oktapod/oktapod/Src/internal/adapters/model/modeltransport"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/native"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
 	"github.com/oktapod/oktapod/Src/internal/adapters/secretstore"
@@ -153,7 +154,8 @@ func run() error {
 	} else if !errors.Is(providerErr, sql.ErrNoRows) {
 		return fmt.Errorf("load model provider config: %w", providerErr)
 	}
-	model := databaseconfigured.New(store, credentials, organization.ID)
+	transportTimeouts := modeltransport.Timeouts{FirstToken: config.ModelTimeouts.FirstToken, StreamIdle: config.ModelTimeouts.StreamIdle}
+	model := databaseconfigured.NewWithTimeouts(store, credentials, organization.ID, transportTimeouts)
 	service := application.NewService(store, config.Profile, modelEndpoint, actor, organization, func() string {
 		provider, err := store.GetModelProviderConfig(context.Background(), organization.ID)
 		if err != nil {
@@ -179,9 +181,9 @@ func run() error {
 	service.WithModelCatalog(model)
 	service.WithProviderRegistry(credentials, func(provider core.ProviderInstance, credential string) application.ModelCatalog {
 		if provider.ProtocolFamily == core.ProviderProtocolAnthropic || provider.ProtocolFamily == core.ProviderProtocolGemini {
-			return native.New(provider.ProtocolFamily, provider.Endpoint, provider.DefaultModelID, func() string { return credential })
+			return native.NewWithTimeouts(provider.ProtocolFamily, provider.Endpoint, provider.DefaultModelID, func() string { return credential }, transportTimeouts)
 		}
-		return openaicompat.New(provider.Endpoint, provider.DefaultModelID, func() string { return credential })
+		return openaicompat.NewWithTimeouts(provider.Endpoint, provider.DefaultModelID, func() string { return credential }, transportTimeouts)
 	})
 	oauthCoordinator, err := mcpadapter.NewOAuthCoordinator(ctx, credentials, mcpOAuthRedirectURL(config.ListenAddress))
 	if err != nil {
@@ -213,8 +215,20 @@ func run() error {
 		_ = discovered.Close()
 		logger.Warn("document runtime adapter initialization failed", "reason", executorErr.Error())
 	} else {
-		documentClient, documentExecutor = discovered, executor
-		service.WithDocumentRuntime(documentExecutor)
+		// Complete the cold health probe before the HTTP server becomes ready.
+		// Otherwise the first resource-catalog request can transiently mark every
+		// preset document Skill degraded while Python is still starting.
+		healthCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		health := executor.Health(healthCtx)
+		cancel()
+		if !health.Available || health.Protocol != "oktapod.document/v1" {
+			_ = discovered.Close()
+			logger.Warn("document runtime readiness check failed; preset document resources are degraded", "reason", health.DegradedReason)
+		} else {
+			documentClient, documentExecutor = discovered, executor
+			service.WithDocumentRuntime(documentExecutor)
+			logger.Info("document runtime is ready", "version", health.Version, "protocol", health.Protocol, "renderer", health.Renderer)
+		}
 	}
 	if documentClient != nil {
 		defer documentClient.Close()
@@ -232,6 +246,12 @@ func run() error {
 	}
 	liveTurnHub := okruntime.NewLiveTurnHub()
 	workerCtx := application.WithScope(ctx, service.Scope())
+	mcpSessions := mcpadapter.NewSessionBroker(workerCtx, 15*time.Minute)
+	defer mcpSessions.Close()
+	modelTurnTimeouts := okruntime.ModelTurnTimeouts{
+		Auto: config.ModelTimeouts.TurnAuto, Off: config.ModelTimeouts.TurnOff,
+		Low: config.ModelTimeouts.TurnLow, Medium: config.ModelTimeouts.TurnMedium, High: config.ModelTimeouts.TurnHigh,
+	}
 	hostname, _ := os.Hostname()
 	workerInstanceID := fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().UnixNano())
 	var workerGroup sync.WaitGroup
@@ -243,8 +263,10 @@ func run() error {
 			WithAssetStager(workspaceExecutor).
 			WithWebAccess(webAccessExecutor).
 			WithMCPSecretStore(credentials).
+			WithMCPSessionBroker(mcpSessions).
 			WithQueuedTurnStarter(queuedTurnStarter).
-			WithLiveTurnPublisher(liveTurnHub)
+			WithLiveTurnPublisher(liveTurnHub).
+			WithModelTurnTimeouts(modelTurnTimeouts)
 		if documentExecutor != nil {
 			worker.WithDocumentRuntime(documentExecutor)
 		}

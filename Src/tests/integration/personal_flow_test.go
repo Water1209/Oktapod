@@ -512,6 +512,7 @@ func TestProjectApprovalScopeSkipsRepeatedProgramApprovalAndCanBeRevoked(t *test
 						"role":    "assistant",
 						"content": "Run the validated Go version command.",
 						"tool_calls": []map[string]any{
+							transitionPlanToolCall(fmt.Sprintf("provider-command-plan-%d", modelCalls), "验证工作区工具链", "执行受治理的版本检查并核对结果。"),
 							{"id": "provider-command", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceRunCommand, "arguments": `{"program":"go","args":["version"]}`}},
 						},
 					}}},
@@ -913,6 +914,7 @@ func newToolMockProvider(t *testing.T) *httptest.Server {
 					"role":    "assistant",
 					"content": "Created the requested file and validated the workspace.",
 					"tool_calls": []map[string]any{
+						transitionPlanToolCall("provider-plan", "创建并验证交付文件", "完成用户要求的文件交付，并核对结果满足验收条件。"),
 						{"id": "provider-write", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": `{"path":"notes/verified.txt","content":"Oktapod controlled write\n"}`}},
 						{"id": "provider-command", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceRunCommand, "arguments": `{"program":"go","args":["version"]}`}},
 					},

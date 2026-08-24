@@ -1,6 +1,6 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.1.0
+> 版本：v1.1.1
 > 更新日期：2026-08-22
 > 发布路径：注册用户 + 个人私有项目 + SQLite
 
@@ -121,6 +121,15 @@ data_root: "C:/ProgramData/Oktapod/data"
 run_concurrency: 4
 database:
   driver: sqlite
+model:
+  first_token_timeout: 15s
+  stream_idle_timeout: 60s
+  turn_timeouts:
+    auto: 120s
+    off: 120s
+    low: 180s
+    medium: 300s
+    high: 600s
 capabilities:
   trusted_keys_file: "C:/ProgramData/Oktapod/trusted-keys.json"
 web_access:
@@ -128,6 +137,8 @@ web_access:
     enabled: false
     allowed_origins: []
 ```
+
+`first_token_timeout` 从请求发出开始计算，只有正文、推理或工具调用的真实增量才算首 Token，HTTP 响应头、空 SSE 和 keep-alive 均不算；`stream_idle_timeout` 在首 Token 后约束连续无新 SSE 行的时间。`turn_timeouts` 是即使流持续活跃也不能突破的整轮硬上限。允许范围为首 Token/流空闲 5 秒～5 分钟、整轮 30 秒～30 分钟，并要求 `off <= low <= medium <= high`；非法值会阻止启动。修改后必须重启服务。
 
 配置目录和 DataRoot 只应授权给运行 Oktapod 的 Windows 账户与系统管理员。随后以同一账户验证并启动：
 

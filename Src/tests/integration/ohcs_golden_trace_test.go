@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
+	"github.com/oktapod/oktapod/Src/internal/adapters/workspace"
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 	okruntime "github.com/oktapod/oktapod/Src/internal/runtime"
@@ -98,6 +100,85 @@ func TestOHCSGoldenTraceTextTurn(t *testing.T) {
 		MessageSeqs:  []int64{1, 2},
 	}
 	assertGoldenTrace(t, got, want)
+}
+
+func TestOHCSGoldenTracePlanToolApprovalAndArtifact(t *testing.T) {
+	t.Parallel()
+
+	provider := newToolMockProvider(t)
+	defer provider.Close()
+	repository, databasePath := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, provider.URL+"/v1", core.Actor{ID: testUserID, DisplayName: "OHCS User"}, core.Organization{ID: testOrgID, Name: "OHCS Org"}, func() string { return "fake-test-key" })
+	project, err := service.CreateProject(context.Background(), core.CreateProjectInput{Name: "OHCS governed tool turn", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "Create a checked file and run the requested validation", Acceptance: "The file exists and go version exits zero", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "ohcs-tool-task", "ohcs-tool-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := workspace.NewLocal(filepath.Join(filepath.Dir(databasePath), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("ohcs-tool-worker", repository, openaicompat.New(provider.URL+"/v1", "", func() string { return "fake-test-key" }), slog.New(slog.NewTextHandler(os.Stderr, nil))).WithWorkspaceExecutor(executor)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+			t.Fatalf("run pre-approval worker %d: worked=%v err=%v", attempt, worked, runErr)
+		}
+	}
+	approvals, err := service.ListApprovals(context.Background(), core.ApprovalPending)
+	if err != nil || len(approvals) != 1 {
+		t.Fatalf("approvals=%#v err=%v", approvals, err)
+	}
+	if _, err := service.DecideApproval(context.Background(), approvals[0].ID, core.DecideApprovalInput{Decision: core.ApprovalApproved}, "ohcs-tool-approval", "ohcs-tool-approval"); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if worked, runErr := worker.RunOnce(context.Background()); runErr != nil || !worked {
+			t.Fatalf("run post-approval worker %d: worked=%v err=%v", attempt, worked, runErr)
+		}
+	}
+
+	completed, err := service.GetTask(context.Background(), task.ID)
+	if err != nil || completed.Status != core.StatusSucceeded {
+		t.Fatalf("task=%#v err=%v", completed, err)
+	}
+	events, err := service.ListRunEvents(context.Background(), task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := service.ListMessages(context.Background(), task.ConversationID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := projectGoldenTrace(events, messages)
+	want := goldenTrace{
+		EventTypes: []string{
+			"run.created",
+			"step.started", "checkpoint.committed", "budget.reserved", "checkpoint.committed", "model.message",
+			"plan.published", "execution.plan_created", "tool.batch_planned", "tool.batch_created", "tool.planned", "tool.planned", "approval.requested", "human_action.requested", "plan.state_changed", "step.succeeded",
+			"step.started", "checkpoint.committed", "tool.execution_started", "checkpoint.committed", "tool.completed", "validation.completed", "artifact.created", "plan.state_changed", "step.succeeded",
+			"approval.decided", "human_action.resolved",
+			"step.started", "checkpoint.committed", "tool.execution_started", "checkpoint.committed", "tool.completed", "validation.completed", "tool.batch_completed", "model.continuation_queued", "plan.state_changed", "step.succeeded",
+			"step.started", "checkpoint.committed", "budget.reserved", "checkpoint.committed", "model.message", "plan.state_changed", "step.succeeded",
+		},
+		EventSeqs:    sequentialInt64(44),
+		MessageRoles: []string{"user", "assistant"},
+		MessageSeqs:  []int64{1, 2},
+	}
+	assertGoldenTrace(t, got, want)
+}
+
+func sequentialInt64(count int) []int64 {
+	values := make([]int64, count)
+	for index := range values {
+		values[index] = int64(index + 1)
+	}
+	return values
 }
 
 func projectGoldenTrace(events []core.RunEvent, messages []core.Message) goldenTrace {

@@ -58,7 +58,7 @@ func (TranscriptAssembler) RunWithConversation(conversation []core.ModelMessage,
 		}
 	}
 	emittedToolGroups := make(map[string]bool)
-	for _, message := range conversation {
+	for _, message := range normalizeToolPairs(conversation) {
 		if message.Role != core.MessageRoleUser && message.Role != core.MessageRoleAssistant && message.Role != core.MessageRoleTool {
 			continue
 		}
@@ -120,6 +120,76 @@ func (TranscriptAssembler) RunWithConversation(conversation []core.ModelMessage,
 		result = append(result, textModelMessage(core.MessageRoleUser, continuationInstruction))
 	}
 	return result
+}
+
+// normalizeToolPairs is the final provider-bound guard for compacted or
+// imported conversation context. Durable same-Run history is reconstructed as
+// a call/result pair below; conversation context may have crossed compaction,
+// cancellation, rollback, or legacy import boundaries and therefore cannot be
+// trusted to remain structurally complete. Text and thinking blocks survive,
+// but a ToolCall or ToolResult is emitted only when its counterpart occurs in
+// the correct order.
+func normalizeToolPairs(messages []core.ModelMessage) []core.ModelMessage {
+	resultIndexes := make(map[string]int)
+	for index, message := range messages {
+		if message.Role != core.MessageRoleTool {
+			continue
+		}
+		if callID := toolResultCallID(message); callID != "" {
+			resultIndexes[callID] = index
+		}
+	}
+
+	result := make([]core.ModelMessage, 0, len(messages))
+	pending := make(map[string]struct{})
+	for index, message := range messages {
+		switch message.Role {
+		case core.MessageRoleAssistant:
+			filtered := message
+			filtered.Content = make([]core.ContentBlock, 0, len(message.Content))
+			for _, block := range message.Content {
+				if block.Type != core.ContentBlockToolCall {
+					filtered.Content = append(filtered.Content, block)
+					continue
+				}
+				if block.ToolCall == nil || strings.TrimSpace(block.ToolCall.ID) == "" || strings.TrimSpace(block.ToolCall.Name) == "" || resultIndexes[block.ToolCall.ID] <= index {
+					continue
+				}
+				if _, duplicate := pending[block.ToolCall.ID]; duplicate {
+					continue
+				}
+				pending[block.ToolCall.ID] = struct{}{}
+				filtered.Content = append(filtered.Content, block)
+			}
+			if len(filtered.Content) > 0 {
+				result = append(result, filtered)
+			}
+		case core.MessageRoleTool:
+			callID := toolResultCallID(message)
+			if _, ok := pending[callID]; !ok {
+				continue
+			}
+			delete(pending, callID)
+			result = append(result, message)
+		default:
+			result = append(result, message)
+		}
+	}
+	return result
+}
+
+func toolResultCallID(message core.ModelMessage) string {
+	if value := strings.TrimSpace(message.ToolCallID); value != "" {
+		return value
+	}
+	for _, block := range message.Content {
+		if block.Type == core.ContentBlockToolResult && block.ToolResult != nil {
+			if value := strings.TrimSpace(block.ToolResult.ToolCallID); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 func assistantHistoryBlocks(content, reasoningContent string) []core.ContentBlock {

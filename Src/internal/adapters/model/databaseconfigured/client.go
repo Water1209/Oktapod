@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oktapod/oktapod/Src/internal/adapters/model/modeltransport"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/native"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/openaicompat"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
@@ -34,6 +35,7 @@ type Client struct {
 	repository     ConfigRepository
 	credentials    CredentialStore
 	organizationID string
+	timeouts       modeltransport.Timeouts
 
 	mu       sync.Mutex
 	cacheKey string
@@ -48,7 +50,11 @@ type configuredClient interface {
 }
 
 func New(repository ConfigRepository, credentials CredentialStore, organizationID string) *Client {
-	return &Client{repository: repository, credentials: credentials, organizationID: organizationID}
+	return NewWithTimeouts(repository, credentials, organizationID, modeltransport.DefaultTimeouts())
+}
+
+func NewWithTimeouts(repository ConfigRepository, credentials CredentialStore, organizationID string, timeouts modeltransport.Timeouts) *Client {
+	return &Client{repository: repository, credentials: credentials, organizationID: organizationID, timeouts: timeouts}
 }
 
 func (c *Client) configured(ctx context.Context, requested core.ModelRef) (configuredClient, core.ModelRef, error) {
@@ -76,9 +82,9 @@ func (c *Client) configured(ctx context.Context, requested core.ModelRef) (confi
 	}
 	switch config.ProtocolFamily {
 	case core.ProviderProtocolAnthropic, core.ProviderProtocolGemini:
-		c.client = native.New(config.ProtocolFamily, config.Endpoint, effective.ModelID, credential)
+		c.client = native.NewWithTimeouts(config.ProtocolFamily, config.Endpoint, effective.ModelID, credential, c.timeouts)
 	default:
-		c.client = openaicompat.New(config.Endpoint, effective.ModelID, credential)
+		c.client = openaicompat.NewWithTimeouts(config.Endpoint, effective.ModelID, credential, c.timeouts)
 	}
 	c.cacheKey = key
 	return c.client, effective, nil
@@ -97,8 +103,13 @@ func (c *Client) resolveConfig(ctx context.Context, requested core.ModelRef) (re
 	if repository, ok := c.repository.(providerConfigRepository); ok {
 		var provider core.ProviderInstance
 		var err error
+		fallbackToDefault := false
 		if strings.TrimSpace(requested.ProviderID) != "" {
 			provider, err = repository.GetProviderInstance(ctx, c.organizationID, requested.ProviderID)
+			if errors.Is(err, sql.ErrNoRows) {
+				provider, err = repository.GetDefaultProviderInstance(ctx, c.organizationID)
+				fallbackToDefault = err == nil
+			}
 		} else {
 			provider, err = repository.GetDefaultProviderInstance(ctx, c.organizationID)
 		}
@@ -107,6 +118,9 @@ func (c *Client) resolveConfig(ctx context.Context, requested core.ModelRef) (re
 				return resolvedConfig{}, fmt.Errorf("provider %s is not active", provider.ProviderID)
 			}
 			modelID := strings.TrimSpace(requested.ModelID)
+			if fallbackToDefault {
+				modelID = ""
+			}
 			if modelID == "" {
 				modelID = provider.DefaultModelID
 			}
@@ -148,6 +162,9 @@ func (c *Client) Complete(ctx context.Context, request okruntime.ModelRequest) (
 	if result.EffectiveModel.ModelID == "" {
 		result.EffectiveModel.ModelID = result.Model
 	}
+	if request.RequestedModel.ProviderID != "" && request.RequestedModel.ProviderID != effective.ProviderID {
+		result.RoutingReason = "fallback"
+	}
 	return result, err
 }
 
@@ -167,6 +184,9 @@ func (c *Client) Stream(ctx context.Context, request okruntime.ModelRequest, onD
 	result.EffectiveModel.ProviderID = effective.ProviderID
 	if result.EffectiveModel.ModelID == "" {
 		result.EffectiveModel.ModelID = result.Model
+	}
+	if request.RequestedModel.ProviderID != "" && request.RequestedModel.ProviderID != effective.ProviderID {
+		result.RoutingReason = "fallback"
 	}
 	return result, err
 }

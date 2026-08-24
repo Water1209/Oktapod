@@ -21,19 +21,15 @@ type scriptedSkillModel struct {
 
 type successfulSkillSearch struct{}
 
-func semanticPlanResult(callID string) core.ModelResult {
-	return core.ModelResult{
-		CallID: callID, Provider: "test", Model: "test-model",
-		ToolCalls: []core.ToolCall{{
-			Name: core.ToolUpdatePlan,
-			Arguments: map[string]any{
-				"explanation": "Execute the requested verification.",
-				"items": []any{
-					map[string]any{"title": "Collect verification evidence", "description": "Run the required checks and preserve their evidence.", "status": "in_progress"},
-					map[string]any{"title": "Synthesize verification result", "description": "Review the evidence and report the verified outcome.", "status": "pending"},
-				},
+func semanticPlanCall() core.ToolCall {
+	return core.ToolCall{
+		Name: core.ToolReplacePlan,
+		Arguments: map[string]any{
+			"items": []any{
+				map[string]any{"title": "Collect verification evidence", "description": "Run the required checks and preserve their evidence."},
+				map[string]any{"title": "Synthesize verification result", "description": "Review the evidence and report the verified outcome."},
 			},
-		}},
+		},
 	}
 }
 
@@ -82,18 +78,19 @@ func setupSkillProject(t *testing.T, manifest string) (*sqlite.Store, *applicati
 func TestModelSkillInvokeQueuesResumeAndAppliesToolScope(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, skill := setupSkillProject(t, `{"description":"release verification","instructions":"Run the frozen release checklist and report evidence.","allowed_tools":["web_search"]}`)
-	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "verify the release", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "skill-run", "")
+	// Keep the goal intentionally unrelated to the Skill metadata so this test
+	// exercises model-selected skill_invoke instead of heuristic auto-loading.
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "perform catalog operation 42", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "skill-run", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := &scriptedSkillModel{results: []core.ModelResult{
-		semanticPlanResult("00000000-0000-7000-0000-000000000410"),
 		{CallID: "00000000-0000-7000-0000-000000000411", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{{Name: core.ToolSkillInvoke, Arguments: map[string]any{"skill": skill.Name + "@" + skill.Version, "args": "production"}}}, Usage: core.ModelUsage{InputTokens: 10, OutputTokens: 3}},
-		{CallID: "00000000-0000-7000-0000-000000000412", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "latest production release"}}}, Usage: core.ModelUsage{InputTokens: 12, OutputTokens: 6}},
+		{CallID: "00000000-0000-7000-0000-000000000412", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{semanticPlanCall(), {Name: core.ToolWebSearch, Arguments: map[string]any{"query": "latest production release"}}}, Usage: core.ModelUsage{InputTokens: 12, OutputTokens: 6}},
 		{CallID: "00000000-0000-7000-0000-000000000413", Provider: "test", Model: "test-model", Content: "Release check completed from the loaded Skill and verified search evidence.", Usage: core.ModelUsage{InputTokens: 15, OutputTokens: 8}},
 	}}
 	worker := NewWorker("skill-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(successfulSkillSearch{})
-	for index := 0; index < 6; index++ {
+	for index := 0; index < 5; index++ {
 		worked, runErr := worker.RunOnce(ctx)
 		if runErr != nil || !worked {
 			t.Fatalf("iteration=%d worked=%v err=%v", index, worked, runErr)
@@ -106,34 +103,34 @@ func TestModelSkillInvokeQueuesResumeAndAppliesToolScope(t *testing.T) {
 	if completed.Status != core.StatusSucceeded || !strings.Contains(completed.ResultSummary, "loaded Skill") {
 		t.Fatalf("task=%#v", completed)
 	}
-	if len(model.requests) != 4 {
+	if len(model.requests) != 3 {
 		t.Fatalf("model requests=%d", len(model.requests))
 	}
 	initialHasInvoke := false
-	for _, definition := range model.requests[1].ToolDefinitions {
+	for _, definition := range model.requests[0].ToolDefinitions {
 		initialHasInvoke = initialHasInvoke || definition.Name == core.ToolSkillInvoke
 	}
 	if !initialHasInvoke {
-		t.Fatalf("initial definitions=%#v", model.requests[1].ToolDefinitions)
+		t.Fatalf("initial definitions=%#v", model.requests[0].ToolDefinitions)
 	}
-	for _, definition := range model.requests[2].ToolDefinitions {
+	for _, definition := range model.requests[1].ToolDefinitions {
 		if definition.Name == core.ToolSkillInvoke {
 			t.Fatal("resume step exposed recursive skill_invoke")
 		}
 	}
-	if !model.requests[2].ToolScopeDeclared || len(model.requests[2].AllowedTools) != 1 || model.requests[2].AllowedTools[0] != core.ToolWebSearch {
-		t.Fatalf("resume tool scope declared=%v allowed=%#v", model.requests[2].ToolScopeDeclared, model.requests[2].AllowedTools)
+	if !model.requests[1].ToolScopeDeclared || len(model.requests[1].AllowedTools) != 1 || model.requests[1].AllowedTools[0] != core.ToolWebSearch {
+		t.Fatalf("resume tool scope declared=%v allowed=%#v", model.requests[1].ToolScopeDeclared, model.requests[1].AllowedTools)
 	}
-	if !strings.Contains(model.requests[2].SystemPrompt, "frozen release checklist") || !strings.Contains(model.requests[2].SystemPrompt, "production") {
-		t.Fatalf("resume prompt=%q", model.requests[2].SystemPrompt)
+	if !strings.Contains(model.requests[1].SystemPrompt, "frozen release checklist") || !strings.Contains(model.requests[1].SystemPrompt, "production") {
+		t.Fatalf("resume prompt=%q", model.requests[1].SystemPrompt)
 	}
-	if !model.requests[3].EnableTools || !strings.Contains(model.requests[3].SystemPrompt, "frozen release checklist") || !strings.Contains(model.requests[3].SystemPrompt, "production") || !strings.Contains(model.requests[3].UserPrompt, "verified") {
-		t.Fatalf("continuation request=%#v", model.requests[3])
+	if !model.requests[2].EnableTools || !strings.Contains(model.requests[2].SystemPrompt, "frozen release checklist") || !strings.Contains(model.requests[2].SystemPrompt, "production") || !strings.Contains(model.requests[2].UserPrompt, "verified") {
+		t.Fatalf("continuation request=%#v", model.requests[2])
 	}
 	pairedToolHistory := false
-	for index := 0; index+1 < len(model.requests[3].Messages); index++ {
-		callBlock := model.requests[3].Messages[index].Content
-		resultBlock := model.requests[3].Messages[index+1].Content
+	for index := 0; index+1 < len(model.requests[2].Messages); index++ {
+		callBlock := model.requests[2].Messages[index].Content
+		resultBlock := model.requests[2].Messages[index+1].Content
 		if len(callBlock) == 1 && callBlock[0].ToolCall != nil &&
 			len(resultBlock) == 1 && resultBlock[0].ToolResult != nil &&
 			callBlock[0].ToolCall.ID == resultBlock[0].ToolResult.ToolCallID {
@@ -142,7 +139,7 @@ func TestModelSkillInvokeQueuesResumeAndAppliesToolScope(t *testing.T) {
 		}
 	}
 	if !pairedToolHistory {
-		t.Fatalf("typed continuation has no paired ToolCall/ToolResult: %#v", model.requests[3].Messages)
+		t.Fatalf("typed continuation has no paired ToolCall/ToolResult: %#v", model.requests[2].Messages)
 	}
 	receipts, err := service.ListSideEffectReceipts(ctx, "all")
 	if err != nil || len(receipts) != 2 {
@@ -257,19 +254,20 @@ func TestExplicitSkillSurvivesSemanticPlanContinuation(t *testing.T) {
 func TestSkillInvokeConstraintQueuesModelRepair(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, _ := setupSkillProject(t, `{"description":"release verification","instructions":"Run checks."}`)
-	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "verify release", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "mixed-skill-tools", "")
+	// Avoid heuristic Skill loading: the contract under test is the model's
+	// invalid mixed skill_invoke response and its deterministic repair.
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "perform catalog operation 43", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "mixed-skill-tools", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := &scriptedSkillModel{results: []core.ModelResult{
-		semanticPlanResult("00000000-0000-7000-0000-000000000420"),
 		{CallID: "00000000-0000-7000-0000-000000000421", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{
 			{Name: core.ToolSkillInvoke, Arguments: map[string]any{"skill": "release-check"}},
 			{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "latest release"}},
 		}},
 	}}
 	worker := NewWorker("mixed-skill-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for iteration := 0; iteration < 2; iteration++ {
+	for iteration := 0; iteration < 1; iteration++ {
 		if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
 			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
 		}

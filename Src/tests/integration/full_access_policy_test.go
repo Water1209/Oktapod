@@ -71,7 +71,10 @@ func TestFullAccessKeepsMCPAskAndFrozenCapabilityBoundary(t *testing.T) {
 		modelCalls++
 		w.Header().Set("Content-Type", "application/json")
 		if modelCalls == 1 {
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "full-access-mcp-plan", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "full-access-mcp-call", "type": "function", "function": map[string]any{"name": "mcp__" + capability.ID + "__confirm", "arguments": `{}`}}}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "full-access-mcp-plan", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+				transitionPlanToolCall("full-access-mcp-plan-control", "确认外部 MCP 操作", "在治理边界内执行外部能力并核对结果。"),
+				{"id": "full-access-mcp-call", "type": "function", "function": map[string]any{"name": "mcp__" + capability.ID + "__confirm", "arguments": `{}`}},
+			}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
 			return
 		}
 		if !strings.Contains(string(body), "confirmed") {
@@ -157,6 +160,7 @@ func TestFullAccessHardDenyQueuesModelRepairWithoutApproval(t *testing.T) {
 		modelCalls++
 		if modelCalls == 1 {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "full-access-deny", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+				transitionPlanToolCall("full-access-deny-plan", "执行受治理的工作区变更", "按用户目标尝试变更，并在策略拒绝时安全恢复。"),
 				{"id": "denied-shell-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceRunCommand, "arguments": `{"program":"powershell","args":["-Command","Get-ChildItem"]}`}},
 				{"id": "superseded-write-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": `{"path":"should-not-run.txt","content":"superseded"}`}},
 			}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})

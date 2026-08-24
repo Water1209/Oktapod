@@ -28,6 +28,7 @@ const (
 	PermissionModeFullAccess = "full_access"
 
 	PromptProfileVersionCurrent = "oktapod-prompt-v2"
+	ThinkingPolicyTaskActionV1  = "task_action_v1"
 
 	VisibilityPrivate  = "private"
 	VisibilitySelected = "selected"

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -92,6 +93,39 @@ func TestLoadConfigDefaultsRunConcurrencyAndAllowsOnlyLowerValues(t *testing.T) 
 	}
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("concurrency above the Release 1A maximum must fail")
+	}
+}
+
+func TestLoadConfigModelTimeoutDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, "profile: personal\n"))
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ModelTimeouts.FirstToken != 15*time.Second || config.ModelTimeouts.StreamIdle != time.Minute || config.ModelTimeouts.TurnHigh != 10*time.Minute {
+		t.Fatalf("defaults=%+v", config.ModelTimeouts)
+	}
+
+	body := "profile: personal\nmodel:\n  first_token_timeout: 30s\n  stream_idle_timeout: 45s\n  turn_timeouts:\n    auto: 90s\n    off: 60s\n    low: 120s\n    medium: 240s\n    high: 480s\n"
+	t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, body))
+	config, err = LoadConfig()
+	if err != nil || config.ModelTimeouts.TurnAuto != 90*time.Second || config.ModelTimeouts.TurnHigh != 8*time.Minute {
+		t.Fatalf("config=%+v err=%v", config.ModelTimeouts, err)
+	}
+}
+
+func TestLoadConfigRejectsUnsafeOrRegressiveModelTimeouts(t *testing.T) {
+	for name, body := range map[string]string{
+		"too short":        "profile: personal\nmodel:\n  first_token_timeout: 1s\n",
+		"token after idle": "profile: personal\nmodel:\n  first_token_timeout: 90s\n  stream_idle_timeout: 60s\n",
+		"regressive":       "profile: personal\nmodel:\n  turn_timeouts:\n    off: 120s\n    low: 60s\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("OKTAPOD_CONFIG_FILE", writeTestConfig(t, body))
+			if _, err := LoadConfig(); err == nil {
+				t.Fatal("invalid model timeout configuration was accepted")
+			}
+		})
 	}
 }
 

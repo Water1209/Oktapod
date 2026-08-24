@@ -53,6 +53,7 @@ type ToolRuntime struct {
 	webSearch       WebSearchExecutor
 	webAccess       WebAccess
 	mcpSecrets      application.ProviderSecretStore
+	mcpSessions     *mcpadapter.SessionBroker
 	mcpCallTimeout  time.Duration
 	logger          *slog.Logger
 }
@@ -68,7 +69,7 @@ func (w *Worker) toolRuntime() ToolRuntime {
 	return ToolRuntime{
 		ledger: w.repository, repository: w.repository, workspace: w.workspace,
 		artifactCapture: w.artifactCapture, assetStager: w.assetStager, documentRuntime: w.documentRuntime,
-		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
+		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpSessions: w.mcpSessions, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
 	}
 }
 
@@ -107,7 +108,7 @@ func (runtime ToolRuntime) Execute(ctx context.Context, step core.ClaimedStep, r
 		}
 		return toolPolicyFailure(step.StepType, reason)
 	}
-	prepared, failure := runtime.preflight(ctx, step, run, invocation, planned)
+	prepared, failure := newToolPreparerRegistry(runtime).Prepare(ctx, step, run, invocation, planned)
 	if failure != nil {
 		return *failure
 	}
@@ -199,24 +200,6 @@ func toolReceiptBeginFailure(err error, summary string) core.StepOutcome {
 		return core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SIDE_EFFECT_STATUS_UNKNOWN", ResultSummary: summary, Output: map[string]any{"retryable": false}}
 	}
 	return core.StepOutcome{Status: core.StatusFailed, ErrorCode: "TOOL_RECEIPT_BEGIN_FAILED", ResultSummary: "工具执行收据暂时无法持久化，系统将从已提交检查点安全重试。", Output: map[string]any{"retryable": true}}
-}
-
-func (runtime ToolRuntime) preflight(ctx context.Context, step core.ClaimedStep, run core.RunContext, invocation FrozenToolInvocation, planned core.PlannedTool) (preparedTool, *core.StepOutcome) {
-	switch {
-	case invocation.Name == core.ToolSkillInvoke:
-		return runtime.preflightSkill(run, invocation)
-	case invocation.Name == core.ToolWebSearch || invocation.Name == core.ToolWebFetch:
-		return runtime.preflightWeb(run, invocation)
-	case isWorkspaceTool(invocation.Name):
-		return runtime.preflightWorkspace(run, invocation, planned)
-	case isDocumentTool(invocation.Name):
-		return runtime.preflightDocument(run, invocation)
-	case isMCPTool(invocation.Name):
-		return runtime.preflightMCP(ctx, run, invocation)
-	default:
-		failure := toolPolicyFailure(step.StepType, "tool is not routed through ToolRuntime")
-		return preparedTool{}, &failure
-	}
 }
 
 func (runtime ToolRuntime) preflightDocument(run core.RunContext, invocation FrozenToolInvocation) (preparedTool, *core.StepOutcome) {
@@ -414,23 +397,36 @@ func (runtime ToolRuntime) dispatchWorkspace(ctx context.Context, run core.RunCo
 			if path == "" {
 				path, _ = call.Arguments["path"].(string)
 			}
-			kind := "deliverable"
-			if strings.HasPrefix(filepath.ToSlash(filepath.Clean(path)), ".research/") {
-				kind = "evidence"
-			}
-			captureCall := core.ToolCall{ID: call.ID, Name: core.ToolArtifactCapture, Arguments: map[string]any{"path": path, "kind": kind}}
-			captured := runtime.captureArtifact(ctx, run.ProjectID, captureCall, core.PlanTool(captureCall))
-			if captured.Status != core.StatusSucceeded {
-				execution.Status, execution.ErrorCode = core.StatusFailed, captured.ErrorCode
-				execution.Output["artifact_capture_error"] = captured.Output["reason"]
+			kind, shouldCapture := workspaceAutoCaptureKind(path)
+			if !shouldCapture {
+				execution.Output["artifact_capture_skipped"] = "internal_workspace_file"
 			} else {
-				for key, value := range captured.Output {
-					execution.Output[key] = value
+				captureCall := core.ToolCall{ID: call.ID, Name: core.ToolArtifactCapture, Arguments: map[string]any{"path": path, "kind": kind}}
+				captured := runtime.captureArtifact(ctx, run.ProjectID, captureCall, core.PlanTool(captureCall))
+				if captured.Status != core.StatusSucceeded {
+					execution.Status, execution.ErrorCode = core.StatusFailed, captured.ErrorCode
+					execution.Output["artifact_capture_error"] = captured.Output["reason"]
+				} else {
+					for key, value := range captured.Output {
+						execution.Output[key] = value
+					}
 				}
 			}
 		}
 	}
 	return execution
+}
+
+func workspaceAutoCaptureKind(path string) (string, bool) {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	clean = strings.TrimPrefix(clean, "./")
+	if clean == ".oktapod" || strings.HasPrefix(clean, ".oktapod/") {
+		return "", false
+	}
+	if strings.HasPrefix(clean, ".research/") {
+		return "evidence", true
+	}
+	return "deliverable", true
 }
 
 func (runtime ToolRuntime) stageAsset(ctx context.Context, run core.RunContext, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {
@@ -538,19 +534,26 @@ func (runtime ToolRuntime) preflightMCP(ctx context.Context, run core.RunContext
 	}
 	return preparedTool{
 		dispatch: func(ctx context.Context) core.ToolExecution {
-			return runtime.dispatchMCP(ctx, invocation, manifestJSON, credential, capabilityID, toolName, updater)
+			return runtime.dispatchMCP(ctx, run, invocation, manifestJSON, credential, capabilityID, toolName, updater)
 		},
 		receiptUnknown: "MCP 副作用状态未知，已停止自动重试。", successSummary: "MCP 工具执行完成，等待确定性收据验收。", failureSummary: "MCP 工具执行失败，已记录错误收据。",
 	}, nil
 }
 
-func (runtime ToolRuntime) dispatchMCP(ctx context.Context, invocation FrozenToolInvocation, manifestJSON, credential, capabilityID, toolName string, updater mcpadapter.CredentialUpdater) core.ToolExecution {
+func (runtime ToolRuntime) dispatchMCP(ctx context.Context, run core.RunContext, invocation FrozenToolInvocation, manifestJSON, credential, capabilityID, toolName string, updater mcpadapter.CredentialUpdater) core.ToolExecution {
 	callContext, cancel := ctx, func() {}
 	if runtime.mcpCallTimeout > 0 {
 		callContext, cancel = context.WithTimeout(ctx, runtime.mcpCallTimeout)
 	}
 	defer cancel()
-	result, callErr := mcpadapter.CallWithCredentialUpdater(callContext, manifestJSON, credential, toolName, invocation.Arguments, updater)
+	var result mcpadapter.CallResult
+	var callErr error
+	if runtime.mcpSessions != nil {
+		sessionKey := strings.Join([]string{run.OrganizationID, run.ProjectID, run.RunID, capabilityID}, "\x00")
+		result, callErr = runtime.mcpSessions.Call(callContext, sessionKey, manifestJSON, credential, toolName, invocation.Arguments, updater)
+	} else {
+		result, callErr = mcpadapter.CallWithCredentialUpdater(callContext, manifestJSON, credential, toolName, invocation.Arguments, updater)
+	}
 	output := map[string]any{"capability_id": capabilityID, "tool_name": toolName, "is_error": result.IsError, "_envelope": map[string]any{"trust": core.TrustExternalUntrusted, "source": "mcp:" + capabilityID, "capability": toolName}}
 	content := make([]any, 0, len(result.Content))
 	for _, raw := range result.Content {

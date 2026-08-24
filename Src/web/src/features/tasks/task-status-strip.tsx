@@ -8,7 +8,8 @@ import { HumanActionCard } from '../approvals/human-action-card'
 
 const activeStatuses = new Set(['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'])
 
-// 每个会话只呈现一个活动语义计划。工具事件属于计划项详情，不再被拼成动态“任务步骤”。
+// 每个会话只呈现一个活动语义计划。工具、Receipt 和恢复事件属于执行记录，
+// 不能投影成计划项；否则会把“怎么执行”错误地冒充“要完成什么”。
 export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: Task | null; conversationId?: string }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -16,7 +17,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
   const task = activeTask ?? null
   const active = task && activeStatuses.has(task.status) ? task : null
   const terminal = task && !active ? task : null
-	const inspectableRunId = task?.presentation_kind === 'task' ? task.run_id : undefined
+	const inspectableRunId = task?.presentation_kind === 'task' || (task?.presentation_kind === 'pending_auto' && terminal) ? task.run_id : undefined
 	const events = useRunEvents(inspectableRunId, Boolean(active && inspectableRunId))
 	const hasSemanticPlan = useMemo(
 		() => events.data.items.some((event) => event.event_type === 'plan.published'),
@@ -120,7 +121,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
   // record and sidebar, but the stale 0/N capsule must leave the input area.
   if (!task || task.status === 'canceled') return null
   if (task.presentation_kind === 'answer') return null
-  if (task.presentation_kind === 'pending_auto') {
+  if (task.presentation_kind === 'pending_auto' && active) {
     return <section className="task-capsule pending-auto" aria-label="正在思考"><div className="task-capsule-head"><span className="task-capsule-icon"><LoaderCircle className="spin" size={14} /></span><span className="task-capsule-current" aria-live="polite">思考中</span></div></section>
   }
 
@@ -155,7 +156,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
       {open ? (
         <div className="task-capsule-detail">
           <header className="task-capsule-detail-head">
-            <span className="task-capsule-detail-title">{planItems.length > 0 ? `执行计划 · 第 ${plan.data?.revision ?? 1} 版` : '任务执行'}</span>
+            <span className="task-capsule-detail-title">{planItems.length > 0 ? `执行计划 · 第 ${plan.data?.revision ?? 1} 版` : '执行计划'}</span>
             <span className="task-capsule-detail-status">{statusLabel}</span>
           </header>
           {failure ? <div className="task-capsule-terminal">
@@ -168,14 +169,14 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
               {planItems.map((item) => (
                 <li key={item.id} className={item.status}>
                   <span className="task-capsule-plan-icon" aria-hidden="true">
-                    {item.status === 'completed' ? <CheckCircle2 size={12} /> : item.status === 'running' ? <LoaderCircle className="spin" size={12} /> : item.status === 'waiting_user' ? <PauseCircle size={12} /> : <Circle size={8} />}
+                    {item.status === 'completed' ? <CheckCircle2 size={12} /> : item.status === 'running' ? <LoaderCircle className="spin" size={12} /> : item.status === 'waiting_user' ? <PauseCircle size={12} /> : item.status === 'blocked' ? <AlertTriangle size={12} /> : <Circle size={8} />}
                   </span>
                   <span className="task-capsule-plan-label"><strong>{item.title}</strong>{item.description ? <small>{item.description}</small> : null}</span>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="task-capsule-detail-current">{plan.isLoading ? '正在读取执行状态…' : terminal ? currentLabel : '当前任务无需预先创建计划，Agent 正在执行。'}</p>
+            <p className="task-capsule-detail-current">{plan.isLoading ? '正在读取执行状态…' : terminal ? '此历史任务未发布语义执行计划；工具调用与恢复过程请在上方执行记录查看。' : 'Agent 正在生成语义执行计划；工具调用与恢复过程请在上方执行记录查看。'}</p>
           )}
           {pendingActions.length > 0 ? <section ref={actionRef} tabIndex={-1} className="human-action-stack" aria-label="需要你处理">
             {approvalBatches.map((batch) => <details className="human-action-batch" open key={`batch:${batch[0]?.id}`}>

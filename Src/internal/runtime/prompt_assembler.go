@@ -119,7 +119,7 @@ func (PromptAssembler) Stage(stage string, snapshot ...string) string {
 	if v2 {
 		switch stage {
 		case "execute":
-			return "直接完成目标：可以直接回答或调用首批业务工具；多阶段工作可在同一响应中用 replace_plan 建立语义计划并调用首批业务工具。不得为了管理计划而单独消耗一次模型响应。"
+			return "直接完成目标：普通回答可直接返回；第一次需要业务工具时，必须在同一响应中先调用一次 replace_plan 建立面向用户结果的语义计划，再调用首批业务工具。即使只有一个语义步骤也必须发布计划；计划项描述要完成什么，不能罗列具体工具调用。不得为了管理计划而单独消耗一次模型响应。"
 		case "steering_replan":
 			return "基于用户 Steering 重规划未完成工作。需要替换计划时，在同一响应中调用 replace_plan 和下一批业务工具；Runtime 会保留已完成项。"
 		case "permission_replan":

@@ -50,7 +50,10 @@ func TestWorkPDFConversionRequiresCaptureAcrossPermissionModes(t *testing.T) {
 				message := map[string]any{"role": "assistant", "content": "PDF 已生成并登记。"}
 				switch modelCalls {
 				case 1:
-					message = map[string]any{"role": "assistant", "content": "先创建转换脚本。", "tool_calls": []map[string]any{{"id": "write-pdf-script", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(writeArguments)}}}}
+					message = map[string]any{"role": "assistant", "content": "先创建转换脚本。", "tool_calls": []map[string]any{
+						transitionPlanToolCall("pdf-plan", "生成并交付 PDF", "完成 PDF 生成、验证和不可变交付登记。"),
+						{"id": "write-pdf-script", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(writeArguments)}},
+					}}
 				case 2:
 					message = map[string]any{"role": "assistant", "content": "执行转换脚本。", "tool_calls": []map[string]any{{"id": "run-pdf-script", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceRunCommand, "arguments": string(commandArguments)}}}}
 				case 3:

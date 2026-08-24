@@ -1,10 +1,10 @@
 # Oktapod Agent Runtime 性能与 LLM 调用优化执行方案 V2.0
 
-> 版本：V2.0
-> 更新日期：2026-08-22
+> 版本：V2.3
+> 更新日期：2026-08-24
 > 实施分支：`codex/runtime-performance-v2`
 > 基线：`main@f3fa78d`
-> 状态：PERF-0～4 代码、本地完整验证、浏览器回归和 Windows 原生烟测已完成；真实 Provider 性能报告、远端双平台 CI 与 PERF-5 决策尚未形成
+> 状态：PERF-0～4 代码与观测基础设施保留；发布级性能采样暂缓，B9 保持 `PARTIAL`，不形成 p50/p95 或性能承诺
 
 ## 1. 结论
 
@@ -12,7 +12,9 @@
 
 新 Run 的热路径已经收敛为一次业务 Agent Turn：Auto 不再先调用模型分类；计划控制可与业务工具共处同一次模型响应；Provider 活跃 Run 不再访问模型目录；历史上下文按工具调用组和 Token 预算投影；工具按安全属性形成连续并发段与 exclusive barrier。历史 Run 缺少 V2 快照字段时继续执行旧协议，不迁移、不改写。
 
-当前不能声明性能门禁已通过。代码已记录调用次数、Token、TTFB、首个安全正文、Assembly、请求字节、Provider 总时延与稳定 purpose；12 个固定场景必须在隔离数据目录上完成自动回放 30 次和真实 Provider 至少 5 次后，才能给出 p50/p95 与 PERF-5 判断。
+真实 Task/Ask 最小对照发现工具目标在 Provider 默认 `thinking=auto` 下可能持续 reasoning 并超过固定 120 秒，而同一请求显式 `off` 可在 4.5～6.8 秒完成。新工具型 Run 因此冻结版本化 action-first Thinking 策略；显式高级思考仍保留，并以可配置分级硬上限获得 180/300/600 秒。传输门禁区分从请求发出到首个真实 Token、首 Token 后流空闲和整轮总完成；空 SSE/keep-alive 只维持连接，不能满足首 Token 门禁。
+
+当前不声明性能门禁已通过。代码继续记录调用次数、Token、TTFB、首个安全正文、Assembly、请求字节、Provider 总时延与稳定 purpose，12 个固定场景脚本也继续保留；但本轮职责解耦不执行 30 次自动回放和 5 次真实 Provider 采样，不输出发布级 p50/p95，也不启动 PERF-5。只有出现可复现延迟问题或准备对外承诺性能时，才恢复固定 Provider、自动审批、防挑样本和报告链路。
 
 ## 2. 架构与所有权
 
@@ -34,7 +36,7 @@ flowchart LR
 |---|---|---|
 | 业务状态与恢复 | SQLite Durable Harness | 不由 Live Hub、前端 provisional buffer 或性能表推导 |
 | ModelRequest | `AgentTurnAssembler` | Tool Schema 是名称、描述、参数的唯一模型来源；最终请求继续进入 `assembly_hash` |
-| 语义计划 | 模型声明 + Runtime 校验 | Runtime 不从一次工具成功机械推断计划项完成 |
+| 语义计划 | 模型声明 + Runtime 校验 | Runtime 不从一次工具成功机械推断计划项完成；普通续轮不能重建已绑定计划 |
 | 工具执行 | 现有 `ToolRuntime` | 不新增第二套 Policy、Authorization、Receipt 或凭据路径 |
 | 临时正文 | 进程内 `LiveTurnHub` | 可丢失、不可重放、无 durable cursor，不阻塞 Worker |
 | 上下文压缩 | 确定性投影 + 单 Run Checkpoint | 只在确定性裁剪仍超预算时生成；事件每 Run 最多一次 |
@@ -65,6 +67,7 @@ flowchart LR
 - Auto Task 初始 `presentation_kind=pending_auto`；首次真实业务工具切为 `task`；无工具且通过 Completion Gate 后切为 `answer`，审计记录仍保留。
 - V2 新 Run 不创建占位计划。`replace_plan` 与首批业务工具、`advance_plan` 与下一批业务工具在同一事务中先控制计划、再绑定工具。
 - 每次模型响应最多一个计划控制；控制调用不能单独占用响应；工具成功不会自动推进语义项；最终无工具响应通过 Completion Gate 后由 Runtime 收敛计划终态。
+- 已绑定计划的普通 continuation/plan_execute 不再向模型暴露 `replace_plan`，Store 同时拒绝普通替换；显式重规划保留完成项、过滤规范化重复标题并限制总项数，防止把执行记录重建成新计划。
 - 显式 `skill_id` 直接冻结并加载，模型请求不暴露 `skill_invoke`；模糊发现仍保留受治理语义选择。
 
 ### 4.3 PERF-2：Task 实时可见流式
@@ -130,7 +133,7 @@ $env:OKTAPOD_PERF_CSRF="<temporary csrf>"
 node Test/runtime-performance-baseline.mjs
 ```
 
-Cookie/CSRF 只能来自隔离测试会话，不写入文档、仓库或输出文件。自动回放设置 30 次；固定真实 Provider、Model、Thinking 与 Prompt 后设置至少 5 次，并分别报告 min/median/max。不同 Harness 只做同 Provider 分析，不作为发布门禁。
+Cookie/CSRF 只能来自隔离测试会话，不写入文档、仓库或输出文件。以上脚本当前只作为按需诊断入口，不要求执行 30 次矩阵或真实 Provider 5 次采样；恢复发布级性能评估时再冻结 Provider、Model、Thinking、Prompt、审批策略和样本规则。不同 Harness 只做同 Provider 分析，不作为发布门禁。
 
 ## 7. 验收状态
 
@@ -144,10 +147,10 @@ Cookie/CSRF 只能来自隔离测试会话，不写入文档、仓库或输出�
 | Live 慢消费者不阻塞 | 代码与 Go/Web 测试通过 | `TestLiveTurnHubDropsSlowSubscriberWithoutBlockingPublisher`、RunEventsProvider provisional 测试 |
 | Barrier 领取和顺序 | 代码与定向测试通过 | `TestBarrierSchedulerPreservesModelOrder`、unknown/MCP mutation exclusive 测试 |
 | 历史 Plan/Recovery | legacy 快照回归通过 | semantic plan、Lease/Fence、失败批次与进程恢复测试 |
-| 第十轮 Token 下降 30% | `PENDING_MEASUREMENT` | 需要旧 Assembly 对照回放 30 次 |
-| 安全文字到 SSE flush p95 ≤100ms | `PENDING_MEASUREMENT` | 需要进程内与 HTTP 观测样本 |
-| 安全并行组 ≤最慢项 1.2x+100ms | `PENDING_MEASUREMENT` | 需要固定延迟工具 30 次报告 |
-| PERF-5 Durable Fast Path | `NOT_TRIGGERED` | PERF-1～4 实测后仅在内部 p95 >250ms 或墙钟占比 >10% 时另立 RFC |
+| 第十轮 Token 下降 30% | `DEFERRED` | 保留字段与场景，不作为本轮完成门禁 |
+| 安全文字到 SSE flush p95 ≤100ms | `DEFERRED` | 出现明确 UI 延迟或准备性能承诺时恢复采样 |
+| 安全并行组 ≤最慢项 1.2x+100ms | `DEFERRED` | 出现工具调度瓶颈时使用固定延迟夹具复测 |
+| PERF-5 Durable Fast Path | `NOT_TRIGGERED` | 没有发布级 p95 证据，不启动新的 Durable Fast Path |
 
 ## 8. 交付门禁
 
@@ -162,16 +165,16 @@ pnpm release:build
 pnpm release:smoke
 ```
 
-本地通过、远端 CI、正式 tag 与真实 Provider 性能报告必须分开记录。平均耗时不能单独判定成功；调用次数、Token、TTFB、p95、任务正确性、Artifact 交付与恢复语义必须同时满足。
+本地通过、远端 CI、正式 tag 与按需性能报告必须分开记录。当前验收以请求、持久状态、安全决策、恢复行为和用户可见结果等价为准；若未来恢复性能承诺，平均耗时不能单独判定成功，仍需同时检查调用次数、Token、TTFB、p95、任务正确性、Artifact 交付与恢复语义。
 
 2026-08-22 本地交付证据：
 
 | 门禁 | 结果 |
 |---|---|
-| `pnpm verify` | `PASS`：Go vet/test、ESLint、Web 14 文件 55/55、TypeScript/Vite/Go build、SQLite migration、OpenAPI drift |
-| Playwright | `PASS`：foundation 初始化 1/1、Vault 重启 1/1、success 27/27；真实浏览器回归同时发现并修复无计划 Run 的合法 404 噪声，以及 Auto answer 在 Task 先终止时漏刷最终助手消息的竞态 |
+| `pnpm verify` | `PASS`：Go vet/test、ESLint、Web 14 文件 56/56、TypeScript/Vite/Go build、SQLite migration、OpenAPI drift |
+| Playwright | `PASS`：foundation 初始化 1/1、Vault 重启 1/1、success 27/27；职责拆分后的完整复跑通过，预置文档资源数量断言已与当前五资源事实同步 |
 | `pnpm test:race` | `BLOCKED_ENV`：本机 Go 为 `CGO_ENABLED=0`，且未安装可用 C 编译器；`-race` 在进入测试前拒绝启动，不计为代码失败，继续由 Ubuntu CI 提供正式证据 |
-| `pnpm release:build` | `PASS`：`Build/oktapod-v1.0.0-windows-amd64.exe`，SHA256 `a02b931c193bf2775d8c7678e7fa2779c5b64ad55d2b1ba215736e7829c00790` |
-| `pnpm release:smoke` | `PASS`：隔离数据目录、端口 54543、health 200；烟测进程已停止 |
+| `pnpm release:build` | `BLOCKED_ENV`：当前签名 Document Runtime 发布要求 `OKTAPOD_DOCUMENT_RUNTIME_STAGE` 等外部发布输入，本机未提供；旧工件不作为当前工作树通过证据 |
+| `pnpm release:smoke` | `BLOCKED_ENV`：因本轮未产生 `Build/document-runtime-trusted-keys.json` 和签名 Runtime 包，严格加载烟测无法启动；需在 release build 具备发布输入后重跑 |
 
-上述证据只证明语义、工程和本地发布门禁。12 场景每项 30 次、真实 Provider 固定配置至少 5 次仍未执行，因此本文件不声明 Token、TTFB、SSE flush、并行组墙钟或内部 p95 已达到性能阈值。
+上述证据只证明语义、工程和本地发布门禁。12 场景每项 30 次与真实 Provider 固定配置至少 5 次已从本轮范围删除，因此本文件不声明 Token、TTFB、SSE flush、并行组墙钟或内部 p95 已达到性能阈值；B9 保持 `PARTIAL`。

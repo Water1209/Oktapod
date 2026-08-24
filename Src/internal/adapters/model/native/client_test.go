@@ -19,8 +19,8 @@ func TestNativeClientUsesPhaseTimeoutsWithoutBoundingHealthyStreams(t *testing.T
 		t.Fatalf("provider total timeout=%s, want disabled", client.httpClient.Timeout)
 	}
 	transport, ok := client.httpClient.Transport.(*http.Transport)
-	if !ok || transport.ResponseHeaderTimeout != time.Minute {
-		t.Fatalf("response header timeout=%v, want 1m", transport)
+	if !ok || transport.ResponseHeaderTimeout != 15*time.Second {
+		t.Fatalf("response header timeout=%v, want 15s first-token bound", transport)
 	}
 }
 

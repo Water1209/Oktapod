@@ -23,11 +23,42 @@ const (
 	StreamIdleTimeout     = 60 * time.Second
 )
 
+type Timeouts struct {
+	FirstToken time.Duration
+	StreamIdle time.Duration
+}
+
+func DefaultTimeouts() Timeouts {
+	return Timeouts{FirstToken: 15 * time.Second, StreamIdle: StreamIdleTimeout}
+}
+
+func (timeouts Timeouts) Normalized() Timeouts {
+	if timeouts.FirstToken <= 0 {
+		timeouts.FirstToken = DefaultTimeouts().FirstToken
+	}
+	if timeouts.StreamIdle <= 0 {
+		timeouts.StreamIdle = StreamIdleTimeout
+	}
+	return timeouts
+}
+
+func Remaining(total time.Duration, started time.Time) time.Duration {
+	if total <= 0 {
+		return 0
+	}
+	remaining := total - time.Since(started)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
+}
+
 const (
 	KindDNS               = "dns_error"
 	KindConnect           = "connect_error"
 	KindTLS               = "tls_error"
 	KindResponseTimeout   = "response_header_timeout"
+	KindFirstTokenTimeout = "first_token_timeout"
 	KindStreamIdleTimeout = "stream_idle_timeout"
 	KindStreamInterrupted = "stream_interrupted"
 	KindNetwork           = "network_error"
@@ -72,6 +103,11 @@ func (f *Failure) ModelFailureTimeout() bool { return f.TimedOut }
 // client timeout also counts time spent reading a healthy SSE stream and can
 // therefore abort an actively progressing model response.
 func NewHTTPClient() *http.Client {
+	return NewHTTPClientWithTimeouts(DefaultTimeouts())
+}
+
+func NewHTTPClientWithTimeouts(timeouts Timeouts) *http.Client {
+	timeouts = timeouts.Normalized()
 	base, ok := http.DefaultTransport.(*http.Transport)
 	var transport *http.Transport
 	if ok {
@@ -82,7 +118,9 @@ func NewHTTPClient() *http.Client {
 	dialer := &net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}
 	transport.DialContext = dialer.DialContext
 	transport.TLSHandshakeTimeout = TLSHandshakeTimeout
-	transport.ResponseHeaderTimeout = ResponseHeaderTimeout
+	// Receiving headers is necessary but not sufficient for a streaming model
+	// response. Bound this phase by the end-to-end first-token deadline.
+	transport.ResponseHeaderTimeout = timeouts.FirstToken
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.ExpectContinueTimeout = time.Second
 	return &http.Client{Transport: transport}
@@ -165,6 +203,15 @@ type scanItem struct {
 // reset by every received line, including provider keep-alives. Closing body on
 // timeout unblocks Scanner so no detached read remains after the call returns.
 func ScanLines(ctx context.Context, body io.ReadCloser, reader io.Reader, maxToken int, idle time.Duration, handle func(string) error) error {
+	return ScanLinesWithProgress(ctx, body, reader, maxToken, 0, idle, func(line string) (bool, error) {
+		return true, handle(line)
+	})
+}
+
+// ScanLinesWithProgress distinguishes a real model token from SSE keep-alives.
+// firstProgress bounds time to the first content, reasoning, or tool-call
+// delta; idle is reset by every received line after transport begins.
+func ScanLinesWithProgress(ctx context.Context, body io.ReadCloser, reader io.Reader, maxToken int, firstProgress, idle time.Duration, handle func(string) (bool, error)) error {
 	if idle <= 0 {
 		idle = StreamIdleTimeout
 	}
@@ -192,6 +239,13 @@ func ScanLines(ctx context.Context, body io.ReadCloser, reader io.Reader, maxTok
 
 	timer := time.NewTimer(idle)
 	defer timer.Stop()
+	var firstTimer *time.Timer
+	var firstTimerC <-chan time.Time
+	if firstProgress > 0 {
+		firstTimer = time.NewTimer(firstProgress)
+		firstTimerC = firstTimer.C
+		defer firstTimer.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -201,6 +255,10 @@ func ScanLines(ctx context.Context, body io.ReadCloser, reader io.Reader, maxTok
 			cancel()
 			_ = body.Close()
 			return &Failure{Kind: KindStreamIdleTimeout, Phase: PhaseResponseBody, TimedOut: true}
+		case <-firstTimerC:
+			cancel()
+			_ = body.Close()
+			return &Failure{Kind: KindFirstTokenTimeout, Phase: PhaseResponseBody, TimedOut: true}
 		case item := <-items:
 			if item.done {
 				if item.err != nil {
@@ -215,10 +273,20 @@ func ScanLines(ctx context.Context, body io.ReadCloser, reader io.Reader, maxTok
 				}
 			}
 			timer.Reset(idle)
-			if err := handle(item.line); err != nil {
+			progressed, err := handle(item.line)
+			if err != nil {
 				cancel()
 				_ = body.Close()
 				return err
+			}
+			if progressed && firstTimerC != nil {
+				if !firstTimer.Stop() {
+					select {
+					case <-firstTimer.C:
+					default:
+					}
+				}
+				firstTimerC = nil
 			}
 		}
 	}

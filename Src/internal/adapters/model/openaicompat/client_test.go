@@ -19,8 +19,8 @@ func TestClientUsesPhaseTimeoutsWithoutBoundingHealthyStreams(t *testing.T) {
 		t.Fatalf("provider total timeout=%s, want disabled", client.httpClient.Timeout)
 	}
 	transport, ok := client.httpClient.Transport.(*http.Transport)
-	if !ok || transport.ResponseHeaderTimeout != time.Minute {
-		t.Fatalf("response header timeout=%v, want 1m", transport)
+	if !ok || transport.ResponseHeaderTimeout != 15*time.Second {
+		t.Fatalf("response header timeout=%v, want 15s first-token bound", transport)
 	}
 }
 
@@ -114,6 +114,49 @@ func TestWorkspaceToolCallsAreStructuredAndBounded(t *testing.T) {
 	}
 	if result.Content == "" {
 		t.Fatal("empty tool-only response did not receive a transparent user summary")
+	}
+}
+
+func TestLongMCPToolNameUsesReversibleProviderAlias(t *testing.T) {
+	const canonical = "mcp__01a029ad-f3d2-739d-9b2f-2eb89d097a14__browser_take_screenshot"
+	var wireName string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		tools, _ := request["tools"].([]any)
+		tool, _ := tools[0].(map[string]any)
+		function, _ := tool["function"].(map[string]any)
+		wireName, _ = function["name"].(string)
+		if wireName == canonical || len(wireName) > maxProviderToolNameBytes {
+			t.Fatalf("wire tool name=%q (%d bytes)", wireName, len(wireName))
+		}
+		parameters, _ := function["parameters"].(map[string]any)
+		if _, exists := parameters["$schema"]; exists {
+			t.Fatalf("provider parameters retained schema dialect metadata: %#v", parameters)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"finish_reason": "tool_calls", "message": map[string]any{
+				"role": "assistant", "content": nil,
+				"tool_calls": []map[string]any{{"id": "provider-id", "type": "function", "function": map[string]any{"name": wireName, "arguments": `{"filename":"page.png"}`}}},
+			}}},
+		})
+	}))
+	defer provider.Close()
+
+	client := New(provider.URL, "model-test", func() string { return "fake-test-key" })
+	result, err := client.Complete(t.Context(), okruntime.ModelRequest{
+		SystemPrompt: "system", UserPrompt: "take screenshot", EnableTools: true,
+		ToolDefinitions: []okruntime.ToolDefinition{{Name: canonical, Description: "Take a screenshot", Parameters: map[string]any{
+			"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": map[string]any{"filename": map[string]any{"type": "string"}},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != canonical {
+		t.Fatalf("canonical tool identity was not restored: %#v", result.ToolCalls)
 	}
 }
 
@@ -464,6 +507,14 @@ func TestThinkingControlAndPreservedReasoningReachCompatibleProvider(t *testing.
 	assistant, _ := messages[0].(map[string]any)
 	if assistant["reasoning_content"] != "preserved reasoning" {
 		t.Fatalf("reasoning history missing: %#v", assistant)
+	}
+}
+
+func TestKnownIncompatibleModelOmitsExplicitThinkingControl(t *testing.T) {
+	payload := chatRequest{}
+	applyThinkingControl(&payload, "https://ark.cn-beijing.volces.com/api/plan/v3", "glm-5.3", "off")
+	if payload.Thinking != nil || payload.ReasoningEffort != "" {
+		t.Fatalf("unsupported thinking control leaked to provider: %#v", payload)
 	}
 }
 

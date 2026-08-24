@@ -287,6 +287,6 @@ function roleLabel(role: string) {
 }
 
 function toolStepLabel(toolName: string) {
-  const labels: Record<string, string> = { workspace_write_file: '写入工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_run_command: '运行验证命令', web_search: '搜索互联网来源', web_fetch: '读取网页来源', document_open: '结构读取', document_read: '分页读取文档', document_create: '创建文档工作副本', document_apply: '应用文档修订', document_render: '渲染与版式校验', document_export: '导出文档 Artifact' }
+  const labels: Record<string, string> = { skill_invoke: '加载并应用 Skill', workspace_write_file: '写入工作区文件', workspace_edit_file: '修改工作区文件', workspace_read_file: '读取工作区文件', workspace_list_files: '检查工作区文件', workspace_grep: '检索工作区内容', workspace_run_command: '运行验证命令', workspace_shell: '运行工作区命令', artifact_capture: '登记交付文件', web_search: '搜索互联网来源', web_fetch: '读取网页来源', document_open: '结构读取', document_read: '分页读取文档', document_create: '创建文档工作副本', document_apply: '应用文档修订', document_render: '渲染与版式校验', document_export: '导出文档 Artifact' }
   return labels[toolName] ?? `执行工具：${toolName}`
 }

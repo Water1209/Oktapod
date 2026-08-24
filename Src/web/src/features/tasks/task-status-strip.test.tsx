@@ -44,10 +44,25 @@ describe('TaskStatusStrip presentation kinds', () => {
     expect(view.container.innerHTML).toBe('')
   })
 
-	it('does not request a semantic plan for a task that started with tools directly', async () => {
+  it('shows a terminal auto failure instead of leaving the composer in thinking state', () => {
+    renderStrip({ ...task, status: 'failed', error_code: 'PROVIDER_REJECTED', result_summary: 'provider rejected the request' })
+    expect(screen.queryByText('思考中')).toBeNull()
+    expect(screen.getByRole('button', { name: /任务未能完成|执行失败/ })).toBeTruthy()
+  })
+
+	it('keeps execution records out of the plan area while the first semantic plan is pending', async () => {
 		renderStrip({ ...task, presentation_kind: 'task', status: 'running' })
 		fireEvent.click(screen.getByRole('button', { name: /执行中/ }))
-		expect(screen.getByText('当前任务无需预先创建计划，Agent 正在执行。')).toBeTruthy()
+		expect(screen.getByText(/Agent 正在生成语义执行计划/)).toBeTruthy()
 		await waitFor(() => expect(api.runPlan).not.toHaveBeenCalled())
 	})
+
+  it('does not present durable execution events as a semantic plan', async () => {
+    renderStrip({ ...task, presentation_kind: 'task', status: 'succeeded' })
+    fireEvent.click(screen.getByRole('button', { name: /已完成/ }))
+    expect(screen.getByText('执行计划')).toBeTruthy()
+    expect(screen.getByText(/此历史任务未发布语义执行计划/)).toBeTruthy()
+    expect(screen.queryByText(/执行记录 ·/)).toBeNull()
+    await waitFor(() => expect(api.runPlan).not.toHaveBeenCalled())
+  })
 })

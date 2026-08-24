@@ -137,7 +137,6 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
           {!conversations.isLoading && conversations.data?.items.length === 0 ? <p className="thread-nav-empty">发送第一条消息后，会话会出现在这里。</p> : null}
         </div>
       </> : <>
-        <Link className="new-thread-button" to="/"><Plus size={15} /><span>新建任务</span></Link>
         <div className="sidebar-label"><span>最近项目</span><em>{projects.data?.items.length ?? 0}</em></div>
         <div className="workspace-project-list">{projects.data?.items.map((project) => <Link key={project.id} to="/projects/$projectId" params={{ projectId: project.id }}><span className={`project-scene ${project.scene}`}><Folder size={14} /></span><span><strong>{project.name}</strong><small>{project.description || '个人私有项目'}</small></span></Link>)}</div>
       </>}

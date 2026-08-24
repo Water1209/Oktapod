@@ -24,6 +24,11 @@ type presetResourceDefinition struct {
 	Dependencies []string
 }
 
+type presetEnsureResult struct {
+	capability core.Capability
+	installed  bool
+}
+
 func presetResourceDefinitions() []presetResourceDefinition {
 	documentTools := []string{
 		core.ToolDocumentOpen, core.ToolDocumentRead, core.ToolDocumentCreate,
@@ -34,9 +39,9 @@ func presetResourceDefinitions() []presetResourceDefinition {
 			Key: "document-runtime", Kind: core.CapabilityKindPlugin, Name: "document-runtime",
 			Description: "受信、离线、共享的办公文档运行时，为固定 document_* 工具提供解析、修订、渲染和导出能力。",
 			ManifestJSON: mustPresetManifest(map[string]any{
-				"description": "Oktapod signed document runtime binding",
-				"capabilities": []string{"document.runtime"},
-				"tools": documentTools,
+				"description":      "Oktapod signed document runtime binding",
+				"capabilities":     []string{"document.runtime"},
+				"tools":            documentTools,
 				"runtime_protocol": "oktapod.document/v1",
 			}),
 		},
@@ -55,15 +60,15 @@ func presetResourceDefinitions() []presetResourceDefinition {
 			Key: item.key, Kind: core.CapabilityKindSkill, Name: item.name, Description: item.description,
 			Dependencies: []string{"document.runtime"},
 			ManifestJSON: mustPresetManifest(map[string]any{
-				"description": item.description,
-				"instructions": "优先使用固定 document_* 工具处理冻结的 Asset、Artifact 或 Workspace 文件。先 document_open，再分页 document_read；编辑使用修订号保护的 document_apply；最后一次编辑后必须 document_render，交付必须 document_export。不得生成临时解析脚本、安装依赖、执行宏、刷新外部数据或在 Runtime 不可用时静默降级。",
-				"model_invocable": true,
-				"triggers": item.triggers,
-				"keywords": item.triggers,
-				"formats": item.formats,
-				"allowed_tools": documentTools,
+				"description":           item.description,
+				"instructions":          "优先使用固定 document_* 工具处理冻结的 Asset、Artifact 或 Workspace 文件。先 document_open，再分页 document_read；编辑使用修订号保护的 document_apply；最后一次编辑后必须 document_render，交付必须 document_export。不得生成临时解析脚本、安装依赖、执行宏、刷新外部数据或在 Runtime 不可用时静默降级。",
+				"model_invocable":       true,
+				"triggers":              item.triggers,
+				"keywords":              item.triggers,
+				"formats":               item.formats,
+				"allowed_tools":         documentTools,
 				"required_capabilities": []string{"document.runtime"},
-				"fallback_policy": "strict",
+				"fallback_policy":       "strict",
 			}),
 		})
 	}
@@ -94,11 +99,24 @@ func presetContentHash(definition presetResourceDefinition) string {
 func (s *Service) ensurePresetResources(ctx context.Context, projectID string) error {
 	for _, definition := range presetResourceDefinitions() {
 		input := presetCapabilityInput(definition)
-		if _, _, err := s.repository.EnsurePresetCapability(ctx, s.ScopeFor(ctx), projectID, input, presetContentHash(definition), false); err != nil {
+		if _, _, err := s.ensurePresetCapability(ctx, projectID, input, presetContentHash(definition), false); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ensurePresetCapability is the single application entry point for the
+// read-then-write preset transaction. SQLite can return BUSY_SNAPSHOT when a
+// concurrent Runtime checkpoint commits between those phases; the repository
+// transaction rolls back cleanly, so retrying the idempotent ensure operation
+// is safe and keeps project creation from reporting a false failure.
+func (s *Service) ensurePresetCapability(ctx context.Context, projectID string, input core.CreateCapabilityInput, contentHash string, force bool) (core.Capability, bool, error) {
+	result, err := retryTransientSQLiteValue(ctx, func() (presetEnsureResult, error) {
+		capability, installed, ensureErr := s.repository.EnsurePresetCapability(ctx, s.ScopeFor(ctx), projectID, input, contentHash, force)
+		return presetEnsureResult{capability: capability, installed: installed}, ensureErr
+	})
+	return result.capability, result.installed, err
 }
 
 func presetCapabilityInput(definition presetResourceDefinition) core.CreateCapabilityInput {
@@ -155,14 +173,14 @@ func (s *Service) InstallPresetResource(ctx context.Context, projectID, presetKe
 			if dependency == "document.runtime" {
 				for _, candidate := range presetResourceDefinitions() {
 					if candidate.Key == "document-runtime" {
-						if _, _, err := s.repository.EnsurePresetCapability(ctx, s.ScopeFor(ctx), projectID, presetCapabilityInput(candidate), presetContentHash(candidate), true); err != nil {
+						if _, _, err := s.ensurePresetCapability(ctx, projectID, presetCapabilityInput(candidate), presetContentHash(candidate), true); err != nil {
 							return core.Capability{}, err
 						}
 					}
 				}
 			}
 		}
-		capability, installed, err := s.repository.EnsurePresetCapability(ctx, s.ScopeFor(ctx), projectID, presetCapabilityInput(definition), presetContentHash(definition), true)
+		capability, installed, err := s.ensurePresetCapability(ctx, projectID, presetCapabilityInput(definition), presetContentHash(definition), true)
 		if err != nil {
 			return core.Capability{}, err
 		}

@@ -23,7 +23,7 @@ type TaskCompletionRequirements struct {
 
 var minimumCharacterPattern = regexp.MustCompile(`(?i)(?:不少于|至少|最低|最少|>=|≥|at\s+least|minimum(?:\s+of)?|min(?:imum)?[\s:：]+)\s*([0-9][0-9,，]*)\s*(万)?\s*(?:字|字符|汉字|characters?)`)
 var maximumSearchCallsPattern = regexp.MustCompile(`(?i)(?:最多|不超过|至多|at\s+most|maximum(?:\s+of)?|max(?:imum)?[\s:：]*)[^。；;\n]{0,24}?([0-9]{1,3})\s*(?:次|calls?)[^。；;\n]{0,48}?(?:检索|搜索|search|research|tavily)`)
-var forbiddenSearchPattern = regexp.MustCompile(`(?i)(?:禁止|不要|无需|不再|不得)[^。；;\n]{0,24}?(?:再)?(?:调用[^。；;\n]{0,16}?)?(?:检索|搜索|联网|上网|站点地图|search|research|crawl|extract|map|browse|discover)`)
+var forbiddenSearchPattern = regexp.MustCompile(`(?i)(?:(?:禁止|不要|无需|不再|不得)[^。；;\n]{0,24}?(?:再)?(?:调用[^。；;\n]{0,16}?)?(?:检索|搜索|联网|上网|站点地图|search|research|crawl|extract|map|browse|discover)|不(?:再)?联网|不(?:再)?上网|离线(?:完成|执行|处理|核对|验收)?|offline|without\s+(?:web|internet|network)\s+access|no\s+(?:web|internet|network)\s+access)`)
 var intentClauseSeparator = regexp.MustCompile(`(?i)[。！？!?；;，,\n\r]+|(?:但是|但|而是|然后|随后|接着)|\b(?:but|then|instead)\b`)
 var forbiddenMutationPattern = regexp.MustCompile(`(?i)(?:不要|禁止|不得|无需|无须|不需要|请勿|不应|不能|先不|不|do\s+not|don't|must\s+not|no\s+need\s+to|without)[^。！？!?；;，,\n\r]{0,24}?(?:修复|修改|改动|改造|编辑|变更|重构|新增|创建|生成|写入|保存|导出|落盘|提交|转换|转成|转为|fix|modify|edit|change|refactor|implement|create|generate|write|save|export|commit|convert)`)
 

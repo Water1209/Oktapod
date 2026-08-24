@@ -29,6 +29,8 @@ type Client struct {
 	model      string
 	key        func() string
 	httpClient *http.Client
+	firstToken time.Duration
+	streamIdle time.Duration
 }
 
 type GatewayError struct {
@@ -43,12 +45,19 @@ func (e *GatewayError) ErrorCode() string { return e.Code }
 func (e *GatewayError) Unwrap() error     { return e.Cause }
 
 func New(protocol, endpoint, model string, key func() string) *Client {
+	return NewWithTimeouts(protocol, endpoint, model, key, modeltransport.DefaultTimeouts())
+}
+
+func NewWithTimeouts(protocol, endpoint, model string, key func() string, timeouts modeltransport.Timeouts) *Client {
+	timeouts = timeouts.Normalized()
 	return &Client{
 		protocol:   strings.TrimSpace(protocol),
 		endpoint:   strings.TrimRight(strings.TrimSpace(endpoint), "/"),
 		model:      strings.TrimSpace(model),
 		key:        key,
-		httpClient: modeltransport.NewHTTPClient(),
+		httpClient: modeltransport.NewHTTPClientWithTimeouts(timeouts),
+		firstToken: timeouts.FirstToken,
+		streamIdle: timeouts.StreamIdle,
 	}
 }
 
@@ -104,14 +113,14 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 	}
 	blocks := map[int]*blockState{}
 	order := make([]int, 0)
-	scanErr := modeltransport.ScanLines(ctx, response.Body, io.LimitReader(response.Body, 16<<20), 4<<20, modeltransport.StreamIdleTimeout, func(rawLine string) error {
+	scanErr := modeltransport.ScanLinesWithProgress(ctx, response.Body, io.LimitReader(response.Body, 16<<20), 4<<20, modeltransport.Remaining(c.firstToken, started), c.streamIdle, func(rawLine string) (bool, error) {
 		line := strings.TrimSpace(rawLine)
 		if !strings.HasPrefix(line, "data:") {
-			return nil
+			return false, nil
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "" || data == "[DONE]" {
-			return nil
+			return false, nil
 		}
 		var event struct {
 			Type    string `json:"type"`
@@ -144,8 +153,9 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 		}
 		if json.Unmarshal([]byte(data), &event) != nil {
 			result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_PROTOCOL_ERROR"
-			return &GatewayError{Code: result.ErrorCode}
+			return false, &GatewayError{Code: result.ErrorCode}
 		}
+		progressed := false
 		switch event.Type {
 		case "message_start":
 			if event.Message.ID != "" {
@@ -157,6 +167,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 			result.Usage.CachedTokens = event.Message.Usage.CacheReadInputTokens
 			result.Usage.CacheWriteTokens = event.Message.Usage.CacheCreationInputTokens
 		case "content_block_start":
+			progressed = event.ContentBlock.Text != "" || event.ContentBlock.Name != ""
 			if _, exists := blocks[event.Index]; !exists {
 				order = append(order, event.Index)
 			}
@@ -172,6 +183,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 			}
 			switch event.Delta.Type {
 			case "text_delta":
+				progressed = progressed || event.Delta.Text != ""
 				state.kind = "text"
 				state.text.WriteString(event.Delta.Text)
 				if event.Delta.Text != "" && result.FirstSafeLatency == 0 {
@@ -180,13 +192,15 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 				if onDelta != nil && event.Delta.Text != "" {
 					if deltaErr := onDelta(event.Delta.Text); deltaErr != nil {
 						result.StopReason = core.StopReasonAborted
-						return deltaErr
+						return progressed, deltaErr
 					}
 				}
 			case "thinking_delta":
+				progressed = progressed || event.Delta.Thinking != ""
 				state.kind = "thinking"
 				state.text.WriteString(event.Delta.Thinking)
 			case "input_json_delta":
+				progressed = progressed || event.Delta.PartialJSON != ""
 				state.kind = "tool_use"
 				state.input.WriteString(event.Delta.PartialJSON)
 			}
@@ -194,7 +208,7 @@ func (c *Client) streamAnthropic(ctx context.Context, request okruntime.ModelReq
 			result.StopReason = nativeStopReason(event.Delta.StopReason, false)
 			result.Usage.OutputTokens = event.Usage.OutputTokens
 		}
-		return nil
+		return progressed, nil
 	})
 	if scanErr != nil {
 		if ctx.Err() != nil {
@@ -267,14 +281,14 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 		return result, &GatewayError{Code: result.ErrorCode}
 	}
 	var visible strings.Builder
-	scanErr := modeltransport.ScanLines(ctx, response.Body, io.LimitReader(response.Body, 16<<20), 4<<20, modeltransport.StreamIdleTimeout, func(rawLine string) error {
+	scanErr := modeltransport.ScanLinesWithProgress(ctx, response.Body, io.LimitReader(response.Body, 16<<20), 4<<20, modeltransport.Remaining(c.firstToken, started), c.streamIdle, func(rawLine string) (bool, error) {
 		line := strings.TrimSpace(rawLine)
 		if !strings.HasPrefix(line, "data:") {
-			return nil
+			return false, nil
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "" || data == "[DONE]" {
-			return nil
+			return false, nil
 		}
 		var chunk struct {
 			Candidates []struct {
@@ -302,20 +316,24 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 		}
 		if json.Unmarshal([]byte(data), &chunk) != nil || len(chunk.Candidates) == 0 {
 			result.StopReason, result.ErrorCode = core.StopReasonError, "PROVIDER_PROTOCOL_ERROR"
-			return &GatewayError{Code: result.ErrorCode}
+			return false, &GatewayError{Code: result.ErrorCode}
 		}
+		progressed := false
 		candidate := chunk.Candidates[0]
 		if candidate.FinishReason != "" {
 			result.StopReason = nativeStopReason(candidate.FinishReason, false)
 		}
 		for _, part := range candidate.Content.Parts {
 			if part.FunctionCall != nil {
+				progressed = true
 				call := core.ToolCall{ID: uuid.NewString(), Name: part.FunctionCall.Name, Arguments: part.FunctionCall.Args}
 				result.ToolCalls = append(result.ToolCalls, call)
 				result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: call.ID, Name: call.Name, Arguments: call.Arguments}})
 			} else if part.Thought {
+				progressed = progressed || part.Text != ""
 				result.ContentBlocks = append(result.ContentBlocks, core.ContentBlock{Type: core.ContentBlockThinking, Thinking: &core.ThinkingBlock{Text: part.Text}})
 			} else if part.Text != "" {
+				progressed = true
 				visible.WriteString(part.Text)
 				if result.FirstSafeLatency == 0 {
 					result.FirstSafeLatency = time.Since(started)
@@ -324,7 +342,7 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 				if onDelta != nil {
 					if deltaErr := onDelta(part.Text); deltaErr != nil {
 						result.StopReason = core.StopReasonAborted
-						return deltaErr
+						return progressed, deltaErr
 					}
 				}
 			}
@@ -341,7 +359,7 @@ func (c *Client) streamGemini(ctx context.Context, request okruntime.ModelReques
 				UsageSemanticsVersion: "v2",
 			}
 		}
-		return nil
+		return progressed, nil
 	})
 	if scanErr != nil {
 		if ctx.Err() != nil {

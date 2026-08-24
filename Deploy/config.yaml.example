@@ -6,6 +6,18 @@ data_root: ""
 run_concurrency: 4
 database:
   driver: sqlite
+model:
+  # 从请求发出到首个正文、推理或工具调用 Token；空 SSE/keep-alive 不计入。
+  first_token_timeout: 15s
+  # 首 Token 后连续没有任何 SSE 行的最长时间。
+  stream_idle_timeout: 60s
+  # 整轮硬上限；显式高级思考可更长，但始终有界。
+  turn_timeouts:
+    auto: 120s
+    off: 120s
+    low: 180s
+    medium: 300s
+    high: 600s
 capabilities:
   # 相对路径按 config.yaml 所在目录解析；正式部署也可填写绝对路径。
   trusted_keys_file: trusted-keys.json

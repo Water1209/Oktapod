@@ -61,6 +61,53 @@ func TestAutoAnswerUsesOneBusinessModelCall(t *testing.T) {
 	}
 }
 
+func TestTransitionPlanRequiresSemanticPlanBeforeFirstBusinessTool(t *testing.T) {
+	ctx := context.Background()
+	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused"}`)
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{
+		Goal: "Open the local product and report its title", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate,
+	}, "transition-plan-required", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedSkillModel{results: []core.ModelResult{
+		{
+			CallID: "00000000-0000-7000-8000-000000000805", Provider: "test", Model: "test-model",
+			ToolCalls: []core.ToolCall{{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "first attempt without a semantic plan"}}},
+		},
+		{
+			CallID: "00000000-0000-7000-8000-000000000806", Provider: "test", Model: "test-model",
+			ToolCalls: []core.ToolCall{
+				{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{map[string]any{"title": "Inspect the local product", "description": "Open the product and preserve its user-visible title."}}}},
+				{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "second attempt with a semantic plan"}},
+			},
+		},
+	}}
+	worker := NewWorker("transition-plan-required-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(successfulSkillSearch{})
+	if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
+		t.Fatalf("first turn worked=%v err=%v", worked, runErr)
+	}
+	events, err := service.ListRunEvents(ctx, task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.EventType == "tool.batch_planned" {
+			t.Fatal("business tool was planned before a semantic plan existed")
+		}
+	}
+	if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
+		t.Fatalf("repair turn worked=%v err=%v", worked, runErr)
+	}
+	plan, err := service.GetActiveRunPlan(ctx, task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Title != "Inspect the local product" || plan.Items[0].Status != core.RunPlanItemRunning {
+		t.Fatalf("semantic plan=%#v", plan)
+	}
+}
+
 func TestTransitionPlanControlsShareBusinessResponses(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused"}`)
@@ -133,6 +180,88 @@ func TestTransitionPlanControlsShareBusinessResponses(t *testing.T) {
 	}
 }
 
+func TestTransitionPlanRejectsOrdinaryReplacementAfterProgress(t *testing.T) {
+	ctx := context.Background()
+	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused"}`)
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{
+		Goal: "Collect two bounded evidence points", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate,
+	}, "transition-plan-stable", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedSkillModel{results: []core.ModelResult{
+		{
+			CallID: "00000000-0000-7000-8000-000000000831", Provider: "test", Model: "test-model",
+			ToolCalls: []core.ToolCall{
+				{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{
+					map[string]any{"title": "Collect bounded evidence A", "description": "Obtain only the first requested evidence point."},
+					map[string]any{"title": "Collect bounded evidence B", "description": "Obtain only the second requested evidence point."},
+				}}},
+				{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "bounded evidence A"}},
+			},
+		},
+		{
+			CallID: "00000000-0000-7000-8000-000000000832", Provider: "test", Model: "test-model",
+			ToolCalls: []core.ToolCall{
+				{Name: core.ToolAdvancePlan, Arguments: map[string]any{"summary": "Evidence A is complete."}},
+				{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "bounded evidence B"}},
+			},
+		},
+		{
+			CallID: "00000000-0000-7000-8000-000000000833", Provider: "test", Model: "test-model",
+			ToolCalls: []core.ToolCall{
+				{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{
+					map[string]any{"title": "Collect bounded evidence A", "description": "Repeat the completed first outcome."},
+					map[string]any{"title": "Collect bounded evidence B", "description": "Repeat the current outcome."},
+					map[string]any{"title": "Expand into unrelated research", "description": "Search beyond the user's bounded request."},
+				}}},
+				{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "unrelated expansion"}},
+			},
+		},
+	}}
+	worker := NewWorker("transition-plan-stable-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(successfulSkillSearch{})
+	for iteration := 0; iteration < 5; iteration++ {
+		if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
+			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
+		}
+	}
+	plan, err := service.GetActiveRunPlan(ctx, task.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 2 || plan.Items[0].Title != "Collect bounded evidence A" || plan.Items[1].Title != "Collect bounded evidence B" {
+		t.Fatalf("ordinary continuation rewrote stable semantic plan: %#v", plan)
+	}
+	if plan.Items[0].Status != core.RunPlanItemCompleted || plan.Items[1].Status != core.RunPlanItemRunning {
+		t.Fatalf("stable plan progress changed after rejected replacement: %#v", plan)
+	}
+	if len(model.requests) != 3 {
+		t.Fatalf("model requests=%d, want three", len(model.requests))
+	}
+	for _, definition := range model.requests[2].ToolDefinitions {
+		if definition.Name == core.ToolReplacePlan {
+			t.Fatal("ordinary continuation advertised replace_plan after a durable plan was bound")
+		}
+	}
+	events, err := service.ListRunEvents(ctx, task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plannedBatches := 0
+	rejectedReplacement := false
+	for _, event := range events {
+		if event.EventType == "tool.batch_planned" {
+			plannedBatches++
+		}
+		if event.EventType == "model.retry_queued" && event.Payload["error_code"] == "TRANSITION_RUN_PLAN_REPLACEMENT_NOT_ALLOWED" {
+			rejectedReplacement = true
+		}
+	}
+	if plannedBatches != 2 || !rejectedReplacement {
+		t.Fatalf("planned_batches=%d rejected_replacement=%v", plannedBatches, rejectedReplacement)
+	}
+}
+
 func TestBarrierSchedulerPreservesModelOrder(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused"}`)
@@ -145,6 +274,10 @@ func TestBarrierSchedulerPreservesModelOrder(t *testing.T) {
 	model := &scriptedSkillModel{results: []core.ModelResult{{
 		CallID: "00000000-0000-7000-8000-000000000821", Provider: "test", Model: "test-model",
 		ToolCalls: []core.ToolCall{
+			{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{
+				map[string]any{"title": "Collect the supporting evidence", "description": "Gather independent read-only evidence in source order."},
+				map[string]any{"title": "Persist the verified result", "description": "Write the verified result without crossing the exclusive barrier."},
+			}}},
 			{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "safe one"}},
 			{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "safe two"}},
 			{Name: core.ToolWorkspaceWriteFile, Arguments: map[string]any{"path": "outputs/barrier/result.txt", "content": "verified"}},

@@ -1,6 +1,11 @@
 package runtime
 
-import "github.com/oktapod/oktapod/Src/internal/domain/core"
+import (
+	"encoding/json"
+	"strings"
+
+	"github.com/oktapod/oktapod/Src/internal/domain/core"
+)
 
 // ToolCatalog is one immutable view used for both provider definitions and
 // AllowedTools. No later phase may independently rebuild either list.
@@ -19,12 +24,16 @@ type ToolCatalogBuilder struct{}
 
 func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, userPrompt string, continuation []map[string]any, selectedContextPlan map[string]any) (ToolCatalog, *core.StepOutcome) {
 	mcpDefinitions, contextPlan := mcpToolDefinitionsForPrompt(run.ConfigSnapshotJSON, userPrompt)
+	preferredMCP, preferredMCPID := explicitMCPProviderFromPrompt(run.ConfigSnapshotJSON, userPrompt)
 	toolDefinitions := append(builtinToolDefinitions(), mcpDefinitions...)
 	if !documentRuntimeSnapshotted(run.ConfigSnapshotJSON) {
 		toolDefinitions = filterOutDocumentToolDefinitions(toolDefinitions)
 	}
 	if snapshotVersion(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
 		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolUpdatePlan)
+		if !transitionPlanReplacementVisible(step.InputJSON) {
+			toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolReplacePlan)
+		}
 	} else {
 		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolReplacePlan)
 		toolDefinitions = filterOutToolDefinition(toolDefinitions, core.ToolAdvancePlan)
@@ -47,6 +56,12 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 			outcome := core.StepOutcome{Status: core.StatusBlocked, ErrorCode: "SKILL_NOT_SNAPSHOTTED", ResultSummary: "显式调用的 Skill 不在当前 Run 的冻结快照中，已拒绝继续执行。", Output: map[string]any{"retryable": false, "context_plan": contextPlan}}
 			return ToolCatalog{}, &outcome
 		}
+	} else if preferredMCP != "" {
+		// An explicit provider choice is stronger than heuristic Skill matching.
+		// Otherwise a generic metadata hit such as "页面" can auto-load a
+		// document Skill and its narrow allowed_tools scope can silently remove
+		// the MCP tools the user explicitly requested.
+		skillContext, skillPlan = suppressedSkillContextForExplicitMCP(run.ConfigSnapshotJSON)
 	} else {
 		// Deterministic matching remains a compatibility fallback for models that
 		// cannot reliably call tools. The auditable path is still skill_invoke.
@@ -74,7 +89,6 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 	contextPlan["tool_definitions_after_skill_scope"] = len(toolDefinitions)
 	contextPlan["skills"] = skillPlan
 
-	preferredMCP, preferredMCPID := explicitMCPProviderFromPrompt(run.ConfigSnapshotJSON, userPrompt)
 	if preferredMCP != "" {
 		toolDefinitions = filterToolsForExplicitMCP(toolDefinitions, preferredMCPID)
 		contextPlan["preferred_mcp_provider"] = preferredMCP
@@ -109,4 +123,26 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 		ContextPlan: contextPlan, PromptSections: sections, SearchBudget: searchBudget,
 		PriorSearchCalls: priorSearchCalls, ContinuationInstructionTail: continuationTail,
 	}, nil
+}
+
+// transitionPlanReplacementVisible keeps replace_plan limited to initial plan
+// creation and explicit replanning stages. Once a durable semantic plan is
+// bound, ordinary continuation must advance it instead of rewriting completed
+// outcomes or expanding the user's scope.
+func transitionPlanReplacementVisible(inputJSON string) bool {
+	stage := modelStage(inputJSON)
+	switch stage {
+	case "plan", "steering_replan", "permission_replan", "recovery", "completion_recovery":
+		return true
+	}
+	var input struct {
+		PlanRevisionID  string `json:"plan_revision_id"`
+		ActivePlanTotal int    `json:"active_plan_total"`
+	}
+	if json.Unmarshal([]byte(inputJSON), &input) != nil {
+		// The durable Store remains authoritative and will reject an illegal
+		// replacement. Do not make a malformed compatibility input less capable.
+		return true
+	}
+	return strings.TrimSpace(input.PlanRevisionID) == "" && input.ActivePlanTotal == 0
 }

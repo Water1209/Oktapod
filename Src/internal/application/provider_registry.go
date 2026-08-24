@@ -206,13 +206,6 @@ func (s *Service) DeleteProvider(ctx context.Context, providerID string) error {
 	if err != nil {
 		return err
 	}
-	inUse, err := s.repository.ProviderModelInUse(ctx, organizationID, providerID, "")
-	if err != nil {
-		return err
-	}
-	if inUse {
-		return &core.ModelInUseError{Reason: "provider is still used by a project or Agent"}
-	}
 	oldCredential, credentialErr := s.providerSecrets.Get(ctx, existing.CredentialRef)
 	if credentialErr == nil {
 		if err = s.providerSecrets.Delete(ctx, existing.CredentialRef); err != nil {
@@ -224,19 +217,6 @@ func (s *Service) DeleteProvider(ctx context.Context, providerID string) error {
 			_ = s.providerSecrets.Set(ctx, existing.CredentialRef, oldCredential)
 		}
 		return err
-	}
-	if existing.IsDefault {
-		remaining, listErr := s.repository.ListProviderInstances(ctx, organizationID)
-		if listErr == nil && len(remaining) > 0 {
-			next := remaining[0]
-			next.IsDefault = true
-			_, _ = s.repository.UpsertProviderInstance(ctx, organizationID, core.UpsertProviderInstanceInput{
-				ProviderID: next.ProviderID, DisplayName: next.DisplayName,
-				ProtocolFamily: next.ProtocolFamily, Endpoint: next.Endpoint,
-				CredentialRef: next.CredentialRef, DefaultModelID: next.DefaultModelID,
-				Status: next.Status, IsDefault: true,
-			})
-		}
 	}
 	return nil
 }

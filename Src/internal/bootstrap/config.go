@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -32,9 +33,20 @@ type Config struct {
 	CapabilityTrustedKeysJSON string
 	CapabilityTrustedKeysFile string
 	RunConcurrency            int
+	ModelTimeouts             ModelTimeoutConfiguration
 	WebAccessPolicy           core.WebAccessPolicy
 	ConfigPath                string
 	ConfigSource              string
+}
+
+type ModelTimeoutConfiguration struct {
+	FirstToken time.Duration
+	StreamIdle time.Duration
+	TurnAuto   time.Duration
+	TurnOff    time.Duration
+	TurnLow    time.Duration
+	TurnMedium time.Duration
+	TurnHigh   time.Duration
 }
 
 type configFile struct {
@@ -45,6 +57,17 @@ type configFile struct {
 	Database       struct {
 		Driver string `yaml:"driver"`
 	} `yaml:"database"`
+	Model struct {
+		FirstTokenTimeout string `yaml:"first_token_timeout"`
+		StreamIdleTimeout string `yaml:"stream_idle_timeout"`
+		TurnTimeouts      struct {
+			Auto   string `yaml:"auto"`
+			Off    string `yaml:"off"`
+			Low    string `yaml:"low"`
+			Medium string `yaml:"medium"`
+			High   string `yaml:"high"`
+		} `yaml:"turn_timeouts"`
+	} `yaml:"model"`
 	Capabilities struct {
 		TrustedKeysFile string `yaml:"trusted_keys_file"`
 	} `yaml:"capabilities"`
@@ -62,6 +85,13 @@ func defaultConfigFile() configFile {
 	file.ListenAddress = "127.0.0.1:8787"
 	file.RunConcurrency = 4
 	file.Database.Driver = "sqlite"
+	file.Model.FirstTokenTimeout = "15s"
+	file.Model.StreamIdleTimeout = "60s"
+	file.Model.TurnTimeouts.Auto = "120s"
+	file.Model.TurnTimeouts.Off = "120s"
+	file.Model.TurnTimeouts.Low = "180s"
+	file.Model.TurnTimeouts.Medium = "300s"
+	file.Model.TurnTimeouts.High = "600s"
 	file.Capabilities.TrustedKeysFile = "trusted-keys.json"
 	return file
 }
@@ -129,6 +159,10 @@ func materializeConfig(file configFile, configPath, source, defaultRoot string) 
 	if profile == "personal" && driver != "sqlite" {
 		return Config{}, fmt.Errorf("personal profile requires the sqlite database driver")
 	}
+	modelTimeouts, err := materializeModelTimeouts(file)
+	if err != nil {
+		return Config{}, err
+	}
 	dataRoot := strings.TrimSpace(file.DataRoot)
 	if dataRoot == "" {
 		dataRoot = defaultRoot
@@ -167,7 +201,54 @@ func materializeConfig(file configFile, configPath, source, defaultRoot string) 
 		WorkspaceRoot:             filepath.Join(absoluteRoot, "workspaces"),
 		CapabilityTrustedKeysJSON: trustedKeysJSON, CapabilityTrustedKeysFile: trustedKeysFile,
 		WebAccessPolicy: webPolicy,
+		ModelTimeouts:   modelTimeouts,
 		RunConcurrency:  file.RunConcurrency, ConfigPath: configPath, ConfigSource: source,
+	}, nil
+}
+
+func materializeModelTimeouts(file configFile) (ModelTimeoutConfiguration, error) {
+	parse := func(field, raw string, minimum, maximum time.Duration) (time.Duration, error) {
+		value, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil || value < minimum || value > maximum {
+			return 0, fmt.Errorf("model.%s must be a duration from %s to %s", field, minimum, maximum)
+		}
+		return value, nil
+	}
+	firstToken, err := parse("first_token_timeout", file.Model.FirstTokenTimeout, 5*time.Second, 5*time.Minute)
+	if err != nil {
+		return ModelTimeoutConfiguration{}, err
+	}
+	streamIdle, err := parse("stream_idle_timeout", file.Model.StreamIdleTimeout, 5*time.Second, 5*time.Minute)
+	if err != nil {
+		return ModelTimeoutConfiguration{}, err
+	}
+	if firstToken > streamIdle {
+		return ModelTimeoutConfiguration{}, fmt.Errorf("model.first_token_timeout must not exceed model.stream_idle_timeout")
+	}
+	turnValues := []struct {
+		name string
+		raw  string
+	}{
+		{"turn_timeouts.auto", file.Model.TurnTimeouts.Auto},
+		{"turn_timeouts.off", file.Model.TurnTimeouts.Off},
+		{"turn_timeouts.low", file.Model.TurnTimeouts.Low},
+		{"turn_timeouts.medium", file.Model.TurnTimeouts.Medium},
+		{"turn_timeouts.high", file.Model.TurnTimeouts.High},
+	}
+	turns := make([]time.Duration, 0, len(turnValues))
+	for _, item := range turnValues {
+		value, parseErr := parse(item.name, item.raw, 30*time.Second, 30*time.Minute)
+		if parseErr != nil {
+			return ModelTimeoutConfiguration{}, parseErr
+		}
+		turns = append(turns, value)
+	}
+	if turns[2] < turns[1] || turns[3] < turns[2] || turns[4] < turns[3] {
+		return ModelTimeoutConfiguration{}, fmt.Errorf("model.turn_timeouts must satisfy off <= low <= medium <= high")
+	}
+	return ModelTimeoutConfiguration{
+		FirstToken: firstToken, StreamIdle: streamIdle,
+		TurnAuto: turns[0], TurnOff: turns[1], TurnLow: turns[2], TurnMedium: turns[3], TurnHigh: turns[4],
 	}, nil
 }
 

@@ -53,6 +53,12 @@ func TestMainAgentModelRequestContractMatchesBuiltinCatalog(t *testing.T) {
 	}
 
 	request := model.requests[0]
+	if request.ThinkingLevel != "auto" || request.ContextPlan["requested_thinking_level"] != "auto" || request.ContextPlan["effective_thinking_level"] != "auto" || request.ContextPlan["thinking_policy_version"] != core.ThinkingPolicyTaskActionV1 || request.ContextPlan["action_first"] != true {
+		t.Fatalf("thinking contract=%#v request_level=%q", request.ContextPlan, request.ThinkingLevel)
+	}
+	if !strings.Contains(request.SystemPrompt, "# Action-first") {
+		t.Fatalf("action-first instruction missing: %q", request.SystemPrompt)
+	}
 	wantNames := make([]string, 0, len(core.BuiltinToolSpecs()))
 	for _, spec := range core.BuiltinToolSpecs() {
 		if spec.Name == core.ToolRequestPermission || spec.Name == core.ToolUpdatePlan || isDocumentTool(spec.Name) {

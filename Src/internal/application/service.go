@@ -775,6 +775,7 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		snapshot["plan_protocol_version"] = "transition_v2"
 		snapshot["tool_scheduler_version"] = "barrier_v2"
 		snapshot["context_projection_version"] = "token_v2"
+		snapshot["thinking_policy_version"] = core.ThinkingPolicyTaskActionV1
 	}
 	if requestedMode == core.ModeAuto {
 		snapshot["turn_router_version"] = "auto_agent_v2"
@@ -1795,7 +1796,10 @@ func transientSQLiteBusy(err error) bool {
 func retryTransientSQLiteValue[T any](ctx context.Context, operation func() (T, error)) (T, error) {
 	var zero T
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	// BUSY_SNAPSHOT is returned immediately instead of honoring busy_timeout.
+	// Eight bounded attempts provide about 2.55 seconds for a short writer to
+	// finish while still respecting cancellation and surfacing sustained load.
+	for attempt := 0; attempt < 8; attempt++ {
 		value, err := operation()
 		if err == nil || !transientSQLiteBusy(err) {
 			return value, err

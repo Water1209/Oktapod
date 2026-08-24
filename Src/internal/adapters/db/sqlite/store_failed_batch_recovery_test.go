@@ -56,6 +56,9 @@ func setupFailedBatchRun(t *testing.T, ctx context.Context) (*Store, core.Task, 
 		t.Fatal(err)
 	}
 	calls := []core.ToolCall{
+		{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{
+			map[string]any{"title": "Write the requested files", "description": "Persist the two files in strict source order and retain recovery evidence."},
+		}}},
 		{Name: core.ToolWorkspaceWriteFile, Sequential: true, Arguments: map[string]any{"path": "first.txt", "content": "first"}},
 		{Name: core.ToolWorkspaceWriteFile, Sequential: true, Arguments: map[string]any{"path": "second.txt", "content": "second"}},
 	}

@@ -3636,7 +3636,7 @@ func resourceInstallDraftResponse(draft core.ResourceInstallDraft) (generated.Re
 	}
 	response := generated.ResourceInstallDraft{
 		Id: id, Kind: generated.ResourceInstallDraftKind(draft.Kind), SourceInput: draft.SourceInput,
-		Status: generated.ResourceInstallDraftStatus(draft.Status), Warnings: append([]string(nil), draft.Warnings...),
+		Status: generated.ResourceInstallDraftStatus(draft.Status), Warnings: append([]string{}, draft.Warnings...),
 		RequiredSecrets: secretBindingResponses(draft.RequiredSecrets), CreatedAt: draft.CreatedAt, UpdatedAt: draft.UpdatedAt,
 	}
 	if draft.ResolvedName != "" {

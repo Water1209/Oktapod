@@ -31,6 +31,7 @@ func NewAgentTurnAssembler(repository WorkerRepository) AgentTurnAssembler {
 
 func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.ClaimedStep, run core.RunContext) (ModelAssembly, *core.StepOutcome) {
 	sections, userPrompt := (PromptAssembler{}).BaseSections(run)
+	enableTools := run.Mode == core.ModeSingleAgent
 	continuation := continuationHistoryForPrompt(step.InputJSON)
 	continuationInstruction := continuationInstructionForTurn(step, continuation)
 	if reminder := planProgressReminder(step, continuation, run.ConfigSnapshotJSON); reminder != "" {
@@ -47,6 +48,10 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	}
 	if stagePrompt := (PromptAssembler{}).Stage(modelStage(step.InputJSON), run.ConfigSnapshotJSON); stagePrompt != "" {
 		sections = append(sections, PromptSection{Name: "stage", Order: 1200, Text: "# Stage instructions\n" + stagePrompt})
+	}
+	actionFirst := mainAgentActionFirst(run.ConfigSnapshotJSON, enableTools)
+	if actionFirst {
+		sections = append(sections, PromptSection{Name: "action_first", Order: 1250, Text: "# Action-first\n这是工具型任务。信息足够时，不要在首次工具动作前进行长篇内部推理；在同一响应中用 replace_plan 发布简洁的语义计划并发出完成当前计划项所需的最小且完整的业务工具调用。计划描述用户结果，具体工具过程只进入执行记录。后续根据真实结果继续。"})
 	}
 	selectedContext, selectedContextPlan := contextForPrompt(ctx, assembler.repository, run)
 	if selectedContext != "" {
@@ -65,10 +70,15 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	catalog.ContextPlan["assembly_schema_version"] = assemblySchemaVersion
 	messages := application.TranscriptAssembler{}.RunWithConversation(conversationMessages, userPrompt, continuation, strings.TrimSpace(continuationInstruction))
 	modelName, fallbackModel := agentModelsFromSnapshot(run.ConfigSnapshotJSON)
+	requestedThinking, effectiveThinking := mainAgentThinkingLevel(run.ConfigSnapshotJSON, enableTools)
+	catalog.ContextPlan["requested_thinking_level"] = requestedThinking
+	catalog.ContextPlan["effective_thinking_level"] = effectiveThinking
+	catalog.ContextPlan["thinking_policy_version"] = snapshotVersion(run.ConfigSnapshotJSON, "thinking_policy_version")
+	catalog.ContextPlan["action_first"] = actionFirst
 	request := ModelRequest{
 		SystemPrompt: RenderPromptSections(sections), UserPrompt: application.RenderLegacyTranscript(messages), Messages: messages,
-		RequestedModel: modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName), ThinkingLevel: thinkingLevelFromSnapshot(run.ConfigSnapshotJSON),
-		MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: run.Mode == core.ModeSingleAgent,
+		RequestedModel: modelRefFromSnapshot(run.ConfigSnapshotJSON, modelName), ThinkingLevel: effectiveThinking,
+		MaxOutputTokens: modelMaxOutputTokens(step.InputJSON), EnableTools: enableTools,
 		ToolDefinitions: catalog.Definitions, ToolScopeDeclared: catalog.ToolScopeDeclared, AllowedTools: catalog.AllowedTools,
 		ContextPlan: catalog.ContextPlan, Model: modelName, FallbackModel: fallbackModel,
 		ToolCallingKnown:   snapshotBool(run.ConfigSnapshotJSON, "model_tool_calling_known"),
@@ -76,6 +86,19 @@ func (assembler AgentTurnAssembler) Assemble(ctx context.Context, step core.Clai
 	}
 	request.ContextPlan["assembly_hash"] = modelAssemblyHash(request)
 	return ModelAssembly{Request: request, SearchBudget: catalog.SearchBudget, PriorSearchCalls: catalog.PriorSearchCalls, Continuation: continuation}, nil
+}
+
+// mainAgentThinkingLevel preserves the immutable user choice as the provider
+// control. Action-first is a separate prompt policy because forcing a provider-
+// specific "thinking disabled" field makes otherwise compatible models reject
+// the entire request.
+func mainAgentThinkingLevel(snapshot string, enableTools bool) (string, string) {
+	requested := thinkingLevelFromSnapshot(snapshot)
+	return requested, requested
+}
+
+func mainAgentActionFirst(snapshot string, enableTools bool) bool {
+	return enableTools && thinkingLevelFromSnapshot(snapshot) == "auto" && snapshotVersion(snapshot, "thinking_policy_version") == core.ThinkingPolicyTaskActionV1
 }
 
 // planProgressReminder keeps semantic plan progress alive on ordinary
