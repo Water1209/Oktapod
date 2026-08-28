@@ -31,6 +31,7 @@ cpSync(stage, outputRoot, { recursive: true, dereference: false, errorOnExist: f
 cpSync(join(root, 'Runtime', 'document-runtime', 'runtime.py'), join(outputRoot, 'runtime.py'))
 cpSync(join(root, 'Runtime', 'document-runtime', 'requirements.lock'), join(outputRoot, 'requirements.lock'))
 cpSync(join(root, 'Runtime', 'document-runtime', 'THIRD_PARTY_NOTICES.md'), join(outputRoot, 'THIRD_PARTY_NOTICES.md'))
+removePythonCaches(outputRoot)
 
 for (const required of [pythonRelative, 'runtime.py', libreOfficeRelative, tesseractRelative].filter(Boolean)) {
   const path = resolve(outputRoot, required)
@@ -133,6 +134,23 @@ function walkFiles(directory, prefix = '') {
   return result.sort()
 }
 
+function removePythonCaches(directory) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const absolute = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === '__pycache__') {
+        rmSync(absolute, { recursive: true, force: true })
+        continue
+      }
+      removePythonCaches(absolute)
+      continue
+    }
+    if (entry.isFile() && (entry.name.endsWith('.pyc') || entry.name.endsWith('.pyo'))) {
+      rmSync(absolute, { force: true })
+    }
+  }
+}
+
 function sha256(path) { return `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}` }
 
 function verifyPackagedRuntime() {
@@ -142,13 +160,13 @@ function verifyPackagedRuntime() {
   const healthRoot = mkdtempSync(join(buildRoot, 'document-runtime-health-'))
   assertWithin(healthRoot, buildRoot)
   try {
-    const dependencyCheck = spawnSync(python, ['-I', '-c', 'import defusedxml; from PIL import Image'], {
+    const dependencyCheck = spawnSync(python, ['-I', '-B', '-c', 'import defusedxml; from PIL import Image'], {
       cwd: outputRoot, encoding: 'utf8', timeout: 30_000,
       env: runtimeEnvironment(healthRoot, python, libreOffice, tesseract),
     })
     if (dependencyCheck.status !== 0) throw new Error(`packaged Runtime dependencies are incomplete: ${dependencyCheck.stderr || dependencyCheck.error || dependencyCheck.status}`)
     const request = `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'health', params: {} })}\n`
-    const checked = spawnSync(python, ['-I', join(outputRoot, 'runtime.py')], {
+    const checked = spawnSync(python, ['-I', '-B', join(outputRoot, 'runtime.py')], {
       cwd: outputRoot, encoding: 'utf8', input: request, timeout: 60_000,
       env: runtimeEnvironment(healthRoot, python, libreOffice, tesseract),
     })

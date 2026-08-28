@@ -37,7 +37,7 @@ for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
 }
 
 try {
-  const result = spawnSync(python, ['-I', runtime], {
+  const result = spawnSync(python, ['-I', '-B', runtime], {
     cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
     input: `${requests.map((request) => JSON.stringify(request)).join('\n')}\n`,
     env: {

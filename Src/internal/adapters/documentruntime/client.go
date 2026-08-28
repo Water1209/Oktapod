@@ -323,7 +323,9 @@ func (c *Client) startLocked() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(python, "-I", entrypoint)
+	// Isolated mode ignores PYTHONDONTWRITEBYTECODE; -B is required so a signed
+	// Runtime package is never mutated by Python bytecode caches at startup.
+	cmd := exec.Command(python, "-I", "-B", entrypoint)
 	cmd.Dir = c.packageRoot
 	tempRoot := filepath.Join(c.workRoot, "tmp")
 	if err := os.MkdirAll(tempRoot, 0o700); err != nil {

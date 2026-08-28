@@ -1,7 +1,7 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.1.1
-> 更新日期：2026-08-22
+> 版本：v1.1.2
+> 更新日期：2026-08-24
 > 发布路径：注册用户 + 个人私有项目 + SQLite
 
 ## 1. 部署结论
@@ -56,7 +56,7 @@ Linux
 ```powershell
 $env:OKTAPOD_DOCUMENT_RUNTIME_STAGE='D:\release-stage\windows-amd64'
 $env:OKTAPOD_DOCUMENT_RUNTIME_PYTHON='python\python.exe'
-$env:OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE='libreoffice\program\soffice.com'
+$env:OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE='libreoffice\program\soffice.exe'
 $env:OKTAPOD_DOCUMENT_RUNTIME_TESSERACT='tesseract\tesseract.exe'
 $env:OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_FILE='D:\release-secrets\document-runtime-ed25519.pem'
 $env:OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_ID='document-runtime-2026-01'
@@ -71,7 +71,7 @@ pnpm release:smoke
 export OKTAPOD_DOCUMENT_RUNTIME_STAGE=/srv/release-stage/linux-amd64
 export OKTAPOD_DOCUMENT_RUNTIME_PYTHON=python/bin/python3
 export OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE=libreoffice/program/soffice
-export OKTAPOD_DOCUMENT_RUNTIME_TESSERACT=tesseract/bin/tesseract
+export OKTAPOD_DOCUMENT_RUNTIME_TESSERACT=tesseract/tesseract
 export OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_FILE=/run/secrets/document-runtime-ed25519.pem
 export OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_ID=document-runtime-2026-01
 pnpm install --frozen-lockfile
@@ -82,6 +82,22 @@ pnpm release:smoke
 ```
 
 `release:build` 会检查版本、锁定依赖、LibreOffice、Tesseract `chi_sim + eng`、四格式 25 次 RPC、SBOM、许可证、逐文件 Hash 和 Ed25519 签名；`release:smoke` 使用临时端口，完成后会停止测试服务，不能代替真实部署健康检查。
+
+### 2.2 本次 Runtime 资源包构建证据
+
+2026-08-24 已在 Windows 主机和 WSL Ubuntu `linux-amd64` 环境分别构建两平台主程序和自包含 `document-runtime` 资源包。主程序均报告版本 `1.0.0`；构建器对包内 Python、LibreOffice、Tesseract、许可证、逐文件 Manifest 和 Ed25519 签名执行检查，并对 PPTX、DOCX、XLSX、PDF 完成 25 次 RPC smoke；Windows 与 Linux 均通过。Windows 主程序使用新归档完成完整 `release:smoke`；Linux 主程序在 WSL ext4 临时目录中解包 Runtime 后完成同等 `product-smoke`，避免把 `/mnt/e` 的 NTFS 逐文件 I/O 延迟误判为产品启动失败。
+
+| 工件 | 大小 | SHA256 | 构建验证 |
+|---|---:|---|---|
+| `Build/oktapod-v1.0.0-windows-amd64.exe` | 31,812,096 bytes | `3d5e87591cc7c8620269f0c41dc05158667fb8773be819440c4d13a9dd025aed` | `version` = `1.0.0` |
+| `Build/oktapod-v1.0.0-linux-amd64` | 31,154,338 bytes | `45407a2c0808378fc15d4068e1b182b58c0f0006972758ebcbafdd1a30a35de8` | `version` = `1.0.0` |
+| `Build/document-runtime-v1.0.0-windows-amd64.zip` | 489,545,478 bytes | `5bd93247218ee79746d4ab3a3cf2aea18f6109c0247f604fac8ed503ba12798c` | 16,388 文件，25 RPC |
+| `Build/document-runtime-v1.0.0-linux-amd64.tar.gz` | 284,075,490 bytes | `82e90cf26e4e1d90a87fce3c0d16a3a43c13f45d93c8bc8ddf4586eb084ed2c0` | 8,024 文件，25 RPC |
+| `Build/document-runtime-trusted-keys.json` | 87 bytes | 随发布集合分发 | Key ID `oktapod-local-release-20260824` |
+
+Windows Runtime 使用 Python 3.13、LibreOffice 26.2.4.2、Tesseract 5.4.0；Linux Runtime 使用 WSL Ubuntu 中的 Python 3.14.4、LibreOffice 26.2.5.2、Tesseract 5.5.0。构建器会剔除 staging 中的 `__pycache__`、`.pyc` 和 `.pyo`，本次两包归档也已检查不含这些运行时缓存。Linux 包内 LibreOffice 配置已改为基于 `ORIGIN` 的相对路径，避免真实主机必须安装到 `/usr/lib/libreoffice`；两包均包含 `LICENSES/`、SBOM、锁定依赖和签名 Manifest。上述是构建机和包级证据，不等同于已在目标生产发行版完成部署；真实部署仍必须执行本指南第 3、4、5 节的 Hash、`config doctor`、健康检查和资源中心验收。
+
+本次 Key ID 对应的私钥仅存在于仓库外受保护位置。进入真实生产前必须完成离线备份、访问控制和组织密钥登记；若使用组织正式密钥，应重新运行两平台构建并重新分发对应的 `document-runtime-trusted-keys.json`，不能只替换公钥文件。
 
 ## 3. Windows 部署
 
@@ -366,7 +382,7 @@ Skill 菜单安装只接受单 Skill ZIP，不接受裸 `SKILL.md`、JSON 或 YA
 
 新用户和现有用户首次升级会安装 `document-runtime` 与 `presentations/pdf/documents/spreadsheets` 五个全局预置资源。用户停用状态会保留；删除后写入 tombstone，重启和升级都不会恢复。Runtime 或依赖缺失时资源中心显示 `degraded` 并提供显式安装/修复；模型不能安装、更新或删除 Runtime，也不能回退为临时解析脚本。删除共享 Runtime 前必须先删除所有声明 `document.runtime` 的 Skill，活动 Run 引用时仍会拒绝。
 
-开发环境只有显式设置 `OKTAPOD_DOCUMENT_RUNTIME_DEV=1` 才会从 `Runtime/document-runtime/runtime.py` 启动，并通过 `OKTAPOD_DOCUMENT_RUNTIME_PYTHON` 指向开发 Python；需要使用宿主渲染器时，可显式设置 `OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE` 和 `OKTAPOD_DOCUMENT_RUNTIME_TESSERACT`。这两个开发路径只接受绝对路径、普通文件且拒绝符号链接，不会放宽生产信任边界。生产环境只加载 DataRoot 的受信版本或二进制旁 `runtime/document-runtime` 签名包；Manifest 必须匹配平台、协议、Ed25519 信任 Key 和逐文件 SHA256。Runtime 不监听端口，使用独立 HOME/TEMP、空代理和受控文件句柄；缓存位于 DataRoot 的 `document-runtime/cache`，默认 1 GiB / 30 天 LRU，不进入 Backup/项目导出。
+开发环境只有显式设置 `OKTAPOD_DOCUMENT_RUNTIME_DEV=1` 才会从 `Runtime/document-runtime/runtime.py` 启动，并通过 `OKTAPOD_DOCUMENT_RUNTIME_PYTHON` 指向开发 Python；需要使用宿主渲染器时，可显式设置 `OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE` 和 `OKTAPOD_DOCUMENT_RUNTIME_TESSERACT`。这两个开发路径只接受绝对路径、普通文件且拒绝符号链接，不会放宽生产信任边界。生产环境只加载 DataRoot 的受信版本或二进制旁 `runtime/document-runtime` 签名包；Manifest 必须匹配平台、协议、Ed25519 信任 Key 和逐文件 SHA256。生产启动使用 Python `-I -B`；`-I` 会忽略 `PYTHONDONTWRITEBYTECODE`，因此显式使用 `-B`，避免 Python 字节码缓存改写已签名 Runtime 包。Runtime 不监听端口，使用独立 HOME/TEMP、空代理和受控文件句柄；缓存位于 DataRoot 的 `document-runtime/cache`，默认 1 GiB / 30 天 LRU，不进入 Backup/项目导出。
 
 发布构建新增严格输入：`OKTAPOD_DOCUMENT_RUNTIME_STAGE` 指向包含自包含平台依赖和完整 `LICENSES/` 的目录；`OKTAPOD_DOCUMENT_RUNTIME_PYTHON`、`OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE`、`OKTAPOD_DOCUMENT_RUNTIME_TESSERACT` 都是该目录内相对文件路径；`OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_FILE` 指向受保护 Ed25519 PKCS8 PEM，`OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_ID` 是部署信任 Key ID。`pnpm release:build` 缺少任一输入即失败；归档前还会用包内 Python 检查锁定依赖、LibreOffice、Tesseract `chi_sim + eng` 和四格式 25 次 RPC。构建只输出不含私钥的 `Build/document-runtime-trusted-keys.json`，`release:smoke` 将它写入隔离 DataRoot 并要求资源目录中的 Runtime 为 `available`，避免发布“主程序正常但文档能力暗中退化”的工件。
 
