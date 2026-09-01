@@ -281,6 +281,96 @@ func TestProviderChangeAppliesToNextRunWithoutMutatingExistingSnapshot(t *testin
 	if secondRun.EffectiveModel.ModelID != "model-b" || secondRun.Thinking != "auto" {
 		t.Fatalf("second run snapshot=%+v", secondRun)
 	}
+	var secondSnapshot map[string]any
+	if err := json.Unmarshal([]byte(secondRun.ConfigSnapshotJSON), &secondSnapshot); err != nil || secondSnapshot["thinking_policy_version"] != core.ThinkingPolicyTaskActionV1 {
+		t.Fatalf("second run thinking policy snapshot=%v err=%v", secondSnapshot, err)
+	}
+}
+
+func TestDeleteProviderMovesMutableSelectionsToDefaultAndPreservesRunSnapshot(t *testing.T) {
+	store, actor, org := openProviderTestStore(t)
+	defer store.Close()
+	secrets := &memoryProviderSecrets{values: map[string]string{}}
+	service := application.NewService(store, core.ProfilePersonal, "https://provider.invalid/v1", actor, org, func() string { return "" }).
+		WithProviderRegistry(secrets, nil)
+	replacementSecret, deletedSecret := "replacement-secret", "deleted-secret"
+	replacement, err := service.SaveProvider(t.Context(), "", application.SaveProviderInput{
+		DisplayName: "Replacement", ProtocolFamily: core.ProviderProtocolOpenAICompatible,
+		Endpoint: "https://replacement.example.test/v1", DefaultModelID: "replacement-model", Credential: &replacementSecret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := service.SaveProvider(t.Context(), "", application.SaveProviderInput{
+		DisplayName: "Delete me", ProtocolFamily: core.ProviderProtocolOpenAICompatible,
+		Endpoint: "https://deleted.example.test/v1", DefaultModelID: "deleted-model", Credential: &deletedSecret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{
+		Name: "Fallback project", Kind: core.ProjectKindPersonal, Scene: core.SceneCode,
+		ModelProviderID: deleted.ProviderID, DefaultModel: "deleted-model", FallbackModel: "deleted-model",
+	}, "provider-delete-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.CreateAgentDefinition(t.Context(), project.ID, core.CreateAgentInput{
+		Name: "Builder", Version: "1.0.0", Instructions: "Build", Model: "deleted-model", FallbackModel: "deleted-model", ConfigJSON: "{}",
+	}, "provider-delete-agent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.UpdatePreferences(t.Context(), core.UserPreferences{
+		Theme: "system", Density: "comfortable", DefaultPermission: "ask",
+		RecentProviderID: deleted.ProviderID, RecentModelID: "deleted-model",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.UpdateAIGovernanceSettings(t.Context(), core.AIGovernanceSettings{
+		ReviewerProviderID: deleted.ProviderID, ReviewerModelID: "deleted-model", Enabled: true, TimeoutSeconds: 30, FailClosed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{
+		Goal: "frozen before provider deletion", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate,
+		ProviderID: deleted.ProviderID, Model: "deleted-model",
+	}, "provider-delete-task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.DeleteProvider(t.Context(), deleted.ProviderID); err != nil {
+		t.Fatal(err)
+	}
+	updatedProject, err := service.GetProject(t.Context(), project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedProject.ModelProviderID != replacement.ProviderID || updatedProject.DefaultModel != "replacement-model" || updatedProject.FallbackModel != "" {
+		t.Fatalf("project fallback=%+v", updatedProject)
+	}
+	agents, err := service.ListAgentDefinitions(t.Context(), project.ID)
+	if err != nil || len(agents) != 1 || agents[0].Model != "replacement-model" || agents[0].FallbackModel != "" {
+		t.Fatalf("agents=%+v err=%v", agents, err)
+	}
+	preferences, err := service.Preferences(t.Context())
+	if err != nil || preferences.RecentProviderID != replacement.ProviderID || preferences.RecentModelID != "replacement-model" {
+		t.Fatalf("preferences=%+v err=%v", preferences, err)
+	}
+	governance, err := service.AIGovernanceSettings(t.Context())
+	if err != nil || governance.ReviewerProviderID != replacement.ProviderID || governance.ReviewerModelID != "replacement-model" || !governance.Enabled {
+		t.Fatalf("governance=%+v err=%v", governance, err)
+	}
+	run, err := store.GetRunContext(t.Context(), task.RunID)
+	if err != nil || run.RequestedModel.ProviderID != deleted.ProviderID || run.RequestedModel.ModelID != "deleted-model" || run.EffectiveModel.ProviderID != deleted.ProviderID {
+		t.Fatalf("run snapshot=%+v err=%v", run, err)
+	}
+	providers, err := service.ListProviders(t.Context())
+	if err != nil || len(providers) != 1 || providers[0].ProviderID != replacement.ProviderID || !providers[0].IsDefault {
+		t.Fatalf("providers=%+v err=%v", providers, err)
+	}
+	if _, err = secrets.Get(t.Context(), deleted.CredentialRef); err == nil {
+		t.Fatal("deleted provider credential still exists")
+	}
 }
 
 func openProviderTestStore(t *testing.T) (*sqlite.Store, core.Actor, core.Organization) {

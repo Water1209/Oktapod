@@ -53,9 +53,15 @@ func TestMainAgentModelRequestContractMatchesBuiltinCatalog(t *testing.T) {
 	}
 
 	request := model.requests[0]
+	if request.ThinkingLevel != "auto" || request.ContextPlan["requested_thinking_level"] != "auto" || request.ContextPlan["effective_thinking_level"] != "auto" || request.ContextPlan["thinking_policy_version"] != core.ThinkingPolicyTaskActionV1 || request.ContextPlan["action_first"] != true {
+		t.Fatalf("thinking contract=%#v request_level=%q", request.ContextPlan, request.ThinkingLevel)
+	}
+	if !strings.Contains(request.SystemPrompt, "# Action-first") {
+		t.Fatalf("action-first instruction missing: %q", request.SystemPrompt)
+	}
 	wantNames := make([]string, 0, len(core.BuiltinToolSpecs()))
 	for _, spec := range core.BuiltinToolSpecs() {
-		if spec.Name == core.ToolRequestPermission {
+		if spec.Name == core.ToolRequestPermission || spec.Name == core.ToolUpdatePlan || isDocumentTool(spec.Name) {
 			continue
 		}
 		wantNames = append(wantNames, spec.Name)
@@ -74,16 +80,11 @@ func TestMainAgentModelRequestContractMatchesBuiltinCatalog(t *testing.T) {
 		t.Fatalf("new Run advertised legacy permission tool: %#v", gotNames)
 	}
 	if request.ContextPlan["builtin_tool_definitions"] != len(core.BuiltinToolSpecs()) ||
-		request.ContextPlan["tool_definitions_after_skill_scope"] != len(core.BuiltinToolSpecs()) {
+		request.ContextPlan["tool_definitions_after_skill_scope"] != len(wantNames)+1 {
 		t.Fatalf("context plan=%#v", request.ContextPlan)
 	}
-	for _, name := range wantNames {
-		if !strings.Contains(request.SystemPrompt, "- `"+name+"`") {
-			t.Fatalf("system prompt omitted tool %q", name)
-		}
-	}
-	if !strings.Contains(request.SystemPrompt, "# Available tools") || !strings.Contains(request.SystemPrompt, "# Stage instructions") {
-		t.Fatalf("system prompt lost catalog or stage sections: %q", request.SystemPrompt)
+	if strings.Contains(request.SystemPrompt, "# Available tools") || !strings.Contains(request.SystemPrompt, "# Stage instructions") {
+		t.Fatalf("system prompt must rely on provider schemas without duplicating the tool catalog: %q", request.SystemPrompt)
 	}
 	if request.ContextPlan["assembly_schema_version"] != assemblySchemaVersion || request.ContextPlan["assembly_hash"] != modelAssemblyHash(request) {
 		t.Fatalf("assembly identity=%#v", request.ContextPlan)

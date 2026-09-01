@@ -114,7 +114,18 @@ func (PromptAssembler) ToolCatalog(definitions []ToolDefinition) string {
 	return strings.Join(lines, "\n")
 }
 
-func (PromptAssembler) Stage(stage string) string {
+func (PromptAssembler) Stage(stage string, snapshot ...string) string {
+	v2 := len(snapshot) > 0 && snapshotVersion(snapshot[0], "plan_protocol_version") == "transition_v2"
+	if v2 {
+		switch stage {
+		case "execute":
+			return "直接完成目标：普通回答可直接返回；第一次需要业务工具时，必须在同一响应中先调用一次 replace_plan 建立面向用户结果的语义计划，再调用首批业务工具。即使只有一个语义步骤也必须发布计划；计划项描述要完成什么，不能罗列具体工具调用。不得为了管理计划而单独消耗一次模型响应。"
+		case "steering_replan":
+			return "基于用户 Steering 重规划未完成工作。需要替换计划时，在同一响应中调用 replace_plan 和下一批业务工具；Runtime 会保留已完成项。"
+		case "permission_replan":
+			return "基于已批准的授权范围继续原目标。需要调整计划时，在同一响应中调用 replace_plan 和下一批业务工具；不得把权限动作当作目标。"
+		}
+	}
 	switch stage {
 	case "plan":
 		return "本轮必须先单独调用 update_plan，提交完整、具体、面向用户结果的语义子任务清单。初次计划不得把任何项目标记 completed，且必须恰好把第一项标记 in_progress，其余为 pending；禁止用工具调用或通用占位语句冒充计划项。"

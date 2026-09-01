@@ -635,6 +635,53 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Capability" }
         default: { $ref: "#/components/responses/Problem" }
+  /resource-catalog:
+    get:
+      operationId: listResourceCatalog
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+          description: Project used to authorize the current user and anchor global preset installation.
+      responses:
+        "200":
+          description: Signed preset catalog merged with the current user's durable install or delete state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PresetResourceCatalogItem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /resource-catalog/{preset_key}:install:
+    parameters:
+      - name: preset_key
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 120, pattern: "^[a-z0-9][a-z0-9-]*$" }
+    post:
+      operationId: installPresetResource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id]
+              additionalProperties: false
+              properties:
+                project_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Preset resource restored or advanced to the catalog-managed version; dependencies are installed first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
+        default: { $ref: "#/components/responses/Problem" }
   /capabilities/{capability_id}:
     parameters:
       - name: capability_id
@@ -3162,7 +3209,7 @@ components:
         token: { type: string, minLength: 32, maxLength: 256 }
     Task:
       type: object
-      required: [id, project_id, run_id, conversation_id, title, goal, mode, visibility, status, accepted, created_at, updated_at]
+      required: [id, project_id, run_id, conversation_id, title, goal, mode, presentation_kind, visibility, status, accepted, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         project_id: { type: string, format: uuid }
@@ -3172,6 +3219,7 @@ components:
         goal: { type: string }
         acceptance: { type: string }
         mode: { type: string, enum: [answer, single_agent, agent_team] }
+        presentation_kind: { type: string, enum: [pending_auto, answer, task] }
         visibility: { type: string, enum: [private, selected, project] }
         status: { type: string, enum: [queued, running, waiting_approval, waiting_input, paused, blocked, succeeded, failed, canceled] }
         error_code: { type: string }
@@ -3179,6 +3227,19 @@ components:
         accepted: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    RunLiveEvent:
+      type: object
+      description: Ephemeral in-process assistant presentation delta; never a durable replay cursor.
+      required: [run_id, model_call_id, kind, ephemeral_seq, emitted_at]
+      additionalProperties: false
+      properties:
+        run_id: { type: string, format: uuid }
+        model_call_id: { type: string, format: uuid, description: Durable model step identifier for provisional-buffer correlation. }
+        kind: { type: string, enum: [assistant_delta, phase] }
+        delta: { type: string }
+        phase: { type: string }
+        ephemeral_seq: { type: integer, format: int64, minimum: 1 }
+        emitted_at: { type: string, format: date-time }
     Schedule:
       type: object
       required: [id, organization_id, project_id, owner_user_id, name, cron_expression, timezone, goal, acceptance, mode, visibility, status, next_run_at, misfire_policy, overlap_policy, misfire_grace_seconds, created_at, updated_at]
@@ -3203,7 +3264,7 @@ components:
         updated_at: { type: string, format: date-time }
     Capability:
       type: object
-      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, availability, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, credential_configured, credential_state, created_at, updated_at]
+      required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, availability, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, credential_configured, credential_state, origin, preset_key, dependencies, managed_version, update_state, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         organization_id: { type: string, format: uuid }
@@ -3230,8 +3291,36 @@ components:
           type: boolean
           description: Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
         credential_state: { type: string, enum: [ready, locked, missing, corrupt] }
+        origin: { type: string, enum: [system, preset, custom] }
+        preset_key: { type: string, maxLength: 120 }
+        dependencies:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 200 }
+        managed_version: { type: string, maxLength: 64 }
+        update_state: { type: string, enum: [current, available, degraded] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    PresetResourceCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [preset_key, kind, name, version, description, origin, dependencies, managed_version, update_state, install_state, availability]
+      properties:
+        preset_key: { type: string, minLength: 1, maxLength: 120 }
+        kind: { type: string, enum: [skill, plugin] }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        version: { type: string, minLength: 1, maxLength: 64 }
+        description: { type: string, maxLength: 2000 }
+        origin: { type: string, enum: [preset] }
+        dependencies:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 200 }
+        managed_version: { type: string, maxLength: 64 }
+        update_state: { type: string, enum: [current, available, degraded] }
+        install_state: { type: string, enum: [installed, available] }
+        capability_id: { type: string, format: uuid }
+        availability: { $ref: "#/components/schemas/ResourceAvailability" }
     ResourceAvailability:
       type: string
       enum: [available, degraded, disabled, quarantined]
@@ -3918,7 +4007,7 @@ components:
           type: array
           maxItems: 8
           items: { type: string, format: uuid }
-        skill_id: { type: string, format: uuid, description: "显式调用的项目 Skill；跳过 Auto 分类并创建任务" }
+        skill_id: { type: string, format: uuid, description: "显式调用并冻结到新 Run 的项目 Skill；首个业务模型请求直接加载，不产生 skill_invoke 握手" }
         skill_args: { type: string, maxLength: 10000 }
     ProjectTurnResponse:
       type: object
@@ -4070,16 +4159,24 @@ components:
         approve: { type: boolean, default: false }
     RunUsage:
       type: object
-      required: [run_id, model_calls, input_tokens, output_tokens, cached_tokens, reasoning_tokens, estimated_calls, latency_ms, cost_status, currency, cost_decimal, budget_max_calls, budget_max_tokens, budget_status, remaining_calls, remaining_tokens]
+      required: [run_id, model_calls, input_tokens, output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, estimated_calls, latency_ms, first_byte_ms, first_safe_delta_ms, assembly_ms, request_bytes, model_call_purposes, cost_status, currency, cost_decimal, budget_max_calls, budget_max_tokens, budget_status, remaining_calls, remaining_tokens]
       properties:
         run_id: { type: string, format: uuid }
         model_calls: { type: integer, format: int64 }
         input_tokens: { type: integer, format: int64 }
         output_tokens: { type: integer, format: int64 }
         cached_tokens: { type: integer, format: int64 }
+        cache_write_tokens: { type: integer, format: int64 }
         reasoning_tokens: { type: integer, format: int64 }
         estimated_calls: { type: integer, format: int64 }
         latency_ms: { type: integer, format: int64 }
+        first_byte_ms: { type: integer, format: int64, description: Sum of Provider time-to-first-response-byte across Run model calls. }
+        first_safe_delta_ms: { type: integer, format: int64, description: Sum of time-to-first-displayable assistant text across Run model calls. }
+        assembly_ms: { type: integer, format: int64, description: Sum of AgentTurn assembly latency across Run model calls. }
+        request_bytes: { type: integer, format: int64, description: Sum of serialized provider request bytes across Run model calls. }
+        model_call_purposes:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
         cost_status: { type: string, enum: [unpriced, estimated, confirmed] }
         currency: { type: string }
         cost_decimal: { type: string }
@@ -4245,14 +4342,14 @@ components:
       additionalProperties: false
       properties:
         decision: { type: string, enum: [approved, rejected, answered, confirm_applied, confirm_not_applied] }
-        scope: { type: string, enum: [once, conversation, project, run_origin], default: once }
+        scope: { type: string, enum: [once, conversation, project, run_origin, run_tool], default: once }
         answer: {}
         note: { type: string, maxLength: 2000, default: "" }
         confirmed: { type: boolean, default: false }
         version: { type: integer, format: int64, minimum: 1 }
     Approval:
       type: object
-      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, risk_level, approval_scope, target_origin, matched_rule_id, policy_hash, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
+      required: [id, project_id, task_id, run_id, step_id, tool_call_id, tool_name, tool_display_name, risk_level, approval_scope, target_origin, matched_rule_id, policy_hash, status, reason, frozen_params, input_hash, requested_by, requested_at, expires_at]
       properties:
         id: { type: string, format: uuid }
         project_id: { type: string, format: uuid }
@@ -4261,8 +4358,9 @@ components:
         step_id: { type: string, format: uuid }
         tool_call_id: { type: string, format: uuid }
         tool_name: { type: string }
+        tool_display_name: { type: string, description: "Human-readable capability and tool name derived from the immutable Run snapshot; tool_name remains the authorization identity." }
         risk_level: { type: string, enum: [L0, L1, L2, L3] }
-        approval_scope: { type: string, enum: [once, conversation, project, run_origin] }
+        approval_scope: { type: string, enum: [once, conversation, project, run_origin, run_tool] }
         target_origin: { type: string }
         matched_rule_id: { type: string }
         policy_hash: { type: string }
@@ -4281,7 +4379,7 @@ components:
       additionalProperties: false
       properties:
         decision: { type: string, enum: [approved, rejected] }
-        scope: { type: string, enum: [once, conversation, project, run_origin], default: once, description: "Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule." }
+        scope: { type: string, enum: [once, conversation, project, run_origin, run_tool], default: once, description: "Approval lifetime. run_origin is reserved for one private web origin in the current Run; run_tool grants one exact MCP tool identity only for the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule." }
         note: { type: string, maxLength: 1000, default: "" }
         confirmed: { type: boolean, default: false, description: "Must be true when scope is project; UI must require a second explicit confirmation." }
     ApprovalRule:

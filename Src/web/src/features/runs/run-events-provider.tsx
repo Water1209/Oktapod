@@ -1,14 +1,15 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { useQueryClient } from '@tanstack/react-query'
-import type { RunEvent } from '../../shared/api/client'
-import { RunEventsContext, type ConnectionState, type RunEventListener } from './run-events-context'
+import type { RunEvent, RunLiveEvent } from '../../shared/api/client'
+import { RunEventsContext, type ConnectionState, type RunEventListener, type RunLiveEventListener } from './run-events-context'
 
 type StreamEntry = {
   runId: string
   cursor: number
   recent: RunEvent[]
   listeners: Set<RunEventListener>
+  liveListeners: Set<RunLiveEventListener>
   states: Set<(value: ConnectionState) => void>
   source?: EventSource
   retry?: number
@@ -31,16 +32,17 @@ class RunEventStreamManager {
     document.addEventListener('visibilitychange', this.onVisibility)
   }
 
-  subscribe(runId: string, after: number, listener: RunEventListener, state: (value: ConnectionState) => void) {
+  subscribe(runId: string, after: number, listener: RunEventListener, state: (value: ConnectionState) => void, live?: RunLiveEventListener) {
     let entry = this.streams.get(runId)
     if (!entry) {
-      entry = { runId, cursor: after, recent: [], listeners: new Set(), states: new Set() }
+      entry = { runId, cursor: after, recent: [], listeners: new Set(), liveListeners: new Set(), states: new Set() }
       this.streams.set(runId, entry)
     }
     if (entry.idleTimer) window.clearTimeout(entry.idleTimer)
     entry.idleTimer = undefined
     entry.cursor = Math.max(entry.cursor, after)
     entry.listeners.add(listener)
+    if (live) entry.liveListeners.add(live)
     entry.states.add(state)
     // One Run has one transport cursor, but components can subscribe at
     // different times. Replay the bounded shared buffer so a late message card
@@ -49,6 +51,7 @@ class RunEventStreamManager {
     if (!entry.source) this.connect(entry)
     return () => {
       entry!.listeners.delete(listener)
+      if (live) entry!.liveListeners.delete(live)
       entry!.states.delete(state)
       if (entry!.listeners.size === 0) {
         // React effects can unsubscribe/resubscribe while a REST snapshot
@@ -112,6 +115,13 @@ class RunEventStreamManager {
         entry.listeners.forEach((listener) => listener(event))
         this.invalidate(entry.runId, event)
       } catch { /* malformed events do not advance the persisted cursor */ }
+    }) as EventListener)
+    source.addEventListener('run_live', ((message: MessageEvent<string>) => {
+      try {
+        const event = JSON.parse(message.data) as RunLiveEvent
+        if (event?.run_id !== entry.runId || typeof event.ephemeral_seq !== 'number') return
+        entry.liveListeners.forEach((listener) => listener(event))
+      } catch { /* ephemeral events never affect the durable cursor */ }
     }) as EventListener)
     source.onopen = () => {
       entry.retry = 0

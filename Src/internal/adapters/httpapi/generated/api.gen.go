@@ -120,6 +120,7 @@ const (
 	ApprovalApprovalScopeOnce         ApprovalApprovalScope = "once"
 	ApprovalApprovalScopeProject      ApprovalApprovalScope = "project"
 	ApprovalApprovalScopeRunOrigin    ApprovalApprovalScope = "run_origin"
+	ApprovalApprovalScopeRunTool      ApprovalApprovalScope = "run_tool"
 )
 
 // Defines values for ApprovalRiskLevel.
@@ -197,6 +198,13 @@ const (
 	CapabilityKindSkill  CapabilityKind = "skill"
 )
 
+// Defines values for CapabilityOrigin.
+const (
+	CapabilityOriginCustom CapabilityOrigin = "custom"
+	CapabilityOriginPreset CapabilityOrigin = "preset"
+	CapabilityOriginSystem CapabilityOrigin = "system"
+)
+
 // Defines values for CapabilityScopeType.
 const (
 	CapabilityScopeTypeGlobal  CapabilityScopeType = "global"
@@ -208,6 +216,13 @@ const (
 	CapabilityStatusDisabled    CapabilityStatus = "disabled"
 	CapabilityStatusEnabled     CapabilityStatus = "enabled"
 	CapabilityStatusQuarantined CapabilityStatus = "quarantined"
+)
+
+// Defines values for CapabilityUpdateState.
+const (
+	CapabilityUpdateStateAvailable CapabilityUpdateState = "available"
+	CapabilityUpdateStateCurrent   CapabilityUpdateState = "current"
+	CapabilityUpdateStateDegraded  CapabilityUpdateState = "degraded"
 )
 
 // Defines values for CaptureWorkspaceArtifactRequestKind.
@@ -397,6 +412,7 @@ const (
 	DecideApprovalRequestScopeOnce         DecideApprovalRequestScope = "once"
 	DecideApprovalRequestScopeProject      DecideApprovalRequestScope = "project"
 	DecideApprovalRequestScopeRunOrigin    DecideApprovalRequestScope = "run_origin"
+	DecideApprovalRequestScopeRunTool      DecideApprovalRequestScope = "run_tool"
 )
 
 // Defines values for DecideHumanActionRequestDecision.
@@ -414,6 +430,7 @@ const (
 	DecideHumanActionRequestScopeOnce         DecideHumanActionRequestScope = "once"
 	DecideHumanActionRequestScopeProject      DecideHumanActionRequestScope = "project"
 	DecideHumanActionRequestScopeRunOrigin    DecideHumanActionRequestScope = "run_origin"
+	DecideHumanActionRequestScopeRunTool      DecideHumanActionRequestScope = "run_tool"
 )
 
 // Defines values for DiagnosticsStatus.
@@ -620,9 +637,33 @@ const (
 
 // Defines values for PortableTranscriptMessageRole.
 const (
-	PortableTranscriptMessageRoleAssistant PortableTranscriptMessageRole = "assistant"
-	PortableTranscriptMessageRoleTool      PortableTranscriptMessageRole = "tool"
-	PortableTranscriptMessageRoleUser      PortableTranscriptMessageRole = "user"
+	Assistant PortableTranscriptMessageRole = "assistant"
+	Tool      PortableTranscriptMessageRole = "tool"
+	User      PortableTranscriptMessageRole = "user"
+)
+
+// Defines values for PresetResourceCatalogItemInstallState.
+const (
+	PresetResourceCatalogItemInstallStateAvailable PresetResourceCatalogItemInstallState = "available"
+	PresetResourceCatalogItemInstallStateInstalled PresetResourceCatalogItemInstallState = "installed"
+)
+
+// Defines values for PresetResourceCatalogItemKind.
+const (
+	Plugin PresetResourceCatalogItemKind = "plugin"
+	Skill  PresetResourceCatalogItemKind = "skill"
+)
+
+// Defines values for PresetResourceCatalogItemOrigin.
+const (
+	Preset PresetResourceCatalogItemOrigin = "preset"
+)
+
+// Defines values for PresetResourceCatalogItemUpdateState.
+const (
+	PresetResourceCatalogItemUpdateStateAvailable PresetResourceCatalogItemUpdateState = "available"
+	PresetResourceCatalogItemUpdateStateCurrent   PresetResourceCatalogItemUpdateState = "current"
+	PresetResourceCatalogItemUpdateStateDegraded  PresetResourceCatalogItemUpdateState = "degraded"
 )
 
 // Defines values for ProjectKind.
@@ -971,6 +1012,13 @@ const (
 	TaskModeSingleAgent TaskMode = "single_agent"
 )
 
+// Defines values for TaskPresentationKind.
+const (
+	TaskPresentationKindAnswer      TaskPresentationKind = "answer"
+	TaskPresentationKindPendingAuto TaskPresentationKind = "pending_auto"
+	TaskPresentationKindTask        TaskPresentationKind = "task"
+)
+
 // Defines values for TaskStatus.
 const (
 	TaskStatusBlocked         TaskStatus = "blocked"
@@ -1119,14 +1167,14 @@ const (
 
 // Defines values for ListHumanActionsParamsStatus.
 const (
-	All         ListHumanActionsParamsStatus = "all"
-	Answered    ListHumanActionsParamsStatus = "answered"
-	Approved    ListHumanActionsParamsStatus = "approved"
-	Expired     ListHumanActionsParamsStatus = "expired"
-	Rejected    ListHumanActionsParamsStatus = "rejected"
-	Reviewing   ListHumanActionsParamsStatus = "reviewing"
-	Superseded  ListHumanActionsParamsStatus = "superseded"
-	WaitingUser ListHumanActionsParamsStatus = "waiting_user"
+	ListHumanActionsParamsStatusAll         ListHumanActionsParamsStatus = "all"
+	ListHumanActionsParamsStatusAnswered    ListHumanActionsParamsStatus = "answered"
+	ListHumanActionsParamsStatusApproved    ListHumanActionsParamsStatus = "approved"
+	ListHumanActionsParamsStatusExpired     ListHumanActionsParamsStatus = "expired"
+	ListHumanActionsParamsStatusRejected    ListHumanActionsParamsStatus = "rejected"
+	ListHumanActionsParamsStatusReviewing   ListHumanActionsParamsStatus = "reviewing"
+	ListHumanActionsParamsStatusSuperseded  ListHumanActionsParamsStatus = "superseded"
+	ListHumanActionsParamsStatusWaitingUser ListHumanActionsParamsStatus = "waiting_user"
 )
 
 // Defines values for ListProjectAssetsParamsKind.
@@ -1374,7 +1422,10 @@ type Approval struct {
 	TargetOrigin  string                 `json:"target_origin"`
 	TaskId        openapi_types.UUID     `json:"task_id"`
 	ToolCallId    openapi_types.UUID     `json:"tool_call_id"`
-	ToolName      string                 `json:"tool_name"`
+
+	// ToolDisplayName Human-readable capability and tool name derived from the immutable Run snapshot; tool_name remains the authorization identity.
+	ToolDisplayName string `json:"tool_display_name"`
+	ToolName        string `json:"tool_name"`
 }
 
 // ApprovalApprovalScope defines model for Approval.ApprovalScope.
@@ -1522,20 +1573,25 @@ type Capability struct {
 	// CredentialConfigured Whether the MCP credential exists in SecretStore. The credential and its reference are never returned.
 	CredentialConfigured bool                      `json:"credential_configured"`
 	CredentialState      CapabilityCredentialState `json:"credential_state"`
+	Dependencies         []string                  `json:"dependencies"`
 	Id                   openapi_types.UUID        `json:"id"`
 	InstallJobId         openapi_types.UUID        `json:"install_job_id"`
 	Kind                 CapabilityKind            `json:"kind"`
+	ManagedVersion       string                    `json:"managed_version"`
 	ManifestJson         string                    `json:"manifest_json"`
 	Name                 string                    `json:"name"`
 	OrganizationId       openapi_types.UUID        `json:"organization_id"`
+	Origin               CapabilityOrigin          `json:"origin"`
 	OwnerUserId          openapi_types.UUID        `json:"owner_user_id"`
 	PermissionDiff       []string                  `json:"permission_diff"`
+	PresetKey            string                    `json:"preset_key"`
 	ProjectId            openapi_types.UUID        `json:"project_id"`
 	RiskLevel            string                    `json:"risk_level"`
 	ScopeId              openapi_types.UUID        `json:"scope_id"`
 	ScopeType            CapabilityScopeType       `json:"scope_type"`
 	SourceFilename       string                    `json:"source_filename"`
 	Status               CapabilityStatus          `json:"status"`
+	UpdateState          CapabilityUpdateState     `json:"update_state"`
 	UpdatedAt            time.Time                 `json:"updated_at"`
 	Version              string                    `json:"version"`
 }
@@ -1546,11 +1602,17 @@ type CapabilityCredentialState string
 // CapabilityKind defines model for Capability.Kind.
 type CapabilityKind string
 
+// CapabilityOrigin defines model for Capability.Origin.
+type CapabilityOrigin string
+
 // CapabilityScopeType defines model for Capability.ScopeType.
 type CapabilityScopeType string
 
 // CapabilityStatus defines model for Capability.Status.
 type CapabilityStatus string
+
+// CapabilityUpdateState defines model for Capability.UpdateState.
+type CapabilityUpdateState string
 
 // CaptureWorkspaceArtifactRequest defines model for CaptureWorkspaceArtifactRequest.
 type CaptureWorkspaceArtifactRequest struct {
@@ -1851,14 +1913,14 @@ type DecideApprovalRequest struct {
 	Decision  DecideApprovalRequestDecision `json:"decision"`
 	Note      *string                       `json:"note,omitempty"`
 
-	// Scope Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
+	// Scope Approval lifetime. run_origin is reserved for one private web origin in the current Run; run_tool grants one exact MCP tool identity only for the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
 	Scope *DecideApprovalRequestScope `json:"scope,omitempty"`
 }
 
 // DecideApprovalRequestDecision defines model for DecideApprovalRequest.Decision.
 type DecideApprovalRequestDecision string
 
-// DecideApprovalRequestScope Approval lifetime. run_origin is reserved for one private web origin in the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
+// DecideApprovalRequestScope Approval lifetime. run_origin is reserved for one private web origin in the current Run; run_tool grants one exact MCP tool identity only for the current Run; conversation creates a same-tool session rule; project creates a 30-day project rule.
 type DecideApprovalRequestScope string
 
 // DecideHumanActionRequest defines model for DecideHumanActionRequest.
@@ -2310,6 +2372,35 @@ type PortableTranscriptMessage struct {
 // PortableTranscriptMessageRole defines model for PortableTranscriptMessage.Role.
 type PortableTranscriptMessageRole string
 
+// PresetResourceCatalogItem defines model for PresetResourceCatalogItem.
+type PresetResourceCatalogItem struct {
+	// Availability Stable user-facing availability. MCP is available only after a successful health check.
+	Availability   ResourceAvailability                  `json:"availability"`
+	CapabilityId   *openapi_types.UUID                   `json:"capability_id,omitempty"`
+	Dependencies   []string                              `json:"dependencies"`
+	Description    string                                `json:"description"`
+	InstallState   PresetResourceCatalogItemInstallState `json:"install_state"`
+	Kind           PresetResourceCatalogItemKind         `json:"kind"`
+	ManagedVersion string                                `json:"managed_version"`
+	Name           string                                `json:"name"`
+	Origin         PresetResourceCatalogItemOrigin       `json:"origin"`
+	PresetKey      string                                `json:"preset_key"`
+	UpdateState    PresetResourceCatalogItemUpdateState  `json:"update_state"`
+	Version        string                                `json:"version"`
+}
+
+// PresetResourceCatalogItemInstallState defines model for PresetResourceCatalogItem.InstallState.
+type PresetResourceCatalogItemInstallState string
+
+// PresetResourceCatalogItemKind defines model for PresetResourceCatalogItem.Kind.
+type PresetResourceCatalogItemKind string
+
+// PresetResourceCatalogItemOrigin defines model for PresetResourceCatalogItem.Origin.
+type PresetResourceCatalogItemOrigin string
+
+// PresetResourceCatalogItemUpdateState defines model for PresetResourceCatalogItem.UpdateState.
+type PresetResourceCatalogItemUpdateState string
+
 // PricingDiagnostics defines model for PricingDiagnostics.
 type PricingDiagnostics struct {
 	UncoveredModels int `json:"uncovered_models"`
@@ -2449,7 +2540,7 @@ type ProjectTurnRequest struct {
 	Scene     *ProjectTurnRequestScene     `json:"scene,omitempty"`
 	SkillArgs *string                      `json:"skill_args,omitempty"`
 
-	// SkillId 显式调用的项目 Skill；跳过 Auto 分类并创建任务
+	// SkillId 显式调用并冻结到新 Run 的项目 Skill；首个业务模型请求直接加载，不产生 skill_invoke 握手
 	SkillId          *openapi_types.UUID `json:"skill_id,omitempty"`
 	TeamDefinitionId *openapi_types.UUID `json:"team_definition_id,omitempty"`
 	TeamRoles        *[]struct {
@@ -2700,24 +2791,37 @@ type RunPlanRevisionTrigger string
 
 // RunUsage defines model for RunUsage.
 type RunUsage struct {
-	BudgetMaxCalls  int64                `json:"budget_max_calls"`
-	BudgetMaxTokens int64                `json:"budget_max_tokens"`
-	BudgetStatus    RunUsageBudgetStatus `json:"budget_status"`
-	CachedTokens    int64                `json:"cached_tokens"`
-	CostDecimal     string               `json:"cost_decimal"`
-	CostStatus      RunUsageCostStatus   `json:"cost_status"`
-	Currency        string               `json:"currency"`
-	EstimatedCalls  int64                `json:"estimated_calls"`
-	InputTokens     int64                `json:"input_tokens"`
-	LatencyMs       int64                `json:"latency_ms"`
-	ModelCalls      int64                `json:"model_calls"`
-	OutputTokens    int64                `json:"output_tokens"`
-	ReasoningTokens int64                `json:"reasoning_tokens"`
-	RemainingCalls  int64                `json:"remaining_calls"`
-	RemainingTokens int64                `json:"remaining_tokens"`
-	ReservedCalls   *int64               `json:"reserved_calls,omitempty"`
-	ReservedTokens  *int64               `json:"reserved_tokens,omitempty"`
-	RunId           openapi_types.UUID   `json:"run_id"`
+	// AssemblyMs Sum of AgentTurn assembly latency across Run model calls.
+	AssemblyMs       int64                `json:"assembly_ms"`
+	BudgetMaxCalls   int64                `json:"budget_max_calls"`
+	BudgetMaxTokens  int64                `json:"budget_max_tokens"`
+	BudgetStatus     RunUsageBudgetStatus `json:"budget_status"`
+	CacheWriteTokens int64                `json:"cache_write_tokens"`
+	CachedTokens     int64                `json:"cached_tokens"`
+	CostDecimal      string               `json:"cost_decimal"`
+	CostStatus       RunUsageCostStatus   `json:"cost_status"`
+	Currency         string               `json:"currency"`
+	EstimatedCalls   int64                `json:"estimated_calls"`
+
+	// FirstByteMs Sum of Provider time-to-first-response-byte across Run model calls.
+	FirstByteMs int64 `json:"first_byte_ms"`
+
+	// FirstSafeDeltaMs Sum of time-to-first-displayable assistant text across Run model calls.
+	FirstSafeDeltaMs  int64            `json:"first_safe_delta_ms"`
+	InputTokens       int64            `json:"input_tokens"`
+	LatencyMs         int64            `json:"latency_ms"`
+	ModelCallPurposes map[string]int64 `json:"model_call_purposes"`
+	ModelCalls        int64            `json:"model_calls"`
+	OutputTokens      int64            `json:"output_tokens"`
+	ReasoningTokens   int64            `json:"reasoning_tokens"`
+	RemainingCalls    int64            `json:"remaining_calls"`
+	RemainingTokens   int64            `json:"remaining_tokens"`
+
+	// RequestBytes Sum of serialized provider request bytes across Run model calls.
+	RequestBytes   int64              `json:"request_bytes"`
+	ReservedCalls  *int64             `json:"reserved_calls,omitempty"`
+	ReservedTokens *int64             `json:"reserved_tokens,omitempty"`
+	RunId          openapi_types.UUID `json:"run_id"`
 }
 
 // RunUsageBudgetStatus defines model for RunUsage.BudgetStatus.
@@ -2897,25 +3001,29 @@ type StorageDiagnostics struct {
 
 // Task defines model for Task.
 type Task struct {
-	Acceptance     *string            `json:"acceptance,omitempty"`
-	Accepted       bool               `json:"accepted"`
-	ConversationId openapi_types.UUID `json:"conversation_id"`
-	CreatedAt      time.Time          `json:"created_at"`
-	ErrorCode      *string            `json:"error_code,omitempty"`
-	Goal           string             `json:"goal"`
-	Id             openapi_types.UUID `json:"id"`
-	Mode           TaskMode           `json:"mode"`
-	ProjectId      openapi_types.UUID `json:"project_id"`
-	ResultSummary  *string            `json:"result_summary,omitempty"`
-	RunId          openapi_types.UUID `json:"run_id"`
-	Status         TaskStatus         `json:"status"`
-	Title          string             `json:"title"`
-	UpdatedAt      time.Time          `json:"updated_at"`
-	Visibility     TaskVisibility     `json:"visibility"`
+	Acceptance       *string              `json:"acceptance,omitempty"`
+	Accepted         bool                 `json:"accepted"`
+	ConversationId   openapi_types.UUID   `json:"conversation_id"`
+	CreatedAt        time.Time            `json:"created_at"`
+	ErrorCode        *string              `json:"error_code,omitempty"`
+	Goal             string               `json:"goal"`
+	Id               openapi_types.UUID   `json:"id"`
+	Mode             TaskMode             `json:"mode"`
+	PresentationKind TaskPresentationKind `json:"presentation_kind"`
+	ProjectId        openapi_types.UUID   `json:"project_id"`
+	ResultSummary    *string              `json:"result_summary,omitempty"`
+	RunId            openapi_types.UUID   `json:"run_id"`
+	Status           TaskStatus           `json:"status"`
+	Title            string               `json:"title"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	Visibility       TaskVisibility       `json:"visibility"`
 }
 
 // TaskMode defines model for Task.Mode.
 type TaskMode string
+
+// TaskPresentationKind defines model for Task.PresentationKind.
+type TaskPresentationKind string
 
 // TaskStatus defines model for Task.Status.
 type TaskStatus string
@@ -3463,6 +3571,17 @@ type DownloadWorkspaceFileContentParams struct {
 	Path string `form:"path" json:"path"`
 }
 
+// ListResourceCatalogParams defines parameters for ListResourceCatalog.
+type ListResourceCatalogParams struct {
+	// ProjectId Project used to authorize the current user and anchor global preset installation.
+	ProjectId openapi_types.UUID `form:"project_id" json:"project_id"`
+}
+
+// InstallPresetResourceJSONBody defines parameters for InstallPresetResource.
+type InstallPresetResourceJSONBody struct {
+	ProjectId openapi_types.UUID `json:"project_id"`
+}
+
 // GetRunChangesParams defines parameters for GetRunChanges.
 type GetRunChangesParams struct {
 	Baseline *GetRunChangesParamsBaseline `form:"baseline,omitempty" json:"baseline,omitempty"`
@@ -3658,6 +3777,9 @@ type UpdateProviderJSONRequestBody = SaveProviderRequest
 
 // SaveProviderModelsJSONRequestBody defines body for SaveProviderModels for application/json ContentType.
 type SaveProviderModelsJSONRequestBody = SaveProviderModelsRequest
+
+// InstallPresetResourceJSONRequestBody defines body for InstallPresetResource for application/json ContentType.
+type InstallPresetResourceJSONRequestBody InstallPresetResourceJSONBody
 
 // CreateAdvisorReportJSONRequestBody defines body for CreateAdvisorReport for application/json ContentType.
 type CreateAdvisorReportJSONRequestBody = CreateAdvisorReportRequest
@@ -4059,6 +4181,12 @@ type ServerInterface interface {
 
 	// (POST /providers/{provider_id}/test)
 	TestProvider(w http.ResponseWriter, r *http.Request, providerId string)
+
+	// (GET /resource-catalog)
+	ListResourceCatalog(w http.ResponseWriter, r *http.Request, params ListResourceCatalogParams)
+
+	// (POST /resource-catalog/{preset_key}:install)
+	InstallPresetResource(w http.ResponseWriter, r *http.Request, presetKey string)
 
 	// (POST /runs/{run_id}/advisor)
 	CreateAdvisorReport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
@@ -4656,6 +4784,16 @@ func (_ Unimplemented) RefreshProviderModels(w http.ResponseWriter, r *http.Requ
 
 // (POST /providers/{provider_id}/test)
 func (_ Unimplemented) TestProvider(w http.ResponseWriter, r *http.Request, providerId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /resource-catalog)
+func (_ Unimplemented) ListResourceCatalog(w http.ResponseWriter, r *http.Request, params ListResourceCatalogParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /resource-catalog/{preset_key}:install)
+func (_ Unimplemented) InstallPresetResource(w http.ResponseWriter, r *http.Request, presetKey string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -8224,6 +8362,65 @@ func (siw *ServerInterfaceWrapper) TestProvider(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// ListResourceCatalog operation middleware
+func (siw *ServerInterfaceWrapper) ListResourceCatalog(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListResourceCatalogParams
+
+	// ------------- Required query parameter "project_id" -------------
+
+	if paramValue := r.URL.Query().Get("project_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "project_id"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "project_id", r.URL.Query(), &params.ProjectId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListResourceCatalog(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InstallPresetResource operation middleware
+func (siw *ServerInterfaceWrapper) InstallPresetResource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "preset_key" -------------
+	var presetKey string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "preset_key", chi.URLParam(r, "preset_key"), &presetKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "preset_key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InstallPresetResource(w, r, presetKey)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateAdvisorReport operation middleware
 func (siw *ServerInterfaceWrapper) CreateAdvisorReport(w http.ResponseWriter, r *http.Request) {
 
@@ -9397,6 +9594,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/providers/{provider_id}/test", wrapper.TestProvider)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/resource-catalog", wrapper.ListResourceCatalog)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/resource-catalog/{preset_key}:install", wrapper.InstallPresetResource)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/runs/{run_id}/advisor", wrapper.CreateAdvisorReport)
@@ -12556,6 +12759,67 @@ func (response TestProviderdefaultApplicationProblemPlusJSONResponse) VisitTestP
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type ListResourceCatalogRequestObject struct {
+	Params ListResourceCatalogParams
+}
+
+type ListResourceCatalogResponseObject interface {
+	VisitListResourceCatalogResponse(w http.ResponseWriter) error
+}
+
+type ListResourceCatalog200JSONResponse struct {
+	Items []PresetResourceCatalogItem `json:"items"`
+}
+
+func (response ListResourceCatalog200JSONResponse) VisitListResourceCatalogResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListResourceCatalogdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListResourceCatalogdefaultApplicationProblemPlusJSONResponse) VisitListResourceCatalogResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type InstallPresetResourceRequestObject struct {
+	PresetKey string `json:"preset_key"`
+	Body      *InstallPresetResourceJSONRequestBody
+}
+
+type InstallPresetResourceResponseObject interface {
+	VisitInstallPresetResourceResponse(w http.ResponseWriter) error
+}
+
+type InstallPresetResource200JSONResponse Capability
+
+func (response InstallPresetResource200JSONResponse) VisitInstallPresetResourceResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type InstallPresetResourcedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response InstallPresetResourcedefaultApplicationProblemPlusJSONResponse) VisitInstallPresetResourceResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreateAdvisorReportRequestObject struct {
 	RunId openapi_types.UUID `json:"run_id"`
 	Body  *CreateAdvisorReportJSONRequestBody
@@ -13719,6 +13983,12 @@ type StrictServerInterface interface {
 
 	// (POST /providers/{provider_id}/test)
 	TestProvider(ctx context.Context, request TestProviderRequestObject) (TestProviderResponseObject, error)
+
+	// (GET /resource-catalog)
+	ListResourceCatalog(ctx context.Context, request ListResourceCatalogRequestObject) (ListResourceCatalogResponseObject, error)
+
+	// (POST /resource-catalog/{preset_key}:install)
+	InstallPresetResource(ctx context.Context, request InstallPresetResourceRequestObject) (InstallPresetResourceResponseObject, error)
 
 	// (POST /runs/{run_id}/advisor)
 	CreateAdvisorReport(ctx context.Context, request CreateAdvisorReportRequestObject) (CreateAdvisorReportResponseObject, error)
@@ -16751,6 +17021,65 @@ func (sh *strictHandler) TestProvider(w http.ResponseWriter, r *http.Request, pr
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(TestProviderResponseObject); ok {
 		if err := validResponse.VisitTestProviderResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListResourceCatalog operation middleware
+func (sh *strictHandler) ListResourceCatalog(w http.ResponseWriter, r *http.Request, params ListResourceCatalogParams) {
+	var request ListResourceCatalogRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListResourceCatalog(ctx, request.(ListResourceCatalogRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListResourceCatalog")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListResourceCatalogResponseObject); ok {
+		if err := validResponse.VisitListResourceCatalogResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InstallPresetResource operation middleware
+func (sh *strictHandler) InstallPresetResource(w http.ResponseWriter, r *http.Request, presetKey string) {
+	var request InstallPresetResourceRequestObject
+
+	request.PresetKey = presetKey
+
+	var body InstallPresetResourceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InstallPresetResource(ctx, request.(InstallPresetResourceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InstallPresetResource")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InstallPresetResourceResponseObject); ok {
+		if err := validResponse.VisitInstallPresetResourceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

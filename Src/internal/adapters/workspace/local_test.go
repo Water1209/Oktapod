@@ -310,6 +310,36 @@ func TestInitializeProjectTracksUntrackedDiffCommitAndRestore(t *testing.T) {
 	}
 }
 
+func TestGitStatusAndDiffExcludeInternalWorkspaceRuntimeFiles(t *testing.T) {
+	executor, projectRoot := newWorkspaceTestExecutor(t)
+	if err := executor.InitializeProject(context.Background(), workspaceTestProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".oktapod", "runtime-cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".oktapod", "runtime-cache", "cache.json"), []byte("internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "public.txt"), []byte("public\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := executeWorkspaceTest(t, executor, core.ToolGitStatus, map[string]any{})
+	statusText, _ := status.Output["status"].(string)
+	if status.Status != core.StatusSucceeded || strings.Contains(statusText, ".oktapod") || !strings.Contains(statusText, "public.txt") {
+		t.Fatalf("public Git status leaked internal runtime files: %+v", status)
+	}
+	diff := executeWorkspaceTest(t, executor, core.ToolGitDiff, map[string]any{})
+	diffText, _ := diff.Output["diff"].(string)
+	if diff.Status != core.StatusSucceeded || strings.Contains(diffText, ".oktapod") || !strings.Contains(diffText, "public.txt") {
+		t.Fatalf("public Git diff leaked internal runtime files: %+v", diff)
+	}
+	denied := executeWorkspaceTest(t, executor, core.ToolGitDiff, map[string]any{"path": ".oktapod/runtime-cache/cache.json"})
+	if denied.ErrorCode != "WORKSPACE_PATH_DENIED" {
+		t.Fatalf("internal Git path was not denied: %+v", denied)
+	}
+}
+
 func TestSamePathUsesFilesystemIdentity(t *testing.T) {
 	root := t.TempDir()
 	original := filepath.Join(root, "original")

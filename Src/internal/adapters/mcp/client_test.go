@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestConnectStreamableHTTPDiscoversTools(t *testing.T) {
@@ -74,6 +77,54 @@ func TestCallStreamableHTTPReturnsStructuredContent(t *testing.T) {
 	result, err := Call(context.Background(), `{"transport":"streamable_http","url":"`+server.URL+`"}`, "", "search", map[string]any{"query": "ok"})
 	if err != nil || result.IsError || len(result.Content) != 1 || len(result.StructuredResult) == 0 {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestSessionBrokerReusesProtocolSessionWithinRunCapability(t *testing.T) {
+	var mu sync.Mutex
+	initializeCalls, toolCalls := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
+		case "initialize":
+			mu.Lock()
+			initializeCalls++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "stateful-fixture", "version": "1.0.0"}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			mu.Lock()
+			toolCalls++
+			current := toolCalls
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("call-%d", current)}}}})
+		default:
+			t.Fatalf("unexpected method %s", request.Method)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	broker := NewSessionBroker(ctx, time.Minute)
+	defer broker.Close()
+	manifestJSON := `{"transport":"streamable_http","url":"` + server.URL + `"}`
+	for range 2 {
+		if _, err := broker.Call(context.Background(), "run-1\x00capability-1", manifestJSON, "", "search", map[string]any{"query": "ok"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if initializeCalls != 1 || toolCalls != 2 {
+		t.Fatalf("initialize calls=%d tool calls=%d", initializeCalls, toolCalls)
 	}
 }
 

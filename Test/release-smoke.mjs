@@ -31,6 +31,9 @@ const port = await new Promise((resolve, reject) => {
 })
 const baseURL = `http://127.0.0.1:${port}/api/v1`
 const configPath = join(dataRoot, 'config.yaml')
+const trustedKeysSource = join(root, 'Build', 'document-runtime-trusted-keys.json')
+if (!readFileSync(trustedKeysSource, 'utf8').trim()) throw new Error('Document Runtime trusted public key output is empty')
+writeFileSync(join(dataRoot, 'trusted-keys.json'), readFileSync(trustedKeysSource, 'utf8'))
 writeFileSync(configPath, `profile: personal\nlisten_address: 127.0.0.1:${port}\ndata_root: ${JSON.stringify(dataRoot)}\nrun_concurrency: 4\ndatabase:\n  driver: sqlite\ncapabilities:\n  trusted_keys_file: trusted-keys.json\n`)
 const child = spawn(binary, ['serve'], {
   cwd: root,

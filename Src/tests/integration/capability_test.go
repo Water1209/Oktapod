@@ -112,6 +112,7 @@ func TestCapabilityManifestPreflightQuarantinesRiskyDeclarations(t *testing.T) {
 		t.Fatal("unsafe manifest should be rejected")
 	}
 	items, err := service.ListCapabilities(context.Background(), project.ID)
+	items = customCapabilities(items)
 	if err != nil || len(items) != 2 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}

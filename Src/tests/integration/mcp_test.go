@@ -191,7 +191,10 @@ func TestMCPToolCallFlowsThroughModelApprovalAndReceipt(t *testing.T) {
 		if strings.Contains(string(body), "Reject unknown MCP tool") {
 			name = "mcp__" + capability.ID + "__unknown"
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "provider-mcp-unknown", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "mcp-call-unknown", "type": "function", "function": map[string]any{"name": name, "arguments": `{"query":"ok"}`}}}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "provider-mcp-unknown", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+				transitionPlanToolCall("mcp-unknown-plan", "验证未知 MCP 工具边界", "确认未发现的工具会在执行前被安全拒绝。"),
+				{"id": "mcp-call-unknown", "type": "function", "function": map[string]any{"name": name, "arguments": `{"query":"ok"}`}},
+			}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
 			return
 		}
 		modelCalls++
@@ -204,7 +207,10 @@ func TestMCPToolCallFlowsThroughModelApprovalAndReceipt(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "provider-mcp-1", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "mcp-call-1", "type": "function", "function": map[string]any{"name": name, "arguments": `{"query":"ok"}`}}}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "provider-mcp-1", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+			transitionPlanToolCall("mcp-call-plan", "调用并核对 MCP 结果", "执行目标 MCP 能力并根据受控结果完成验收。"),
+			{"id": "mcp-call-1", "type": "function", "function": map[string]any{"name": name, "arguments": `{"query":"ok"}`}},
+		}}}}, "usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 5}})
 	}))
 	defer provider.Close()
 

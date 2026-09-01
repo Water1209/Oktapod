@@ -56,6 +56,7 @@ const server = createServer(async (request, response) => {
           role: 'assistant',
           content: '已创建验收文件，并准备运行冻结的验证命令。',
           tool_calls: [
+            transitionPlanToolCall('provider-e2e-tools-plan', '创建并验证验收文件', '生成验收文件，并完成运行结果验证。'),
             { id: 'provider-e2e-write', type: 'function', function: { name: 'workspace_write_file', arguments: JSON.stringify({ path: 'e2e/approval.txt', content: 'approval persisted\n' }) } },
             { id: 'provider-e2e-command', type: 'function', function: { name: 'workspace_run_command', arguments: JSON.stringify({ program: 'node', args: ['--version'] }) } },
           ],
@@ -80,6 +81,9 @@ const server = createServer(async (request, response) => {
           role: 'assistant',
           content: webFetchCallCount === 0 ? '先读取受控私网页面。' : '继续读取相同 origin 的第二个路径。',
           tool_calls: [
+            ...(webFetchCallCount === 0
+              ? [transitionPlanToolCall('provider-e2e-private-fetch-plan', '读取并总结私网文档', '读取目标页面及其后续内容，形成可核验的总结。')]
+              : []),
             { id: `provider-e2e-private-fetch-call-${webFetchCallCount + 1}`, type: 'function', function: { name: 'web_fetch', arguments: JSON.stringify({ url: `http://127.0.0.1:19090${path}` }) } },
           ],
         } }],
@@ -119,6 +123,7 @@ const server = createServer(async (request, response) => {
           role: 'assistant',
           content: '核对冻结状态后，只提交用户在 Changes 中选择的文件。',
           tool_calls: [
+            transitionPlanToolCall('provider-e2e-changes-commit-plan', '提交所选变更', '提交用户已选择的文件，并核验提交后的工作区状态。'),
             { id: 'provider-e2e-git-commit-paths', type: 'function', function: { name: 'git_commit_paths', arguments: JSON.stringify({ message, paths, expected_status_hash: statusHash }) } },
           ],
         } }],
@@ -141,6 +146,7 @@ const server = createServer(async (request, response) => {
           role: 'assistant',
           content: '先写入执行结果文件，再总结。',
           tool_calls: [
+            transitionPlanToolCall('provider-e2e-result-plan', '生成并交付执行结果', '完成目标结果，并生成可审阅的结果与摘要文件。'),
             { id: 'provider-e2e-result-write', type: 'function', function: { name: 'workspace_write_file', arguments: JSON.stringify({ path: '执行结果.md', content: 'E2E 模型执行成功。\n' }) } },
             { id: 'provider-e2e-summary-write', type: 'function', function: { name: 'workspace_write_file', arguments: JSON.stringify({ path: '执行摘要.md', content: '# 执行摘要\n\n| 项目 | 结果 |\n| --- | --- |\n| 浏览器验收 | 通过 |\n' }) } },
           ],
@@ -178,4 +184,15 @@ async function readJSON(request) {
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function transitionPlanToolCall(id, title, description) {
+  return {
+    id,
+    type: 'function',
+    function: {
+      name: 'replace_plan',
+      arguments: JSON.stringify({ items: [{ title, description }] }),
+    },
+  }
 }

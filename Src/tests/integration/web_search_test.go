@@ -52,7 +52,10 @@ func TestWebSearchToolExecutesAndSynthesizesCitedAnswer(t *testing.T) {
 			if !strings.Contains(string(body), `"name":"web_search"`) {
 				t.Fatalf("web_search schema missing: %s", body)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "search-plan", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{{"id": "search-call", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"Oktapod current"}`}}}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "search-plan", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []map[string]any{
+				transitionPlanToolCall("search-plan-control", "核对当前信息", "检索可信来源并形成带出处的可验收结论。"),
+				{"id": "search-call", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"Oktapod current"}`}},
+			}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5}})
 			return
 		}
 		if !strings.Contains(string(body), "https://docs.example.test/oktapod") || !strings.Contains(string(body), `"tools"`) {
@@ -120,7 +123,10 @@ func TestDocumentTaskCannotCompleteAfterResearchWithoutFileReceipt(t *testing.T)
 		}
 		modelCalls++
 		if modelCalls == 1 {
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "research", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "先检索证据。", "tool_calls": []map[string]any{{"id": "search-call", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"physical ai products"}`}}}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "research", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "先检索证据。", "tool_calls": []map[string]any{
+				transitionPlanToolCall("research-plan-control", "研究并交付文档", "核对外部证据并形成可验收的文档交付物。"),
+				{"id": "search-call", "type": "function", "function": map[string]any{"name": core.ToolWebSearch, "arguments": `{"query":"physical ai products"}`}},
+			}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5}})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "false-finish", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "研究证据已经完整，现在开始形成 Markdown 文件。"}}}, "usage": map[string]any{"prompt_tokens": 20, "completion_tokens": 8}})
@@ -228,7 +234,10 @@ func TestWorkspaceCompletionRequiresDeclaredPostconditionEvidence(t *testing.T) 
 				}
 				modelCalls++
 				if modelCalls == 1 {
-					_ = json.NewEncoder(w).Encode(map[string]any{"id": "workspace-write", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "写入文件。", "tool_calls": []map[string]any{{"id": "write-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(arguments)}}}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 6}})
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "workspace-write", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "写入文件。", "tool_calls": []map[string]any{
+						transitionPlanToolCall("workspace-gate-plan", "完成文件交付", "创建目标文件并核对用户声明的验收条件。"),
+						{"id": "write-call", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(arguments)}},
+					}}}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 6}})
 					return
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"id": "false-final", "choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "任务已经完成。"}}}, "usage": map[string]any{"prompt_tokens": 20, "completion_tokens": 5}})
@@ -281,6 +290,7 @@ func TestSingleReportLengthCannotBeSatisfiedByFragmentSum(t *testing.T) {
 		message := map[string]any{"role": "assistant", "content": "两个分片合计已经超过要求。"}
 		if modelCalls == 1 {
 			message = map[string]any{"role": "assistant", "content": "写入两个分片。", "tool_calls": []map[string]any{
+				transitionPlanToolCall("single-report-plan", "形成一份完整报告", "产出并核验满足最低篇幅要求的单一主报告。"),
 				{"id": "write-fragment-one", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(firstArguments)}},
 				{"id": "write-fragment-two", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(secondArguments)}},
 			}}
@@ -336,7 +346,10 @@ func TestEditedDeliverableUsesVerifiedLatestContent(t *testing.T) {
 		var message map[string]any
 		switch modelCalls {
 		case 1:
-			message = map[string]any{"role": "assistant", "content": "创建报告。", "tool_calls": []map[string]any{{"id": "write-edit-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(writeArguments)}}}}
+			message = map[string]any{"role": "assistant", "content": "创建报告。", "tool_calls": []map[string]any{
+				transitionPlanToolCall("edit-gate-plan", "完成并核验最终报告", "创建、完善并核对最终报告满足交付要求。"),
+				{"id": "write-edit-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(writeArguments)}},
+			}}
 		case 2:
 			message = map[string]any{"role": "assistant", "content": "扩充报告。", "tool_calls": []map[string]any{{"id": "edit-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceEditFile, "arguments": string(editArguments)}}}}
 		case 3:
@@ -399,11 +412,17 @@ func TestNaturalLanguageContinuationCompletesFromSourceArtifactAndCurrentVerific
 		var message map[string]any
 		switch modelCalls {
 		case 1:
-			message = map[string]any{"role": "assistant", "content": "创建报告。", "tool_calls": []map[string]any{{"id": "write-source-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(writeArguments)}}}}
+			message = map[string]any{"role": "assistant", "content": "创建报告。", "tool_calls": []map[string]any{
+				transitionPlanToolCall("source-report-plan", "交付来源报告", "创建并验证可供后续任务复用的报告。"),
+				{"id": "write-source-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceWriteFile, "arguments": string(writeArguments)}},
+			}}
 		case 2:
 			message = map[string]any{"role": "assistant", "content": "来源任务已经完成报告。"}
 		case 3:
-			message = map[string]any{"role": "assistant", "content": "核对来源任务的报告。", "tool_calls": []map[string]any{{"id": "verify-source-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceReadFile, "arguments": string(readArguments)}}}}
+			message = map[string]any{"role": "assistant", "content": "核对来源任务的报告。", "tool_calls": []map[string]any{
+				transitionPlanToolCall("continuation-report-plan", "复用并核对已有报告", "读取来源任务交付物并完成当前验收。"),
+				{"id": "verify-source-report", "type": "function", "function": map[string]any{"name": core.ToolWorkspaceReadFile, "arguments": string(readArguments)}},
+			}}
 		default:
 			message = map[string]any{"role": "assistant", "content": "已复用来源任务交付物并完成当前核验。"}
 		}

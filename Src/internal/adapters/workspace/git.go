@@ -41,10 +41,15 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 			args = append(args, "--cached")
 		}
 		if path := stringArgument(call.Arguments, "path"); path != "" {
+			if isInternalGitPath(path) {
+				return workspaceFailure(result, "WORKSPACE_PATH_DENIED", errors.New("internal workspace paths are not public Git changes"))
+			}
 			if _, err := securePotentialFilePath(root, path); err != nil {
 				return workspaceFailure(result, "WORKSPACE_PATH_DENIED", err)
 			}
 			args = append(args, "--", filepathSlash(path))
+		} else {
+			args = appendPublicGitPathspec(args)
 		}
 		output, truncated, err := l.runGit(ctx, root, args...)
 		if err != nil {
@@ -101,6 +106,9 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 		args := []string{"commit", "--only", "-m", stringArgument(call.Arguments, "message"), "--"}
 		addArgs := []string{"add", "--"}
 		for _, path := range stringSliceArgument(call.Arguments, "paths") {
+			if isInternalGitPath(path) {
+				return workspaceFailure(result, "WORKSPACE_PATH_DENIED", errors.New("internal workspace paths cannot be committed"))
+			}
 			if _, pathErr := securePotentialFilePath(root, path); pathErr != nil {
 				return workspaceFailure(result, "WORKSPACE_PATH_DENIED", pathErr)
 			}
@@ -113,6 +121,9 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 		output, truncated, err = l.runGit(ctx, root, args...)
 	case core.ToolGitRestore:
 		path := stringArgument(call.Arguments, "path")
+		if isInternalGitPath(path) {
+			return workspaceFailure(result, "WORKSPACE_PATH_DENIED", errors.New("internal workspace paths cannot be restored through public Changes"))
+		}
 		target, pathErr := secureExistingPath(root, path, false)
 		if pathErr != nil {
 			return workspaceFailure(result, "WORKSPACE_PATH_DENIED", pathErr)
@@ -125,6 +136,9 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 		}
 	case core.ToolGitRestoreHunk:
 		path := stringArgument(call.Arguments, "path")
+		if isInternalGitPath(path) {
+			return workspaceFailure(result, "WORKSPACE_PATH_DENIED", errors.New("internal workspace paths cannot be restored through public Changes"))
+		}
 		if _, pathErr := securePotentialFilePath(root, path); pathErr != nil {
 			return workspaceFailure(result, "WORKSPACE_PATH_DENIED", pathErr)
 		}
@@ -156,7 +170,7 @@ func (l *Local) executeGit(ctx context.Context, root string, call core.ToolCall,
 }
 
 func (l *Local) gitStatus(ctx context.Context, root string) (string, string, error) {
-	output, _, err := l.runGit(ctx, root, "status", "--porcelain=v1", "--branch")
+	output, _, err := l.runGit(ctx, root, appendPublicGitPathspec([]string{"status", "--porcelain=v1", "--branch"})...)
 	if err != nil {
 		return "", "", err
 	}
@@ -219,7 +233,7 @@ func (l *Local) appendUntrackedDiffs(ctx context.Context, root, trackedDiff, sel
 	}
 	for _, path := range untrackedPaths {
 		path = filepathSlash(path)
-		if path == "" || (selectedPath != "" && path != selectedPath && !strings.HasPrefix(path, strings.TrimSuffix(selectedPath, "/")+"/")) {
+		if path == "" || isInternalGitPath(path) || (selectedPath != "" && path != selectedPath && !strings.HasPrefix(path, strings.TrimSuffix(selectedPath, "/")+"/")) {
 			continue
 		}
 		if _, err := secureExistingPath(root, path, false); err != nil {
@@ -236,6 +250,15 @@ func (l *Local) appendUntrackedDiffs(ctx context.Context, root, trackedDiff, sel
 		listTruncated = listTruncated || truncated
 	}
 	return output.String(), output.truncated || listTruncated, nil
+}
+
+func appendPublicGitPathspec(args []string) []string {
+	return append(args, "--", ".", ":(exclude).oktapod", ":(exclude).oktapod/**")
+}
+
+func isInternalGitPath(path string) bool {
+	clean := strings.TrimPrefix(filepathSlash(strings.TrimSpace(path)), "./")
+	return clean == ".oktapod" || strings.HasPrefix(clean, ".oktapod/")
 }
 
 func selectDiffHunk(diff string, index int) (string, error) {

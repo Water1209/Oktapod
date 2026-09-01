@@ -135,6 +135,65 @@ func (s *Store) DeleteProviderInstance(ctx context.Context, organizationID, prov
 		return err
 	}
 	defer tx.Rollback()
+	var existingIsDefault int
+	if err = tx.QueryRowContext(ctx, `SELECT is_default FROM provider_instances WHERE organization_id = ? AND provider_id = ?`, organizationID, providerID).Scan(&existingIsDefault); err != nil {
+		return err
+	}
+	var fallbackProviderID, fallbackModelID string
+	fallbackErr := tx.QueryRowContext(ctx, `
+SELECT provider_id, default_model_id
+FROM provider_instances
+WHERE organization_id = ? AND provider_id <> ? AND status = 'active'
+ORDER BY is_default DESC, updated_at DESC, display_name ASC
+LIMIT 1`, organizationID, providerID).Scan(&fallbackProviderID, &fallbackModelID)
+	if fallbackErr != nil && fallbackErr != sql.ErrNoRows {
+		return fallbackErr
+	}
+	if fallbackErr == sql.ErrNoRows {
+		fallbackProviderID, fallbackModelID = "", ""
+	}
+	now := formatTime(time.Now().UTC())
+	if fallbackProviderID != "" && existingIsDefault == 1 {
+		if _, err = tx.ExecContext(ctx, `UPDATE provider_instances SET is_default = 0, updated_at = ? WHERE organization_id = ? AND provider_id = ?`, now, organizationID, providerID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE provider_instances SET is_default = 1, updated_at = ? WHERE organization_id = ? AND provider_id = ?`, now, organizationID, fallbackProviderID); err != nil {
+			return err
+		}
+	}
+	// Project and Agent model choices are mutable configuration. Move them to the
+	// surviving default before deleting the instance; durable Run/model-call
+	// snapshots deliberately remain untouched as historical execution facts.
+	if _, err = tx.ExecContext(ctx, `
+UPDATE agent_definitions
+SET model = CASE WHEN model = '' THEN '' ELSE ? END,
+    fallback_model = '',
+    updated_at = ?
+WHERE organization_id = ? AND project_id IN (
+    SELECT id FROM projects WHERE organization_id = ? AND model_provider_id = ?
+)`, fallbackModelID, now, organizationID, organizationID, providerID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `
+UPDATE projects
+SET model_provider_id = ?, default_model = ?, fallback_model = '', updated_at = ?
+WHERE organization_id = ? AND model_provider_id = ?`, fallbackProviderID, fallbackModelID, now, organizationID, providerID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `
+UPDATE ai_governance_settings
+SET reviewer_provider_id = ?, reviewer_model_id = ?,
+    enabled = CASE WHEN ? = '' THEN 0 ELSE enabled END,
+    updated_at = ?
+WHERE organization_id = ? AND reviewer_provider_id = ?`, fallbackProviderID, fallbackModelID, fallbackProviderID, now, organizationID, providerID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `
+UPDATE user_preferences
+SET recent_provider_id = ?, recent_model_id = ?, updated_at = ?
+WHERE organization_id = ? AND recent_provider_id = ?`, fallbackProviderID, fallbackModelID, now, organizationID, providerID); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM provider_instances WHERE organization_id = ? AND provider_id = ?`,
 		organizationID, providerID)
 	if err != nil {

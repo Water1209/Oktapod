@@ -28,6 +28,7 @@ const (
 	PermissionModeFullAccess = "full_access"
 
 	PromptProfileVersionCurrent = "oktapod-prompt-v2"
+	ThinkingPolicyTaskActionV1  = "task_action_v1"
 
 	VisibilityPrivate  = "private"
 	VisibilitySelected = "selected"
@@ -58,6 +59,12 @@ const (
 	ToolWorkspaceShell          = "workspace_shell"
 	ToolArtifactCapture         = "artifact_capture"
 	ToolAssetStage              = "asset_stage"
+	ToolDocumentOpen            = "document_open"
+	ToolDocumentRead            = "document_read"
+	ToolDocumentCreate          = "document_create"
+	ToolDocumentApply           = "document_apply"
+	ToolDocumentRender          = "document_render"
+	ToolDocumentExport          = "document_export"
 	ToolGitStatus               = "git_status"
 	ToolGitDiff                 = "git_diff"
 	ToolGitLog                  = "git_log"
@@ -71,6 +78,8 @@ const (
 	ToolWebFetch                = "web_fetch"
 	ToolSkillInvoke             = "skill_invoke"
 	ToolUpdatePlan              = "update_plan"
+	ToolReplacePlan             = "replace_plan"
+	ToolAdvancePlan             = "advance_plan"
 	ToolRequestInput            = "request_input"
 	ToolRequestPermission       = "request_permission"
 	ToolWorkspaceExtractArchive = "workspace_extract_archive"
@@ -87,6 +96,7 @@ const (
 	ApprovalScopeConversation = "conversation"
 	ApprovalScopeProject      = "project"
 	ApprovalScopeRunOrigin    = "run_origin"
+	ApprovalScopeRunTool      = "run_tool"
 
 	HumanActionToolApproval         = "tool_approval"
 	HumanActionPermissionEscalation = "permission_escalation"
@@ -136,6 +146,7 @@ const (
 	// deterministic progress; repeating an unavailable network call cannot.
 	DefaultModelTransportRetryLimit = 1
 	DefaultToolRetryLimit           = 5
+	DefaultMCPCallsPerPlanItem      = 12
 	DefaultModelOutputTokens        = 8_192
 
 	SideEffectReceiptStarted   = "started"
@@ -194,6 +205,12 @@ const (
 	CapabilityReviewRejected    = "rejected"
 	CapabilityScopeGlobal       = "global"
 	CapabilityScopeProject      = "project"
+	CapabilityOriginSystem      = "system"
+	CapabilityOriginPreset      = "preset"
+	CapabilityOriginCustom      = "custom"
+	CapabilityUpdateCurrent     = "current"
+	CapabilityUpdateAvailable   = "available"
+	CapabilityUpdateDegraded    = "degraded"
 
 	StepAgentCoordinatorPlan      = "agent_coordinator_plan"
 	StepAgentWorker               = "agent_worker"
@@ -386,6 +403,7 @@ type Task struct {
 	Goal              string
 	Acceptance        string
 	Mode              string
+	PresentationKind  string
 	Visibility        string
 	Status            string
 	ErrorCode         string
@@ -394,6 +412,12 @@ type Task struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
+
+const (
+	TaskPresentationPendingAuto = "pending_auto"
+	TaskPresentationAnswer      = "answer"
+	TaskPresentationTask        = "task"
+)
 
 type Conversation struct {
 	ID             string
@@ -837,28 +861,29 @@ type ToolExecution struct {
 }
 
 type Approval struct {
-	ID             string
-	OrganizationID string
-	ProjectID      string
-	TaskID         string
-	RunID          string
-	StepID         string
-	ToolCallID     string
-	ToolName       string
-	RiskLevel      string
-	ApprovalScope  string
-	TargetOrigin   string
-	MatchedRuleID  string
-	PolicyHash     string
-	Status         string
-	Reason         string
-	FrozenParams   map[string]any
-	InputHash      string
-	RequestedBy    string
-	DecidedBy      string
-	RequestedAt    time.Time
-	ExpiresAt      time.Time
-	DecidedAt      *time.Time
+	ID              string
+	OrganizationID  string
+	ProjectID       string
+	TaskID          string
+	RunID           string
+	StepID          string
+	ToolCallID      string
+	ToolName        string
+	ToolDisplayName string
+	RiskLevel       string
+	ApprovalScope   string
+	TargetOrigin    string
+	MatchedRuleID   string
+	PolicyHash      string
+	Status          string
+	Reason          string
+	FrozenParams    map[string]any
+	InputHash       string
+	RequestedBy     string
+	DecidedBy       string
+	RequestedAt     time.Time
+	ExpiresAt       time.Time
+	DecidedAt       *time.Time
 }
 
 type RunPlanRevision struct {
@@ -1113,6 +1138,11 @@ type Capability struct {
 	CredentialExists bool
 	CredentialStatus string
 	Availability     string
+	Origin           string
+	PresetKey        string
+	Dependencies     []string
+	ManagedVersion   string
+	UpdateState      string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -1193,6 +1223,64 @@ type CreateCapabilityInput struct {
 	Credential     string
 	Credentials    map[string]string
 	CredentialRef  string
+	Origin         string
+	PresetKey      string
+	Dependencies   []string
+	ManagedVersion string
+	UpdateState    string
+}
+
+type PresetResourceCatalogItem struct {
+	PresetKey      string
+	Kind           string
+	Name           string
+	Version        string
+	Description    string
+	Origin         string
+	Dependencies   []string
+	ManagedVersion string
+	UpdateState    string
+	InstallState   string
+	CapabilityID   string
+	Availability   string
+}
+
+type DocumentSession struct {
+	ID                    string
+	OrganizationID        string
+	ProjectID             string
+	OwnerUserID           string
+	TaskID                string
+	RunID                 string
+	OpenKey               string
+	SourceRef             string
+	SourceContentHash     string
+	Format                string
+	Mode                  string
+	RuntimeVersion        string
+	ExtractionProfileHash string
+	Revision              int64
+	RevisionHash          string
+	WorkingHandle         string
+	StructureJSON         string
+	WarningsJSON          string
+	RenderedRevision      int64
+	RenderHash            string
+	RenderManifestJSON    string
+	Status                string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type DocumentRevision struct {
+	DocumentID    string
+	Revision      int64
+	RevisionHash  string
+	OperationHash string
+	WorkingHandle string
+	StructureJSON string
+	WarningsJSON  string
+	CreatedAt     time.Time
 }
 
 type Memory struct {
@@ -1325,24 +1413,30 @@ type ModelUsage struct {
 }
 
 type RunUsage struct {
-	RunID           string
-	ModelCalls      int64
-	InputTokens     int64
-	OutputTokens    int64
-	CachedTokens    int64
-	ReasoningTokens int64
-	EstimatedCalls  int64
-	LatencyMS       int64
-	CostStatus      string
-	Currency        string
-	CostDecimal     string
-	BudgetMaxCalls  int64
-	BudgetMaxTokens int64
-	BudgetStatus    string
-	RemainingCalls  int64
-	RemainingTokens int64
-	ReservedCalls   int64
-	ReservedTokens  int64
+	RunID             string
+	ModelCalls        int64
+	InputTokens       int64
+	OutputTokens      int64
+	CachedTokens      int64
+	CacheWriteTokens  int64
+	ReasoningTokens   int64
+	EstimatedCalls    int64
+	LatencyMS         int64
+	FirstByteMS       int64
+	FirstSafeDeltaMS  int64
+	AssemblyMS        int64
+	RequestBytes      int64
+	ModelCallPurposes map[string]int64
+	CostStatus        string
+	Currency          string
+	CostDecimal       string
+	BudgetMaxCalls    int64
+	BudgetMaxTokens   int64
+	BudgetStatus      string
+	RemainingCalls    int64
+	RemainingTokens   int64
+	ReservedCalls     int64
+	ReservedTokens    int64
 }
 
 type RunChanges struct {
@@ -1509,6 +1603,10 @@ type ModelResult struct {
 	StopReason          StopReason
 	Usage               ModelUsage
 	Latency             time.Duration
+	FirstByteLatency    time.Duration
+	FirstSafeLatency    time.Duration
+	AssemblyLatency     time.Duration
+	RequestBytes        int64
 	ErrorCode           string
 	ToolCalls           []ToolCall
 	ToolArgumentRepairs int

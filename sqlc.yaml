@@ -23,9 +23,48 @@ sql:
       - Src/db/migrations/sqlite/000020_schedule_policies.up.sql
       - Src/db/migrations/sqlite/000021_mcp_connections.up.sql
       - Src/db/migrations/sqlite/000022_scheduler_leases.up.sql
+      - Src/db/migrations/sqlite/000023_team_definitions.up.sql
+      - Src/db/migrations/sqlite/000024_budget_reservations.up.sql
+      - Src/db/migrations/sqlite/000025_local_password_auth.up.sql
+      - Src/db/migrations/sqlite/000026_project_invitations.up.sql
+      - Src/db/migrations/sqlite/000027_side_effect_resolutions.up.sql
+      - Src/db/migrations/sqlite/000028_capability_reviews.up.sql
       - Src/db/migrations/sqlite/000029_memory_status.up.sql
       - Src/db/migrations/sqlite/000030_memory_sources.up.sql
       - Src/db/migrations/sqlite/000031_project_model_policy.up.sql
+      - Src/db/migrations/sqlite/000032_usage_aggregates.up.sql
+      - Src/db/migrations/sqlite/000033_daily_summary_unique.up.sql
+      - Src/db/migrations/sqlite/000034_approval_expiry.up.sql
+      - Src/db/migrations/sqlite/000035_local_user_registration.up.sql
+      - Src/db/migrations/sqlite/000036_conversation_model_calls.up.sql
+      - Src/db/migrations/sqlite/000037_capability_scopes_and_install_jobs.up.sql
+      - Src/db/migrations/sqlite/000038_model_provider_config.up.sql
+      - Src/db/migrations/sqlite/000039_conversation_compaction.up.sql
+      - Src/db/migrations/sqlite/000040_unlimited_run_budgets.up.sql
+      - Src/db/migrations/sqlite/000041_conversation_approval_rules.up.sql
+      - Src/db/migrations/sqlite/000042_project_runtime_settings.up.sql
+      - Src/db/migrations/sqlite/000043_conversation_message_queue.up.sql
+      - Src/db/migrations/sqlite/000044_session_entries.up.sql
+      - Src/db/migrations/sqlite/000045_typed_model_protocol.up.sql
+      - Src/db/migrations/sqlite/000046_durable_tool_batches.up.sql
+      - Src/db/migrations/sqlite/000047_session_tree_v2.up.sql
+      - Src/db/migrations/sqlite/000048_provider_registry.up.sql
+      - Src/db/migrations/sqlite/000049_project_approval_rules.up.sql
+      - Src/db/migrations/sqlite/000050_run_execution_plans.up.sql
+      - Src/db/migrations/sqlite/000051_human_actions.up.sql
+      - Src/db/migrations/sqlite/000052_approval_rule_signatures.up.sql
+      - Src/db/migrations/sqlite/000053_task_run_status_reconciliation.up.sql
+      - Src/db/migrations/sqlite/000054_tool_contract_snapshots.up.sql
+      - Src/db/migrations/sqlite/000055_mcp_credentials.up.sql
+      - Src/db/migrations/sqlite/000056_provider_enabled_models.up.sql
+      - Src/db/migrations/sqlite/000057_message_presentation_queue.up.sql
+      - Src/db/migrations/sqlite/000058_database_secret_vault.up.sql
+      - Src/db/migrations/sqlite/000059_ai_governance_settings.up.sql
+      - Src/db/migrations/sqlite/000060_model_pricing_versions.up.sql
+      - Src/db/migrations/sqlite/000061_user_preferences.up.sql
+      - Src/db/migrations/sqlite/000062_run_approval_rules.up.sql
+      - Src/db/migrations/sqlite/000063_web_receipt_authority.up.sql
+      - Src/db/migrations/sqlite/000064_runtime_performance_v2.up.sql
     queries: Src/db/queries/sqlite
     gen:
       go:

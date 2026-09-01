@@ -96,4 +96,7 @@ func TestValidateDecideApprovalScope(t *testing.T) {
 	if err := ValidateDecideApproval(DecideApprovalInput{Decision: ApprovalApproved, Scope: ApprovalScopeProject, Confirmed: true}); err != nil {
 		t.Fatalf("confirmed project approval scope rejected: %v", err)
 	}
+	if err := ValidateDecideApproval(DecideApprovalInput{Decision: ApprovalApproved, Scope: ApprovalScopeRunTool}); err != nil {
+		t.Fatalf("current Run tool approval scope rejected: %v", err)
+	}
 }

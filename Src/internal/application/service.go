@@ -53,6 +53,7 @@ type Service struct {
 	vault                  VaultController
 	bootstrapConfiguration BootstrapConfigurationManager
 	webAccessPolicy        core.WebAccessPolicy
+	documentRuntime        DocumentExecutor
 }
 
 const (
@@ -96,6 +97,11 @@ func (s *Service) WithChatToolExecutor(executor ChatToolExecutor, workspaceRoot 
 // into explicit user-driven recovery actions in the Files inspector.
 func (s *Service) WithArtifactCapture(capture ArtifactCapture) *Service {
 	s.artifactCapture = capture
+	return s
+}
+
+func (s *Service) WithDocumentRuntime(runtime DocumentExecutor) *Service {
+	s.documentRuntime = runtime
 	return s
 }
 
@@ -361,6 +367,9 @@ func (s *Service) CreateProject(ctx context.Context, input core.CreateProjectInp
 		if err := initializer.InitializeProject(ctx, project.ID); err != nil {
 			return core.Project{}, fmt.Errorf("initialize project workspace: %w", err)
 		}
+	}
+	if err := s.ensurePresetResources(ctx, project.ID); err != nil {
+		return core.Project{}, fmt.Errorf("install preset resources: %w", err)
 	}
 	return project, nil
 }
@@ -669,6 +678,9 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	if err != nil {
 		return core.Task{}, err
 	}
+	if err := s.ensurePresetResources(ctx, projectID); err != nil {
+		return core.Task{}, fmt.Errorf("install preset resources: %w", err)
+	}
 	if strings.TrimSpace(input.ProviderID) == "" {
 		input.ProviderID = strings.TrimSpace(project.ModelProviderID)
 	}
@@ -699,7 +711,8 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		classificationReason = "explicit_skill_invocation"
 	}
 	if input.Mode == core.ModeAuto {
-		input.Mode, classificationReason = classifyTaskMode(input)
+		input.Mode = core.ModeSingleAgent
+		classificationReason = "auto_agent_v2"
 	}
 	if err := core.ValidateCreateTask(input); err != nil {
 		return core.Task{}, err
@@ -758,6 +771,17 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		"permission_mode":        input.PermissionMode,
 		"prompt_profile_version": core.PromptProfileVersionCurrent,
 	}
+	if input.Mode == core.ModeSingleAgent {
+		snapshot["plan_protocol_version"] = "transition_v2"
+		snapshot["tool_scheduler_version"] = "barrier_v2"
+		snapshot["context_projection_version"] = "token_v2"
+		snapshot["thinking_policy_version"] = core.ThinkingPolicyTaskActionV1
+	}
+	if requestedMode == core.ModeAuto {
+		snapshot["turn_router_version"] = "auto_agent_v2"
+	} else {
+		snapshot["turn_router_version"] = "explicit_v2"
+	}
 	s.webAccessPolicy.Snapshot().AddTo(snapshot)
 	if input.ProviderID != "" {
 		snapshot["model_provider_id"] = input.ProviderID
@@ -811,12 +835,21 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		return core.Task{}, listErr
 	}
 	if listErr == nil {
+		for index := range capabilities {
+			capabilities[index] = s.decorateCapabilityAvailability(ctx, capabilities[index])
+		}
+		decorateDependencyAvailability(capabilities)
 		mcpSnapshots := make([]map[string]any, 0)
 		var explicitSkill *core.Capability
+		var documentRuntimeCapability *core.Capability
 		for _, capability := range capabilities {
 			if capability.ID == input.SkillID {
 				candidate := capability
 				explicitSkill = &candidate
+			}
+			if capability.PresetKey == "document-runtime" {
+				candidate := capability
+				documentRuntimeCapability = &candidate
 			}
 			if capability.Kind != core.CapabilityKindMCP || capability.Status != core.CapabilityStatusEnabled {
 				continue
@@ -839,13 +872,45 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 		if len(mcpSnapshots) > 0 {
 			snapshot["mcp_capabilities"] = mcpSnapshots
 		}
+		documentRuntimeAvailable := false
+		if documentRuntimeCapability != nil && documentRuntimeCapability.Status == core.CapabilityStatusEnabled && documentRuntimeCapability.Availability == core.ResourceAvailabilityAvailable && s.documentRuntime != nil {
+			healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			health := s.documentRuntime.Health(healthCtx)
+			cancel()
+			if health.Available && health.Protocol == "oktapod.document/v1" {
+				documentRuntimeAvailable = true
+				snapshot["document_runtime"] = map[string]any{"capability_id": documentRuntimeCapability.ID, "managed_version": documentRuntimeCapability.ManagedVersion, "runtime_version": health.Version, "protocol": health.Protocol, "renderer": health.Renderer, "ocr_languages": health.OCRLanguages}
+			}
+		}
+		if input.SkillID == "" && input.Mode == core.ModeSingleAgent {
+			if presetKey := documentPresetForTask(contextAssetSnapshots, input.Goal+"\n"+input.Acceptance); presetKey != "" {
+				for index := range capabilities {
+					candidate := &capabilities[index]
+					if candidate.PresetKey == presetKey && candidate.Kind == core.CapabilityKindSkill && candidate.Status == core.CapabilityStatusEnabled && candidate.Availability == core.ResourceAvailabilityAvailable {
+						explicitSkill = candidate
+						input.SkillID = candidate.ID
+						classificationReason = "document_asset_skill_binding"
+						snapshot["classification_reason"] = classificationReason
+						snapshot["document_skill_binding"] = map[string]any{"preset_key": presetKey, "skill_id": candidate.ID, "source": "frozen_asset_mime_and_intent"}
+						break
+					}
+				}
+				if input.SkillID == "" || !documentRuntimeAvailable {
+					missing := presetKey
+					if input.SkillID != "" {
+						missing = "document-runtime"
+					}
+					return core.Task{}, &core.ResourceConflictError{Resource: "document resource", Reason: missing + " is unavailable; restore it from the resource catalog instead of falling back to a temporary script"}
+				}
+			}
+		}
 		// Skills are frozen as metadata plus their manifest at Run creation, but
 		// their instruction body is loaded into the model prompt only when the
 		// deterministic runtime relevance plan selects them. This keeps ordinary
 		// tasks cheap while preserving reproducibility if a Skill is edited later.
 		skillSnapshots := make([]map[string]any, 0)
 		for _, capability := range capabilities {
-			if capability.Kind != core.CapabilityKindSkill || capability.Status != core.CapabilityStatusEnabled {
+			if capability.Kind != core.CapabilityKindSkill || capability.Status != core.CapabilityStatusEnabled || capability.Availability != core.ResourceAvailabilityAvailable {
 				continue
 			}
 			skillSnapshots = append(skillSnapshots, map[string]any{"id": capability.ID, "name": capability.Name, "version": capability.Version, "content_hash": capability.ContentHash, "manifest_json": capability.ManifestJSON})
@@ -865,6 +930,9 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 			}
 			if explicitSkill.Status != core.CapabilityStatusEnabled {
 				return core.Task{}, &core.ForbiddenError{Message: "selected Skill is not enabled"}
+			}
+			if explicitSkill.Availability != core.ResourceAvailabilityAvailable {
+				return core.Task{}, &core.ResourceConflictError{Resource: "selected Skill", Reason: "a required dependency is unavailable; repair it from the resource catalog"}
 			}
 			snapshot["explicit_skill_invocation"] = map[string]any{"skill_id": explicitSkill.ID, "skill_name": explicitSkill.Name, "skill_args": input.SkillArgs}
 		}
@@ -1238,34 +1306,17 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 		return s.executeMCPInstallDirective(ctx, projectID, input, content, sourceInput, conversationID, visibility, idempotencyKey, onRoute, onDelta)
 	}
 
-	var classification core.ModelResult
 	route := TurnRouteTask
-	classificationReason := "user_selected_task"
 	hasSelectedAttachments := len(input.ContextAssetIDs) > 0
 	if hasSelectedAttachments {
 		// Selected attachments are immutable Run context. Keeping this turn on
 		// the chat-only path would discard that context and expose no governed
 		// tool for staging binary files such as PDF documents.
 		route = TurnRouteTask
-		classificationReason = "selected_attachments_require_task"
 	} else if mode == core.ModeAnswer {
 		route = TurnRouteChat
-		classificationReason = "user_selected_chat"
 	} else if mode == core.ModeAuto {
-		var classifyErr error
-		classification, classifyErr = s.classifyProjectTurn(ctx, project, content, input.Model, input.FallbackModel, input.ProviderID)
-		if classifyErr != nil {
-			// Auto routing must not lose the user's first message when the model
-			// is temporarily unavailable. A task is persisted before any worker
-			// model call, so the same Thread can be resumed after connectivity is
-			// restored instead of asking a context-free "继续" turn to guess.
-			route, classificationReason = TurnRouteTask, "classify_fallback_task"
-		} else {
-			route, classificationReason = parseTurnRoute(classification.Content)
-			if route == "" {
-				route, classificationReason = TurnRouteChat, "classify_unparsable_chat"
-			}
-		}
+		route = TurnRouteTask
 	}
 	if onRoute != nil {
 		if err := onRoute(route); err != nil {
@@ -1288,9 +1339,6 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 			return core.ProjectTurnResult{}, answerErr
 		}
 		calls := []core.ConversationModelCall{{Purpose: "answer", Model: answer}}
-		if classification.CallID != "" {
-			calls = append([]core.ConversationModelCall{{Purpose: "classification", Model: classification}}, calls...)
-		}
 		return s.repository.AppendChatTurn(ctx, s.ScopeFor(ctx), projectID, inputWithTurnDefaults(input, content, conversationID, visibility), answer.Content, calls, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(struct {
 			ProjectID string
 			Input     core.ProjectTurnInput
@@ -1349,11 +1397,6 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 	if taskErr != nil {
 		return core.ProjectTurnResult{}, taskErr
 	}
-	if classification.CallID != "" && task.ConversationID != "" {
-		if recordErr := s.repository.RecordConversationModelCalls(ctx, s.ScopeFor(ctx), projectID, task.ConversationID, []core.ConversationModelCall{{Purpose: "classification:" + classificationReason, Model: classification}}); recordErr != nil {
-			return core.ProjectTurnResult{}, recordErr
-		}
-	}
 	conversation, conversationErr := s.repository.GetConversation(ctx, s.ScopeFor(ctx), task.ConversationID)
 	if conversationErr != nil {
 		return core.ProjectTurnResult{}, conversationErr
@@ -1411,7 +1454,10 @@ func (s *Service) messagePresentationForTurn(ctx context.Context, projectID, con
 }
 
 func effectiveTaskMode(mode string, hasSelectedAttachments bool) string {
-	if mode == core.ModeAuto || hasSelectedAttachments {
+	if mode == core.ModeAuto {
+		return core.ModeAuto
+	}
+	if hasSelectedAttachments {
 		return core.ModeSingleAgent
 	}
 	return mode
@@ -1750,7 +1796,10 @@ func transientSQLiteBusy(err error) bool {
 func retryTransientSQLiteValue[T any](ctx context.Context, operation func() (T, error)) (T, error) {
 	var zero T
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	// BUSY_SNAPSHOT is returned immediately instead of honoring busy_timeout.
+	// Eight bounded attempts provide about 2.55 seconds for a short writer to
+	// finish while still respecting cancellation and surfacing sustained load.
+	for attempt := 0; attempt < 8; attempt++ {
 		value, err := operation()
 		if err == nil || !transientSQLiteBusy(err) {
 			return value, err
@@ -2135,6 +2184,11 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 	input.ScopeType = strings.ToLower(strings.TrimSpace(input.ScopeType))
 	input.SourceFilename = strings.TrimSpace(input.SourceFilename)
 	input.Credential = strings.TrimSpace(input.Credential)
+	input.Origin = core.CapabilityOriginCustom
+	input.PresetKey = ""
+	input.Dependencies = nil
+	input.ManagedVersion = ""
+	input.UpdateState = core.CapabilityUpdateCurrent
 	normalizedCredentials := make(map[string]string, len(input.Credentials))
 	for name, value := range input.Credentials {
 		trimmedName, trimmedValue := strings.TrimSpace(name), strings.TrimSpace(value)
@@ -2169,6 +2223,7 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 		}
 		input.ManifestJSON = normalized
 		input.Name = name
+		input.Dependencies = skillManifestDependencies(normalized)
 	}
 	var mcpDefinition core.MCPDefinitionV1
 	if input.Kind == core.CapabilityKindMCP {
@@ -2311,6 +2366,9 @@ func (s *Service) CreateCapability(ctx context.Context, projectID string, input 
 }
 
 func (s *Service) ListCapabilities(ctx context.Context, projectID string) ([]core.Capability, error) {
+	if err := s.ensurePresetResources(ctx, projectID); err != nil {
+		return nil, err
+	}
 	items, err := s.repository.ListCapabilities(ctx, s.ScopeFor(ctx), projectID, 100)
 	if err != nil {
 		return nil, err
@@ -2319,6 +2377,7 @@ func (s *Service) ListCapabilities(ctx context.Context, projectID string) ([]cor
 		items[index] = s.decorateCapabilityCredential(ctx, items[index])
 		items[index] = s.decorateCapabilityAvailability(ctx, items[index])
 	}
+	decorateDependencyAvailability(items)
 	return items, nil
 }
 
@@ -2330,6 +2389,20 @@ func (s *Service) decorateCapabilityAvailability(ctx context.Context, capability
 		capability.Availability = core.ResourceAvailabilityQuarantined
 	default:
 		capability.Availability = core.ResourceAvailabilityAvailable
+		if capability.PresetKey == "document-runtime" {
+			if s.documentRuntime == nil {
+				capability.Availability = core.ResourceAvailabilityDegraded
+				capability.UpdateState = core.CapabilityUpdateDegraded
+			} else {
+				healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				health := s.documentRuntime.Health(healthCtx)
+				cancel()
+				if !health.Available || health.Protocol != "oktapod.document/v1" {
+					capability.Availability = core.ResourceAvailabilityDegraded
+					capability.UpdateState = core.CapabilityUpdateDegraded
+				}
+			}
+		}
 		if capability.Kind == core.CapabilityKindMCP {
 			health, err := s.repository.GetMCPHealth(ctx, s.ScopeFor(ctx), capability.ID)
 			if err != nil || health.Status != core.MCPStatusConnected {
@@ -2794,7 +2867,10 @@ func (s *Service) CreateAgentDefinition(ctx context.Context, projectID string, i
 		ProjectID string                `json:"project_id"`
 		Input     core.CreateAgentInput `json:"input"`
 	}{ProjectID: projectID, Input: input}
-	return s.repository.CreateAgentDefinition(ctx, s.ScopeFor(ctx), projectID, input, status, core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)})
+	idempotency := core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)}
+	return retryTransientSQLiteValue(ctx, func() (core.AgentDefinition, error) {
+		return s.repository.CreateAgentDefinition(ctx, s.ScopeFor(ctx), projectID, input, status, idempotency)
+	})
 }
 
 func (s *Service) ListAgentDefinitions(ctx context.Context, projectID string) ([]core.AgentDefinition, error) {

@@ -12,6 +12,8 @@ export type MemoryStatus = 'active' | 'inactive'
 export type CapabilityKind = 'skill' | 'plugin' | 'mcp' | 'agent'
 export type CapabilityStatus = 'enabled' | 'disabled' | 'quarantined'
 export type CapabilityScope = 'global' | 'project'
+export type CapabilityOrigin = 'system' | 'preset' | 'custom'
+export type CapabilityUpdateState = 'current' | 'update_available' | 'degraded'
 export type ResourceAvailability = 'available' | 'degraded' | 'disabled' | 'quarantined'
 export type TaskStatus =
   | 'queued'
@@ -266,6 +268,7 @@ export interface Task {
   goal: string
   acceptance?: string
   mode: TaskMode
+  presentation_kind: 'pending_auto' | 'answer' | 'task'
   visibility: Visibility
   status: TaskStatus
   error_code?: string
@@ -273,6 +276,16 @@ export interface Task {
   accepted: boolean
   created_at: string
   updated_at: string
+}
+
+export interface RunLiveEvent {
+  run_id: string
+  model_call_id: string
+  kind: 'assistant_delta' | 'phase'
+  delta?: string
+  phase?: string
+  ephemeral_seq: number
+  emitted_at: string
 }
 
 export interface Schedule {
@@ -317,8 +330,28 @@ export interface Capability {
   install_job_id: string
   credential_configured: boolean
   credential_state: 'ready' | 'locked' | 'missing' | 'corrupt'
+  origin: CapabilityOrigin
+  preset_key?: string
+  dependencies: string[]
+  managed_version?: string
+  update_state: CapabilityUpdateState
   created_at: string
   updated_at: string
+}
+
+export interface PresetResourceCatalogItem {
+  preset_key: string
+  kind: CapabilityKind
+  name: string
+  version: string
+  description: string
+  origin: 'preset'
+  dependencies: string[]
+  managed_version: string
+  update_state: CapabilityUpdateState
+  install_state: 'installed' | 'available'
+  capability_id?: string
+  availability: ResourceAvailability
 }
 
 export interface MCPHealth {
@@ -571,9 +604,15 @@ export interface RunUsage {
   input_tokens: number
   output_tokens: number
   cached_tokens: number
+  cache_write_tokens: number
   reasoning_tokens: number
   estimated_calls: number
   latency_ms: number
+  first_byte_ms: number
+  first_safe_delta_ms: number
+  assembly_ms: number
+  request_bytes: number
+  model_call_purposes: Record<string, number>
   cost_status: 'unpriced' | 'estimated' | 'confirmed'
   currency: string
   cost_decimal: string
@@ -691,6 +730,7 @@ export interface Approval {
   step_id: string
   tool_call_id: string
   tool_name: string
+  tool_display_name: string
   risk_level: 'L0' | 'L1' | 'L2' | 'L3'
   approval_scope: ApprovalScope
   target_origin: string
@@ -707,7 +747,7 @@ export interface Approval {
   decided_at?: string
 }
 
-export type ApprovalScope = 'once' | 'conversation' | 'project' | 'run_origin'
+export type ApprovalScope = 'once' | 'conversation' | 'project' | 'run_origin' | 'run_tool'
 
 export interface RunPlanItem {
   id: string
@@ -909,7 +949,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		.split('; ')
 		.find((item) => item.startsWith('oktapod_csrf='))
 		?.slice('oktapod_csrf='.length)
-	const response = await fetch(`/api/v1${path}`, {
+  const requestInit: RequestInit = {
     credentials: 'same-origin',
     ...init,
     headers: {
@@ -918,7 +958,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		...(csrf && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) ? { 'X-CSRF-Token': decodeURIComponent(csrf) } : {}),
       ...init?.headers,
     },
-  })
+  }
+	const response = await fetchWithIdempotentNetworkRetry(`/api/v1${path}`, requestInit)
   if (!response.ok) {
     let problem: ProblemDetails
     try {
@@ -936,6 +977,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+async function fetchWithIdempotentNetworkRetry(input: RequestInfo | URL, init: RequestInit) {
+  try {
+    return await fetch(input, init)
+  } catch (error) {
+    const retryable = error instanceof TypeError && !init.signal?.aborted && new Headers(init.headers).has('Idempotency-Key')
+    if (!retryable) throw error
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    return fetch(input, init)
+  }
 }
 
 async function streamProjectTurn(path: string, input: ProjectTurnInput, handlers: StreamProjectTurnHandlers): Promise<ProjectTurnResult> {
@@ -1091,6 +1143,9 @@ export const api = {
   setScheduleStatus: (scheduleId: string, status: ScheduleStatus) =>
     request<Schedule>(`/schedules/${scheduleId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
   capabilities: (projectId: string) => request<{ items: Capability[] }>(`/projects/${projectId}/capabilities`),
+  resourceCatalog: (projectId: string) => request<{ items: PresetResourceCatalogItem[] }>(`/resource-catalog?project_id=${encodeURIComponent(projectId)}`),
+  installPresetResource: (projectId: string, presetKey: string) =>
+    request<Capability>(`/resource-catalog/${encodeURIComponent(presetKey)}:install`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ project_id: projectId }) }),
   resolveResourceInstallDraft: (projectId: string, sourceInput: string) =>
     request<ResourceInstallDraft>(`/projects/${projectId}/resource-install-drafts:resolve`, { method: 'POST', body: JSON.stringify({ source_input: sourceInput }) }),
   createCapability: (projectId: string, input: { kind: CapabilityKind; name: string; version?: string; manifest_json: string; scope_type?: CapabilityScope; source_filename?: string; bundle_base64?: string; credential?: string; credentials?: Record<string, string> }) =>

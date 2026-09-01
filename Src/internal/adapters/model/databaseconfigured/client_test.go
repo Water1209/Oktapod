@@ -2,6 +2,7 @@ package databaseconfigured
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -62,7 +63,49 @@ func (s *registryRepositoryStub) GetModelProviderConfig(context.Context, string)
 }
 
 func (s *registryRepositoryStub) GetProviderInstance(_ context.Context, _, providerID string) (core.ProviderInstance, error) {
-	return s.providers[providerID], nil
+	provider, ok := s.providers[providerID]
+	if !ok {
+		return core.ProviderInstance{}, sql.ErrNoRows
+	}
+	return provider, nil
+}
+
+func TestClientFallsBackToDefaultWhenRequestedProviderWasDeleted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/chat/completions" {
+			http.NotFound(response, request)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "model-a" {
+			t.Fatalf("model=%v; expected surviving provider default", body["model"])
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"id":      "request-fallback",
+			"choices": []map[string]any{{"message": map[string]any{"content": "fallback"}, "finish_reason": "stop"}},
+			"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1},
+		})
+	}))
+	defer upstream.Close()
+	now := time.Now().UTC()
+	repository := &registryRepositoryStub{providers: map[string]core.ProviderInstance{
+		"provider-a": {ProviderID: "provider-a", ProtocolFamily: core.ProviderProtocolOpenAICompatible, Endpoint: upstream.URL, CredentialRef: "ref-a", DefaultModelID: "model-a", Status: core.ProviderStatusActive, UpdatedAt: now},
+	}}
+	client := New(repository, credentialStoreStub{}, "org-1")
+	result, err := client.Complete(context.Background(), okruntime.ModelRequest{
+		SystemPrompt: "system", UserPrompt: "user",
+		RequestedModel: core.ModelRef{ProviderID: "deleted-provider", ModelID: "deleted-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequestedModel.ProviderID != "deleted-provider" || result.RequestedModel.ModelID != "deleted-model" ||
+		result.EffectiveModel.ProviderID != "provider-a" || result.EffectiveModel.ModelID != "model-a" || result.RoutingReason != "fallback" {
+		t.Fatalf("result=%+v", result)
+	}
 }
 
 func (s *registryRepositoryStub) GetDefaultProviderInstance(context.Context, string) (core.ProviderInstance, error) {

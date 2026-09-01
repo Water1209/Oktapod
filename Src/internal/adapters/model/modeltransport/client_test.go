@@ -51,3 +51,23 @@ func TestScanLinesClassifiesStreamIdleTimeout(t *testing.T) {
 		t.Fatalf("failure=%+v", failure)
 	}
 }
+
+func TestScanLinesKeepAliveDoesNotSatisfyFirstTokenDeadline(t *testing.T) {
+	reader, writer := net.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	go func() {
+		for index := 0; index < 8; index++ {
+			_, _ = io.WriteString(writer, ": keep-alive\n")
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	err := ScanLinesWithProgress(context.Background(), reader, io.Reader(reader), 1024, 20*time.Millisecond, 50*time.Millisecond, func(string) (bool, error) {
+		return false, nil
+	})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Kind != KindFirstTokenTimeout || failure.Phase != PhaseResponseBody || !failure.TimedOut {
+		t.Fatalf("failure=%+v err=%v", failure, err)
+	}
+}

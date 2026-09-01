@@ -52,7 +52,12 @@ func TestClaimNextStepRecoversCompletedBatchWithoutRunnableStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _, err := store.planToolSteps(ctx, tx, store.queries.WithTx(tx), modelStep, run, []core.ToolCall{{Name: core.ToolWorkspaceWriteFile, Arguments: map[string]any{"path": "done.html", "content": "<h1>done</h1>"}}}, nowText, "plan-before-crash")
+	status, _, err := store.planToolSteps(ctx, tx, store.queries.WithTx(tx), modelStep, run, []core.ToolCall{
+		{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{
+			map[string]any{"title": "Write and verify the HTML file", "description": "Persist the requested HTML and retain durable completion evidence."},
+		}}},
+		{Name: core.ToolWorkspaceWriteFile, Arguments: map[string]any{"path": "done.html", "content": "<h1>done</h1>"}},
+	}, nowText, "plan-before-crash")
 	if err != nil {
 		t.Fatal(err)
 	}

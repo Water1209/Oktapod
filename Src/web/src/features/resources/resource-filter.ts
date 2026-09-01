@@ -12,12 +12,12 @@ export function resourceKindCounts(items: Capability[]) {
   } satisfies Record<ResourceKind, number>
 }
 
-export function filterProjectResources(items: Capability[], kind: ResourceKind, query: string) {
+export function filterProjectResources<T extends Capability>(items: T[], kind: ResourceKind, query: string): T[] {
   const needle = query.trim().toLowerCase()
   return items.filter((item) => (kind === 'all' || item.kind === kind) && (!needle || `${item.name} ${item.source_filename}`.toLowerCase().includes(needle)))
 }
 
-export function filterSystemResources(items: Capability[], query: string) {
+export function filterSystemResources<T extends Capability>(items: T[], query: string): T[] {
   const needle = query.trim().toLowerCase()
   return items.filter((item) => !needle || `${item.name} ${item.source_filename}`.toLowerCase().includes(needle))
 }

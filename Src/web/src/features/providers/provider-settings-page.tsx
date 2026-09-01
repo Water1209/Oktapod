@@ -102,7 +102,17 @@ export function ProviderSettingsPage() {
         onSaved(result.provider, result)
       },
     })
-    const remove = useMutation({ mutationFn: () => api.deleteProvider(provider!.provider_id), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['providers'] }); onDeleted?.() } })
+    const remove = useMutation({ mutationFn: () => api.deleteProvider(provider!.provider_id), onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['projects'] }),
+        queryClient.invalidateQueries({ queryKey: ['preferences'] }),
+        queryClient.invalidateQueries({ queryKey: ['ai-governance'] }),
+        queryClient.invalidateQueries({ queryKey: ['diagnostics'] }),
+      ])
+      onDeleted?.()
+    } })
     const testConnection = useMutation({ mutationFn: () => api.testProvider(provider!.provider_id), onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['provider-models', provider!.provider_id] }) })
     const refresh = useMutation({ mutationFn: () => api.refreshProviderModels(provider!.provider_id), onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['provider-models', provider!.provider_id] }) })
     const latestTest = testConnection.data ?? saveResult?.test
@@ -135,7 +145,7 @@ export function ProviderSettingsPage() {
       {latestTest || latestTestError ? <div className={`test-result provider-test-result ${testSucceeded ? '' : 'error'}`} role="status">{testSucceeded ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span><strong>{testSucceeded ? '保存并验证成功' : saveResult?.provider ? '更改已保存，连接验证未通过' : '连接验证未通过'}</strong><small>{testSucceeded ? `${latestTest?.model_count ?? 0} 个模型 · ${latestTest?.latency_millis ?? 0} ms` : latestTest?.redacted_error || latestTestError || `失败阶段：${latestTest?.stage ?? 'unknown'}`}</small></span></div> : null}
       {saveAll.error || remove.error || refresh.error ? <div className="form-error provider-form-error">{displayError(saveAll.error ?? remove.error ?? refresh.error)}</div> : null}
       <footer className="provider-save-bar">
-        <div className="provider-destructive-actions">{provider ? <button className="danger-button" type="button" disabled={remove.isPending} onClick={() => { if (window.confirm(`删除 ${provider.display_name}？仍被项目使用时系统会拒绝。`)) remove.mutate() }}><Trash2 size={14} />删除实例</button> : <button className="secondary-button" type="button" onClick={onCancel}>取消</button>}{provider ? <button className="secondary-button" type="button" disabled={testConnection.isPending || provider.credential_state !== 'ready' || dirty} onClick={() => testConnection.mutate()}><RefreshCw className={testConnection.isPending ? 'spin' : ''} size={14} />{testConnection.isPending ? '测试中…' : '测试已保存连接'}</button> : null}</div>
+        <div className="provider-destructive-actions">{provider ? <button className="danger-button" type="button" disabled={remove.isPending} onClick={() => { if (window.confirm(`删除 ${provider.display_name}？项目、Agent 和最近模型选择会切换到剩余默认实例；历史 Run 不会改写。`)) remove.mutate() }}><Trash2 size={14} />{remove.isPending ? '删除中…' : '删除实例'}</button> : <button className="secondary-button" type="button" onClick={onCancel}>取消</button>}{provider ? <button className="secondary-button" type="button" disabled={testConnection.isPending || provider.credential_state !== 'ready' || dirty} onClick={() => testConnection.mutate()}><RefreshCw className={testConnection.isPending ? 'spin' : ''} size={14} />{testConnection.isPending ? '测试中…' : '测试已保存连接'}</button> : null}</div>
         <span><i className={dirty ? 'changed' : ''} /><strong>{dirty ? '有未保存的更改' : '当前已保存'}</strong><small>{selectedModels.length} 个模型 · {defaultModel || '未选择默认模型'}</small></span>
         <button className="primary-button" type="submit" disabled={!dirty || saveAll.isPending || !canSave}>{saveAll.isPending ? '保存并验证中…' : '保存所有更改'}</button>
       </footer>

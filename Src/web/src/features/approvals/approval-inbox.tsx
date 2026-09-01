@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, ExternalLink, LockKeyhole, ShieldAlert, X } from 'lucide-react'
 import { api, type Approval, type ApprovalScope, type InboxHistoryItem, type InboxItem } from '../../shared/api/client'
+import { mcpToolDisplayLabel } from '../../shared/mcp-display'
 import { backgroundInboxRefetchInterval } from '../../shared/query-refresh'
 import { RunBudgetControl } from '../tasks/run-budget-control'
 import { taskFailureInfo } from '../tasks/task-progress-model'
@@ -117,16 +118,17 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
   })
   const params = formatFrozenParams(approval)
   const privateWebFetch = approval.tool_name === 'web_fetch' && approval.approval_scope === 'run_origin'
-	const persistentApprovalSupported = !approval.tool_name.startsWith('mcp__') && !privateWebFetch
+  const mcpApproval = approval.tool_name.startsWith('mcp__')
+  const persistentApprovalSupported = !mcpApproval && !privateWebFetch
   return <article className={`approval-card ${compact ? 'compact' : ''}`}>
     <div className="approval-card-head">
       {selectable ? <input type="checkbox" aria-label={`选择审批 ${approval.tool_name}`} checked={selected} onChange={onSelect} /> : null}
       <span className={`risk-chip ${approval.risk_level.toLowerCase()}`}>{approval.risk_level}</span>
-      <span><strong>{toolLabel(approval.tool_name)}</strong><small><Clock3 size={12} />{new Date(approval.requested_at).toLocaleString('zh-CN')} · 截止 {new Date(approval.expires_at).toLocaleString('zh-CN')}</small></span>
+      <span><strong>{toolLabel(approval.tool_name, approval.tool_display_name)}</strong><small><Clock3 size={12} />{new Date(approval.requested_at).toLocaleString('zh-CN')} · 截止 {new Date(approval.expires_at).toLocaleString('zh-CN')}</small></span>
       <span className={`approval-state ${approval.status}`}>{statusLabel(approval.status)}</span>
     </div>
     <p className="approval-reason">{approval.reason}</p>
-	{approval.status === 'pending' && approval.tool_name.startsWith('mcp__') ? <small className="approval-error">外部 MCP 仅支持逐次批准，避免把一次确认扩展为后续未知参数。</small> : null}
+    {approval.status === 'pending' && mcpApproval ? <small className="approval-error">可批准当前参数一次，或仅在本任务内允许后续调用同一个 MCP 工具；不会授权整个 Server、其他任务或项目。</small> : null}
     {privateWebFetch ? <div className="private-origin-approval"><ShieldAlert size={16} /><span><strong>受控私网读取</strong><small>只读 GET · 当前 Run · 最长 24 小时</small><code>{approval.target_origin}</code>{approval.matched_rule_id ? <small>匹配规则：{approval.matched_rule_id}</small> : null}<p>批准后，模型可读取此 origin 的其他路径，并可能把页面数据带入模型上下文；不会授权其他端口、协议或 Run。</p></span></div> : null}
     <div className="frozen-params"><LockKeyhole size={15} /><span><small>冻结参数</small><code>{params}</code></span></div>
     <div className="approval-hash"><span>INPUT HASH</span><code>{approval.input_hash}</code></div>
@@ -134,9 +136,10 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
       <Link to="/tasks/$taskId" params={{ taskId: approval.task_id }}>打开任务<ExternalLink size={13} /></Link>
       {approval.status === 'pending' ? <>
         <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-		{privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_origin' })}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />批准一次</button>}
-		{persistentApprovalSupported ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话允许同类动作</button> : null}
-		{persistentApprovalSupported ? <button className="approve approve-project" disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
+        {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_origin' })}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />批准一次</button>}
+        {mcpApproval ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_tool' })}><Check size={14} />本任务允许此工具</button> : null}
+        {persistentApprovalSupported ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话允许同类动作</button> : null}
+        {persistentApprovalSupported ? <button className="approve approve-project" disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
       </> : null}
     </div>
     {decision.error ? <small className="approval-error">{decision.error.message}</small> : null}
@@ -159,10 +162,11 @@ function formatFrozenParams(approval: Approval) {
   return JSON.stringify(approval.frozen_params)
 }
 
-function toolLabel(tool: string) {
+function toolLabel(tool: string, displayName = '') {
   if (tool === 'workspace_run_command') return '运行工作区命令'
   if (tool === 'workspace_write_file') return '写入工作区文件'
   if (tool === 'web_fetch') return '读取网页'
+  if (tool.startsWith('mcp__')) return mcpToolDisplayLabel(tool, displayName)
   return tool
 }
 

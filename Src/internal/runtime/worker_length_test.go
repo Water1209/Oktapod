@@ -235,17 +235,17 @@ func TestSequentialDeclarationForcesWholeToolBatchToSourceOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := &scriptedSkillModel{results: []core.ModelResult{
-		semanticPlanResult("sequential-semantic-plan"),
 		{
 			CallID: "sequential-plan",
 			ToolCalls: []core.ToolCall{
+				semanticPlanCall(),
 				{ID: "source-1", Name: core.ToolWebSearch, Arguments: map[string]any{"query": "first"}, Sequential: true},
 				{ID: "source-2", Name: core.ToolWebSearch, Arguments: map[string]any{"query": "second"}},
 			},
 		},
 	}}
 	worker := NewWorker("sequential-model", store, model, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for iteration := 0; iteration < 2; iteration++ {
+	for iteration := 0; iteration < 1; iteration++ {
 		if worked, runErr := worker.RunOnce(ctx); runErr != nil || !worked {
 			t.Fatalf("planning iteration=%d worked=%v err=%v", iteration, worked, runErr)
 		}
@@ -271,10 +271,10 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := &scriptedSkillModel{results: []core.ModelResult{
-		semanticPlanResult("parallel-semantic-plan"),
 		{
 			CallID: "parallel-plan",
 			ToolCalls: []core.ToolCall{
+				semanticPlanCall(),
 				{ID: "source-1", Name: core.ToolWebSearch, Arguments: map[string]any{"query": "first"}},
 				{ID: "source-2", Name: core.ToolWebSearch, Arguments: map[string]any{"query": "second"}},
 			},
@@ -283,7 +283,7 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 	}}
 	search := &countingSearch{payload: strings.Repeat("x", 40_000)}
 	worker := NewWorker("parallel-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(search)
-	for iteration := 0; iteration < 5; iteration++ {
+	for iteration := 0; iteration < 4; iteration++ {
 		worked, runErr := worker.RunOnce(ctx)
 		if runErr != nil || !worked {
 			t.Fatalf("iteration=%d worked=%v err=%v", iteration, worked, runErr)
@@ -292,11 +292,11 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 	if len(search.queries) != 2 || search.queries[0] != "first" || search.queries[1] != "second" {
 		t.Fatalf("executed queries=%#v", search.queries)
 	}
-	if len(model.requests) != 3 {
+	if len(model.requests) != 2 {
 		t.Fatalf("model requests=%d", len(model.requests))
 	}
 	orderedResults := make([]string, 0, 2)
-	for _, message := range model.requests[2].Messages {
+	for _, message := range model.requests[1].Messages {
 		for _, block := range message.Content {
 			if block.ToolCall != nil {
 				query, _ := block.ToolCall.Arguments["query"].(string)
@@ -305,10 +305,10 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 		}
 	}
 	if len(orderedResults) != 2 || orderedResults[0] != "first" || orderedResults[1] != "second" {
-		t.Fatalf("persisted source order=%#v messages=%#v", orderedResults, model.requests[2].Messages)
+		t.Fatalf("persisted source order=%#v messages=%#v", orderedResults, model.requests[1].Messages)
 	}
 	artifactReferences := 0
-	for _, message := range model.requests[2].Messages {
+	for _, message := range model.requests[1].Messages {
 		for _, block := range message.Content {
 			if block.ToolResult != nil && strings.Contains(block.ToolResult.Content, `"artifact_id"`) && strings.Contains(block.ToolResult.Content, `"truncated":true`) {
 				artifactReferences++
@@ -316,7 +316,7 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 		}
 	}
 	if artifactReferences != 2 {
-		t.Fatalf("large tool results were not replaced by artifact references: %#v", model.requests[2].Messages)
+		t.Fatalf("large tool results were not replaced by artifact references: %#v", model.requests[1].Messages)
 	}
 	artifacts, err := service.ListRunArtifacts(ctx, task.RunID)
 	if err != nil {
@@ -332,7 +332,7 @@ func TestDurableParallelToolBatchQueuesOneOrderedContinuation(t *testing.T) {
 	counts := map[string]int{}
 	for _, event := range events {
 		counts[event.EventType]++
-		if event.EventType == "tool.batch_created" && event.Payload["execution_mode"] != "parallel" {
+		if event.EventType == "tool.batch_created" && event.Payload["execution_mode"] != "barriered" {
 			t.Fatalf("batch event=%#v", event)
 		}
 	}

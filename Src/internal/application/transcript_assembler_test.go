@@ -66,6 +66,64 @@ func TestTranscriptAssemblerDropsOrphanToolResult(t *testing.T) {
 	}
 }
 
+func TestTranscriptAssemblerKeepsToolPairsAcrossRecoveryOutcomes(t *testing.T) {
+	for _, status := range []string{core.StatusSucceeded, core.StatusFailed, core.StatusCanceled, core.StatusBlocked, "unknown"} {
+		t.Run(status, func(t *testing.T) {
+			messages := (TranscriptAssembler{}).Run("goal", []map[string]any{
+				{"kind": "assistant", "step_id": "step-1", "content": "inspect"},
+				{"kind": "tool_result", "group_id": "step-1", "tool_call_id": "call-1", "tool_name": "read_file", "arguments": map[string]any{"path": "README.md"}, "status": status, "error_code": "RECOVERY_RESULT", "output": map[string]any{}},
+			}, "continue")
+			assertModelToolPairs(t, messages)
+		})
+	}
+}
+
+func TestTranscriptAssemblerNormalizesCompactedAndRolledBackToolContext(t *testing.T) {
+	conversation := []core.ModelMessage{
+		{Role: core.MessageRoleAssistant, Content: []core.ContentBlock{
+			{Type: core.ContentBlockText, Text: "preserve text"},
+			{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: "paired", Name: "read_file", Arguments: map[string]any{"path": "README.md"}}},
+			{Type: core.ContentBlockToolCall, ToolCall: &core.ToolCallBlock{ID: "truncated", Name: "write_file", Arguments: map[string]any{}}},
+		}},
+		{Role: core.MessageRoleTool, ToolCallID: "paired", ToolName: "read_file", Content: []core.ContentBlock{{Type: core.ContentBlockToolResult, ToolResult: &core.ToolResultBlock{ToolCallID: "paired", ToolName: "read_file", Content: "ok"}}}},
+		{Role: core.MessageRoleTool, ToolCallID: "rolled-back", ToolName: "write_file", Content: []core.ContentBlock{{Type: core.ContentBlockToolResult, ToolResult: &core.ToolResultBlock{ToolCallID: "rolled-back", ToolName: "write_file", Content: "unknown", IsError: true}}}},
+	}
+	messages := (TranscriptAssembler{}).RunWithConversation(conversation, "goal", nil, "")
+	assertModelToolPairs(t, messages)
+	if len(messages) != 3 || messages[0].Role != core.MessageRoleAssistant || len(messages[0].Content) != 2 {
+		t.Fatalf("normalized conversation=%#v", messages)
+	}
+	if messages[0].Content[0].Text != "preserve text" || messages[0].Content[1].ToolCall == nil || messages[0].Content[1].ToolCall.ID != "paired" {
+		t.Fatalf("assistant content=%#v", messages[0])
+	}
+}
+
+func assertModelToolPairs(t *testing.T, messages []core.ModelMessage) {
+	t.Helper()
+	pending := make(map[string]struct{})
+	for _, message := range messages {
+		if message.Role == core.MessageRoleAssistant {
+			for _, block := range message.Content {
+				if block.Type == core.ContentBlockToolCall && block.ToolCall != nil {
+					if _, exists := pending[block.ToolCall.ID]; exists {
+						t.Fatalf("duplicate tool call %q in %#v", block.ToolCall.ID, messages)
+					}
+					pending[block.ToolCall.ID] = struct{}{}
+				}
+			}
+		}
+		if message.Role == core.MessageRoleTool {
+			if _, exists := pending[message.ToolCallID]; !exists {
+				t.Fatalf("orphan tool result %q in %#v", message.ToolCallID, messages)
+			}
+			delete(pending, message.ToolCallID)
+		}
+	}
+	if len(pending) != 0 {
+		t.Fatalf("orphan tool calls=%#v in %#v", pending, messages)
+	}
+}
+
 func TestTranscriptAssemblerCarriesConversationIntoNewRun(t *testing.T) {
 	assembler := TranscriptAssembler{}
 	conversation := assembler.Conversation("", []core.Message{

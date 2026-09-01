@@ -65,6 +65,37 @@ func TestThinkingLevelComesFromImmutableRunSnapshot(t *testing.T) {
 	}
 }
 
+func TestMainAgentAutoThinkingIsActionFirstOnlyForVersionedToolRuns(t *testing.T) {
+	requested, effective := mainAgentThinkingLevel(`{"thinking_level":"auto","thinking_policy_version":"task_action_v1"}`, true)
+	if requested != "auto" || effective != "auto" || !mainAgentActionFirst(`{"thinking_level":"auto","thinking_policy_version":"task_action_v1"}`, true) {
+		t.Fatalf("requested=%q effective=%q", requested, effective)
+	}
+
+	_, effective = mainAgentThinkingLevel(`{"thinking_level":"auto"}`, true)
+	if effective != "auto" {
+		t.Fatalf("historical effective=%q, want auto", effective)
+	}
+	if mainAgentActionFirst(`{"thinking_level":"auto"}`, true) {
+		t.Fatal("historical run unexpectedly enabled action-first")
+	}
+
+	_, effective = mainAgentThinkingLevel(`{"thinking_level":"high","thinking_policy_version":"task_action_v1"}`, true)
+	if effective != "high" {
+		t.Fatalf("explicit effective=%q, want high", effective)
+	}
+	if mainAgentActionFirst(`{"thinking_level":"high","thinking_policy_version":"task_action_v1"}`, true) {
+		t.Fatal("explicit high unexpectedly enabled action-first")
+	}
+
+	_, effective = mainAgentThinkingLevel(`{"thinking_level":"auto","thinking_policy_version":"task_action_v1"}`, false)
+	if effective != "auto" {
+		t.Fatalf("answer effective=%q, want auto", effective)
+	}
+	if mainAgentActionFirst(`{"thinking_level":"auto","thinking_policy_version":"task_action_v1"}`, false) {
+		t.Fatal("answer turn unexpectedly enabled action-first")
+	}
+}
+
 func TestExplicitSearchBudgetCountsSucceededHistoryAndProposedCalls(t *testing.T) {
 	history := []map[string]any{
 		{"kind": "tool_result", "status": core.StatusSucceeded, "tool_name": "mcp__tavily__tavily_search"},

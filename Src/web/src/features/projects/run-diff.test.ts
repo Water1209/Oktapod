@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseUnifiedDiff } from './run-diff'
+import { isTemporaryDiffPath, parseUnifiedDiff } from './run-diff'
 
 describe('parseUnifiedDiff', () => {
   it('groups files and hunks for selectable Changes actions', () => {
@@ -31,5 +31,17 @@ describe('parseUnifiedDiff', () => {
     ].join('\n'))
 
     expect(files[0]?.path).toBe('obsolete.txt')
+  })
+
+  it('keeps binary paths and identifies generated runtime residue', () => {
+    const files = parseUnifiedDiff([
+      'diff --git a/pip/cache/item.body b/pip/cache/item.body',
+      'new file mode 100644',
+      'index 0000000..e69de29',
+    ].join('\n'))
+
+    expect(files[0]?.path).toBe('pip/cache/item.body')
+    expect(isTemporaryDiffPath(files[0]!.path)).toBe(true)
+    expect(isTemporaryDiffPath('src/runtime/cache.ts')).toBe(false)
   })
 })

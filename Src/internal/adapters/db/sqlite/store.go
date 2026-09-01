@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -187,23 +188,67 @@ func (s *Store) migrate(ctx context.Context) error {
 		if readErr != nil {
 			return fmt.Errorf("read migration %s: %w", name, readErr)
 		}
-		tx, beginErr := s.db.BeginTx(ctx, nil)
+		tx, finishMigration, foreignKeysOff, beginErr := beginSQLiteMigration(ctx, s.db, body)
 		if beginErr != nil {
 			return fmt.Errorf("begin migration %s: %w", name, beginErr)
 		}
 		if _, execErr := tx.ExecContext(ctx, string(body)); execErr != nil {
 			_ = tx.Rollback()
+			finishMigration()
 			return fmt.Errorf("apply migration %s: %w", name, execErr)
+		}
+		if foreignKeysOff {
+			rows, checkErr := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+			if checkErr != nil {
+				_ = tx.Rollback()
+				finishMigration()
+				return fmt.Errorf("foreign key check migration %s: %w", name, checkErr)
+			}
+			violated := rows.Next()
+			_ = rows.Close()
+			if violated {
+				_ = tx.Rollback()
+				finishMigration()
+				return fmt.Errorf("foreign key check migration %s: violation detected", name)
+			}
 		}
 		if _, ledgerErr := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES (?, ?)`, version, formatTime(time.Now())); ledgerErr != nil {
 			_ = tx.Rollback()
+			finishMigration()
 			return fmt.Errorf("record migration %s: %w", name, ledgerErr)
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
+			finishMigration()
 			return fmt.Errorf("commit migration %s: %w", name, commitErr)
 		}
+		finishMigration()
 	}
 	return nil
+}
+
+func beginSQLiteMigration(ctx context.Context, db *sql.DB, body []byte) (*sql.Tx, func(), bool, error) {
+	if !bytes.Contains(body, []byte("-- oktapod:foreign-keys-off")) {
+		tx, err := db.BeginTx(ctx, nil)
+		return tx, func() {}, false, err
+	}
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return nil, func() {}, true, err
+	}
+	if _, err = connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		_ = connection.Close()
+		return nil, func() {}, true, err
+	}
+	finish := func() {
+		_, _ = connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+		_ = connection.Close()
+	}
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		finish()
+		return nil, func() {}, true, err
+	}
+	return tx, finish, true, nil
 }
 
 func (s *Store) Bootstrap(ctx context.Context, actor core.Actor, organization core.Organization) error {
@@ -2323,6 +2368,15 @@ func (s *Store) UploadAsset(ctx context.Context, scope core.Scope, projectID str
 	if err != nil {
 		return core.Asset{}, err
 	}
+	// The upload body is a one-shot reader, so retry only the SQLite registration
+	// after the immutable blob has been persisted. Replaying UploadAsset at the
+	// application boundary could consume an empty reader or duplicate a write.
+	return retrySQLiteBusyValue(ctx, func() (core.Asset, error) {
+		return s.registerUploadedAsset(ctx, scope, projectID, input, persisted, quotaBytes)
+	})
+}
+
+func (s *Store) registerUploadedAsset(ctx context.Context, scope core.Scope, projectID string, input core.UploadAssetInput, persisted persistedBlob, quotaBytes int64) (core.Asset, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return core.Asset{}, err
@@ -2367,6 +2421,34 @@ func (s *Store) UploadAsset(ctx context.Context, scope core.Scope, projectID str
 		return core.Asset{}, err
 	}
 	return asset, nil
+}
+
+func retrySQLiteBusyValue[T any](ctx context.Context, operation func() (T, error)) (T, error) {
+	var zero T
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		value, err := operation()
+		if err == nil || !isSQLiteBusy(err) {
+			return value, err
+		}
+		lastErr = err
+		timer := time.NewTimer(time.Duration(10*(1<<attempt)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return zero, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return zero, lastErr
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToUpper(err.Error())
+	return strings.Contains(message, "SQLITE_BUSY") || strings.Contains(message, "DATABASE IS LOCKED")
 }
 
 func (s *Store) ListAssets(ctx context.Context, scope core.Scope, projectID, parentID, query, kind string, limit int, quotaBytes int64) (core.AssetCollection, error) {
@@ -2860,7 +2942,11 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 	if err != nil {
 		return core.Task{}, fmt.Errorf("encode config snapshot: %w", err)
 	}
-	stepInputValue := map[string]any{"goal": input.Goal, "acceptance": input.Acceptance, "mode": input.Mode, "stage": "plan", "role": "coordinator"}
+	stepStage := "plan"
+	if snapshotString(configSnapshot, "plan_protocol_version") == "transition_v2" {
+		stepStage = "execute"
+	}
+	stepInputValue := map[string]any{"goal": input.Goal, "acceptance": input.Acceptance, "mode": input.Mode, "stage": stepStage, "role": "coordinator"}
 	if input.SkillID != "" {
 		stepInputValue["invoked_skill_ids"] = []string{input.SkillID}
 		stepInputValue["skill_args"] = input.SkillArgs
@@ -2967,6 +3053,13 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 	if err != nil {
 		return core.Task{}, fmt.Errorf("create task: %w", err)
 	}
+	presentationKind := core.TaskPresentationTask
+	if snapshotString(configSnapshot, "turn_router_version") == "auto_agent_v2" {
+		presentationKind = core.TaskPresentationPendingAuto
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO task_presentations (task_id, presentation_kind, updated_at) VALUES (?, ?, ?)`, taskID, presentationKind, now); err != nil {
+		return core.Task{}, fmt.Errorf("create task presentation: %w", err)
+	}
 	planRank, err := q.NextPlanItemRank(ctx, sqlitegen.NextPlanItemRankParams{ProjectID: projectID, Status: core.PlanStatusTodo})
 	if err != nil {
 		return core.Task{}, fmt.Errorf("allocate plan item rank: %w", err)
@@ -2984,9 +3077,13 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 	if err := freezeRunToolSnapshots(ctx, tx, runID, configSnapshot, now); err != nil {
 		return core.Task{}, fmt.Errorf("freeze run tool snapshots: %w", err)
 	}
-	runPlanRevisionID, runPlanItemIDs, err := createInitialRunPlan(ctx, tx, scope, projectID, taskID, runID, input, now)
-	if err != nil {
-		return core.Task{}, fmt.Errorf("create run plan: %w", err)
+	runPlanRevisionID := ""
+	runPlanItemIDs := []string(nil)
+	if snapshotString(configSnapshot, "plan_protocol_version") != "transition_v2" {
+		runPlanRevisionID, runPlanItemIDs, err = createInitialRunPlan(ctx, tx, scope, projectID, taskID, runID, input, now)
+		if err != nil {
+			return core.Task{}, fmt.Errorf("create run plan: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE runs SET
@@ -3040,13 +3137,15 @@ WHERE id = ?`,
 			return core.Task{}, fmt.Errorf("bind initial step to run plan: %w", err)
 		}
 	}
-	if err := s.appendEvent(ctx, q, eventInput{
-		OrganizationID: scope.OrganizationID, ProjectID: projectID, RunID: runID,
-		EventType: "plan.published", ActorType: "system", ActorID: scope.UserID,
-		CorrelationID: correlationID, Visibility: input.Visibility,
-		Payload: map[string]any{"plan_revision_id": runPlanRevisionID, "revision": 1, "trigger": "initial", "goal_summary": input.Goal, "items": runPlanItemIDs},
-	}); err != nil {
-		return core.Task{}, err
+	if runPlanRevisionID != "" {
+		if err := s.appendEvent(ctx, q, eventInput{
+			OrganizationID: scope.OrganizationID, ProjectID: projectID, RunID: runID,
+			EventType: "plan.published", ActorType: "system", ActorID: scope.UserID,
+			CorrelationID: correlationID, Visibility: input.Visibility,
+			Payload: map[string]any{"plan_revision_id": runPlanRevisionID, "revision": 1, "trigger": "initial", "goal_summary": input.Goal, "items": runPlanItemIDs},
+		}); err != nil {
+			return core.Task{}, err
+		}
 	}
 	if err := s.appendEvent(ctx, q, eventInput{
 		OrganizationID: scope.OrganizationID,
@@ -3057,7 +3156,7 @@ WHERE id = ?`,
 		ActorID:        scope.UserID,
 		CorrelationID:  correlationID,
 		Visibility:     input.Visibility,
-		Payload:        map[string]any{"task_id": taskID, "step_id": stepID, "mode": input.Mode, "requested_mode": configSnapshot["requested_mode"], "classification_reason": configSnapshot["classification_reason"], "permission_mode": configSnapshot["permission_mode"], "agent_name": runAgentDisplayName(configSnapshot), "status": core.StatusQueued},
+		Payload:        map[string]any{"task_id": taskID, "step_id": stepID, "mode": input.Mode, "requested_mode": configSnapshot["requested_mode"], "classification_reason": configSnapshot["classification_reason"], "turn_router_version": configSnapshot["turn_router_version"], "plan_protocol_version": configSnapshot["plan_protocol_version"], "tool_scheduler_version": configSnapshot["tool_scheduler_version"], "context_projection_version": configSnapshot["context_projection_version"], "permission_mode": configSnapshot["permission_mode"], "agent_name": runAgentDisplayName(configSnapshot), "status": core.StatusQueued},
 	}); err != nil {
 		return core.Task{}, err
 	}
@@ -3085,6 +3184,7 @@ WHERE id = ?`,
 	if err != nil {
 		return core.Task{}, err
 	}
+	task.PresentationKind = presentationKind
 	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusAccepted, task); err != nil {
 		return core.Task{}, err
 	}
@@ -4182,7 +4282,12 @@ func (s *Store) GetTask(ctx context.Context, scope core.Scope, taskID string) (c
 	if err != nil {
 		return core.Task{}, err
 	}
-	return taskFromGetRow(row)
+	task, err := taskFromGetRow(row)
+	if err != nil {
+		return core.Task{}, err
+	}
+	s.enrichTaskPresentation(ctx, &task)
+	return task, nil
 }
 
 func (s *Store) ListTasks(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Task, error) {
@@ -4196,9 +4301,18 @@ func (s *Store) ListTasks(ctx context.Context, scope core.Scope, projectID strin
 		if convertErr != nil {
 			return nil, convertErr
 		}
+		s.enrichTaskPresentation(ctx, &task)
 		tasks = append(tasks, task)
 	}
 	return tasks, nil
+}
+
+func (s *Store) enrichTaskPresentation(ctx context.Context, task *core.Task) {
+	task.PresentationKind = core.TaskPresentationTask
+	var kind string
+	if err := s.db.QueryRowContext(ctx, `SELECT presentation_kind FROM task_presentations WHERE task_id = ?`, task.ID).Scan(&kind); err == nil && strings.TrimSpace(kind) != "" {
+		task.PresentationKind = kind
+	}
 }
 
 func (s *Store) ListRunEvents(ctx context.Context, scope core.Scope, runID string, after int64, limit int) ([]core.RunEvent, error) {
@@ -4640,6 +4754,22 @@ func toolInputSummary(toolName string, arguments map[string]any) string {
 	case core.ToolSkillInvoke:
 		skill, _ := arguments["skill"].(string)
 		return "加载 " + skill
+	case core.ToolDocumentOpen:
+		return truncateToolText(stringValue(arguments["source_ref"]), 360)
+	case core.ToolDocumentRead:
+		selector := stringValue(arguments["selector"])
+		if selector == "" {
+			selector = "分页读取"
+		}
+		return selector
+	case core.ToolDocumentCreate:
+		return "创建 " + strings.ToUpper(stringValue(arguments["format"]))
+	case core.ToolDocumentApply:
+		return fmt.Sprintf("修订 %d · %d 个结构操作", integerMapValue(arguments, "expected_revision"), sliceLength(arguments["operations"]))
+	case core.ToolDocumentRender:
+		return fmt.Sprintf("修订 %d · 版式校验", integerMapValue(arguments, "expected_revision"))
+	case core.ToolDocumentExport:
+		return fmt.Sprintf("%s · %s", stringValue(arguments["name"]), strings.ToUpper(stringValue(arguments["format"])))
 	default:
 		keys := make([]string, 0, len(arguments))
 		for key := range arguments {
@@ -4709,6 +4839,16 @@ func toolOutputSummary(toolName, status, errorCode string, exitCode int64, outpu
 		name, _ := output["skill_name"].(string)
 		version, _ := output["version"].(string)
 		return strings.TrimSpace(fmt.Sprintf("%s · %s %s", result, name, version))
+	case core.ToolDocumentOpen, core.ToolDocumentCreate:
+		return fmt.Sprintf("%s · %s · 修订 %d%s", result, strings.ToUpper(stringValue(output["format"])), integerMapValue(output, "revision"), cacheSuffix(output))
+	case core.ToolDocumentRead:
+		return fmt.Sprintf("%s · 本页 %d 项 · 共 %d 项", result, sliceLength(output["items"]), integerMapValue(output, "total"))
+	case core.ToolDocumentApply:
+		return fmt.Sprintf("%s · 修订 %d · %d 个操作", result, integerMapValue(output, "revision"), sliceLength(output["applied"]))
+	case core.ToolDocumentRender:
+		return fmt.Sprintf("%s · %d 页 · 已通过版式校验%s", result, integerMapValue(output, "page_count"), cacheSuffix(output))
+	case core.ToolDocumentExport:
+		return fmt.Sprintf("%s · %s · 不可变 Artifact", result, stringValue(output["path"]))
 	default:
 		if tool, _ := output["tool_name"].(string); tool != "" {
 			return result + " · " + tool
@@ -4776,9 +4916,40 @@ func toolPresentation(toolName string, arguments, output map[string]any) map[str
 			"content_preview": truncateToolText(stringValue(output["content"]), 1600),
 			"truncated":       output["truncated"],
 		}
+	case core.ToolDocumentOpen, core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentRender, core.ToolDocumentExport:
+		phase := map[string]string{
+			core.ToolDocumentOpen: "structure", core.ToolDocumentCreate: "revision", core.ToolDocumentApply: "revision",
+			core.ToolDocumentRender: "render", core.ToolDocumentExport: "output",
+		}[toolName]
+		return map[string]any{
+			"kind": "document", "phase": phase, "document_ref": stringValue(output["document_ref"]),
+			"format": stringValue(output["format"]), "revision": output["revision"],
+			"page_count": output["page_count"], "previews": output["previews"],
+			"warnings": output["warnings"], "cache_hit": output["cache_hit"],
+			"path": stringValue(output["path"]), "media_type": stringValue(output["media_type"]),
+		}
 	default:
 		return nil
 	}
+}
+
+func sliceLength(value any) int {
+	if values, ok := value.([]any); ok {
+		return len(values)
+	}
+	return 0
+}
+
+func integerMapValue(value map[string]any, key string) int64 {
+	number, _ := numericToolValue(value[key])
+	return number
+}
+
+func cacheSuffix(output map[string]any) string {
+	if hit, _ := output["cache_hit"].(bool); hit {
+		return " · 缓存命中"
+	}
+	return ""
 }
 
 func redactToolValue(value any) any {
@@ -4837,7 +5008,7 @@ func numericToolValue(value any) (int64, bool) {
 }
 
 func (s *Store) GetRunUsage(ctx context.Context, scope core.Scope, runID string) (core.RunUsage, error) {
-	usage := core.RunUsage{RunID: runID, CostStatus: "unpriced", Currency: "USD"}
+	usage := core.RunUsage{RunID: runID, CostStatus: "unpriced", Currency: "USD", ModelCallPurposes: map[string]int64{}}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(mc.id),
 		       COALESCE(SUM(mc.input_tokens), 0),
@@ -4862,6 +5033,37 @@ func (s *Store) GetRunUsage(ctx context.Context, scope core.Scope, runID string)
 	).Scan(&usage.ModelCalls, &usage.InputTokens, &usage.OutputTokens, &usage.CachedTokens, &usage.ReasoningTokens, &usage.EstimatedCalls, &usage.LatencyMS)
 	if err != nil {
 		return core.RunUsage{}, err
+	}
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(performance.first_byte_ms), 0),
+		       COALESCE(SUM(performance.first_safe_delta_ms), 0),
+		       COALESCE(SUM(performance.assembly_ms), 0),
+		       COALESCE(SUM(performance.request_bytes), 0),
+		       COALESCE(SUM(performance.cache_write_tokens), 0)
+		FROM model_call_performance performance
+		JOIN model_calls call ON call.id = performance.call_id
+		WHERE call.run_id = ?`, runID).Scan(
+		&usage.FirstByteMS, &usage.FirstSafeDeltaMS, &usage.AssemblyMS,
+		&usage.RequestBytes, &usage.CacheWriteTokens,
+	)
+	if err != nil {
+		return core.RunUsage{}, err
+	}
+	if rows, performanceErr := s.db.QueryContext(ctx, `
+		SELECT performance.purpose, COUNT(*)
+		FROM model_call_performance performance
+		JOIN model_calls call ON call.id = performance.call_id
+		WHERE call.run_id = ?
+		GROUP BY performance.purpose
+		ORDER BY performance.purpose`, runID); performanceErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var purpose string
+			var count int64
+			if rows.Scan(&purpose, &count) == nil {
+				usage.ModelCallPurposes[purpose] = count
+			}
+		}
 	}
 	var budgetStatus string
 	if err := s.db.QueryRowContext(ctx, `SELECT max_model_calls, max_tokens, status, reserved_model_calls, reserved_tokens FROM run_budgets WHERE run_id = ?`, runID).Scan(&usage.BudgetMaxCalls, &usage.BudgetMaxTokens, &budgetStatus, &usage.ReservedCalls, &usage.ReservedTokens); err == nil {
@@ -5813,7 +6015,16 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	if err != nil {
 		return core.Capability{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = ?, scope_id = ?, source_filename = ?, bundle_storage_key = ?, install_job_id = ?, credential_ref = ? WHERE id = ?`, input.ScopeType, scopeID, input.SourceFilename, bundleStorageKey, installJobID, input.CredentialRef, id); err != nil {
+	origin := input.Origin
+	if origin == "" {
+		origin = core.CapabilityOriginCustom
+	}
+	dependenciesJSON, _ := json.Marshal(input.Dependencies)
+	updateState := input.UpdateState
+	if updateState == "" {
+		updateState = core.CapabilityUpdateCurrent
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = ?, scope_id = ?, source_filename = ?, bundle_storage_key = ?, install_job_id = ?, credential_ref = ?, origin = ?, preset_key = ?, dependencies_json = ?, managed_version = ?, update_state = ? WHERE id = ?`, input.ScopeType, scopeID, input.SourceFilename, bundleStorageKey, installJobID, input.CredentialRef, origin, input.PresetKey, string(dependenciesJSON), input.ManagedVersion, updateState, id); err != nil {
 		return core.Capability{}, err
 	}
 	jobState := "succeeded"
@@ -5833,6 +6044,11 @@ func (s *Store) CreateCapability(ctx context.Context, scope core.Scope, projectI
 	capability.BundleHash = contentHash
 	capability.InstallJobID = installJobID
 	capability.CredentialRef = input.CredentialRef
+	capability.Origin = origin
+	capability.PresetKey = input.PresetKey
+	capability.Dependencies = append([]string(nil), input.Dependencies...)
+	capability.ManagedVersion = input.ManagedVersion
+	capability.UpdateState = updateState
 	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusCreated, capability); err != nil {
 		return core.Capability{}, err
 	}
@@ -5846,6 +6062,118 @@ func (s *Store) GetCapability(ctx context.Context, scope core.Scope, capabilityI
 	return s.getCapabilityByID(ctx, scope, capabilityID)
 }
 
+func (s *Store) EnsurePresetCapability(ctx context.Context, scope core.Scope, projectID string, input core.CreateCapabilityInput, contentHash string, force bool) (core.Capability, bool, error) {
+	if input.Origin != core.CapabilityOriginPreset || input.PresetKey == "" || input.ScopeType != core.CapabilityScopeGlobal {
+		return core.Capability{}, false, &core.ValidationError{Field: "preset", Message: "requires a global preset capability"}
+	}
+	if err := core.ValidateCreateCapability(input); err != nil {
+		return core.Capability{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Capability{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.queries.WithTx(tx)
+	if _, err := q.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
+		return core.Capability{}, false, err
+	}
+	var rememberedState string
+	stateErr := tx.QueryRowContext(ctx, `SELECT state FROM preset_resource_states WHERE organization_id = ? AND owner_user_id = ? AND preset_key = ?`, scope.OrganizationID, scope.UserID, input.PresetKey).Scan(&rememberedState)
+	if stateErr != nil && !errors.Is(stateErr, sql.ErrNoRows) {
+		return core.Capability{}, false, stateErr
+	}
+	if rememberedState == "deleted" && !force {
+		return core.Capability{}, false, nil
+	}
+	now := formatTime(time.Now())
+	dependenciesJSON, _ := json.Marshal(input.Dependencies)
+	updateState := input.UpdateState
+	if updateState == "" {
+		updateState = core.CapabilityUpdateCurrent
+	}
+	var capabilityID, existingContentHash, existingManagedVersion, existingKind, existingName, existingVersion string
+	var existingManifestJSON, existingSourceFilename, existingDependenciesJSON, existingUpdateState string
+	existingErr := tx.QueryRowContext(ctx, `
+		SELECT id, content_hash, managed_version, kind, name, version, manifest_json,
+		       source_filename, dependencies_json, update_state
+		FROM capabilities
+		WHERE organization_id = ? AND owner_user_id = ? AND preset_key = ?`, scope.OrganizationID, scope.UserID, input.PresetKey).Scan(
+		&capabilityID, &existingContentHash, &existingManagedVersion, &existingKind, &existingName,
+		&existingVersion, &existingManifestJSON, &existingSourceFilename, &existingDependenciesJSON, &existingUpdateState,
+	)
+	created := false
+	if errors.Is(existingErr, sql.ErrNoRows) {
+		capabilityID, err = newID()
+		if err != nil {
+			return core.Capability{}, false, err
+		}
+		installJobID, idErr := newID()
+		if idErr != nil {
+			return core.Capability{}, false, idErr
+		}
+		if _, err = q.CreateCapability(ctx, sqlitegen.CreateCapabilityParams{
+			ID: capabilityID, OrganizationID: scope.OrganizationID, ProjectID: projectID, OwnerUserID: scope.UserID,
+			Kind: input.Kind, Name: input.Name, Version: input.Version, ManifestJson: input.ManifestJSON,
+			ContentHash: contentHash, Status: core.CapabilityStatusEnabled, RiskLevel: "low", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return core.Capability{}, false, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE capabilities SET scope_type = 'global', scope_id = ?, source_filename = ?, install_job_id = ?, origin = 'preset', preset_key = ?, dependencies_json = ?, managed_version = ?, update_state = ? WHERE id = ?`, scope.UserID, input.SourceFilename, installJobID, input.PresetKey, string(dependenciesJSON), input.ManagedVersion, updateState, capabilityID); err != nil {
+			return core.Capability{}, false, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO capability_install_jobs (id, organization_id, project_id, actor_user_id, scope_type, scope_id, source_filename, bundle_hash, state, capability_id, error_code, created_at, updated_at) VALUES (?, ?, ?, ?, 'global', ?, ?, ?, 'succeeded', ?, '', ?, ?)`, installJobID, scope.OrganizationID, projectID, scope.UserID, scope.UserID, input.SourceFilename, contentHash, capabilityID, now, now); err != nil {
+			return core.Capability{}, false, err
+		}
+		created = true
+	} else if existingErr != nil {
+		return core.Capability{}, false, existingErr
+	} else {
+		if !force && rememberedState == "installed" && existingContentHash == contentHash &&
+			existingManagedVersion == input.ManagedVersion && existingKind == input.Kind &&
+			existingName == input.Name && existingVersion == input.Version &&
+			existingManifestJSON == input.ManifestJSON && existingSourceFilename == input.SourceFilename &&
+			existingDependenciesJSON == string(dependenciesJSON) && existingUpdateState == updateState {
+			capability, getErr := s.getCapabilityByIDTx(ctx, tx, scope, capabilityID)
+			if getErr != nil {
+				return core.Capability{}, false, getErr
+			}
+			if commitErr := tx.Commit(); commitErr != nil {
+				return core.Capability{}, false, commitErr
+			}
+			return capability, true, nil
+		}
+		// Preserve the user's enabled/disabled choice while advancing only the
+		// managed immutable content. Frozen Runs keep their snapshot version.
+		if _, err = tx.ExecContext(ctx, `UPDATE capabilities SET kind = ?, name = ?, version = ?, manifest_json = ?, content_hash = ?, source_filename = ?, origin = 'preset', dependencies_json = ?, managed_version = ?, update_state = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, input.Kind, input.Name, input.Version, input.ManifestJSON, contentHash, input.SourceFilename, string(dependenciesJSON), input.ManagedVersion, updateState, now, capabilityID, scope.OrganizationID, scope.UserID); err != nil {
+			return core.Capability{}, false, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO preset_resource_states (organization_id, owner_user_id, preset_key, state, capability_id, managed_version, created_at, updated_at) VALUES (?, ?, ?, 'installed', ?, ?, ?, ?) ON CONFLICT (organization_id, owner_user_id, preset_key) DO UPDATE SET state = 'installed', capability_id = excluded.capability_id, managed_version = excluded.managed_version, updated_at = excluded.updated_at`, scope.OrganizationID, scope.UserID, input.PresetKey, capabilityID, input.ManagedVersion, now, now); err != nil {
+		return core.Capability{}, false, err
+	}
+	auditID, err := newID()
+	if err != nil {
+		return core.Capability{}, false, err
+	}
+	action := "capability.preset_updated"
+	if created {
+		action = "capability.preset_installed"
+	}
+	detail, _ := json.Marshal(map[string]any{"preset_key": input.PresetKey, "managed_version": input.ManagedVersion, "content_hash": contentHash, "forced": force})
+	if err = q.CreateAuditEvent(ctx, sqlitegen.CreateAuditEventParams{ID: auditID, OrganizationID: scope.OrganizationID, ProjectID: projectID, ActorUserID: scope.UserID, Action: action, TargetType: "capability", TargetID: capabilityID, Outcome: "succeeded", DetailJson: string(detail), CorrelationID: auditID, OccurredAt: now}); err != nil {
+		return core.Capability{}, false, err
+	}
+	capability, err := s.getCapabilityByIDTx(ctx, tx, scope, capabilityID)
+	if err != nil {
+		return core.Capability{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return core.Capability{}, false, err
+	}
+	return capability, true, nil
+}
+
 func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Capability, error) {
 	if _, err := s.queries.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
 		return nil, err
@@ -5853,7 +6181,8 @@ func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectI
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, credential_ref, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, origin, preset_key,
+		       dependencies_json, managed_version, update_state, created_at, updated_at
 		FROM capabilities
 		WHERE organization_id = ?
 		  AND ((scope_type = 'project' AND scope_id = ?) OR (scope_type = 'global' AND owner_user_id = ?))
@@ -5866,10 +6195,11 @@ func (s *Store) ListCapabilities(ctx context.Context, scope core.Scope, projectI
 	items := make([]core.Capability, 0)
 	for rows.Next() {
 		var item core.Capability
-		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version, &item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID, &item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt); err != nil {
+		var dependenciesJSON, createdAt, updatedAt string
+		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version, &item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID, &item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &item.Origin, &item.PresetKey, &dependenciesJSON, &item.ManagedVersion, &item.UpdateState, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal([]byte(dependenciesJSON), &item.Dependencies)
 		item.BundleHash = item.ContentHash
 		item.PermissionDiff = core.CapabilityPermissionDiff(item.ManifestJSON)
 		item.CreatedAt = mustParseTime(createdAt)
@@ -5925,8 +6255,8 @@ func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabili
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var projectID, name, kind string
-	if err := tx.QueryRowContext(ctx, `SELECT project_id, name, kind FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &name, &kind); err != nil {
+	var projectID, name, kind, origin, presetKey, manifestJSON, credentialRef string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id, name, kind, origin, preset_key, manifest_json, COALESCE(credential_ref, '') FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID).Scan(&projectID, &name, &kind, &origin, &presetKey, &manifestJSON, &credentialRef); err != nil {
 		return err
 	}
 	var activeRuns int64
@@ -5935,11 +6265,41 @@ func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabili
 		FROM run_tool_snapshots snapshots
 		JOIN runs ON runs.id = snapshots.run_id
 		WHERE snapshots.capability_id = ?
-		  AND runs.status IN ('queued','running','waiting_approval','waiting_input','paused','blocked')`, capabilityID).Scan(&activeRuns); err != nil {
+		  AND (
+			runs.status IN ('queued','running','waiting_approval','waiting_input','paused')
+			OR (runs.status = 'blocked' AND ? <> '')
+		  )`, capabilityID, credentialRef).Scan(&activeRuns); err != nil {
 		return err
 	}
 	if activeRuns > 0 {
 		return &core.StateConflictError{Status: "active_run", Command: "delete capability"}
+	}
+	provided := manifestCapabilityNames(manifestJSON)
+	if len(provided) > 0 {
+		rows, queryErr := tx.QueryContext(ctx, `SELECT id, name, dependencies_json FROM capabilities WHERE organization_id = ? AND owner_user_id = ? AND id <> ?`, scope.OrganizationID, scope.UserID, capabilityID)
+		if queryErr != nil {
+			return queryErr
+		}
+		dependents := make([]string, 0)
+		for rows.Next() {
+			var id, dependentName, dependenciesJSON string
+			if scanErr := rows.Scan(&id, &dependentName, &dependenciesJSON); scanErr != nil {
+				_ = rows.Close()
+				return scanErr
+			}
+			var dependencies []string
+			_ = json.Unmarshal([]byte(dependenciesJSON), &dependencies)
+			if stringSetsIntersect(provided, dependencies) {
+				dependents = append(dependents, dependentName)
+			}
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			return closeErr
+		}
+		if len(dependents) > 0 {
+			sort.Strings(dependents)
+			return &core.ResourceConflictError{Resource: "capability dependency", Reason: fmt.Sprintf("%s is required by %s; remove the dependents first or use the explicit cascade uninstall action", name, strings.Join(dependents, ", "))}
+		}
 	}
 	now := formatTime(time.Now())
 	auditID, err := newID()
@@ -5950,12 +6310,235 @@ func (s *Store) DeleteCapability(ctx context.Context, scope core.Scope, capabili
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'capability.deleted', 'capability', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, capabilityID, string(detail), correlationID, now); err != nil {
 		return err
 	}
+	if origin == core.CapabilityOriginPreset && presetKey != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO preset_resource_states (organization_id, owner_user_id, preset_key, state, capability_id, managed_version, created_at, updated_at) VALUES (?, ?, ?, 'deleted', '', '', ?, ?) ON CONFLICT (organization_id, owner_user_id, preset_key) DO UPDATE SET state = 'deleted', capability_id = '', updated_at = excluded.updated_at`, scope.OrganizationID, scope.UserID, presetKey, now, now); err != nil {
+			return err
+		}
+	}
 	if result, err := tx.ExecContext(ctx, `DELETE FROM capabilities WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, capabilityID, scope.OrganizationID, scope.UserID); err != nil {
 		return err
 	} else if affected, _ := result.RowsAffected(); affected != 1 {
 		return sql.ErrNoRows
 	}
 	return tx.Commit()
+}
+
+func manifestCapabilityNames(manifestJSON string) []string {
+	var manifest map[string]any
+	if json.Unmarshal([]byte(manifestJSON), &manifest) != nil {
+		return nil
+	}
+	raw, _ := manifest["capabilities"].([]any)
+	result := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			result = append(result, strings.TrimSpace(text))
+		}
+	}
+	return result
+}
+
+func stringSetsIntersect(left, right []string) bool {
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		values[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := values[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) GetDocumentSession(ctx context.Context, scope core.Scope, runID, documentID string) (core.DocumentSession, error) {
+	return scanDocumentSession(s.db.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions
+		WHERE id = ? AND run_id = ? AND organization_id = ? AND owner_user_id = ?`, documentID, runID, scope.OrganizationID, scope.UserID))
+}
+
+func (s *Store) GetDocumentSessionByOpenKey(ctx context.Context, scope core.Scope, runID, openKey string) (core.DocumentSession, error) {
+	return scanDocumentSession(s.db.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions
+		WHERE run_id = ? AND open_key = ? AND organization_id = ? AND owner_user_id = ?`, runID, openKey, scope.OrganizationID, scope.UserID))
+}
+
+func (s *Store) CreateDocumentSession(ctx context.Context, scope core.Scope, session core.DocumentSession, initial core.DocumentRevision) (core.DocumentSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.DocumentSession{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var marker int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT 1 FROM runs r
+		JOIN tasks t ON t.id = r.task_id
+		JOIN project_memberships pm ON pm.project_id = r.project_id AND pm.user_id = ? AND pm.status = 'active'
+		WHERE r.id = ? AND r.organization_id = ? AND r.project_id = ? AND r.task_id = ? AND t.owner_user_id = ?`,
+		scope.UserID, session.RunID, scope.OrganizationID, session.ProjectID, session.TaskID, scope.UserID).Scan(&marker); err != nil {
+		return core.DocumentSession{}, err
+	}
+	if existing, existingErr := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE run_id = ? AND open_key = ?`, session.RunID, session.OpenKey)); existingErr == nil {
+		return existing, nil
+	} else if !errors.Is(existingErr, sql.ErrNoRows) {
+		return core.DocumentSession{}, existingErr
+	}
+	now := formatTime(time.Now().UTC())
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = mustParseTime(now)
+	}
+	session.UpdatedAt = mustParseTime(now)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO document_sessions (
+			id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+			source_ref, source_content_hash, format, mode, runtime_version,
+			extraction_profile_hash, revision, revision_hash, working_handle,
+			structure_json, warnings_json, rendered_revision, render_hash,
+			render_manifest_json, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, '', '{}', ?, ?, ?)`,
+		session.ID, scope.OrganizationID, session.ProjectID, scope.UserID, session.TaskID, session.RunID, session.OpenKey,
+		session.SourceRef, session.SourceContentHash, session.Format, session.Mode, session.RuntimeVersion,
+		session.ExtractionProfileHash, initial.RevisionHash, initial.WorkingHandle,
+		initial.StructureJSON, initial.WarningsJSON, session.Status, now, now); err != nil {
+		return core.DocumentSession{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO document_revisions (document_id, revision, revision_hash, operation_hash, working_handle, structure_json, warnings_json, created_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)`, session.ID, initial.RevisionHash, initial.OperationHash, initial.WorkingHandle, initial.StructureJSON, initial.WarningsJSON, now); err != nil {
+		return core.DocumentSession{}, err
+	}
+	created, err := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE id = ?`, session.ID))
+	if err != nil {
+		return core.DocumentSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.DocumentSession{}, err
+	}
+	return created, nil
+}
+
+func (s *Store) AdvanceDocumentRevision(ctx context.Context, scope core.Scope, documentID string, expectedRevision int64, next core.DocumentRevision) (core.DocumentSession, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, documentID, scope.OrganizationID, scope.UserID))
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	var replayRevision int64
+	replayErr := tx.QueryRowContext(ctx, `SELECT revision FROM document_revisions WHERE document_id = ? AND operation_hash = ?`, documentID, next.OperationHash).Scan(&replayRevision)
+	if replayErr == nil {
+		return current, true, nil
+	}
+	if replayErr != nil && !errors.Is(replayErr, sql.ErrNoRows) {
+		return core.DocumentSession{}, false, replayErr
+	}
+	if current.Revision != expectedRevision {
+		return core.DocumentSession{}, false, &core.StateConflictError{Status: fmt.Sprintf("document_revision_%d", current.Revision), Command: fmt.Sprintf("apply document revision %d", expectedRevision)}
+	}
+	next.Revision = expectedRevision + 1
+	now := formatTime(time.Now().UTC())
+	result, err := tx.ExecContext(ctx, `
+		UPDATE document_sessions
+		SET revision = ?, revision_hash = ?, working_handle = ?, structure_json = ?, warnings_json = ?,
+		    rendered_revision = 0, render_hash = '', render_manifest_json = '{}', status = 'ready', updated_at = ?
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND revision = ?`,
+		next.Revision, next.RevisionHash, next.WorkingHandle, next.StructureJSON, next.WarningsJSON,
+		now, documentID, scope.OrganizationID, scope.UserID, expectedRevision)
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return core.DocumentSession{}, false, &core.StateConflictError{Status: "document_revision_changed", Command: "apply document revision"}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO document_revisions (document_id, revision, revision_hash, operation_hash, working_handle, structure_json, warnings_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, documentID, next.Revision, next.RevisionHash, next.OperationHash, next.WorkingHandle, next.StructureJSON, next.WarningsJSON, now); err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	updated, err := scanDocumentSession(tx.QueryRowContext(ctx, `
+		SELECT id, organization_id, project_id, owner_user_id, task_id, run_id, open_key,
+		       source_ref, source_content_hash, format, mode, runtime_version,
+		       extraction_profile_hash, revision, revision_hash, working_handle,
+		       structure_json, warnings_json, rendered_revision, render_hash,
+		       render_manifest_json, status, created_at, updated_at
+		FROM document_sessions WHERE id = ?`, documentID))
+	if err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.DocumentSession{}, false, err
+	}
+	return updated, false, nil
+}
+
+func (s *Store) MarkDocumentRendered(ctx context.Context, scope core.Scope, documentID string, expectedRevision int64, renderHash, manifestJSON, warningsJSON string) (core.DocumentSession, error) {
+	now := formatTime(time.Now().UTC())
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE document_sessions
+		SET rendered_revision = ?, render_hash = ?, render_manifest_json = ?, warnings_json = ?, updated_at = ?
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND revision = ?`,
+		expectedRevision, renderHash, manifestJSON, warningsJSON, now, documentID, scope.OrganizationID, scope.UserID, expectedRevision)
+	if err != nil {
+		return core.DocumentSession{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return core.DocumentSession{}, &core.StateConflictError{Status: "document_revision_changed", Command: "render document revision"}
+	}
+	return s.GetDocumentSession(ctx, scope, documentSessionRunID(ctx, s.db, documentID), documentID)
+}
+
+func documentSessionRunID(ctx context.Context, db *sql.DB, documentID string) string {
+	var runID string
+	_ = db.QueryRowContext(ctx, `SELECT run_id FROM document_sessions WHERE id = ?`, documentID).Scan(&runID)
+	return runID
+}
+
+type documentSessionScanner interface {
+	Scan(...any) error
+}
+
+func scanDocumentSession(row documentSessionScanner) (core.DocumentSession, error) {
+	var session core.DocumentSession
+	var createdAt, updatedAt string
+	if err := row.Scan(
+		&session.ID, &session.OrganizationID, &session.ProjectID, &session.OwnerUserID, &session.TaskID, &session.RunID, &session.OpenKey,
+		&session.SourceRef, &session.SourceContentHash, &session.Format, &session.Mode, &session.RuntimeVersion,
+		&session.ExtractionProfileHash, &session.Revision, &session.RevisionHash, &session.WorkingHandle,
+		&session.StructureJSON, &session.WarningsJSON, &session.RenderedRevision, &session.RenderHash,
+		&session.RenderManifestJSON, &session.Status, &createdAt, &updatedAt,
+	); err != nil {
+		return core.DocumentSession{}, err
+	}
+	session.CreatedAt = mustParseTime(createdAt)
+	session.UpdatedAt = mustParseTime(updatedAt)
+	return session, nil
 }
 
 func (s *Store) ReviewCapability(ctx context.Context, scope core.Scope, capabilityID string, input core.ReviewCapabilityInput, correlationID string, idempotency core.Idempotency) (core.Capability, error) {
@@ -6157,6 +6740,11 @@ func freezeRunToolSnapshots(ctx context.Context, tx *sql.Tx, runID string, confi
 		return err
 	}
 	for _, spec := range core.BuiltinToolSpecs() {
+		if isDocumentToolName(spec.Name) {
+			if runtimeSnapshot, ok := config["document_runtime"].(map[string]any); !ok || strings.TrimSpace(fmt.Sprint(runtimeSnapshot["runtime_version"])) == "" {
+				continue
+			}
+		}
 		if err := insert(spec.Identity, spec.Name, spec.Source, "", spec.Parameters, spec.Capabilities, "builtin_at_run_creation"); err != nil {
 			return err
 		}
@@ -6192,6 +6780,15 @@ func freezeRunToolSnapshots(ctx context.Context, tx *sql.Tx, runID string, confi
 		}
 	}
 	return nil
+}
+
+func isDocumentToolName(name string) bool {
+	switch name {
+	case core.ToolDocumentOpen, core.ToolDocumentRead, core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentRender, core.ToolDocumentExport:
+		return true
+	default:
+		return false
+	}
 }
 
 func nullableTime(value time.Time) string {
@@ -6774,1535 +7371,6 @@ func (s *Store) SetTeamDefinitionStatus(ctx context.Context, scope core.Scope, t
 	return definition, nil
 }
 
-func (s *Store) ListApprovals(ctx context.Context, scope core.Scope, status string, limit int) ([]core.Approval, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT ar.id, ar.organization_id, ar.project_id, ar.task_id, ar.run_id,
-		       ar.step_id, ar.tool_call_id, ar.tool_name, ar.risk_level, ar.status,
-		       ar.reason, ar.frozen_params_json, ar.input_hash, ar.requested_by,
-		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at,
-		       ar.approval_scope, ar.target_origin, ar.matched_rule_id, ar.policy_hash
-		FROM approval_requests ar
-		JOIN tasks t ON t.id = ar.task_id
-		JOIN memberships m ON m.organization_id = ar.organization_id
-		JOIN project_memberships pm ON pm.project_id = ar.project_id AND pm.user_id = m.user_id
-		WHERE ar.organization_id = ?
-		  AND m.user_id = ? AND m.status = 'active' AND pm.status = 'active'
-		  AND (t.visibility = 'project' OR t.owner_user_id = ?)
-		  AND (? = 'all' OR ar.status = ?)
-		ORDER BY CASE ar.status WHEN 'pending' THEN 0 ELSE 1 END, ar.requested_at ASC, ar.id ASC
-		LIMIT ?`,
-		scope.OrganizationID, scope.UserID, scope.UserID, status, status, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	approvals := make([]core.Approval, 0)
-	for rows.Next() {
-		approval, scanErr := scanApproval(rows)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		approvals = append(approvals, approval)
-	}
-	return approvals, rows.Err()
-}
-
-// ExpireApprovals deterministically rejects unattended pending approvals and
-// converges the associated task/run to BLOCKED. It runs in one transaction so
-// a stale approval can never remain actionable while its task is already
-// terminal, and every expiry is represented in the Run Event stream.
-func (s *Store) ExpireApprovals(ctx context.Context, now time.Time) (int, error) {
-	nowText := formatTime(now.UTC())
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, organization_id, project_id, task_id, run_id, step_id, tool_call_id
-		FROM approval_requests
-		WHERE status = 'pending'
-		  AND ((expires_at <> '' AND expires_at <= ?) OR (expires_at = '' AND requested_at <= ?))
-		ORDER BY CASE WHEN expires_at = '' THEN requested_at ELSE expires_at END ASC, id ASC`, nowText, formatTime(now.UTC().Add(-core.DefaultApprovalTTL)))
-	if err != nil {
-		return 0, err
-	}
-	type expiredApproval struct{ id, organizationID, projectID, taskID, runID, stepID, toolCallID string }
-	items := make([]expiredApproval, 0)
-	for rows.Next() {
-		var item expiredApproval
-		if err := rows.Scan(&item.id, &item.organizationID, &item.projectID, &item.taskID, &item.runID, &item.stepID, &item.toolCallID); err != nil {
-			_ = rows.Close()
-			return 0, err
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, err
-	}
-	_ = rows.Close()
-	q := s.queries.WithTx(tx)
-	expiredCount := 0
-	for _, item := range items {
-		result, err := tx.ExecContext(ctx, `
-			UPDATE approval_requests
-			SET status = 'rejected', decided_by = '', decision_note = ?, decided_at = ?
-			WHERE id = ? AND status = 'pending'`, "审批已过期，系统默认拒绝", nowText, item.id)
-		if err != nil {
-			return 0, err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil || changed != 1 {
-			if err != nil {
-				return 0, err
-			}
-			continue
-		}
-		expiredCount++
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE human_action_requests
-			SET status = 'expired', response_json = '{"decision":"rejected","reason":"expired"}',
-			    decided_by = 'system', decided_at = ?, version = version + 1
-			WHERE id = ? AND status IN ('waiting_user', 'reviewing')`, nowText, item.id); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'rejected', error_code = 'APPROVAL_EXPIRED', updated_at = ? WHERE id = ?`, nowText, item.toolCallID); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = 'canceled', error_code = 'APPROVAL_EXPIRED', owner_id = '', lease_until = '', updated_at = ? WHERE id = ? AND status = 'waiting_approval'`, nowText, item.stepID); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'blocked', error_code = 'APPROVAL_EXPIRED', result_summary = ?, updated_at = ? WHERE id = ?`, "审批已过期，风险动作未执行", nowText, item.taskID); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'blocked', updated_at = ? WHERE id = ?`, nowText, item.runID); err != nil {
-			return 0, err
-		}
-		if err := s.blockToolBatchAfterApproval(ctx, tx, q, item.organizationID, item.projectID, item.runID, item.toolCallID, "APPROVAL_EXPIRED", nowText, "", item.id); err != nil {
-			return 0, err
-		}
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: item.organizationID, ProjectID: item.projectID, RunID: item.runID, EventType: "approval.expired", ActorType: "system", ActorID: "", CorrelationID: item.id, Visibility: core.VisibilityPrivate, Payload: map[string]any{"approval_id": item.id, "tool_call_id": item.toolCallID, "step_id": item.stepID, "decision": core.ApprovalRejected, "reason": "expired"}}); err != nil {
-			return 0, err
-		}
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: item.organizationID, ProjectID: item.projectID, RunID: item.runID, EventType: "human_action.expired", ActorType: "system", ActorID: "runtime", CorrelationID: item.id, Visibility: core.VisibilityPrivate, Payload: map[string]any{"human_action_id": item.id, "kind": core.HumanActionToolApproval, "status": core.HumanActionExpired}}); err != nil {
-			return 0, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return expiredCount, nil
-}
-
-func (s *Store) blockToolBatchAfterApproval(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, organizationID, projectID, runID, toolCallID, errorCode, now, actorID, correlationID string) error {
-	var batchID string
-	if err := tx.QueryRowContext(ctx, `SELECT tool_batch_id FROM tool_calls WHERE id = ?`, toolCallID).Scan(&batchID); err != nil {
-		return err
-	}
-	if batchID == "" {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE approval_requests
-		SET status = 'rejected', decided_by = ?, decision_note = ?, decided_at = ?
-		WHERE status = 'pending'
-		  AND tool_call_id IN (SELECT id FROM tool_calls WHERE tool_batch_id = ?)`,
-		actorID, "同一工具批次中的审批被拒绝或过期，剩余动作已取消", now, batchID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE human_action_requests
-		SET status = 'superseded',
-		    response_json = '{"reason":"tool_batch_canceled"}',
-		    decided_by = ?, decided_at = ?, version = version + 1
-		WHERE status IN ('waiting_user', 'reviewing')
-		  AND id IN (
-		    SELECT ar.id FROM approval_requests ar
-		    JOIN tool_calls tc ON tc.id = ar.tool_call_id
-		    WHERE tc.tool_batch_id = ?
-		  )`,
-		actorID, now, batchID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE tool_calls
-		SET status = 'blocked', error_code = ?, completed_at = ?, updated_at = ?
-		WHERE tool_batch_id = ? AND status IN ('planned', 'queued', 'waiting_approval')`,
-		"BATCH_CANCELED_AFTER_"+errorCode, now, now, batchID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE steps
-		SET status = 'canceled', error_code = ?, owner_id = '', lease_until = '', updated_at = ?
-		WHERE tool_batch_id = ? AND status IN ('queued', 'waiting_approval')`,
-		"BATCH_CANCELED_AFTER_"+errorCode, now, batchID,
-	); err != nil {
-		return err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE tool_batches SET status = 'blocked', updated_at = ? WHERE id = ? AND status <> 'blocked'`, now, batchID)
-	if err != nil {
-		return err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil || changed == 0 {
-		return err
-	}
-	return s.appendEvent(ctx, q, eventInput{
-		OrganizationID: organizationID,
-		ProjectID:      projectID,
-		RunID:          runID,
-		EventType:      "tool.batch_completed",
-		ActorType:      "system",
-		ActorID:        actorID,
-		CorrelationID:  correlationID,
-		Visibility:     core.VisibilityPrivate,
-		Payload: map[string]any{
-			"batch_id":   batchID,
-			"status":     "blocked",
-			"error_code": errorCode,
-		},
-	})
-}
-
-func (s *Store) ListInboxHistory(ctx context.Context, scope core.Scope, limit int) ([]core.InboxHistoryItem, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT e.id, e.event_type, e.project_id, t.id, t.title, e.payload_json, e.occurred_at
-		FROM run_events e
-		JOIN runs r ON r.id = e.run_id
-		JOIN tasks t ON t.id = r.task_id
-		JOIN memberships m ON m.organization_id = e.organization_id
-		JOIN project_memberships pm ON pm.project_id = e.project_id AND pm.user_id = m.user_id
-		WHERE e.organization_id = ?
-		  AND m.user_id = ? AND m.status = 'active' AND pm.status = 'active'
-		  AND (e.visibility = 'project' OR t.owner_user_id = ?)
-		  AND e.event_type IN ('approval.decided', 'approval.expired', 'tool.side_effect_resolved', 'run.paused', 'run.resumed', 'run.retried', 'run.canceled', 'outcome.accepted')
-		ORDER BY e.occurred_at DESC, e.id DESC
-		LIMIT ?`, scope.OrganizationID, scope.UserID, scope.UserID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]core.InboxHistoryItem, 0)
-	for rows.Next() {
-		var id, eventType, projectID, taskID, title, payloadJSON, occurredAtText string
-		if err := rows.Scan(&id, &eventType, &projectID, &taskID, &title, &payloadJSON, &occurredAtText); err != nil {
-			return nil, err
-		}
-		occurredAt, err := parseTime(occurredAtText)
-		if err != nil {
-			return nil, err
-		}
-		payload := map[string]any{}
-		if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-			return nil, fmt.Errorf("decode inbox history payload: %w", err)
-		}
-		kind, status, summary := inboxHistorySummary(eventType, payload)
-		items = append(items, core.InboxHistoryItem{ID: id, Kind: kind, ProjectID: projectID, TaskID: taskID, Title: title, Summary: summary, Status: status, OccurredAt: occurredAt})
-	}
-	return items, rows.Err()
-}
-
-func inboxHistorySummary(eventType string, payload map[string]any) (kind, status, summary string) {
-	stringValue := func(key string) string {
-		value, _ := payload[key].(string)
-		return value
-	}
-	switch eventType {
-	case "approval.decided":
-		decision := stringValue("decision")
-		if decision == core.ApprovalApproved {
-			if stringValue("approval_scope") == core.ApprovalScopeConversation {
-				return "approval", decision, "本会话已允许同类动作，冻结参数保持不变"
-			}
-			if stringValue("approval_scope") == core.ApprovalScopeProject {
-				return "approval", decision, "当前项目已允许同类窄规则动作 30 天，可随时撤销"
-			}
-			if stringValue("approval_scope") == core.ApprovalScopeRunOrigin {
-				return "approval", decision, "当前 Run 已允许访问同一私网 origin，终态或 24 小时后自动失效"
-			}
-			return "approval", decision, "审批已批准一次，冻结参数保持不变"
-		}
-		return "approval", decision, "审批已拒绝，风险动作未执行"
-	case "approval.expired":
-		return "approval", core.ApprovalRejected, "审批已过期，系统默认拒绝"
-	case "tool.side_effect_resolved":
-		return "side_effect", stringValue("decision"), "未知副作用已由人工完成核查"
-	case "run.paused":
-		return "task", core.StatusPaused, "任务已暂停"
-	case "run.resumed":
-		return "task", core.StatusQueued, "任务已恢复排队"
-	case "run.retried":
-		return "task", core.StatusQueued, "任务已从安全点重试"
-	case "run.canceled":
-		return "task", core.StatusCanceled, "任务已取消"
-	case "outcome.accepted":
-		return "task", core.StatusSucceeded, "任务结果已被人工验收"
-	default:
-		return "task", "", "人机协作状态已更新"
-	}
-}
-
-func (s *Store) ListSideEffectReceipts(ctx context.Context, scope core.Scope, status string, limit int) ([]core.SideEffectReceipt, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT r.id, r.organization_id, r.project_id, r.task_id, r.run_id,
-		       r.step_id, r.tool_call_id, tc.tool_name, r.input_hash, r.idempotent,
-		       r.status, r.error_code, r.network_class, r.matched_rule_id,
-		       r.policy_hash, r.authorization_id, r.started_at, r.finished_at
-		FROM side_effect_receipts r
-		JOIN tool_calls tc ON tc.id = r.tool_call_id
-		JOIN tasks t ON t.id = r.task_id
-		JOIN memberships m ON m.organization_id = r.organization_id
-		JOIN project_memberships pm ON pm.project_id = r.project_id AND pm.user_id = m.user_id
-		WHERE r.organization_id = ?
-		  AND m.user_id = ? AND m.status = 'active' AND pm.status = 'active'
-		  AND (t.visibility = 'project' OR t.owner_user_id = ?)
-		  AND (? = 'all' OR r.status = ?)
-		ORDER BY CASE r.status WHEN 'unknown' THEN 0 ELSE 1 END, r.started_at ASC, r.id ASC
-		LIMIT ?`,
-		scope.OrganizationID, scope.UserID, scope.UserID, status, status, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]core.SideEffectReceipt, 0)
-	for rows.Next() {
-		item, scanErr := scanSideEffectReceipt(rows)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func (s *Store) ResolveSideEffect(ctx context.Context, scope core.Scope, receiptID string, input core.ResolveSideEffectInput, correlationID string, idempotency core.Idempotency) (core.SideEffectReceipt, error) {
-	route := "POST /side-effect-receipts/" + receiptID + "/resolution"
-	if idempotency.Key != "" {
-		s.idempotencyMu.Lock()
-		defer s.idempotencyMu.Unlock()
-		var replay core.SideEffectReceipt
-		found, err := replayIdempotency(ctx, s.db, scope, route, idempotency, &replay)
-		if err != nil || found {
-			return replay, err
-		}
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if idempotency.Key != "" {
-		var replay core.SideEffectReceipt
-		found, replayErr := replayIdempotency(ctx, tx, scope, route, idempotency, &replay)
-		if replayErr != nil || found {
-			return replay, replayErr
-		}
-	}
-	receipt, err := getSideEffectReceiptForUserTx(ctx, tx, scope, receiptID)
-	if err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	var role string
-	if err := tx.QueryRowContext(ctx, `SELECT role FROM project_memberships WHERE project_id = ? AND user_id = ? AND status = 'active'`, receipt.ProjectID, scope.UserID).Scan(&role); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if role != core.ProjectRoleOwner && role != core.ProjectRoleApprover {
-		return core.SideEffectReceipt{}, &core.ForbiddenError{Message: "project members cannot resolve side effects"}
-	}
-	if receipt.Status != core.SideEffectReceiptUnknown {
-		return core.SideEffectReceipt{}, &core.StateConflictError{Status: receipt.Status, Command: input.Decision}
-	}
-	var existingDecision string
-	_ = tx.QueryRowContext(ctx, `SELECT decision FROM side_effect_resolutions WHERE receipt_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, receiptID).Scan(&existingDecision)
-	if existingDecision != "" {
-		return core.SideEffectReceipt{}, &core.StateConflictError{Status: existingDecision, Command: input.Decision}
-	}
-	run, err := getRunContextTx(ctx, tx, receipt.RunID)
-	if err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	now := formatTime(time.Now())
-	resolutionID, err := newID()
-	if err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO side_effect_resolutions (id, organization_id, project_id, task_id, run_id, receipt_id, decision, note, actor_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, resolutionID, receipt.OrganizationID, receipt.ProjectID, receipt.TaskID, receipt.RunID, receipt.ID, input.Decision, input.Note, scope.UserID, now); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	confirmed := input.Decision == core.SideEffectDecisionConfirmApplied
-	receiptStatus := core.SideEffectReceiptFailed
-	errorCode := "SIDE_EFFECT_" + strings.ToUpper(strings.TrimPrefix(input.Decision, "confirm_"))
-	if confirmed {
-		receiptStatus = core.SideEffectReceiptSucceeded
-		errorCode = "MANUALLY_CONFIRMED"
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE side_effect_receipts SET status = ?, error_code = ?, finished_at = ? WHERE id = ? AND status = 'unknown'`, receiptStatus, errorCode, now, receipt.ID); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	actionStatus := core.HumanActionRejected
-	if confirmed {
-		actionStatus = core.HumanActionApproved
-	}
-	actionResponse, _ := json.Marshal(map[string]any{"decision": input.Decision, "note": input.Note})
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE human_action_requests
-		SET status = ?, response_json = ?, decided_by = ?, decided_at = ?, version = version + 1
-		WHERE id = ? AND status IN ('waiting_user', 'reviewing')`,
-		actionStatus, string(actionResponse), scope.UserID, now, receipt.ID,
-	); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	toolStatus := core.StatusBlocked
-	stepStatus := core.StatusBlocked
-	taskStatus := core.StatusBlocked
-	taskError := errorCode
-	taskSummary := "副作用结果未确认执行，已由人工终止；如需重试，请 Fork 任务并重新审批。"
-	if confirmed {
-		toolStatus = core.StatusSucceeded
-		stepStatus = core.StatusSucceeded
-		taskStatus = core.StatusSucceeded
-		taskError = ""
-		taskSummary = "外部副作用已由用户人工确认完成。"
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = ?, error_code = ?, updated_at = ? WHERE id = ?`, toolStatus, taskError, now, receipt.ToolCallID); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	stepOutput, _ := json.Marshal(map[string]any{"manual_resolution": input.Decision, "note": input.Note, "receipt_id": receipt.ID})
-	if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = ?, output_json = ?, error_code = ?, updated_at = ? WHERE id = ? AND status = 'blocked'`, stepStatus, string(stepOutput), taskError, now, receipt.StepID); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE step_attempts SET status = ?, error_code = ?, finished_at = ? WHERE id = (SELECT id FROM step_attempts WHERE step_id = ? ORDER BY attempt_number DESC LIMIT 1)`, stepStatus, taskError, now, receipt.StepID); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, error_code = ?, result_summary = ?, updated_at = ? WHERE id = ?`, taskStatus, taskError, taskSummary, now, receipt.TaskID); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`, taskStatus, now, receipt.RunID); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	validationID, err := newID()
-	if err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	validationStatus := "failed"
-	if confirmed {
-		validationStatus = "passed"
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO validation_results (id, organization_id, project_id, task_id, run_id, step_id, tool_call_id, validator, status, input_hash, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, validationID, receipt.OrganizationID, receipt.ProjectID, receipt.TaskID, receipt.RunID, receipt.StepID, receipt.ToolCallID, "manual_side_effect_resolution", validationStatus, receipt.InputHash, string(stepOutput), now); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if err := s.appendEvent(ctx, s.queries.WithTx(tx), eventInput{OrganizationID: receipt.OrganizationID, ProjectID: receipt.ProjectID, RunID: receipt.RunID, EventType: "tool.side_effect_resolved", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"receipt_id": receipt.ID, "tool_call_id": receipt.ToolCallID, "decision": input.Decision, "note": input.Note, "validation_status": validationStatus}}); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if err := s.appendEvent(ctx, s.queries.WithTx(tx), eventInput{OrganizationID: receipt.OrganizationID, ProjectID: receipt.ProjectID, RunID: receipt.RunID, EventType: "human_action.resolved", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": receipt.ID, "kind": core.HumanActionSideEffectResolution, "status": actionStatus, "decision": input.Decision}}); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if err := s.appendEvent(ctx, s.queries.WithTx(tx), eventInput{OrganizationID: receipt.OrganizationID, ProjectID: receipt.ProjectID, RunID: receipt.RunID, EventType: "step." + stepStatus, ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": receipt.StepID, "receipt_id": receipt.ID, "decision": input.Decision, "error_code": taskError}}); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if err := s.appendConversationMessage(ctx, tx, s.queries.WithTx(tx), run, "assistant", taskSummary, now); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	receipt.Status = receiptStatus
-	receipt.ErrorCode = errorCode
-	finishedAt, _ := parseTime(now)
-	receipt.FinishedAt = &finishedAt
-	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusOK, receipt); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return core.SideEffectReceipt{}, err
-	}
-	return receipt, nil
-}
-
-func (s *Store) DecideApproval(ctx context.Context, scope core.Scope, approvalID string, input core.DecideApprovalInput, correlationID string, idempotency core.Idempotency) (core.Approval, error) {
-	route := "POST /approvals/" + approvalID + "/decision"
-	if idempotency.Key != "" {
-		s.idempotencyMu.Lock()
-		defer s.idempotencyMu.Unlock()
-		var replay core.Approval
-		found, err := replayIdempotency(ctx, s.db, scope, route, idempotency, &replay)
-		if err != nil || found {
-			return replay, err
-		}
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.Approval{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if idempotency.Key != "" {
-		var replay core.Approval
-		found, replayErr := replayIdempotency(ctx, tx, scope, route, idempotency, &replay)
-		if replayErr != nil || found {
-			return replay, replayErr
-		}
-	}
-	approval, err := getApprovalForUser(ctx, tx, scope, approvalID)
-	if err != nil {
-		return core.Approval{}, err
-	}
-	var runOriginPlan core.PlannedTool
-	var runOriginAuthorizationID string
-	if input.Decision == core.ApprovalApproved && approval.ToolName == core.ToolWebFetch {
-		if input.Scope != core.ApprovalScopeRunOrigin {
-			return core.Approval{}, &core.ValidationError{Field: "scope", Message: "private web_fetch approvals must use the current Run and origin scope"}
-		}
-		run, runErr := getRunContextTx(ctx, tx, approval.RunID)
-		if runErr != nil {
-			return core.Approval{}, runErr
-		}
-		var argumentsJSON string
-		if err := tx.QueryRowContext(ctx, `SELECT arguments_json FROM tool_calls WHERE id = ?`, approval.ToolCallID).Scan(&argumentsJSON); err != nil {
-			return core.Approval{}, err
-		}
-		arguments := map[string]any{}
-		if err := json.Unmarshal([]byte(argumentsJSON), &arguments); err != nil {
-			return core.Approval{}, &core.ValidationError{Field: "frozen_params", Message: "frozen web_fetch parameters are invalid"}
-		}
-		runOriginPlan, err = s.executionPolicy.EvaluateExecution(ctx,
-			application.Principal{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID},
-			application.ExecutionRequest{ProjectID: run.ProjectID, Call: core.ToolCall{ID: approval.ToolCallID, Name: approval.ToolName, Arguments: arguments}, ConfigSnapshot: run.ConfigSnapshotJSON},
-		)
-		if err != nil {
-			return core.Approval{}, err
-		}
-		if runOriginPlan.Decision != core.PolicyAsk || runOriginPlan.ApprovalScope != core.ApprovalScopeRunOrigin ||
-			runOriginPlan.ApprovalGrantKey == "" || runOriginPlan.ApprovalPolicyHash == "" || runOriginPlan.ApprovalOrigin == "" {
-			return core.Approval{}, &core.StateConflictError{Status: runOriginPlan.Decision, Command: "approve private web origin"}
-		}
-	} else if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunOrigin {
-		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "Run origin approval is only valid for private web_fetch calls"}
-	}
-	if input.Decision == core.ApprovalApproved && input.Scope != core.ApprovalScopeOnce && strings.HasPrefix(approval.ToolName, "mcp__") {
-		return core.Approval{}, &core.ValidationError{Field: "scope", Message: "MCP tools only support one-time approval"}
-	}
-	var projectRole string
-	if err := tx.QueryRowContext(ctx, `SELECT role FROM project_memberships WHERE project_id = ? AND user_id = ? AND status = 'active'`, approval.ProjectID, scope.UserID).Scan(&projectRole); err != nil {
-		return core.Approval{}, err
-	}
-	if projectRole != core.ProjectRoleOwner && projectRole != core.ProjectRoleApprover {
-		return core.Approval{}, &core.ForbiddenError{Message: "project members cannot decide approvals"}
-	}
-	if input.Scope == core.ApprovalScopeProject && projectRole != core.ProjectRoleOwner {
-		return core.Approval{}, &core.ForbiddenError{Message: "only a project owner can create project approval rules"}
-	}
-	if approval.Status != core.ApprovalPending {
-		if approval.Status != input.Decision {
-			return core.Approval{}, &core.StateConflictError{Status: approval.Status, Command: input.Decision}
-		}
-		if err := saveIdempotency(ctx, tx, scope, route, idempotency, 200, approval); err != nil {
-			return core.Approval{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return core.Approval{}, err
-		}
-		return approval, nil
-	}
-	now := formatTime(time.Now())
-	result, err := tx.ExecContext(ctx, `
-		UPDATE approval_requests
-		SET status = ?, decided_by = ?, decision_note = ?, decided_at = ?
-		WHERE id = ? AND status = 'pending'`,
-		input.Decision, scope.UserID, input.Note, now, approvalID,
-	)
-	if err != nil {
-		return core.Approval{}, err
-	}
-	if count, err := result.RowsAffected(); err != nil || count != 1 {
-		return core.Approval{}, &core.StateConflictError{Status: approval.Status, Command: input.Decision}
-	}
-	humanStatus := core.HumanActionApproved
-	if input.Decision == core.ApprovalRejected {
-		humanStatus = core.HumanActionRejected
-	}
-	responseJSON, _ := json.Marshal(map[string]any{"decision": input.Decision, "scope": input.Scope, "note": input.Note})
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE human_action_requests
-		SET status = ?, response_json = ?, decided_by = ?, decided_at = ?, version = version + 1
-		WHERE id = ? AND status IN ('waiting_user', 'reviewing')`,
-		humanStatus, string(responseJSON), scope.UserID, now, approvalID,
-	); err != nil {
-		return core.Approval{}, err
-	}
-	taskStatus := core.StatusQueued
-	errorCode := ""
-	resultSummary := "已批准冻结的工具参数，等待 Worker 执行。"
-	toolStatus := "queued"
-	stepStatus := core.StatusQueued
-	if input.Decision == core.ApprovalRejected {
-		taskStatus = core.StatusBlocked
-		errorCode = "APPROVAL_REJECTED"
-		resultSummary = "审批被拒绝，风险动作未执行。"
-		toolStatus = "rejected"
-		stepStatus = core.StatusCanceled
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = ?, error_code = ?, updated_at = ? WHERE id = ?`, toolStatus, errorCode, now, approval.ToolCallID); err != nil {
-		return core.Approval{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = ?, error_code = ?, owner_id = '', lease_until = '', updated_at = ? WHERE id = ? AND status = 'waiting_approval'`, stepStatus, errorCode, now, approval.StepID); err != nil {
-		return core.Approval{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, error_code = ?, result_summary = ?, updated_at = ? WHERE id = ?`, taskStatus, errorCode, resultSummary, now, approval.TaskID); err != nil {
-		return core.Approval{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`, taskStatus, now, approval.RunID); err != nil {
-		return core.Approval{}, err
-	}
-	planItemStatus := core.RunPlanItemRunning
-	if input.Decision == core.ApprovalRejected {
-		planItemStatus = core.RunPlanItemBlocked
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE run_plan_items SET status = ?, updated_at = ?,
-		       completed_at = CASE WHEN ? = 'blocked' THEN ? ELSE completed_at END,
-		       result_summary = CASE WHEN ? = 'blocked' THEN ? ELSE result_summary END
-		WHERE id = (SELECT run_plan_item_id FROM human_action_requests WHERE id = ?)`,
-		planItemStatus, now, planItemStatus, now, planItemStatus, resultSummary, approvalID,
-	); err != nil {
-		return core.Approval{}, err
-	}
-	q := s.queries.WithTx(tx)
-	if input.Decision == core.ApprovalRejected {
-		if err := s.blockToolBatchAfterApproval(ctx, tx, q, approval.OrganizationID, approval.ProjectID, approval.RunID, approval.ToolCallID, "APPROVAL_REJECTED", now, scope.UserID, correlationID); err != nil {
-			return core.Approval{}, err
-		}
-	}
-	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeRunOrigin {
-		ruleID, err := newID()
-		if err != nil {
-			return core.Approval{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO run_approval_rules
-			(id, organization_id, project_id, run_id, tool_name, grant_type, grant_key,
-			 policy_hash, canonical_origin, created_from_approval_id, created_by, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, 'run_origin', ?, ?, ?, ?, ?, ?, ?)`,
-			ruleID, approval.OrganizationID, approval.ProjectID, approval.RunID, approval.ToolName,
-			runOriginPlan.ApprovalGrantKey, runOriginPlan.ApprovalPolicyHash, runOriginPlan.ApprovalOrigin,
-			approval.ID, scope.UserID, now, formatTime(approval.ExpiresAt)); err != nil {
-			return core.Approval{}, err
-		}
-		if err := tx.QueryRowContext(ctx, `
-			SELECT id FROM run_approval_rules
-			WHERE run_id = ? AND tool_name = ? AND grant_type = 'run_origin'
-			  AND grant_key = ? AND policy_hash = ? LIMIT 1`, approval.RunID, approval.ToolName,
-			runOriginPlan.ApprovalGrantKey, runOriginPlan.ApprovalPolicyHash).Scan(&runOriginAuthorizationID); err != nil {
-			return core.Approval{}, err
-		}
-	}
-	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeConversation {
-		var conversationID, argumentsJSON string
-		if err := tx.QueryRowContext(ctx, `
-			SELECT t.conversation_id, tc.arguments_json
-			FROM tasks t
-			JOIN tool_calls tc ON tc.id = ?
-			WHERE t.id = ?`, approval.ToolCallID, approval.TaskID).Scan(&conversationID, &argumentsJSON); err != nil {
-			return core.Approval{}, err
-		}
-		if ruleKey, matchJSON, ok := approvalRuleSignature(approval.ToolName, argumentsJSON); ok {
-			ruleID, err := newID()
-			if err != nil {
-				return core.Approval{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT OR IGNORE INTO conversation_approval_rules
-				(id, organization_id, project_id, conversation_id, tool_name, rule_key, created_from_approval_id, created_by, created_at, expires_at, rule_version, match_json, match_hash, risk_level)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?)`,
-				ruleID, approval.OrganizationID, approval.ProjectID, conversationID, approval.ToolName, ruleKey,
-				approval.ID, scope.UserID, now, formatTime(approval.ExpiresAt), matchJSON, ruleKey, approval.RiskLevel); err != nil {
-				return core.Approval{}, err
-			}
-		}
-	}
-	if input.Decision == core.ApprovalApproved && input.Scope == core.ApprovalScopeProject {
-		var argumentsJSON string
-		if err := tx.QueryRowContext(ctx, `SELECT arguments_json FROM tool_calls WHERE id = ?`, approval.ToolCallID).Scan(&argumentsJSON); err != nil {
-			return core.Approval{}, err
-		}
-		if ruleKey, matchJSON, ok := approvalRuleSignature(approval.ToolName, argumentsJSON); ok {
-			ruleID, err := newID()
-			if err != nil {
-				return core.Approval{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO project_approval_rules
-				(id, organization_id, project_id, tool_name, rule_key, created_from_approval_id, created_by, created_at, expires_at, revoked_at, revoked_by, rule_version, match_json, match_hash, risk_level)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 2, ?, ?, ?)
-				ON CONFLICT(project_id, tool_name, rule_key) DO UPDATE SET
-					created_from_approval_id = excluded.created_from_approval_id,
-					created_by = excluded.created_by,
-					created_at = excluded.created_at,
-					expires_at = excluded.expires_at,
-					rule_version = excluded.rule_version,
-					match_json = excluded.match_json,
-					match_hash = excluded.match_hash,
-					risk_level = excluded.risk_level,
-					revoked_at = '',
-					revoked_by = ''`,
-				ruleID, approval.OrganizationID, approval.ProjectID, approval.ToolName, ruleKey,
-				approval.ID, scope.UserID, now, formatTime(time.Now().UTC().Add(30*24*time.Hour)), matchJSON, ruleKey, approval.RiskLevel); err != nil {
-				return core.Approval{}, err
-			}
-		}
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "approval.decided", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"approval_id": approval.ID, "tool_call_id": approval.ToolCallID, "step_id": approval.StepID, "decision": input.Decision, "approval_scope": input.Scope, "input_hash": approval.InputHash, "parameters_changed": false, "target_origin": approval.TargetOrigin, "matched_rule_id": approval.MatchedRuleID, "policy_hash": approval.PolicyHash, "authorization_id": runOriginAuthorizationID}}); err != nil {
-		return core.Approval{}, err
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: approval.OrganizationID, ProjectID: approval.ProjectID, RunID: approval.RunID, EventType: "human_action.resolved", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: core.VisibilityPrivate, Payload: map[string]any{"human_action_id": approval.ID, "kind": core.HumanActionToolApproval, "status": humanStatus, "decision": input.Decision, "scope": input.Scope}}); err != nil {
-		return core.Approval{}, err
-	}
-	updated, err := getApprovalForUser(ctx, tx, scope, approvalID)
-	if err != nil {
-		return core.Approval{}, err
-	}
-	if err := saveIdempotency(ctx, tx, scope, route, idempotency, 200, updated); err != nil {
-		return core.Approval{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return core.Approval{}, err
-	}
-	return updated, nil
-}
-
-func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUntil time.Time) (core.ClaimedStep, error) {
-	// Keep the common idle poll read-only. The UPDATE ... RETURNING below is
-	// still the atomic claim/CAS, but it is attempted only when a candidate
-	// exists so four idle Workers do not continuously contend with HTTP writes
-	// and active checkpoint transactions for SQLite's single writer.
-	const findBatchAwareCandidate = `
-		SELECT candidate.id
-		FROM steps AS candidate
-		JOIN runs AS candidate_run ON candidate_run.id = candidate.run_id
-		WHERE (candidate.status = 'queued'
-		   OR (candidate.status = 'running' AND candidate.lease_until <> '' AND candidate.lease_until < ?))
-		  AND candidate_run.status IN ('queued', 'running')
-		  AND (
-		      EXISTS (
-		          SELECT 1 FROM steps same_run
-		          WHERE same_run.run_id = candidate.run_id
-		            AND same_run.status = 'running'
-		            AND same_run.lease_until >= ?
-		      )
-		      OR (
-		          SELECT COUNT(DISTINCT active.run_id)
-		          FROM steps active
-		          WHERE active.status = 'running'
-		            AND active.lease_until >= ?
-		      ) < 4
-		  )
-		  AND NOT EXISTS (
-		      SELECT 1
-		      FROM steps AS earlier
-		      WHERE earlier.run_id = candidate.run_id
-		        AND earlier.position < candidate.position
-		        AND earlier.status IN ('queued', 'running', 'waiting_approval')
-		        AND (
-		            candidate.tool_batch_id = ''
-		            OR earlier.tool_batch_id <> candidate.tool_batch_id
-		            OR NOT EXISTS (
-		                SELECT 1 FROM tool_batches batch
-		                WHERE batch.id = candidate.tool_batch_id
-		                  AND batch.execution_mode = 'parallel'
-		            )
-		        )
-		  )
-		  AND (
-		      candidate.tool_batch_id = ''
-		      OR EXISTS (
-		          SELECT 1 FROM tool_batches parallel_batch
-		          WHERE parallel_batch.id = candidate.tool_batch_id
-		            AND parallel_batch.execution_mode = 'parallel'
-		      )
-		      OR NOT EXISTS (
-		          SELECT 1 FROM steps batch_failure
-		          WHERE batch_failure.tool_batch_id = candidate.tool_batch_id
-		            AND batch_failure.status IN ('blocked', 'failed', 'canceled')
-		      )
-		  )
-		ORDER BY candidate.created_at ASC, candidate.id ASC
-		LIMIT 1`
-	nowText := formatTime(now)
-	var candidateID string
-	if err := s.db.QueryRowContext(ctx, findBatchAwareCandidate, nowText, nowText, nowText).Scan(&candidateID); errors.Is(err, sql.ErrNoRows) {
-		recovered, recoverErr := s.recoverCompletedToolBatchWithoutRunnableStep(ctx, now)
-		if recoverErr != nil {
-			return core.ClaimedStep{}, fmt.Errorf("recover completed tool batch: %w", recoverErr)
-		}
-		if recovered {
-			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
-		}
-		healed, healErr := s.recoverFailedSequentialToolBatch(ctx, now)
-		if healErr != nil {
-			return core.ClaimedStep{}, fmt.Errorf("recover failed sequential tool batch: %w", healErr)
-		}
-		if healed {
-			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
-		}
-		return core.ClaimedStep{}, core.ErrNoWork
-	} else if err != nil {
-		return core.ClaimedStep{}, err
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.ClaimedStep{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := s.queries.WithTx(tx)
-	const claimNextBatchAwareStep = `
-		UPDATE steps
-		SET status = 'running',
-		    owner_id = ?,
-		    lease_until = ?,
-		    fence_token = fence_token + 1,
-		    attempt_count = attempt_count + 1,
-		    updated_at = ?
-		WHERE id = (
-		    SELECT candidate.id
-		    FROM steps AS candidate
-		    JOIN runs AS candidate_run ON candidate_run.id = candidate.run_id
-		    WHERE (candidate.status = 'queued'
-		       OR (candidate.status = 'running' AND candidate.lease_until <> '' AND candidate.lease_until < ?))
-		      AND candidate_run.status IN ('queued', 'running')
-		      AND (
-		          EXISTS (
-		              SELECT 1 FROM steps same_run
-		              WHERE same_run.run_id = candidate.run_id
-		                AND same_run.status = 'running'
-		                AND same_run.lease_until >= ?
-		          )
-		          OR (
-		              SELECT COUNT(DISTINCT active.run_id)
-		              FROM steps active
-		              WHERE active.status = 'running'
-		                AND active.lease_until >= ?
-		          ) < 4
-		      )
-		      AND NOT EXISTS (
-		          SELECT 1
-		          FROM steps AS earlier
-		          WHERE earlier.run_id = candidate.run_id
-		            AND earlier.position < candidate.position
-		            AND earlier.status IN ('queued', 'running', 'waiting_approval')
-		            AND (
-		                candidate.tool_batch_id = ''
-		                OR earlier.tool_batch_id <> candidate.tool_batch_id
-		                OR NOT EXISTS (
-		                    SELECT 1 FROM tool_batches batch
-		                    WHERE batch.id = candidate.tool_batch_id
-		                      AND batch.execution_mode = 'parallel'
-		                )
-		            )
-		      )
-		      AND (
-		          candidate.tool_batch_id = ''
-		          OR EXISTS (
-		              SELECT 1 FROM tool_batches parallel_batch
-		              WHERE parallel_batch.id = candidate.tool_batch_id
-		                AND parallel_batch.execution_mode = 'parallel'
-		          )
-		          OR NOT EXISTS (
-		              SELECT 1 FROM steps batch_failure
-		              WHERE batch_failure.tool_batch_id = candidate.tool_batch_id
-		                AND batch_failure.status IN ('blocked', 'failed', 'canceled')
-		          )
-		      )
-		    ORDER BY candidate.created_at ASC, candidate.id ASC
-		    LIMIT 1
-		)
-		RETURNING id, organization_id, project_id, run_id, step_type, position, status,
-		          input_json, output_json, attempt_count, owner_id, lease_until,
-		          fence_token, error_code, created_at, updated_at, agent_id`
-	var row sqlitegen.Step
-	err = tx.QueryRowContext(ctx, claimNextBatchAwareStep, workerID, formatTime(leaseUntil), nowText, nowText, nowText, nowText).Scan(
-		&row.ID,
-		&row.OrganizationID,
-		&row.ProjectID,
-		&row.RunID,
-		&row.StepType,
-		&row.Position,
-		&row.Status,
-		&row.InputJson,
-		&row.OutputJson,
-		&row.AttemptCount,
-		&row.OwnerID,
-		&row.LeaseUntil,
-		&row.FenceToken,
-		&row.ErrorCode,
-		&row.CreatedAt,
-		&row.UpdatedAt,
-		&row.AgentID,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ClaimedStep{}, core.ErrNoWork
-	}
-	if err != nil {
-		return core.ClaimedStep{}, err
-	}
-	if row.AttemptCount > 1 {
-		if err := q.LosePreviousStepAttempts(ctx, sqlitegen.LosePreviousStepAttemptsParams{FinishedAt: formatTime(now), StepID: row.ID}); err != nil {
-			return core.ClaimedStep{}, err
-		}
-	}
-	attemptID, err := newID()
-	if err != nil {
-		return core.ClaimedStep{}, err
-	}
-	attemptKind := "initial"
-	if row.AttemptCount > 1 {
-		attemptKind = "recovery"
-	}
-	if err := q.CreateStepAttempt(ctx, sqlitegen.CreateStepAttemptParams{
-		ID:             attemptID,
-		OrganizationID: row.OrganizationID,
-		ProjectID:      row.ProjectID,
-		RunID:          row.RunID,
-		StepID:         row.ID,
-		AttemptNumber:  row.AttemptCount,
-		AttemptKind:    attemptKind,
-		OwnerID:        row.OwnerID,
-		FenceToken:     row.FenceToken,
-		StartedAt:      formatTime(now),
-	}); err != nil {
-		return core.ClaimedStep{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return core.ClaimedStep{}, err
-	}
-	return core.ClaimedStep{ID: row.ID, AttemptID: attemptID, AttemptNumber: row.AttemptCount, Recovery: row.AttemptCount > 1, OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, RunID: row.RunID, StepType: row.StepType, AgentID: row.AgentID, InputJSON: row.InputJson, OwnerID: row.OwnerID, FenceToken: row.FenceToken}, nil
-}
-
-func (s *Store) HeartbeatStep(ctx context.Context, step core.ClaimedStep, now, leaseUntil time.Time) (bool, error) {
-	count, err := s.queries.HeartbeatStep(ctx, sqlitegen.HeartbeatStepParams{LeaseUntil: formatTime(leaseUntil), UpdatedAt: formatTime(now), ID: step.ID, OwnerID: step.OwnerID, FenceToken: step.FenceToken})
-	return count == 1, err
-}
-
-func (s *Store) GetRunContext(ctx context.Context, runID string) (core.RunContext, error) {
-	row, err := s.queries.GetRunContext(ctx, runID)
-	if err != nil {
-		return core.RunContext{}, err
-	}
-	var configSnapshot string
-	var requestedProviderID, requestedModelID, effectiveProviderID, effectiveModelID string
-	var thinking, fallbackReason, catalogVersion string
-	if err := s.db.QueryRowContext(ctx, `
-SELECT config_snapshot_json, requested_provider_id, requested_model_id,
-       effective_provider_id, effective_model_id, thinking_level,
-       model_fallback_reason, model_catalog_version
-FROM runs WHERE id = ?`, runID).Scan(
-		&configSnapshot, &requestedProviderID, &requestedModelID,
-		&effectiveProviderID, &effectiveModelID, &thinking,
-		&fallbackReason, &catalogVersion,
-	); err != nil {
-		return core.RunContext{}, err
-	}
-	return core.RunContext{
-		RunID: row.RunID, TaskID: row.TaskID, ProjectID: row.ProjectID,
-		OrganizationID: row.OrganizationID, OwnerUserID: row.OwnerUserID,
-		ConversationID: row.ConversationID, Title: row.Title, Goal: row.Goal,
-		Acceptance: row.Acceptance, Mode: row.Mode, Visibility: row.Visibility,
-		ConfigSnapshotJSON: configSnapshot,
-		RequestedModel:     core.ModelRef{ProviderID: requestedProviderID, ModelID: requestedModelID},
-		EffectiveModel:     core.ModelRef{ProviderID: effectiveProviderID, ModelID: effectiveModelID},
-		Thinking:           thinking, ModelFallbackReason: fallbackReason, ModelCatalogVersion: catalogVersion,
-	}, nil
-}
-
-func (s *Store) MarkStepStarted(ctx context.Context, step core.ClaimedStep, run core.RunContext, correlationID string) error {
-	now := formatTime(time.Now())
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := s.queries.WithTx(tx)
-	if step.AgentID != "" {
-		if _, err := q.UpdateAgentTeamMemberStatus(ctx, sqlitegen.UpdateAgentTeamMemberStatusParams{Status: "working", CurrentStepID: step.ID, Model: "", UpdatedAt: now, ID: step.AgentID, RunID: run.RunID}); err != nil {
-			return err
-		}
-	}
-	if err := q.UpdateTaskResult(ctx, sqlitegen.UpdateTaskResultParams{Status: core.StatusRunning, UpdatedAt: now, ID: run.TaskID}); err != nil {
-		return err
-	}
-	if err := q.UpdateRunStatus(ctx, sqlitegen.UpdateRunStatusParams{Status: core.StatusRunning, UpdatedAt: now, ID: run.RunID}); err != nil {
-		return err
-	}
-	if step.Recovery {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "step.recovered", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": step.ID, "attempt_id": step.AttemptID, "attempt_number": step.AttemptNumber, "fence_token": step.FenceToken}}); err != nil {
-			return err
-		}
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "step.started", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": step.ID, "attempt_id": step.AttemptID, "attempt_number": step.AttemptNumber, "fence_token": step.FenceToken}}); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) CommitCheckpoint(ctx context.Context, step core.ClaimedStep, run core.RunContext, kind string, state map[string]any, correlationID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	var owned int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM steps
-		WHERE id = ? AND owner_id = ? AND fence_token = ? AND status = 'running'`,
-		step.ID, step.OwnerID, step.FenceToken,
-	).Scan(&owned); err != nil {
-		return err
-	}
-	if owned != 1 {
-		return fmt.Errorf("LEASE_LOST: cannot checkpoint step %s fence %d", step.ID, step.FenceToken)
-	}
-	q := s.queries.WithTx(tx)
-	checkpointID, contentHash, err := createCheckpoint(ctx, q, step, run, kind, state)
-	if err != nil {
-		return err
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "checkpoint.committed", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"checkpoint_id": checkpointID, "checkpoint_kind": kind, "content_hash": contentHash, "step_id": step.ID, "attempt_id": step.AttemptID, "fence_token": step.FenceToken}}); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) BeginToolExecution(ctx context.Context, step core.ClaimedStep, run core.RunContext, call core.ToolCall, inputHash string, idempotent bool, correlationID string) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback() }()
-	var owned int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM steps WHERE id = ? AND owner_id = ? AND fence_token = ? AND status = 'running'`, step.ID, step.OwnerID, step.FenceToken).Scan(&owned); err != nil {
-		return "", err
-	}
-	if owned != 1 {
-		return "", fmt.Errorf("LEASE_LOST: cannot execute tool step %s fence %d", step.ID, step.FenceToken)
-	}
-	var storedName string
-	var storedHash string
-	var storedRisk string
-	var storedDecision string
-	var toolStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT tool_name, arguments_hash, risk_level, policy_decision, status FROM tool_calls WHERE id = ? AND step_id = ? AND run_id = ?`, call.ID, step.ID, run.RunID).Scan(&storedName, &storedHash, &storedRisk, &storedDecision, &toolStatus); err != nil {
-		return "", err
-	}
-	planned, policyErr := s.executionPolicy.EvaluateExecution(ctx, application.Principal{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}, application.ExecutionRequest{ProjectID: run.ProjectID, Call: call, ConfigSnapshot: run.ConfigSnapshotJSON})
-	if policyErr != nil {
-		return "", policyErr
-	}
-	if strings.HasPrefix(call.Name, "mcp__") {
-		risk, plannedIdempotent, reason := application.MCPPolicyFromSnapshot(run.ConfigSnapshotJSON, call.Name)
-		planned.RiskLevel = risk
-		planned.Idempotent = plannedIdempotent
-		if reason != "" {
-			planned.Reason = reason
-		}
-	}
-	authorization := core.ExecutionAuthorization{
-		ToolIdentity: storedName, InputHash: storedHash,
-		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
-		RiskLevel: storedRisk, PolicyDecision: storedDecision, PolicyVersion: core.ToolPolicyVersion,
-	}
-	if authErr := core.ValidateExecutionAuthorization(planned, authorization); authErr != nil || storedHash != inputHash || (toolStatus != "queued" && toolStatus != "running") {
-		if authErr == nil {
-			authErr = errors.New("frozen tool input or state no longer matches")
-		}
-		return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: %w", authErr)
-	}
-	networkClass, matchedRuleID, policyHash, authorizationID := "", "", "", ""
-	if call.Name == core.ToolWebFetch {
-		networkClass = "public"
-		if planned.ApprovalScope == core.ApprovalScopeRunOrigin {
-			networkClass, matchedRuleID, policyHash = "private", planned.ApprovalRuleID, planned.ApprovalPolicyHash
-			if err := tx.QueryRowContext(ctx, `
-				SELECT id FROM run_approval_rules
-				WHERE organization_id = ? AND project_id = ? AND run_id = ? AND tool_name = ?
-				  AND grant_type = 'run_origin' AND grant_key = ? AND policy_hash = ? AND expires_at > ?
-				LIMIT 1`, run.OrganizationID, run.ProjectID, run.RunID, call.Name,
-				planned.ApprovalGrantKey, planned.ApprovalPolicyHash, formatTime(time.Now())).Scan(&authorizationID); err != nil {
-				return "", fmt.Errorf("TOOL_AUTHORIZATION_INVALID: private web origin approval is missing or expired: %w", err)
-			}
-		}
-	}
-
-	var receiptID string
-	var invocationID string
-	var receiptStatus string
-	var storedIdempotent int64
-	queryErr := tx.QueryRowContext(ctx, `SELECT id, invocation_id, status, idempotent FROM side_effect_receipts WHERE tool_call_id = ?`, call.ID).Scan(&receiptID, &invocationID, &receiptStatus, &storedIdempotent)
-	unknown := false
-	now := formatTime(time.Now())
-	if errors.Is(queryErr, sql.ErrNoRows) {
-		receiptID, err = newID()
-		if err != nil {
-			return "", err
-		}
-		invocationID, err = newID()
-		if err != nil {
-			return "", err
-		}
-		idempotentValue := 0
-		if idempotent {
-			idempotentValue = 1
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO side_effect_receipts (
-				id, organization_id, project_id, task_id, run_id, step_id, tool_call_id,
-				invocation_id, input_hash, idempotent, status, network_class, matched_rule_id,
-				policy_hash, authorization_id, started_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?, ?)`,
-			receiptID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, step.ID, call.ID,
-			invocationID, inputHash, idempotentValue, networkClass, matchedRuleID, policyHash, authorizationID, now,
-		); err != nil {
-			return "", err
-		}
-	} else if queryErr != nil {
-		return "", queryErr
-	} else if !idempotent || storedIdempotent != 1 {
-		unknown = true
-		if _, err := tx.ExecContext(ctx, `UPDATE side_effect_receipts SET status = 'unknown', error_code = 'SIDE_EFFECT_STATUS_UNKNOWN', finished_at = ? WHERE id = ?`, now, receiptID); err != nil {
-			return "", err
-		}
-	} else if _, err := tx.ExecContext(ctx, `
-			UPDATE side_effect_receipts
-			SET status = 'started', exit_code = -1, output_json = '{}',
-			    error_code = '', network_class = ?, matched_rule_id = ?, policy_hash = ?,
-			    authorization_id = ?, started_at = ?, finished_at = ''
-			WHERE id = ?`, networkClass, matchedRuleID, policyHash, authorizationID, now, receiptID); err != nil {
-		return "", err
-	}
-	if unknown {
-		if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'blocked', error_code = 'SIDE_EFFECT_STATUS_UNKNOWN', updated_at = ? WHERE id = ?`, now, call.ID); err != nil {
-			return "", err
-		}
-		var planRevisionID, planItemID string
-		_ = tx.QueryRowContext(ctx, `SELECT plan_revision_id, run_plan_item_id FROM steps WHERE id = ?`, step.ID).Scan(&planRevisionID, &planItemID)
-		expiresAt := formatTime(time.Now().UTC().Add(core.DefaultApprovalTTL))
-		requestJSON, _ := json.Marshal(map[string]any{"receipt_id": receiptID, "tool_call_id": call.ID, "tool_name": call.Name, "input_hash": inputHash, "invocation_id": invocationID})
-		if _, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO human_action_requests (
-				id, organization_id, project_id, conversation_id, task_id, run_id,
-				step_id, plan_revision_id, run_plan_item_id, kind, status, reviewer,
-				risk_level, title, reason, request_json, request_hash, requested_by,
-				requested_at, expires_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'side_effect_resolution', 'waiting_user', 'user', 'L3', ?, ?, ?, ?, ?, ?, ?)`,
-			receiptID, run.OrganizationID, run.ProjectID, run.ConversationID, run.TaskID, run.RunID,
-			step.ID, planRevisionID, planItemID, call.Name, "系统无法确认外部操作是否已执行，必须人工核查后才能继续。",
-			string(requestJSON), inputHash, step.OwnerID, now, expiresAt,
-		); err != nil {
-			return "", err
-		}
-		if planItemID != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'waiting_user', updated_at = ? WHERE id = ?`, now, planItemID); err != nil {
-				return "", err
-			}
-		}
-	} else if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'running', updated_at = ? WHERE id = ?`, now, call.ID); err != nil {
-		return "", err
-	}
-	q := s.queries.WithTx(tx)
-	eventType := "tool.execution_started"
-	if unknown {
-		eventType = "tool.side_effect_unknown"
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: eventType, ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": call.ID, "step_id": step.ID, "tool_name": call.Name, "input_summary": toolInputSummary(call.Name, call.Arguments), "invocation_id": invocationID, "input_hash": inputHash, "idempotent": idempotent}}); err != nil {
-		return "", err
-	}
-	if unknown {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": receiptID, "kind": core.HumanActionSideEffectResolution, "status": core.HumanActionWaitingUser, "title": call.Name}}); err != nil {
-			return "", err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
-	if unknown {
-		return "", fmt.Errorf("SIDE_EFFECT_STATUS_UNKNOWN: refusing to repeat non-idempotent invocation %s", invocationID)
-	}
-	return invocationID, nil
-}
-
-func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.RunContext, outcome core.StepOutcome, correlationID string) error {
-	now := formatTime(time.Now())
-	output, err := json.Marshal(outcome.Output)
-	if err != nil {
-		return err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := s.queries.WithTx(tx)
-	// Release the pre-execution reservation before accounting the actual model
-	// usage. This keeps the reservation bounded to the in-flight call while the
-	// completion transaction remains the source of truth for measured usage.
-	var reservedTokens int64
-	if err := tx.QueryRowContext(ctx, `SELECT budget_reserved_tokens FROM steps WHERE id = ?`, step.ID).Scan(&reservedTokens); err == nil && reservedTokens > 0 {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE run_budgets
-			SET reserved_model_calls = CASE WHEN reserved_model_calls > 0 THEN reserved_model_calls - 1 ELSE 0 END,
-			    reserved_tokens = CASE WHEN reserved_tokens >= ? THEN reserved_tokens - ? ELSE 0 END,
-			    updated_at = ?
-			WHERE run_id = ?`, reservedTokens, reservedTokens, now, run.RunID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE steps SET budget_reserved_tokens = 0 WHERE id = ?`, step.ID); err != nil {
-			return err
-		}
-	}
-	if outcome.Model != nil {
-		var maxCalls, maxTokens int64
-		var budgetStatus string
-		if err := tx.QueryRowContext(ctx, `SELECT max_model_calls, max_tokens, status FROM run_budgets WHERE run_id = ?`, run.RunID).Scan(&maxCalls, &maxTokens, &budgetStatus); err == nil && budgetStatus == "active" {
-			var calls, tokens int64
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(input_tokens + output_tokens), 0) FROM model_calls WHERE run_id = ?`, run.RunID).Scan(&calls, &tokens); err != nil {
-				return err
-			}
-			incoming := outcome.Model.Usage.InputTokens + outcome.Model.Usage.OutputTokens
-			if (maxCalls > 0 && calls+1 > maxCalls) || (maxTokens > 0 && tokens+incoming > maxTokens) {
-				outcome.Status = core.StatusBlocked
-				outcome.ErrorCode = "BUDGET_EXCEEDED"
-				outcome.ResultSummary = fmt.Sprintf("Run budget reached (calls %d/%d, tokens %d/%d); choose a smaller scope or approve an exception.", calls+1, maxCalls, tokens+incoming, maxTokens)
-				output, err = json.Marshal(outcome.Output)
-				if err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE run_budgets SET status = 'exhausted', updated_at = ? WHERE run_id = ?`, now, run.RunID); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	count, err := q.CompleteStep(ctx, sqlitegen.CompleteStepParams{Status: outcome.Status, OutputJson: string(output), ErrorCode: outcome.ErrorCode, UpdatedAt: now, ID: step.ID, OwnerID: step.OwnerID, FenceToken: step.FenceToken})
-	if err != nil {
-		return err
-	}
-	if count != 1 {
-		return fmt.Errorf("LEASE_LOST: step %s fence %d is no longer owned", step.ID, step.FenceToken)
-	}
-	attemptCount, err := q.FinishStepAttempt(ctx, sqlitegen.FinishStepAttemptParams{Status: outcome.Status, ErrorCode: outcome.ErrorCode, FinishedAt: now, ID: step.AttemptID, OwnerID: step.OwnerID, FenceToken: step.FenceToken})
-	if err != nil {
-		return err
-	}
-	if attemptCount != 1 {
-		return fmt.Errorf("ATTEMPT_LOST: attempt %s is no longer active", step.AttemptID)
-	}
-	checkpointID, contentHash, err := createCheckpoint(ctx, q, step, run, "after_execution", map[string]any{"status": outcome.Status, "error_code": outcome.ErrorCode, "output": outcome.Output, "result_summary": outcome.ResultSummary})
-	if err != nil {
-		return err
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "checkpoint.committed", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"checkpoint_id": checkpointID, "checkpoint_kind": "after_execution", "content_hash": contentHash, "step_id": step.ID, "attempt_id": step.AttemptID, "fence_token": step.FenceToken}}); err != nil {
-		return err
-	}
-	if outcome.Model != nil {
-		if err := persistModelUsage(ctx, tx, q, step, run, *outcome.Model, now); err != nil {
-			return err
-		}
-	}
-
-	taskStatus := outcome.Status
-	taskSummary := outcome.ResultSummary
-	taskErrorCode := outcome.ErrorCode
-	modelRetryStepID := ""
-	modelRetryCount := 0
-	toolRecoveryStepID := ""
-	toolRecoveryCount := 0
-	toolRecoveryCallID := ""
-	if outcome.ErrorCode == "BUDGET_RESERVATION_EXCEEDED" || outcome.ErrorCode == "BUDGET_EXCEEDED" {
-		if err := s.createBudgetHumanAction(ctx, tx, q, step, run, outcome, now, correlationID); err != nil {
-			return err
-		}
-		taskStatus, taskSummary, taskErrorCode = core.StatusWaitingInput, "本次运行预算不足，等待你确认扩展后继续。", ""
-	}
-	reviewStep := step.StepType == core.StepHumanActionReview
-	if reviewStep {
-		taskStatus, taskSummary, taskErrorCode, err = s.applyAutoReviewOutcome(ctx, tx, q, step, run, outcome, now, correlationID)
-		if err != nil {
-			return err
-		}
-	}
-	if !reviewStep && outcome.Status == core.StatusSucceeded && outcome.Model != nil && strings.TrimSpace(outcome.ResultSummary) != "" {
-		phase := "final"
-		if len(outcome.Model.ToolCalls) > 0 || len(lengthTruncatedToolCalls(outcome.Output)) > 0 {
-			phase = "progress"
-		}
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.message", ActorType: "agent", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": step.ID, "phase": phase, "content": outcome.ResultSummary, "model": outcome.Model.Model, "tool_call_count": len(outcome.Model.ToolCalls), "tool_argument_repairs": outcome.Model.ToolArgumentRepairs}}); err != nil {
-			return err
-		}
-	}
-	if !reviewStep && outcome.Status == core.StatusSucceeded && outcome.Model != nil && len(outcome.Model.ToolCalls) > 0 {
-		taskStatus, taskErrorCode, err = s.planToolSteps(ctx, tx, q, step, run, outcome.Model.ToolCalls, now, correlationID)
-		if err != nil {
-			return err
-		}
-	}
-	if !reviewStep && outcome.Status == core.StatusSucceeded && outcome.Model != nil {
-		if calls := lengthTruncatedToolCalls(outcome.Output); len(calls) > 0 {
-			if err := s.recordLengthTruncatedToolCalls(ctx, tx, q, step, run, calls, now, correlationID); err != nil {
-				return err
-			}
-			continuationStepID, queueErr := s.queueLengthTruncatedModelContinuation(ctx, tx, q, step, run, now, correlationID)
-			if queueErr != nil {
-				return queueErr
-			}
-			if continuationStepID == "" {
-				return fmt.Errorf("MODEL_CONTINUATION_NOT_QUEUED: length-truncated tool calls have no recovery step")
-			}
-			taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-		}
-	}
-	if run.Mode == core.ModeSingleAgent && outcome.Status == core.StatusFailed && outcome.Model != nil && isRetryableModelInteractionError(outcome.ErrorCode) {
-		var queued bool
-		modelRetryStepID, modelRetryCount, queued, err = s.queueModelInteractionRetry(ctx, tx, step, run, outcome.ErrorCode, now)
-		if err != nil {
-			return err
-		}
-		if queued {
-			taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-		}
-	}
-	if outcome.ToolExecution != nil {
-		if err := s.finishToolExecution(ctx, tx, q, step, run, *outcome.ToolExecution, now, correlationID); err != nil {
-			return err
-		}
-		if outcome.Status == core.StatusSucceeded {
-			taskStatus, taskErrorCode, err = deriveRunStatus(ctx, tx, run.RunID)
-			if err != nil {
-				return err
-			}
-			if taskStatus == core.StatusSucceeded {
-				batchReady, continuationClaimed, batchID, batchErr := s.completeToolBatchState(ctx, tx, q, step, run, now, correlationID)
-				if batchErr != nil {
-					return batchErr
-				}
-				if !batchReady {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				} else if !continuationClaimed {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				} else {
-					queued := false
-					var queueErr error
-					var queuedStepID string
-					if step.StepType == core.ToolSkillInvoke {
-						queued, queueErr = s.queueSkillResume(ctx, tx, q, step, run, outcome.Output, now, correlationID)
-					} else {
-						forceSynthesis := false
-						if step.StepType == core.ToolWebSearch {
-							forceSynthesis, queueErr = webSearchSynthesisThresholdReached(ctx, tx, run.RunID)
-						}
-						if queueErr == nil && forceSynthesis {
-							queued, queueErr = s.queueWebSearchSynthesis(ctx, tx, q, step, run, now, correlationID)
-						} else if queueErr == nil {
-							var continuationStepID string
-							continuationStepID, queueErr = s.queueModelContinuation(ctx, tx, q, step, run, now, correlationID)
-							queued = continuationStepID != ""
-							queuedStepID = continuationStepID
-						}
-					}
-					if queueErr != nil {
-						return queueErr
-					}
-					if queued {
-						if batchID != "" && queuedStepID != "" {
-							if _, err := tx.ExecContext(ctx, `UPDATE tool_batches SET continuation_step_id = ?, updated_at = ? WHERE id = ?`, queuedStepID, now, batchID); err != nil {
-								return err
-							}
-						}
-						taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-					} else if step.StepType != core.ToolSkillInvoke {
-						return fmt.Errorf("MODEL_CONTINUATION_NOT_QUEUED: completed tool batch has no next model step")
-					}
-				}
-			}
-		} else {
-			batchReady, recoveryClaimed, _, batchErr := s.completeToolBatchState(ctx, tx, q, step, run, now, correlationID)
-			if batchErr != nil {
-				return batchErr
-			}
-			if !batchReady || !recoveryClaimed {
-				taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-			} else if outcome.Status == core.StatusFailed && isRecoverableToolExecutionFailure(outcome.ErrorCode) {
-				var queued bool
-				toolRecoveryStepID, toolRecoveryCount, toolRecoveryCallID, queued, err = s.queueToolFailureRecovery(ctx, tx, q, step, run, outcome.ErrorCode, now, correlationID)
-				if err != nil {
-					return err
-				}
-				if queued {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				} else {
-					synthesized, synthErr := s.queueWebSearchSynthesis(ctx, tx, q, step, run, now, correlationID)
-					if synthErr != nil {
-						return synthErr
-					}
-					if synthesized {
-						taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-					} else if actionErr := s.createToolRecoveryHumanAction(ctx, tx, q, step, run, outcome.ErrorCode, now, correlationID); actionErr != nil {
-						return actionErr
-					} else {
-						taskStatus, taskSummary, taskErrorCode = core.StatusWaitingInput, "自动恢复已用尽，需要你选择下一步。", ""
-					}
-				}
-			}
-		}
-	} else if step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceRunCommand {
-		if outcome.Status == core.StatusBlocked {
-			if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'blocked', error_code = ?, updated_at = ? WHERE step_id = ?`, outcome.ErrorCode, now, step.ID); err != nil {
-				return err
-			}
-		} else if outcome.Status == core.StatusFailed {
-			if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'failed', error_code = ?, updated_at = ? WHERE step_id = ?`, outcome.ErrorCode, now, step.ID); err != nil {
-				return err
-			}
-			if isRecoverableToolExecutionFailure(outcome.ErrorCode) {
-				var queued bool
-				toolRecoveryStepID, toolRecoveryCount, toolRecoveryCallID, queued, err = s.queueToolFailureRecovery(ctx, tx, q, step, run, outcome.ErrorCode, now, correlationID)
-				if err != nil {
-					return err
-				}
-				if queued {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				}
-			}
-		}
-	}
-	if run.Mode == core.ModeAgentTeam {
-		taskStatus, taskSummary, taskErrorCode, err = s.advanceAgentTeam(ctx, tx, q, step, run, outcome, now, correlationID)
-		if err != nil {
-			return err
-		}
-	}
-	if run.Mode == core.ModeSingleAgent && taskStatus == core.StatusSucceeded && outcome.Model != nil && len(outcome.Model.ToolCalls) == 0 {
-		validation, invariantErr := s.completionInvariantFailure(ctx, tx, run)
-		if invariantErr != nil {
-			return invariantErr
-		}
-		if validation.Reason != "" {
-			if modelStageFromInput(step.InputJSON) == "completion_recovery" {
-				taskStatus, taskErrorCode = core.StatusBlocked, validation.Reason
-				if validation.Reason == "ATTACHMENT_NOT_READ" {
-					taskSummary = "任务包含二进制附件，但当前 Run 没有成功的 asset_stage 收据，不能在未读取附件时标记为完成。"
-				} else if validation.Reason == "WEB_EVIDENCE_MISSING" {
-					taskSummary = "任务要求联网检索，但当前 Run 没有成功的互联网检索收据，不能标记为完成。"
-				} else if validation.Reason == "DELIVERABLE_MISSING" && validation.DeliverableFormat == "pdf" {
-					taskSummary = "任务要求 PDF 交付物，但当前 Run 没有新的、签名与 MIME 校验通过的 PDF Artifact，不能标记为完成。"
-				} else if validation.Reason == "DELIVERABLE_TOO_SHORT" {
-					taskSummary = fmt.Sprintf("报告实际为 %d 字，未达到不少于 %d 字的验收要求，不能标记为完成。", validation.ActualCharacters, validation.RequiredCharacters)
-				} else if validation.Reason == "WORKSPACE_MUTATION_MISSING" {
-					taskSummary = "任务要求修改工作区，但当前 Run 没有成功的文件写入或编辑收据，不能标记为完成。"
-				} else if validation.Reason == "VERIFICATION_MISSING" {
-					taskSummary = "任务要求完成后验证结果，但当前 Run 没有变更后的验证收据，不能标记为完成。"
-				} else {
-					taskSummary = "任务要求生成文档交付物，但当前 Run 没有成功写入任何工作区文件，不能标记为完成。"
-				}
-			} else {
-				history, historyErr := s.collectContinuationHistory(ctx, tx, run)
-				if historyErr != nil {
-					return historyErr
-				}
-				nextStepID, queueErr := insertQueuedModelStep(ctx, tx, run, map[string]any{
-					"history": history, "stage": "completion_recovery",
-					"source_step_id": step.ID, "completion_recovery_reason": validation.Reason,
-					"completion_deliverable_format":  validation.DeliverableFormat,
-					"completion_required_characters": validation.RequiredCharacters,
-					"completion_actual_characters":   validation.ActualCharacters,
-				}, now)
-				if queueErr != nil {
-					return queueErr
-				}
-				planRevisionID, planItemID := activeExecutionPlanBinding(ctx, tx, run.RunID)
-				if _, err := tx.ExecContext(ctx, `UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE id = ?`, planRevisionID, planItemID, nextStepID); err != nil {
-					return err
-				}
-				if err := s.appendEvent(ctx, q, eventInput{
-					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
-					EventType: "completion.validation_failed", ActorType: "validator", ActorID: "runtime",
-					CorrelationID: correlationID, Visibility: run.Visibility,
-					Payload: map[string]any{"source_step_id": step.ID, "recovery_step_id": nextStepID, "reason": validation.Reason, "deliverable_format": validation.DeliverableFormat, "required_characters": validation.RequiredCharacters, "actual_characters": validation.ActualCharacters},
-				}); err != nil {
-					return err
-				}
-				taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-			}
-		}
-	}
-	taskSummary, taskErrorCode = reconcileTerminalTaskResult(taskStatus, taskSummary, taskErrorCode)
-	if err := s.syncRunPlanState(ctx, tx, q, run, taskStatus, taskSummary, now, correlationID); err != nil {
-		return err
-	}
-
-	if err := q.UpdateTaskResult(ctx, sqlitegen.UpdateTaskResultParams{Status: taskStatus, ResultSummary: taskSummary, ErrorCode: taskErrorCode, UpdatedAt: now, ID: run.TaskID}); err != nil {
-		return err
-	}
-	if err := q.UpdateRunStatus(ctx, sqlitegen.UpdateRunStatusParams{Status: taskStatus, UpdatedAt: now, ID: run.RunID}); err != nil {
-		return err
-	}
-
-	if taskStatus == core.StatusSucceeded || taskStatus == core.StatusFailed || taskStatus == core.StatusBlocked {
-		messageContent := strings.TrimSpace(taskSummary)
-		if messageContent == "" && taskErrorCode != "" {
-			messageContent = "任务未完成，错误代码：" + taskErrorCode
-		}
-		if messageContent != "" {
-			if err := s.appendConversationMessage(ctx, tx, q, run, "assistant", messageContent, now); err != nil {
-				return err
-			}
-		}
-	}
-	eventType := "step." + outcome.Status
-	eventPayload := map[string]any{"step_id": step.ID, "attempt_id": step.AttemptID, "attempt_number": step.AttemptNumber, "status": outcome.Status, "error_code": outcome.ErrorCode, "result_summary": outcome.ResultSummary}
-	if outcome.Model != nil {
-		eventPayload["model"] = outcome.Model.Model
-		eventPayload["provider"] = outcome.Model.Provider
-		eventPayload["routing_reason"] = outcome.Model.RoutingReason
-		eventPayload["input_tokens"] = outcome.Model.Usage.InputTokens
-		eventPayload["output_tokens"] = outcome.Model.Usage.OutputTokens
-		eventPayload["usage_estimated"] = outcome.Model.Usage.Estimated
-		eventPayload["tool_argument_repairs"] = outcome.Model.ToolArgumentRepairs
-	}
-	if contextPlan, ok := outcome.Output["context_plan"].(map[string]any); ok {
-		// Keep the deterministic context decision visible in the committed event
-		// so UI/audit consumers do not need to read the full Step output blob.
-		eventPayload["context_plan"] = contextPlan
-		if skills, ok := contextPlan["skills"].(map[string]any); ok {
-			if strategy, _ := skills["strategy"].(string); strategy == "explicit_skill_invocation_v1" {
-				if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "skill.loaded", ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": step.ID, "skill_ids": skills["loaded_ids"], "skill_names": skills["loaded_names"], "allowed_tools": skills["allowed_tools"], "status": "loaded"}}); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	if modelFailure, ok := outcome.Output["model_failure"].(map[string]any); ok {
-		eventPayload["model_failure"] = modelFailure
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: eventType, ActorType: "worker", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: eventPayload}); err != nil {
-		return err
-	}
-	if modelRetryStepID != "" {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.retry_queued", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": modelRetryStepID, "source_step_id": step.ID, "retry_count": modelRetryCount, "max_retries": core.ModelRetryLimit(outcome.ErrorCode), "error_code": outcome.ErrorCode}}); err != nil {
-			return err
-		}
-	}
-	if toolRecoveryStepID != "" {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.recovery_queued", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": toolRecoveryStepID, "source_step_id": step.ID, "tool_call_id": toolRecoveryCallID, "retry_count": toolRecoveryCount, "max_retries": core.DefaultToolRetryLimit, "error_code": outcome.ErrorCode}}); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// reconcileTerminalTaskResult is a final consistency barrier: a failed Task
-// must never persist the success summary of the last tool that happened to
-// finish. Individual tool receipts remain the source for per-action success.
 func reconcileTerminalTaskResult(status, summary, errorCode string) (string, string) {
 	if status != core.StatusFailed || !strings.Contains(summary, "通过确定性校验") {
 		return summary, errorCode
@@ -8614,6 +7682,13 @@ func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run 
 		if requirements.RequiresCompleteDeliverable && metrics.LargestIncomplete {
 			return completionInvariantResult{Reason: "DELIVERABLE_INCOMPLETE"}, nil
 		}
+		validDocumentExport, err := validDocumentExportEvidence(ctx, tx, evidenceRunIDs)
+		if err != nil {
+			return completionInvariantResult{}, err
+		}
+		if !validDocumentExport {
+			return completionInvariantResult{Reason: "DOCUMENT_EXPORT_INVALID", DeliverableFormat: requirements.DeliverableFormat}, nil
+		}
 	}
 	lastMutationPosition, currentMutationCount, mutationCount, err := successfulWorkspaceMutationEvidence(ctx, tx, run.RunID, evidenceRunIDs)
 	if err != nil {
@@ -8673,27 +7748,34 @@ func contextAssetNeedsStaging(mediaType, name string) bool {
 
 func successfulStagedAssetIDs(ctx context.Context, tx *sql.Tx, runIDs []string) (map[string]bool, error) {
 	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
-	args := make([]any, 0, len(runIDs)+1)
+	args := make([]any, 0, len(runIDs)+2)
 	for _, runID := range runIDs {
 		args = append(args, runID)
 	}
-	args = append(args, core.ToolAssetStage)
-	rows, err := tx.QueryContext(ctx, `SELECT arguments_json FROM tool_calls WHERE run_id IN (`+runFilter+`) AND tool_name = ? AND status = 'succeeded'`, args...)
+	args = append(args, core.ToolAssetStage, core.ToolDocumentOpen)
+	rows, err := tx.QueryContext(ctx, `SELECT tool_name, arguments_json FROM tool_calls WHERE run_id IN (`+runFilter+`) AND tool_name IN (?, ?) AND status = 'succeeded'`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	staged := make(map[string]bool)
 	for rows.Next() {
-		var argumentsJSON string
-		if err := rows.Scan(&argumentsJSON); err != nil {
+		var toolName, argumentsJSON string
+		if err := rows.Scan(&toolName, &argumentsJSON); err != nil {
 			return nil, err
 		}
-		var arguments struct {
-			AssetID string `json:"asset_id"`
-		}
-		if json.Unmarshal([]byte(argumentsJSON), &arguments) == nil && strings.TrimSpace(arguments.AssetID) != "" {
-			staged[arguments.AssetID] = true
+		var arguments map[string]any
+		if json.Unmarshal([]byte(argumentsJSON), &arguments) == nil {
+			assetID, _ := arguments["asset_id"].(string)
+			if toolName == core.ToolDocumentOpen {
+				sourceRef, _ := arguments["source_ref"].(string)
+				if strings.HasPrefix(sourceRef, "asset:") {
+					assetID = strings.TrimPrefix(sourceRef, "asset:")
+				}
+			}
+			if strings.TrimSpace(assetID) != "" {
+				staged[assetID] = true
+			}
 		}
 	}
 	return staged, rows.Err()
@@ -8729,6 +7811,7 @@ func completionEvidenceRunIDs(run core.RunContext) []string {
 func successfulWorkspaceMutationEvidence(ctx context.Context, tx *sql.Tx, runID string, evidenceRunIDs []string) (int64, int64, int64, error) {
 	mutationTools := []string{
 		core.ToolWorkspaceWriteFile, core.ToolWorkspaceEditFile, core.ToolArtifactCapture,
+		core.ToolDocumentCreate, core.ToolDocumentApply, core.ToolDocumentExport,
 		core.ToolGitCommit, core.ToolGitCommitPaths,
 		core.ToolGitRestore, core.ToolGitRestoreHunk, core.ToolGitBranch,
 	}
@@ -8857,7 +7940,7 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 	err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM tool_calls
 		WHERE run_id = ? AND status = 'succeeded' AND position > ? AND (
-			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
+			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
 				tool_name LIKE 'mcp__%__%' AND (
 					lower(tool_name) LIKE '%playwright%' OR lower(tool_name) LIKE '%browser%' OR
 					lower(tool_name) LIKE '%test%' OR lower(tool_name) LIKE '%verify%' OR
@@ -8870,8 +7953,50 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 		core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell,
 		core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
 		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolArtifactCapture,
+		core.ToolDocumentRender, core.ToolDocumentExport,
 	).Scan(&count)
 	return count, err
+}
+
+func validDocumentExportEvidence(ctx context.Context, tx *sql.Tx, runIDs []string) (bool, error) {
+	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, 0, len(runIDs)*2+3)
+	for _, runID := range runIDs {
+		args = append(args, runID)
+	}
+	args = append(args, core.ToolDocumentCreate, core.ToolDocumentApply)
+	for _, runID := range runIDs {
+		args = append(args, runID)
+	}
+	args = append(args, core.ToolDocumentExport)
+	var mutatedDocuments, missingValidExports int64
+	err := tx.QueryRowContext(ctx, `
+		WITH mutated_documents AS (
+			SELECT DISTINCT replace(
+				COALESCE(json_extract(receipts.output_json, '$.document_ref'), json_extract(calls.arguments_json, '$.document_ref')),
+				'document:', ''
+			) AS document_id
+			FROM tool_calls calls
+			JOIN side_effect_receipts receipts ON receipts.tool_call_id = calls.id AND receipts.status = 'succeeded'
+			WHERE calls.run_id IN (`+runFilter+`) AND calls.status = 'succeeded' AND calls.tool_name IN (?, ?)
+		), valid_exports AS (
+			SELECT DISTINCT documents.id AS document_id
+			FROM tool_calls calls
+			JOIN side_effect_receipts receipts ON receipts.tool_call_id = calls.id AND receipts.status = 'succeeded'
+			JOIN document_sessions documents
+			  ON documents.id = replace(json_extract(calls.arguments_json, '$.document_ref'), 'document:', '')
+			JOIN artifacts outputs ON outputs.step_id = calls.step_id AND outputs.source_type = 'document_export'
+			WHERE calls.run_id IN (`+runFilter+`) AND calls.tool_name = ? AND calls.status = 'succeeded'
+			  AND documents.revision = CAST(json_extract(calls.arguments_json, '$.expected_revision') AS INTEGER)
+			  AND documents.rendered_revision = documents.revision
+			  AND documents.render_hash <> ''
+			  AND documents.render_hash = json_extract(receipts.output_json, '$.render_hash')
+			  AND outputs.content_hash = json_extract(receipts.output_json, '$.content_hash')
+		)
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN valid_exports.document_id IS NULL THEN 1 ELSE 0 END), 0)
+		FROM mutated_documents
+		LEFT JOIN valid_exports ON valid_exports.document_id = mutated_documents.document_id`, args...).Scan(&mutatedDocuments, &missingValidExports)
+	return err == nil && (mutatedDocuments == 0 || missingValidExports == 0), err
 }
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
@@ -8902,7 +8027,13 @@ func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Q
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE run_plan_items SET status = 'waiting_user', updated_at = ?
 			WHERE id = (
-				SELECT id FROM run_plan_items WHERE plan_revision_id = ? AND status IN ('pending', 'running')
+				SELECT id FROM run_plan_items
+				WHERE plan_revision_id = ? AND status IN ('pending', 'running')
+				  AND NOT EXISTS (
+					SELECT 1 FROM run_plan_items waiting
+					WHERE waiting.plan_revision_id = run_plan_items.plan_revision_id
+					  AND waiting.status = 'waiting_user'
+				  )
 				ORDER BY position LIMIT 1
 			)`, now, revisionID); err != nil {
 			return err
@@ -9240,16 +8371,27 @@ func persistModelUsage(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, st
 		return err
 	}
 	requested, effective := persistedModelRefs(model)
+	purpose := modelCallPurpose(step, run, model)
 	if _, err := tx.ExecContext(ctx, `UPDATE model_calls SET
 		purpose = ?, requested_provider_id = ?, requested_model_id = ?,
 		effective_provider_id = ?, effective_model_id = ?, stop_reason = ?,
 		context_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?,
 		usage_semantics_version = ?
 		WHERE id = ?`,
-		step.StepType, requested.ProviderID, requested.ModelID,
+		purpose, requested.ProviderID, requested.ModelID,
 		effective.ProviderID, effective.ModelID, model.StopReason,
 		model.Usage.ContextTokens, persistedCacheReadTokens(model.Usage), model.Usage.CacheWriteTokens,
 		persistedUsageVersion(model.Usage), model.CallID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO model_call_performance (
+			call_id, purpose, first_byte_ms, first_safe_delta_ms, assembly_ms,
+			request_bytes, cache_read_tokens, cache_write_tokens, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		model.CallID, purpose, model.FirstByteLatency.Milliseconds(), model.FirstSafeLatency.Milliseconds(),
+		model.AssemblyLatency.Milliseconds(), model.RequestBytes, persistedCacheReadTokens(model.Usage),
+		model.Usage.CacheWriteTokens, now); err != nil {
 		return err
 	}
 	fallbackReason := ""
@@ -9271,6 +8413,42 @@ WHERE id = ?`,
 		return err
 	}
 	return q.CreateUsageLedger(ctx, sqlitegen.CreateUsageLedgerParams{ID: ledgerID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, CallID: model.CallID, InputTokens: model.Usage.InputTokens, OutputTokens: model.Usage.OutputTokens, CachedTokens: model.Usage.CachedTokens, CostDecimal: costDecimal, Currency: pricingCurrency, Confirmed: confirmed, CreatedAt: now, PricingSnapshotJson: pricingSnapshot})
+}
+
+func modelCallPurpose(step core.ClaimedStep, run core.RunContext, model core.ModelResult) string {
+	stage := modelStageFromInput(step.InputJSON)
+	if snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") != "transition_v2" {
+		if stage == "plan" {
+			return "legacy_plan_define"
+		}
+		if len(model.ToolCalls) == 1 && model.ToolCalls[0].Name == core.ToolUpdatePlan {
+			return "legacy_plan_progress"
+		}
+	}
+	if step.StepType == core.StepModelSynthesis {
+		return "task_synthesis"
+	}
+	switch stage {
+	case "steering_replan", "permission_replan":
+		return "task_replan"
+	case "completion_recovery":
+		return "task_completion_recovery"
+	case "compaction":
+		return "task_compaction"
+	}
+	if strings.Contains(stage, "repair") || strings.Contains(stage, "retry") || strings.Contains(stage, "truncation") {
+		return "task_repair"
+	}
+	return "task_execute"
+}
+
+func snapshotStringFromJSON(snapshot, key string) string {
+	var values map[string]any
+	if json.Unmarshal([]byte(snapshot), &values) == nil {
+		value, _ := values[key].(string)
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func persistedModelRefs(model core.ModelResult) (core.ModelRef, core.ModelRef) {
@@ -9438,6 +8616,67 @@ func (s *Store) planHumanInteraction(ctx context.Context, tx *sql.Tx, q *sqliteg
 }
 
 func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, calls []core.ToolCall, now, correlationID string) (string, string, error) {
+	transitionV2 := snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2"
+	boundPlanRevisionID, boundPlanItemID := "", ""
+	if transitionV2 {
+		businessCalls := make([]core.ToolCall, 0, len(calls))
+		var control *core.ToolCall
+		hasSkillInvoke := false
+		for index := range calls {
+			if calls[index].Name == core.ToolReplacePlan || calls[index].Name == core.ToolAdvancePlan {
+				if control != nil {
+					return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "PLAN_CONTROL_MULTIPLE", now, correlationID)
+				}
+				candidate := calls[index]
+				control = &candidate
+				continue
+			}
+			if calls[index].Name == core.ToolUpdatePlan {
+				return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "LEGACY_PLAN_CONTROL_DENIED", now, correlationID)
+			}
+			if calls[index].Name == core.ToolSkillInvoke {
+				hasSkillInvoke = true
+			}
+			businessCalls = append(businessCalls, calls[index])
+		}
+		// Loading a Skill is a context transition, not execution of a semantic
+		// plan item. It may happen before the first plan exists, but it must be
+		// the only call in the model response so no business work can escape the
+		// Skill's frozen instructions and tool scope.
+		if hasSkillInvoke && (control != nil || len(businessCalls) != 1) {
+			return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "SKILL_INVOKE_MUST_BE_EXCLUSIVE", now, correlationID)
+		}
+		if control != nil {
+			if len(businessCalls) == 0 {
+				return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL", now, correlationID)
+			}
+			var controlCode string
+			var controlErr error
+			switch control.Name {
+			case core.ToolReplacePlan:
+				boundPlanRevisionID, boundPlanItemID, controlCode, controlErr = s.replaceRunPlanV2(ctx, tx, q, modelStep, run, *control, now, correlationID)
+			case core.ToolAdvancePlan:
+				boundPlanRevisionID, boundPlanItemID, controlCode, controlErr = s.advanceRunPlanV2(ctx, tx, q, modelStep, run, *control, now, correlationID)
+			}
+			if controlErr != nil {
+				return "", "", controlErr
+			}
+			if controlCode != "" {
+				return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, transitionPlanErrorCode(controlCode), now, correlationID)
+			}
+		} else if len(businessCalls) > 0 && !(len(businessCalls) == 1 && (businessCalls[0].Name == core.ToolRequestInput || businessCalls[0].Name == core.ToolRequestPermission || businessCalls[0].Name == core.ToolSkillInvoke)) {
+			boundPlanRevisionID, boundPlanItemID = activeExecutionPlanBinding(ctx, tx, run.RunID)
+			if boundPlanRevisionID == "" || boundPlanItemID == "" {
+				return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "TRANSITION_RUN_PLAN_REQUIRED", now, correlationID)
+			}
+		}
+		calls = businessCalls
+		if len(calls) > 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE task_presentations SET presentation_kind = 'task', resolved_at = CASE WHEN resolved_at = '' THEN ? ELSE resolved_at END, updated_at = ? WHERE task_id = ? AND presentation_kind = 'pending_auto'`, now, now, run.TaskID); err != nil {
+				return "", "", err
+			}
+		}
+	}
 	if len(calls) == 1 && calls[0].Name == core.ToolUpdatePlan {
 		status, errorCode, err := s.publishModelRunPlan(ctx, tx, q, modelStep, run, calls[0], now, correlationID)
 		if err != nil || status != core.StatusBlocked || !isRepairableRunPlanError(errorCode) {
@@ -9450,14 +8689,22 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "UPDATE_PLAN_MUST_BE_EXCLUSIVE", now, correlationID)
 		}
 	}
-	provisionalPlan, err := activeRunPlanIsProvisional(ctx, tx, run.RunID)
-	if err != nil {
-		return "", "", err
-	}
-	if provisionalPlan {
-		if err := s.materializeGoalFallbackPlan(ctx, tx, q, modelStep, run, now, correlationID); err != nil {
+	if !transitionV2 {
+		provisionalPlan, err := activeRunPlanIsProvisional(ctx, tx, run.RunID)
+		if err != nil {
 			return "", "", err
 		}
+		if provisionalPlan {
+			if err := s.materializeGoalFallbackPlan(ctx, tx, q, modelStep, run, now, correlationID); err != nil {
+				return "", "", err
+			}
+		}
+	}
+	if len(calls) == 0 {
+		if transitionV2 {
+			return s.queueRunPlanModelRepair(ctx, tx, q, modelStep, run, "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL", now, correlationID)
+		}
+		return core.StatusSucceeded, "", nil
 	}
 	if len(calls) == 1 && (calls[0].Name == core.ToolRequestInput || calls[0].Name == core.ToolRequestPermission) {
 		return s.planHumanInteraction(ctx, tx, q, modelStep, run, calls[0], now, correlationID)
@@ -9472,6 +8719,29 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		if call.Sequential {
 			executionMode = "sequential"
 			break
+		}
+	}
+	barrierGroups := make([]int, len(calls))
+	barrierGroupCount := 0
+	if snapshotStringFromJSON(run.ConfigSnapshotJSON, "tool_scheduler_version") == "barrier_v2" {
+		group := 0
+		inSafeGroup := false
+		for index, call := range calls {
+			if call.Sequential {
+				if inSafeGroup {
+					group++
+				}
+				barrierGroups[index] = group
+				group++
+				inSafeGroup = false
+			} else {
+				barrierGroups[index] = group
+				inSafeGroup = true
+			}
+		}
+		barrierGroupCount = group
+		if inSafeGroup {
+			barrierGroupCount++
 		}
 	}
 	hasDeny := false
@@ -9503,6 +8773,14 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 			if reason != "" {
 				plan.Reason = reason
 			}
+			if risk == "L3" && plan.Decision == core.PolicyAsk {
+				if grantKey, policyHash, ok := application.MCPRunToolGrant(run.ConfigSnapshotJSON, call.Name); ok {
+					plan.ApprovalScope = core.ApprovalScopeRunTool
+					plan.ApprovalGrantKey = grantKey
+					plan.ApprovalPolicyHash = policyHash
+					plan.ForceHumanApproval = true
+				}
+			}
 		}
 		if violationCode != "" {
 			plan.Decision = core.PolicyDeny
@@ -9533,12 +8811,14 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		stepIDs[index] = stepID
 		plans[index].Call.ID = toolCallID
 		planItems = append(planItems, map[string]any{
-			"index":         index + 1,
-			"step_id":       stepID,
-			"tool_call_id":  toolCallID,
-			"tool_name":     plans[index].Call.Name,
-			"input_summary": toolInputSummary(plans[index].Call.Name, plans[index].Call.Arguments),
-			"position":      maxPosition + int64(index) + 1,
+			"index":             index + 1,
+			"step_id":           stepID,
+			"tool_call_id":      toolCallID,
+			"tool_name":         plans[index].Call.Name,
+			"tool_display_name": application.MCPToolDisplayName(run.ConfigSnapshotJSON, plans[index].Call.Name),
+			"input_summary":     toolInputSummary(plans[index].Call.Name, plans[index].Call.Arguments),
+			"position":          maxPosition + int64(index) + 1,
+			"barrier_group":     barrierGroups[index],
 		})
 	}
 	var planIteration int64
@@ -9555,13 +8835,20 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 	); err != nil {
 		return "", "", err
 	}
+	publicExecutionMode := executionMode
+	if barrierGroupCount > 0 {
+		publicExecutionMode = "barriered"
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tool_batch_schedulers (batch_id, protocol_version, execution_mode, group_count, created_at) VALUES (?, 'barrier_v2', 'barriered', ?, ?)`, batchID, barrierGroupCount, now); err != nil {
+			return "", "", err
+		}
+	}
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "execution.plan_created", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"plan_id": modelStep.ID, "source_step_id": modelStep.ID, "iteration": planIteration, "summary": strings.TrimSpace(modelStepSummary(ctx, tx, modelStep.ID)), "items": planItems}}); err != nil {
 		return "", "", err
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.batch_planned", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"batch_id": batchID, "source_step_id": modelStep.ID, "iteration": planIteration, "execution_mode": executionMode, "items": planItems}}); err != nil {
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.batch_planned", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"batch_id": batchID, "source_step_id": modelStep.ID, "iteration": planIteration, "execution_mode": publicExecutionMode, "barrier_group_count": barrierGroupCount, "items": planItems}}); err != nil {
 		return "", "", err
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.batch_created", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"batch_id": batchID, "source_step_id": modelStep.ID, "plan_iteration": planIteration, "execution_mode": executionMode, "tool_count": len(calls)}}); err != nil {
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.batch_created", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"batch_id": batchID, "source_step_id": modelStep.ID, "plan_iteration": planIteration, "execution_mode": publicExecutionMode, "barrier_group_count": barrierGroupCount, "tool_count": len(calls)}}); err != nil {
 		return "", "", err
 	}
 	hasQueued := false
@@ -9572,7 +8859,10 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 	}
 	fullAccess := core.FullAccessActive(run.ConfigSnapshotJSON, planningTime)
 	autoReview := permissionModeFromSnapshot(run.ConfigSnapshotJSON) == core.PermissionModeAutoReview
-	planRevisionID, executionPlanItemID := activeExecutionPlanBinding(ctx, tx, run.RunID)
+	planRevisionID, executionPlanItemID := boundPlanRevisionID, boundPlanItemID
+	if planRevisionID == "" {
+		planRevisionID, executionPlanItemID = activeExecutionPlanBinding(ctx, tx, run.RunID)
+	}
 	for index, plan := range plans {
 		// A full-access Run still goes through deterministic hard denies and
 		// never suppresses L3 approval. It does suppress ordinary L0-L2 prompts
@@ -9590,6 +8880,8 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				plan.Decision = core.PolicyAllow
 				if plan.ApprovalScope == core.ApprovalScopeRunOrigin {
 					plan.Reason = "当前 Run 已批准访问相同私网 origin，继续使用冻结 URL 执行"
+				} else if plan.ApprovalScope == core.ApprovalScopeRunTool {
+					plan.Reason = "当前任务已批准使用同一个冻结 MCP 工具，仍按本次参数生成独立收据"
 				} else {
 					plan.Reason = "本会话已批准同类动作，继续使用冻结参数执行"
 				}
@@ -9598,6 +8890,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		toolCallID := toolCallIDs[index]
 		stepID := stepIDs[index]
 		plan.Call.ID = toolCallID
+		toolDisplayName := application.MCPToolDisplayName(run.ConfigSnapshotJSON, plan.Call.Name)
 		position := maxPosition + int64(index) + 1
 		toolStatus := "queued"
 		stepStatus := core.StatusQueued
@@ -9634,7 +8927,12 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 		); err != nil {
 			return "", "", err
 		}
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.planned", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "position": position, "risk_level": plan.RiskLevel, "policy_decision": plan.Decision, "input_hash": plan.InputHash, "reason": plan.Reason}}); err != nil {
+		if barrierGroupCount > 0 {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO tool_call_barriers (tool_call_id, step_id, barrier_group, created_at) VALUES (?, ?, ?, ?)`, toolCallID, stepID, barrierGroups[index], now); err != nil {
+				return "", "", err
+			}
+		}
+		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.planned", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "tool_display_name": toolDisplayName, "position": position, "risk_level": plan.RiskLevel, "policy_decision": plan.Decision, "input_hash": plan.InputHash, "reason": plan.Reason}}); err != nil {
 			return "", "", err
 		}
 		if !hasDeny && plan.Decision == core.PolicyAsk {
@@ -9656,14 +8954,15 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 				hasQueued = true
 			}
 			actionRequest, err := json.Marshal(map[string]any{
-				"tool_name":       plan.Call.Name,
-				"frozen_params":   plan.Call.Arguments,
-				"impact_scope":    "当前计划项",
-				"policy_reason":   plan.Reason,
-				"policy_decision": plan.Decision,
-				"approval_scope":  approvalScope,
-				"target_origin":   plan.ApprovalOrigin,
-				"matched_rule_id": plan.ApprovalRuleID,
+				"tool_name":         plan.Call.Name,
+				"tool_display_name": toolDisplayName,
+				"frozen_params":     plan.Call.Arguments,
+				"impact_scope":      "当前计划项",
+				"policy_reason":     plan.Reason,
+				"policy_decision":   plan.Decision,
+				"approval_scope":    approvalScope,
+				"target_origin":     plan.ApprovalOrigin,
+				"matched_rule_id":   plan.ApprovalRuleID,
 			})
 			if err != nil {
 				return "", "", err
@@ -9683,7 +8982,7 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 					requested_at, expires_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'tool_approval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				approvalID, run.OrganizationID, run.ProjectID, run.ConversationID, run.TaskID, run.RunID,
-				stepID, planRevisionID, executionPlanItemID, actionStatus, actionReviewer, plan.RiskLevel, plan.Call.Name,
+				stepID, planRevisionID, executionPlanItemID, actionStatus, actionReviewer, plan.RiskLevel, toolDisplayName,
 				plan.Reason, string(actionRequest), plan.InputHash, modelStep.OwnerID, now, expiresAt,
 			); err != nil {
 				return "", "", err
@@ -9697,10 +8996,10 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 					return "", "", err
 				}
 			}
-			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "approval.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"approval_id": approvalID, "tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "risk_level": plan.RiskLevel, "approval_scope": approvalScope, "input_hash": plan.InputHash, "reason": plan.Reason, "target_origin": plan.ApprovalOrigin, "matched_rule_id": plan.ApprovalRuleID}}); err != nil {
+			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "approval.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"approval_id": approvalID, "tool_call_id": toolCallID, "step_id": stepID, "tool_name": plan.Call.Name, "tool_display_name": toolDisplayName, "risk_level": plan.RiskLevel, "approval_scope": approvalScope, "input_hash": plan.InputHash, "reason": plan.Reason, "target_origin": plan.ApprovalOrigin, "matched_rule_id": plan.ApprovalRuleID}}); err != nil {
 				return "", "", err
 			}
-			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": approvalID, "kind": core.HumanActionToolApproval, "status": actionStatus, "reviewer": actionReviewer, "plan_revision_id": planRevisionID, "run_plan_item_id": executionPlanItemID, "risk_level": plan.RiskLevel, "title": plan.Call.Name, "reason": plan.Reason}}); err != nil {
+			if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "human_action.requested", ActorType: "agent", ActorID: modelStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"human_action_id": approvalID, "kind": core.HumanActionToolApproval, "status": actionStatus, "reviewer": actionReviewer, "plan_revision_id": planRevisionID, "run_plan_item_id": executionPlanItemID, "risk_level": plan.RiskLevel, "title": toolDisplayName, "reason": plan.Reason}}); err != nil {
 				return "", "", err
 			}
 			if toolAutoReview {
@@ -9926,6 +9225,255 @@ func (s *Store) queueRunPlanModelRepair(ctx context.Context, tx *sql.Tx, q *sqli
 		return "", "", err
 	}
 	return core.StatusRunning, "", nil
+}
+
+func transitionPlanErrorCode(code string) string {
+	switch code {
+	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_REQUIRED", "RUN_PLAN_DUPLICATE_ITEM", "RUN_PLAN_NO_UNFINISHED_ITEMS", "RUN_PLAN_REPLACEMENT_NOT_ALLOWED":
+		return "TRANSITION_" + code
+	default:
+		return code
+	}
+}
+
+type transitionPlanItem struct {
+	Title       string
+	Description string
+}
+
+func parseTransitionPlanItems(call core.ToolCall) ([]transitionPlanItem, string) {
+	rawItems, ok := call.Arguments["items"].([]any)
+	if !ok || len(rawItems) < 1 || len(rawItems) > 12 {
+		return nil, "RUN_PLAN_INVALID"
+	}
+	items := make([]transitionPlanItem, 0, len(rawItems))
+	for _, raw := range rawItems {
+		value, ok := raw.(map[string]any)
+		if !ok {
+			return nil, "RUN_PLAN_INVALID"
+		}
+		title, _ := value["title"].(string)
+		description, _ := value["description"].(string)
+		title, description = strings.TrimSpace(title), strings.TrimSpace(description)
+		if title == "" || description == "" || len([]rune(title)) > 160 || len([]rune(description)) > 500 {
+			return nil, "RUN_PLAN_INVALID"
+		}
+		lower := strings.ToLower(title)
+		for _, placeholder := range []string{"理解目标", "完成目标", "生成下一步", "验证并交付", "read_file", "web_search", "读取文件", "执行工具"} {
+			if strings.Contains(lower, strings.ToLower(placeholder)) {
+				return nil, "RUN_PLAN_PLACEHOLDER_DENIED"
+			}
+		}
+		items = append(items, transitionPlanItem{Title: title, Description: description})
+	}
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		key := transitionPlanItemKey(item.Title)
+		if key == "" {
+			return nil, "RUN_PLAN_INVALID"
+		}
+		if _, exists := seen[key]; exists {
+			return nil, "RUN_PLAN_DUPLICATE_ITEM"
+		}
+		seen[key] = struct{}{}
+	}
+	return items, ""
+}
+
+func transitionPlanItemKey(title string) string {
+	var normalized strings.Builder
+	for _, value := range strings.ToLower(strings.TrimSpace(title)) {
+		if unicode.IsLetter(value) || unicode.IsNumber(value) {
+			normalized.WriteRune(value)
+		}
+	}
+	return normalized.String()
+}
+
+func (s *Store) replaceRunPlanV2(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, call core.ToolCall, now, correlationID string) (string, string, string, error) {
+	items, code := parseTransitionPlanItems(call)
+	if code != "" {
+		return "", "", code, nil
+	}
+	type completedPlanItem struct{ Title, Description, Summary string }
+	completed := make([]completedPlanItem, 0, 4)
+	previousID, supersedesID := "", ""
+	var previousRevision int64
+	err := tx.QueryRowContext(ctx, `SELECT id, revision FROM run_plan_revisions WHERE run_id = ? AND status = 'active' ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&previousID, &previousRevision)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", err
+	}
+	stage := modelStageFromInput(modelStep.InputJSON)
+	if previousID != "" && !modelStageAllowsPlanReplacement(stage) {
+		return "", "", "RUN_PLAN_REPLACEMENT_NOT_ALLOWED", nil
+	}
+	if previousID != "" {
+		supersedesID = previousID
+		rows, queryErr := tx.QueryContext(ctx, `SELECT title, description, result_summary FROM run_plan_items WHERE plan_revision_id = ? AND status = 'completed' ORDER BY position`, previousID)
+		if queryErr != nil {
+			return "", "", "", queryErr
+		}
+		for rows.Next() {
+			var item completedPlanItem
+			if scanErr := rows.Scan(&item.Title, &item.Description, &item.Summary); scanErr != nil {
+				_ = rows.Close()
+				return "", "", "", scanErr
+			}
+			completed = append(completed, item)
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			return "", "", "", closeErr
+		}
+	} else {
+		latestErr := tx.QueryRowContext(ctx, `SELECT id, revision FROM run_plan_revisions WHERE run_id = ? ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&supersedesID, &previousRevision)
+		if latestErr != nil && !errors.Is(latestErr, sql.ErrNoRows) {
+			return "", "", "", latestErr
+		}
+	}
+	if len(completed) > 0 {
+		completedKeys := make(map[string]struct{}, len(completed))
+		for _, item := range completed {
+			completedKeys[transitionPlanItemKey(item.Title)] = struct{}{}
+		}
+		unfinished := make([]transitionPlanItem, 0, len(items))
+		for _, item := range items {
+			if _, alreadyCompleted := completedKeys[transitionPlanItemKey(item.Title)]; alreadyCompleted {
+				continue
+			}
+			unfinished = append(unfinished, item)
+		}
+		items = unfinished
+	}
+	if len(items) == 0 {
+		return "", "", "RUN_PLAN_NO_UNFINISHED_ITEMS", nil
+	}
+	if len(completed)+len(items) > 12 {
+		return "", "", "RUN_PLAN_INVALID", nil
+	}
+	if previousID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'superseded', superseded_at = ? WHERE id = ? AND status = 'active'`, now, previousID); err != nil {
+			return "", "", "", err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'canceled', completed_at = ?, updated_at = ? WHERE plan_revision_id = ? AND status NOT IN ('completed', 'canceled')`, now, now, previousID); err != nil {
+			return "", "", "", err
+		}
+	}
+	revisionID, err := newID()
+	if err != nil {
+		return "", "", "", err
+	}
+	trigger := "initial"
+	switch stage {
+	case "steering_replan":
+		trigger = "steering"
+	case "permission_replan":
+		trigger = "permission_change"
+	case "recovery", "completion_recovery":
+		trigger = "recovery"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_plan_revisions (
+			id, organization_id, project_id, task_id, run_id, revision, trigger,
+			goal_summary, status, supersedes_revision_id, created_by, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+		revisionID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, previousRevision+1,
+		trigger, truncateText(run.Goal, 1000), supersedesID, modelStep.OwnerID, now); err != nil {
+		return "", "", "", err
+	}
+	position := 1
+	for _, item := range completed {
+		itemID, idErr := newID()
+		if idErr != nil {
+			return "", "", "", idErr
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO run_plan_items (
+				id, organization_id, project_id, task_id, run_id, plan_revision_id,
+				position, title, description, status, result_summary, started_at, completed_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)`,
+			itemID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, revisionID,
+			position, item.Title, item.Description, item.Summary, now, now, now, now); err != nil {
+			return "", "", "", err
+		}
+		position++
+	}
+	currentItemID := ""
+	for index, item := range items {
+		itemID, idErr := newID()
+		if idErr != nil {
+			return "", "", "", idErr
+		}
+		status, startedAt := core.RunPlanItemPending, ""
+		if index == 0 {
+			status, startedAt, currentItemID = core.RunPlanItemRunning, now, itemID
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO run_plan_items (
+				id, organization_id, project_id, task_id, run_id, plan_revision_id,
+				position, title, description, status, started_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			itemID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, revisionID,
+			position, item.Title, item.Description, status, startedAt, now, now); err != nil {
+			return "", "", "", err
+		}
+		position++
+	}
+	explanation, _ := call.Arguments["explanation"].(string)
+	if err := s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		EventType: "plan.published", ActorType: "agent", ActorID: modelStep.OwnerID,
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{"plan_revision_id": revisionID, "revision": previousRevision + 1, "trigger": trigger, "preserved_completed": len(completed), "new_items": len(items), "explanation": truncateText(strings.TrimSpace(explanation), 1000), "protocol_version": "transition_v2"},
+	}); err != nil {
+		return "", "", "", err
+	}
+	return revisionID, currentItemID, "", nil
+}
+
+func (s *Store) advanceRunPlanV2(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, call core.ToolCall, now, correlationID string) (string, string, string, error) {
+	var revisionID, currentItemID string
+	var currentPosition int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT p.id, i.id, i.position
+		FROM run_plan_revisions p
+		JOIN run_plan_items i ON i.plan_revision_id = p.id
+		WHERE p.run_id = ? AND p.status = 'active' AND i.status = 'running'
+		ORDER BY p.revision DESC, i.position LIMIT 1`, run.RunID).Scan(&revisionID, &currentItemID, &currentPosition); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", "RUN_PLAN_REQUIRED", nil
+		}
+		return "", "", "", err
+	}
+	var outstanding int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_calls WHERE run_id = ? AND run_plan_item_id = ? AND status IN ('planned', 'queued', 'running', 'waiting_approval')`, run.RunID, currentItemID).Scan(&outstanding); err != nil {
+		return "", "", "", err
+	}
+	if outstanding > 0 {
+		return "", "", "RUN_PLAN_ITEM_HAS_UNFINISHED_WORK", nil
+	}
+	var nextItemID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM run_plan_items WHERE plan_revision_id = ? AND position > ? AND status = 'pending' ORDER BY position LIMIT 1`, revisionID, currentPosition).Scan(&nextItemID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", "RUN_PLAN_ALREADY_AT_FINAL_ITEM", nil
+		}
+		return "", "", "", err
+	}
+	summary, _ := call.Arguments["summary"].(string)
+	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'completed', result_summary = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'running'`, truncateText(strings.TrimSpace(summary), 1000), now, now, currentItemID); err != nil {
+		return "", "", "", err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'running', started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END, updated_at = ? WHERE id = ? AND status = 'pending'`, now, now, nextItemID); err != nil {
+		return "", "", "", err
+	}
+	if err := s.appendEvent(ctx, q, eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+		EventType: "plan.state_changed", ActorType: "agent", ActorID: modelStep.OwnerID,
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{"plan_revision_id": revisionID, "completed_item_id": currentItemID, "active_item_id": nextItemID, "summary": truncateText(strings.TrimSpace(summary), 1000), "protocol_version": "transition_v2"},
+	}); err != nil {
+		return "", "", "", err
+	}
+	return revisionID, nextItemID, "", nil
 }
 
 func (s *Store) publishModelRunPlan(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, call core.ToolCall, now, correlationID string) (string, string, error) {
@@ -10361,7 +9909,12 @@ func modelStageFromInput(inputJSON string) string {
 }
 
 func modelStageAllowsPlanReplacement(stage string) bool {
-	return stage == "plan" || stage == "steering_replan" || stage == "permission_replan"
+	switch stage {
+	case "plan", "steering_replan", "permission_replan", "recovery", "completion_recovery":
+		return true
+	default:
+		return false
+	}
 }
 
 func lengthTruncatedToolCalls(output map[string]any) []core.ToolCall {
@@ -10524,19 +10077,20 @@ func activeExecutionPlanBinding(ctx context.Context, tx *sql.Tx, runID string) (
 }
 
 func approvalRuleMatches(ctx context.Context, tx *sql.Tx, run core.RunContext, planned core.PlannedTool, now string) (bool, error) {
-	if planned.ApprovalScope == core.ApprovalScopeRunOrigin {
+	if planned.ApprovalScope == core.ApprovalScopeRunOrigin || planned.ApprovalScope == core.ApprovalScopeRunTool {
 		if planned.ApprovalGrantKey == "" || planned.ApprovalPolicyHash == "" {
 			return false, nil
 		}
+		grantType := planned.ApprovalScope
 		var marker int
 		err := tx.QueryRowContext(ctx, `
 			SELECT 1
 			FROM run_approval_rules
 			WHERE organization_id = ? AND project_id = ? AND run_id = ?
-			  AND tool_name = ? AND grant_type = 'run_origin' AND grant_key = ?
+			  AND tool_name = ? AND grant_type = ? AND grant_key = ?
 			  AND policy_hash = ? AND expires_at > ?
 			LIMIT 1`, run.OrganizationID, run.ProjectID, run.RunID, planned.Call.Name,
-			planned.ApprovalGrantKey, planned.ApprovalPolicyHash, now).Scan(&marker)
+			grantType, planned.ApprovalGrantKey, planned.ApprovalPolicyHash, now).Scan(&marker)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -10729,6 +10283,8 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 		validator = "artifact_scope_hash_size_and_media_signature"
 	} else if step.StepType == core.ToolAssetStage {
 		validator = "run_frozen_asset_scope_hash_and_read_only_stage"
+	} else if isDocumentToolName(step.StepType) {
+		validator = "document_scope_revision_hash_render_and_runtime_receipt"
 	} else if step.StepType == core.ToolWorkspaceReadFile || step.StepType == core.ToolWorkspaceListFiles ||
 		step.StepType == core.ToolWorkspaceFindFiles || step.StepType == core.ToolWorkspaceGrep {
 		validator = "workspace_scope_pagination_binary_and_redaction"
@@ -10758,7 +10314,7 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	}
 	arguments := map[string]any{}
 	_ = json.Unmarshal([]byte(argumentsJSON), &arguments)
-	completedPayload := map[string]any{"tool_call_id": execution.ToolCallID, "step_id": step.ID, "tool_name": toolName, "input_summary": toolInputSummary(toolName, arguments), "output_summary": toolOutputSummary(toolName, receiptStatus, execution.ErrorCode, int64(execution.ExitCode), execution.Output), "output_excerpt": toolOutputExcerpt(toolName, execution.Output), "invocation_id": execution.InvocationID, "status": receiptStatus, "error_code": execution.ErrorCode, "exit_code": execution.ExitCode, "input_hash": execution.InputHash}
+	completedPayload := map[string]any{"tool_call_id": execution.ToolCallID, "step_id": step.ID, "tool_name": toolName, "tool_display_name": application.MCPToolDisplayName(run.ConfigSnapshotJSON, toolName), "input_summary": toolInputSummary(toolName, arguments), "output_summary": toolOutputSummary(toolName, receiptStatus, execution.ErrorCode, int64(execution.ExitCode), execution.Output), "output_excerpt": toolOutputExcerpt(toolName, execution.Output), "invocation_id": execution.InvocationID, "status": receiptStatus, "error_code": execution.ErrorCode, "exit_code": execution.ExitCode, "input_hash": execution.InputHash}
 	if presentation := toolPresentation(toolName, arguments, execution.Output); presentation != nil {
 		completedPayload["presentation"] = presentation
 	}
@@ -10768,7 +10324,7 @@ func (s *Store) finishToolExecution(ctx context.Context, tx *sql.Tx, q *sqlitege
 	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "validation.completed", ActorType: "validator", ActorID: validator, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"validation_id": validationID, "tool_call_id": execution.ToolCallID, "validator": validator, "status": validationStatus, "input_hash": execution.InputHash}}); err != nil {
 		return err
 	}
-	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile || step.StepType == core.ToolArtifactCapture) && validationStatus == "passed" {
+	if (step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceEditFile || step.StepType == core.ToolArtifactCapture || step.StepType == core.ToolDocumentExport) && validationStatus == "passed" {
 		return s.persistCapturedArtifact(ctx, tx, q, step, run, execution, now, correlationID)
 	}
 	return nil
@@ -10846,6 +10402,8 @@ func (s *Store) persistCapturedArtifact(ctx context.Context, tx *sql.Tx, q *sqli
 	sourceType := "workspace_file"
 	if step.StepType == core.ToolArtifactCapture {
 		sourceType = "artifact_capture"
+	} else if step.StepType == core.ToolDocumentExport {
+		sourceType = "document_export"
 	}
 	row, err := q.CreateArtifact(ctx, sqlitegen.CreateArtifactParams{ID: artifactID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, TaskID: run.TaskID, RunID: run.RunID, StepID: step.ID, Name: path, Kind: kind, MediaType: persisted.MediaType, ContentHash: persisted.ContentHash, SizeBytes: persisted.SizeBytes, Visibility: run.Visibility, SourceType: sourceType, CreatedAt: now})
 	if err != nil {
@@ -10935,17 +10493,46 @@ func (s *Store) completeToolBatchState(ctx context.Context, tx *sql.Tx, q *sqlit
 		if err = tx.QueryRowContext(ctx, `SELECT execution_mode FROM tool_batches WHERE id = ?`, batchID).Scan(&executionMode); err != nil {
 			return false, false, batchID, err
 		}
-		if executionMode != "parallel" {
+		barriered := false
+		barrierGroup := int64(0)
+		barrierErr := tx.QueryRowContext(ctx, `
+			SELECT barrier.barrier_group
+			FROM tool_batch_schedulers scheduler
+			JOIN tool_call_barriers barrier ON barrier.step_id = ?
+			JOIN tool_calls calls ON calls.id = barrier.tool_call_id AND calls.tool_batch_id = scheduler.batch_id
+			WHERE scheduler.batch_id = ?
+			  AND scheduler.execution_mode = 'barriered'
+			  AND barrier.step_id = ?`, step.ID, batchID, step.ID).Scan(&barrierGroup)
+		switch {
+		case barrierErr == nil:
+			barriered = true
+		case !errors.Is(barrierErr, sql.ErrNoRows):
+			return false, false, batchID, barrierErr
+		}
+		if executionMode != "parallel" || barriered {
 			// ClaimNextStep never dispatches the remaining items of a sequential
 			// batch once the batch contains a failed/blocked/canceled step, so a
 			// not-yet-started remainder would wait forever and deadlock the Run.
-			// Cancel it here so the batch reaches a terminal state and the failure
-			// path can queue recovery, mirroring blockToolBatchAfterApproval.
+			// A barriered batch has the same requirement, but cancellation begins
+			// at the failed call's barrier: already-running peers may converge while
+			// unstarted peers in this group and every successor group are canceled.
+			// This preserves the provider's call order and makes failure recovery
+			// reachable without dispatching work past a failed barrier.
+			restrictToBarrier := int64(0)
+			if barriered {
+				restrictToBarrier = 1
+			}
 			if _, err = tx.ExecContext(ctx, `
 				UPDATE approval_requests
 				SET status = 'rejected', decided_by = 'system', decision_note = '同一顺序工具批次中已有步骤失败，剩余动作已取消', decided_at = ?
 				WHERE status = 'pending'
-				  AND tool_call_id IN (SELECT id FROM tool_calls WHERE tool_batch_id = ?)`, now, batchID); err != nil {
+				  AND tool_call_id IN (
+				    SELECT calls.id
+				    FROM tool_calls calls
+				    LEFT JOIN tool_call_barriers barriers ON barriers.tool_call_id = calls.id
+				    WHERE calls.tool_batch_id = ?
+				      AND (? = 0 OR barriers.barrier_group >= ?)
+				  )`, now, batchID, restrictToBarrier, barrierGroup); err != nil {
 				return false, false, batchID, err
 			}
 			if _, err = tx.ExecContext(ctx, `
@@ -10957,26 +10544,51 @@ func (s *Store) completeToolBatchState(ctx context.Context, tx *sql.Tx, q *sqlit
 				  AND id IN (
 				    SELECT ar.id FROM approval_requests ar
 				    JOIN tool_calls tc ON tc.id = ar.tool_call_id
+				    LEFT JOIN tool_call_barriers barriers ON barriers.tool_call_id = tc.id
 				    WHERE tc.tool_batch_id = ?
-				  )`, now, batchID); err != nil {
+				      AND (? = 0 OR barriers.barrier_group >= ?)
+				  )`, now, batchID, restrictToBarrier, barrierGroup); err != nil {
 				return false, false, batchID, err
 			}
 			if _, err = tx.ExecContext(ctx, `
 				UPDATE tool_calls
 				SET status = 'blocked', error_code = 'BATCH_CANCELED_AFTER_FAILURE', completed_at = ?, updated_at = ?
-				WHERE tool_batch_id = ? AND status IN ('planned', 'queued', 'waiting_approval')`, now, now, batchID); err != nil {
+				WHERE tool_batch_id = ?
+				  AND status IN ('planned', 'queued', 'waiting_approval')
+				  AND (
+				    ? = 0
+				    OR id IN (
+				      SELECT barriers.tool_call_id
+				      FROM tool_call_barriers barriers
+				      JOIN tool_calls calls ON calls.id = barriers.tool_call_id
+				      WHERE calls.tool_batch_id = ? AND barriers.barrier_group >= ?
+				    )
+				  )`, now, now, batchID, restrictToBarrier, batchID, barrierGroup); err != nil {
 				return false, false, batchID, err
 			}
 			if _, err = tx.ExecContext(ctx, `
 				UPDATE steps
 				SET status = 'canceled', error_code = 'BATCH_CANCELED_AFTER_FAILURE', owner_id = '', lease_until = '', updated_at = ?
-				WHERE tool_batch_id = ? AND status IN ('queued', 'waiting_approval')`, now, batchID); err != nil {
+				WHERE tool_batch_id = ?
+				  AND status IN ('queued', 'waiting_approval')
+				  AND (
+				    ? = 0
+				    OR id IN (
+				      SELECT barriers.step_id
+				      FROM tool_call_barriers barriers
+				      JOIN tool_calls calls ON calls.id = barriers.tool_call_id
+				      WHERE calls.tool_batch_id = ? AND barriers.barrier_group >= ?
+				    )
+				  )`, now, batchID, restrictToBarrier, batchID, barrierGroup); err != nil {
 				return false, false, batchID, err
 			}
 			if err = tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM tool_calls
-				WHERE tool_batch_id = ? AND status IN ('planned', 'queued', 'running', 'waiting_approval')`, batchID,
-			).Scan(&active); err != nil {
+				SELECT COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0),
+				       COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+				       COALESCE(SUM(CASE WHEN status IN ('blocked', 'rejected') THEN 1 ELSE 0 END), 0),
+				       COALESCE(SUM(CASE WHEN status IN ('planned', 'queued', 'running', 'waiting_approval') THEN 1 ELSE 0 END), 0)
+				FROM tool_calls WHERE tool_batch_id = ?`, batchID,
+			).Scan(&succeeded, &failed, &blocked, &active); err != nil {
 				return false, false, batchID, err
 			}
 		}
@@ -11163,7 +10775,41 @@ func (s *Store) collectContinuationHistory(ctx context.Context, tx *sql.Tx, run 
 	if err != nil {
 		return nil, err
 	}
-	history = boundedContinuationHistory(history, 96*1024)
+	if snapshotStringFromJSON(run.ConfigSnapshotJSON, "context_projection_version") == "token_v2" {
+		projected, checkpoint, throughPosition := projectContinuationHistoryV2(history, continuationTokenBudget(run.ConfigSnapshotJSON))
+		if checkpoint != nil {
+			checkpointJSON, _ := json.Marshal(checkpoint)
+			digest := sha256.Sum256(checkpointJSON)
+			contentHash := fmt.Sprintf("sha256:%x", digest[:])
+			var previousHash string
+			_ = tx.QueryRowContext(ctx, `SELECT content_hash FROM run_context_checkpoints WHERE run_id = ?`, run.RunID).Scan(&previousHash)
+			now := formatTime(time.Now())
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO run_context_checkpoints (run_id, projection_version, source_through_position, content_json, content_hash, created_at, updated_at)
+				VALUES (?, 'token_v2', ?, ?, ?, ?, ?)
+				ON CONFLICT(run_id) DO UPDATE SET source_through_position = excluded.source_through_position, content_json = excluded.content_json, content_hash = excluded.content_hash, updated_at = excluded.updated_at`,
+				run.RunID, throughPosition, string(checkpointJSON), contentHash, now, now); err != nil {
+				return nil, err
+			}
+			// The checkpoint row may evolve as more history becomes old, but the
+			// durable lifecycle event is emitted only once per Run. This keeps
+			// compaction from becoming a per-turn management protocol.
+			if previousHash == "" {
+				if err := s.appendEvent(ctx, s.queries.WithTx(tx), eventInput{
+					OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID,
+					EventType: "run.context_compacted", ActorType: "system", ActorID: "runtime",
+					CorrelationID: contentHash, Visibility: run.Visibility,
+					Payload: map[string]any{"projection_version": "token_v2", "source_through_position": throughPosition, "content_hash": contentHash, "dropped_groups": checkpoint["dropped_groups"]},
+				}); err != nil {
+					return nil, err
+				}
+			}
+			projected = append([]map[string]any{{"kind": "assistant", "group_id": "context-checkpoint", "position": int64(-1), "content": "<run-context-checkpoint>\n" + string(checkpointJSON) + "\n</run-context-checkpoint>"}}, projected...)
+		}
+		history = projected
+	} else {
+		history = boundedContinuationHistory(history, 96*1024)
+	}
 	return history, nil
 }
 
@@ -11204,6 +10850,33 @@ func insertQueuedModelStep(ctx context.Context, tx *sql.Tx, run core.RunContext,
 		if total > 1 {
 			input["active_plan_total"] = total
 			input["active_plan_remaining"] = remaining
+		}
+	}
+	if snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT i.position, i.title, i.description, i.status, i.result_summary
+			FROM run_plan_items i
+			JOIN run_plan_revisions r ON r.id = i.plan_revision_id
+			WHERE r.run_id = ? AND r.status = 'active' AND i.status <> 'canceled'
+			ORDER BY i.position`, run.RunID)
+		if err != nil {
+			return "", err
+		}
+		activePlan := make([]map[string]any, 0, 8)
+		for rows.Next() {
+			var position int64
+			var title, description, status, summary string
+			if err := rows.Scan(&position, &title, &description, &status, &summary); err != nil {
+				_ = rows.Close()
+				return "", err
+			}
+			activePlan = append(activePlan, map[string]any{"position": position, "title": title, "description": description, "status": status, "result_summary": summary})
+		}
+		if err := rows.Close(); err != nil {
+			return "", err
+		}
+		if len(activePlan) > 0 {
+			input["active_plan"] = activePlan
 		}
 	}
 	inputJSON, err := json.Marshal(input)
@@ -11252,6 +10925,25 @@ func (s *Store) queueModelContinuation(ctx context.Context, tx *sql.Tx, q *sqlit
 	}
 
 	input := map[string]any{"history": history, "stage": "continue", "source_step_id": sourceStep.ID}
+	var runPlanItemID string
+	if err := tx.QueryRowContext(ctx, `SELECT run_plan_item_id FROM steps WHERE id = ? AND run_id = ?`, sourceStep.ID, run.RunID).Scan(&runPlanItemID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if strings.TrimSpace(runPlanItemID) != "" {
+		var terminalMCPCalls int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tool_calls
+			WHERE run_id = ? AND run_plan_item_id = ? AND tool_name GLOB 'mcp__*__*'
+			  AND status IN ('succeeded', 'failed', 'blocked', 'rejected')`, run.RunID, runPlanItemID).Scan(&terminalMCPCalls); err != nil {
+			return "", err
+		}
+		if terminalMCPCalls >= core.DefaultMCPCallsPerPlanItem {
+			input["stage"] = "bounded_finish"
+			input["mcp_tool_calls_used"] = terminalMCPCalls
+			input["mcp_tool_call_limit"] = core.DefaultMCPCallsPerPlanItem
+			input["run_plan_item_id"] = runPlanItemID
+		}
+	}
 	if len(invokedSkillIDs) > 0 {
 		input["invoked_skill_ids"] = invokedSkillIDs
 		input["skill_args"] = skillArgs
@@ -11260,7 +10952,7 @@ func (s *Store) queueModelContinuation(ctx context.Context, tx *sql.Tx, q *sqlit
 	if err != nil {
 		return "", err
 	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.continuation_queued", ActorType: "system", ActorID: sourceStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": stepID, "source_step_id": sourceStep.ID, "history_items": len(history)}}); err != nil {
+	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.continuation_queued", ActorType: "system", ActorID: sourceStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": stepID, "source_step_id": sourceStep.ID, "history_items": len(history), "stage": input["stage"], "mcp_tool_calls_used": input["mcp_tool_calls_used"]}}); err != nil {
 		return "", err
 	}
 	return stepID, nil
@@ -11317,20 +11009,31 @@ func isRecoverableToolExecutionFailure(code string) bool {
 }
 
 func (s *Store) queueToolFailureRecovery(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, sourceStep core.ClaimedStep, run core.RunContext, reason, now, correlationID string) (string, int, string, bool, error) {
-	var recoveryCount int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM run_events WHERE run_id = ? AND event_type = 'tool.recovery_queued'`, run.RunID).Scan(&recoveryCount); err != nil {
-		return "", 0, "", false, err
-	}
-	if recoveryCount >= core.DefaultToolRetryLimit {
-		return "", recoveryCount, "", false, nil
-	}
 	var sourceInput map[string]any
 	if json.Unmarshal([]byte(sourceStep.InputJSON), &sourceInput) != nil {
-		return "", recoveryCount, "", false, fmt.Errorf("TOOL_RECOVERY_INPUT_INVALID: source step input is not JSON")
+		return "", 0, "", false, fmt.Errorf("TOOL_RECOVERY_INPUT_INVALID: source step input is not JSON")
 	}
 	toolCallID, _ := sourceInput["tool_call_id"].(string)
 	toolName, _ := sourceInput["name"].(string)
 	modelSourceStepID, _ := sourceInput["model_source_step_id"].(string)
+
+	// Retry limits belong to one consecutive recovery episode, not the whole
+	// Run. A successful tool queues an ordinary continuation without this
+	// lineage field, so the next unrelated failure starts again at 1/5.
+	recoveryCount := 0
+	if strings.TrimSpace(modelSourceStepID) != "" {
+		var modelInputJSON string
+		err := tx.QueryRowContext(ctx, `SELECT input_json FROM steps WHERE id = ? AND run_id = ?`, modelSourceStepID, run.RunID).Scan(&modelInputJSON)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", 0, toolCallID, false, err
+		}
+		if err == nil {
+			recoveryCount = toolRecoveryEpisodeCount(modelInputJSON)
+		}
+	}
+	if recoveryCount >= core.DefaultToolRetryLimit {
+		return "", recoveryCount, toolCallID, false, nil
+	}
 
 	var sourcePosition int64
 	if err := tx.QueryRowContext(ctx, `SELECT position FROM steps WHERE id = ? AND run_id = ?`, sourceStep.ID, run.RunID).Scan(&sourcePosition); err != nil {
@@ -11392,6 +11095,18 @@ func (s *Store) queueToolFailureRecovery(ctx context.Context, tx *sql.Tx, q *sql
 		return "", recoveryCount, toolCallID, false, err
 	}
 	return recoveryStepID, recoveryCount, toolCallID, true, nil
+}
+
+func toolRecoveryEpisodeCount(modelInputJSON string) int {
+	var modelInput map[string]any
+	if json.Unmarshal([]byte(modelInputJSON), &modelInput) != nil {
+		return 0
+	}
+	value, ok := numericToolValue(modelInput["tool_recovery_count"])
+	if !ok || value <= 0 {
+		return 0
+	}
+	return int(value)
 }
 
 func isRetryableModelInteractionError(code string) bool {
@@ -11472,6 +11187,145 @@ func boundedContinuationHistory(history []map[string]any, maxBytes int) []map[st
 		history = history[cut:]
 	}
 	return history
+}
+
+func continuationTokenBudget(snapshot string) int {
+	contextWindow := snapshotInt64FromJSON(snapshot, "model_context_window")
+	maxOutput := snapshotInt64FromJSON(snapshot, "model_max_output")
+	if contextWindow <= 0 {
+		return 0
+	}
+	if maxOutput <= 0 {
+		maxOutput = core.DefaultModelOutputTokens
+	}
+	reserve := contextWindow / 20
+	if reserve < 4096 {
+		reserve = 4096
+	}
+	budget := contextWindow - maxOutput - reserve
+	if budget <= 0 {
+		return 0
+	}
+	// Tool schemas, the stable system prefix and current goal share the same
+	// request budget. Bound historical turns to 80% of the available input.
+	return int(budget * 4 / 5)
+}
+
+func snapshotInt64FromJSON(snapshot, key string) int64 {
+	var values map[string]any
+	if json.Unmarshal([]byte(snapshot), &values) != nil {
+		return 0
+	}
+	switch value := values[key].(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	default:
+		return 0
+	}
+}
+
+func projectContinuationHistoryV2(history []map[string]any, tokenBudget int) ([]map[string]any, map[string]any, int64) {
+	if len(history) == 0 {
+		return history, nil, 0
+	}
+	projected := make([]map[string]any, len(history))
+	latestGroup := ""
+	for index, item := range history {
+		copyItem := make(map[string]any, len(item))
+		for key, value := range item {
+			copyItem[key] = value
+		}
+		projected[index] = copyItem
+		if group, _ := item["group_id"].(string); group != "" {
+			latestGroup = group
+		}
+	}
+	for _, item := range projected {
+		group, _ := item["group_id"].(string)
+		if item["kind"] == "assistant" && group != latestGroup {
+			delete(item, "reasoning_content")
+		}
+	}
+	if tokenBudget <= 0 {
+		return boundedContinuationHistory(projected, 96*1024), nil, 0
+	}
+	type historyGroup struct {
+		id    string
+		items []map[string]any
+	}
+	groups := make([]historyGroup, 0, len(projected))
+	for _, item := range projected {
+		groupID, _ := item["group_id"].(string)
+		if groupID == "" {
+			groupID = fmt.Sprintf("position:%v", item["position"])
+		}
+		if len(groups) == 0 || groups[len(groups)-1].id != groupID {
+			groups = append(groups, historyGroup{id: groupID})
+		}
+		groups[len(groups)-1].items = append(groups[len(groups)-1].items, item)
+	}
+	selectedFrom := len(groups)
+	used := 0
+	for index := len(groups) - 1; index >= 0; index-- {
+		encoded, _ := json.Marshal(groups[index].items)
+		cost := estimateContextTokens(encoded)
+		if used+cost > tokenBudget && selectedFrom < len(groups) {
+			break
+		}
+		used += cost
+		selectedFrom = index
+	}
+	if selectedFrom == 0 {
+		return projected, nil, 0
+	}
+	selected := make([]map[string]any, 0, len(projected))
+	for _, group := range groups[selectedFrom:] {
+		selected = append(selected, group.items...)
+	}
+	summaries := make([]map[string]any, 0, selectedFrom)
+	var through int64
+	for _, group := range groups[:selectedFrom] {
+		summary := map[string]any{"group_id": group.id}
+		tools := make([]map[string]any, 0, len(group.items))
+		for _, item := range group.items {
+			if position, ok := item["position"].(int64); ok && position > through {
+				through = position
+			}
+			if item["kind"] != "tool_result" {
+				continue
+			}
+			tool := map[string]any{"tool_name": item["tool_name"], "status": item["status"], "error_code": item["error_code"]}
+			if output, ok := item["output"].(map[string]any); ok {
+				for _, key := range []string{"artifact_id", "content_hash", "size_bytes", "path", "receipt_id"} {
+					if value, exists := output[key]; exists {
+						tool[key] = value
+					}
+				}
+			}
+			tools = append(tools, tool)
+		}
+		if len(tools) > 0 {
+			summary["tools"] = tools
+		}
+		summaries = append(summaries, summary)
+	}
+	return selected, map[string]any{"projection_version": "token_v2", "dropped_groups": selectedFrom, "groups": summaries}, through
+}
+
+func estimateContextTokens(encoded []byte) int {
+	asciiBytes, nonASCII := 0, 0
+	for _, value := range string(encoded) {
+		if value <= 0x7f {
+			asciiBytes++
+		} else {
+			nonASCII++
+		}
+	}
+	return (asciiBytes+3)/4 + nonASCII
 }
 
 func (s *Store) artifactizeLargeToolResults(ctx context.Context, tx *sql.Tx, run core.RunContext, history []map[string]any, maxInlineBytes int) ([]map[string]any, error) {
@@ -12207,18 +12061,21 @@ func capabilityFromRow(row sqlitegen.Capability) core.Capability {
 
 func (s *Store) getCapabilityByIDTx(ctx context.Context, tx *sql.Tx, scope core.Scope, capabilityID string) (core.Capability, error) {
 	var item core.Capability
-	var createdAt, updatedAt string
+	var dependenciesJSON, createdAt, updatedAt string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, credential_ref, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, origin, preset_key,
+		       dependencies_json, managed_version, update_state, created_at, updated_at
 		FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(
 		&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version,
 		&item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID,
-		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt,
+		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &item.Origin, &item.PresetKey,
+		&dependenciesJSON, &item.ManagedVersion, &item.UpdateState, &createdAt, &updatedAt,
 	); err != nil {
 		return core.Capability{}, err
 	}
+	_ = json.Unmarshal([]byte(dependenciesJSON), &item.Dependencies)
 	item.BundleHash = item.ContentHash
 	item.PermissionDiff = core.CapabilityPermissionDiff(item.ManifestJSON)
 	item.CreatedAt = mustParseTime(createdAt)
@@ -12228,18 +12085,21 @@ func (s *Store) getCapabilityByIDTx(ctx context.Context, tx *sql.Tx, scope core.
 
 func (s *Store) getCapabilityByID(ctx context.Context, scope core.Scope, capabilityID string) (core.Capability, error) {
 	var item core.Capability
-	var createdAt, updatedAt string
+	var dependenciesJSON, createdAt, updatedAt string
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, project_id, owner_user_id, kind, name, version,
 		       manifest_json, content_hash, status, risk_level, scope_type, scope_id,
-		       source_filename, install_job_id, credential_ref, created_at, updated_at
+		       source_filename, install_job_id, credential_ref, origin, preset_key,
+		       dependencies_json, managed_version, update_state, created_at, updated_at
 		FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(
 		&item.ID, &item.OrganizationID, &item.ProjectID, &item.OwnerUserID, &item.Kind, &item.Name, &item.Version,
 		&item.ManifestJSON, &item.ContentHash, &item.Status, &item.RiskLevel, &item.ScopeType, &item.ScopeID,
-		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &createdAt, &updatedAt,
+		&item.SourceFilename, &item.InstallJobID, &item.CredentialRef, &item.Origin, &item.PresetKey,
+		&dependenciesJSON, &item.ManagedVersion, &item.UpdateState, &createdAt, &updatedAt,
 	); err != nil {
 		return core.Capability{}, err
 	}
+	_ = json.Unmarshal([]byte(dependenciesJSON), &item.Dependencies)
 	item.BundleHash = item.ContentHash
 	item.PermissionDiff = core.CapabilityPermissionDiff(item.ManifestJSON)
 	item.CreatedAt = mustParseTime(createdAt)
@@ -12335,11 +12195,14 @@ func scanHumanAction(scanner rowScanner) (core.HumanAction, error) {
 func getApprovalForUser(ctx context.Context, runner idempotencyRunner, scope core.Scope, approvalID string) (core.Approval, error) {
 	row := runner.QueryRowContext(ctx, `
 		SELECT ar.id, ar.organization_id, ar.project_id, ar.task_id, ar.run_id,
-		       ar.step_id, ar.tool_call_id, ar.tool_name, ar.risk_level, ar.status,
+		       ar.step_id, ar.tool_call_id, ar.tool_name,
+		       COALESCE(NULLIF(ha.title, ''), ar.tool_name) AS tool_display_name,
+		       ar.risk_level, ar.status,
 		       ar.reason, ar.frozen_params_json, ar.input_hash, ar.requested_by,
 		       ar.decided_by, ar.requested_at, ar.expires_at, ar.decided_at,
 		       ar.approval_scope, ar.target_origin, ar.matched_rule_id, ar.policy_hash
 		FROM approval_requests ar
+		LEFT JOIN human_action_requests ha ON ha.id = ar.id
 		JOIN tasks t ON t.id = ar.task_id
 		JOIN memberships m ON m.organization_id = ar.organization_id
 		JOIN project_memberships pm ON pm.project_id = ar.project_id AND pm.user_id = m.user_id
@@ -12359,7 +12222,7 @@ func scanApproval(scanner rowScanner) (core.Approval, error) {
 	var decidedAt string
 	if err := scanner.Scan(
 		&approval.ID, &approval.OrganizationID, &approval.ProjectID, &approval.TaskID, &approval.RunID,
-		&approval.StepID, &approval.ToolCallID, &approval.ToolName, &approval.RiskLevel, &approval.Status,
+		&approval.StepID, &approval.ToolCallID, &approval.ToolName, &approval.ToolDisplayName, &approval.RiskLevel, &approval.Status,
 		&approval.Reason, &frozenJSON, &approval.InputHash, &approval.RequestedBy,
 		&approval.DecidedBy, &requestedAt, &expiresAt, &decidedAt,
 		&approval.ApprovalScope, &approval.TargetOrigin, &approval.MatchedRuleID, &approval.PolicyHash,
@@ -12572,471 +12435,6 @@ func newID() (string, error) {
 		return "", fmt.Errorf("generate uuidv7: %w", err)
 	}
 	return id.String(), nil
-}
-
-func (s *Store) HasActiveTask(ctx context.Context, scope core.Scope, conversationID string) (bool, string, error) {
-	var taskID string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT t.id
-		FROM tasks t
-		JOIN runs r ON r.id = (
-			SELECT latest.id
-			FROM runs latest
-			WHERE latest.task_id = t.id
-			ORDER BY latest.created_at DESC, latest.id DESC
-			LIMIT 1
-		)
-		WHERE t.conversation_id = ? AND t.organization_id = ?
-		  AND r.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')
-		ORDER BY t.created_at DESC, t.id DESC
-		LIMIT 1
-	`, conversationID, scope.OrganizationID).Scan(&taskID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, "", nil
-	}
-	if err != nil {
-		return false, "", err
-	}
-	return true, taskID, nil
-}
-
-func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation) (core.ConversationQueueItem, error) {
-	id, err := newID()
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	messageID, err := newID()
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	now := formatTime(time.Now())
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := s.queries.WithTx(tx)
-	var conversationProjectID, visibility string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT c.project_id, c.visibility
-		FROM conversations c
-		JOIN project_memberships pm ON pm.project_id = c.project_id
-		WHERE c.id = ? AND c.organization_id = ?
-		  AND pm.user_id = ? AND pm.status = 'active'
-		  AND (c.visibility = 'project' OR c.owner_user_id = ?)`,
-		conversationID, scope.OrganizationID, scope.UserID, scope.UserID,
-	).Scan(&conversationProjectID, &visibility); err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	if conversationProjectID != projectID {
-		return core.ConversationQueueItem{}, &core.ForbiddenError{Message: "conversation is not in this project"}
-	}
-	messageTaskID := ""
-	if kind == "steering" {
-		messageTaskID = activeTaskID
-	}
-	if _, _, err := s.appendSessionMessageTx(ctx, tx, q, sessionMessageInput{
-		MessageID: messageID, OrganizationID: scope.OrganizationID, ProjectID: projectID,
-		ConversationID: conversationID, OwnerUserID: scope.UserID, TaskID: messageTaskID,
-		Role: "user", Visibility: visibility, Content: content, Presentation: presentation, Now: now,
-	}); err != nil {
-		return core.ConversationQueueItem{}, fmt.Errorf("append queued user message: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO conversation_message_queue (id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', '', ?)
-	`, id, scope.OrganizationID, projectID, conversationID, activeTaskID, content, inputJSON, kind, now, messageID); err != nil {
-		return core.ConversationQueueItem{}, fmt.Errorf("enqueue conversation turn: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	createdAt, _ := parseTime(now)
-	return core.ConversationQueueItem{
-		ID: id, OrganizationID: scope.OrganizationID, ProjectID: projectID,
-		ConversationID: conversationID, ActiveTaskID: activeTaskID, MessageID: messageID,
-		Content: content, InputJSON: inputJSON, Kind: kind, Status: "pending",
-		CreatedAt: createdAt,
-	}, nil
-}
-
-func (s *Store) ListConversationQueue(ctx context.Context, scope core.Scope, conversationID string, status string) ([]core.ConversationQueueItem, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-		FROM conversation_message_queue
-		WHERE conversation_id = ? AND organization_id = ? AND status = ?
-		ORDER BY created_at ASC
-	`, conversationID, scope.OrganizationID, status)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []core.ConversationQueueItem
-	for rows.Next() {
-		var item core.ConversationQueueItem
-		var createdAt, claimedAt, consumedAt string
-		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID); err != nil {
-			return nil, err
-		}
-		item.CreatedAt, _ = parseTime(createdAt)
-		item.ClaimedAt, _ = parseTime(claimedAt)
-		item.ConsumedAt, _ = parseTime(consumedAt)
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func (s *Store) ClaimSteeringAfterStep(ctx context.Context, scope core.Scope, taskID, conversationID string) (core.ConversationQueueItem, error) {
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	now := formatTime(time.Now())
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
-		WHERE id = (
-			SELECT id FROM conversation_message_queue
-			WHERE conversation_id = ? AND active_task_id = ? AND kind = 'steering' AND status = 'pending'
-			ORDER BY created_at ASC LIMIT 1
-		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, conversationID, taskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, core.ErrNoWork
-	}
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-	return item, nil
-}
-
-// ApplyConversationSteering claims the oldest pending steering message for the
-// conversation and, in one transaction, replaces the remaining queued plan with
-// a steering replan step. The queue item is consumed only after the replan step
-// is durably created; any failure rolls the claim back to pending.
-func replaceRunPlanForSteering(ctx context.Context, tx *sql.Tx, run core.RunContext, steering, actorID, now string) (string, string, error) {
-	var previousID string
-	var previousRevision int64
-	err := tx.QueryRowContext(ctx, `SELECT id, revision FROM run_plan_revisions WHERE run_id = ? AND status = 'active' ORDER BY revision DESC LIMIT 1`, run.RunID).Scan(&previousID, &previousRevision)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", "", err
-	}
-	if previousID != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'superseded', superseded_at = ? WHERE id = ?`, now, previousID); err != nil {
-			return "", "", err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'canceled', completed_at = ?, updated_at = ? WHERE plan_revision_id = ? AND status NOT IN ('completed', 'canceled')`, now, now, previousID); err != nil {
-			return "", "", err
-		}
-	}
-	revisionID, err := newID()
-	if err != nil {
-		return "", "", err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO run_plan_revisions (
-			id, organization_id, project_id, task_id, run_id, revision, trigger,
-			goal_summary, status, supersedes_revision_id, created_by, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, 'steering', ?, 'active', ?, ?, ?)`,
-		revisionID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID,
-		previousRevision+1, truncateText(strings.TrimSpace(steering), 1000), previousID, actorID, now,
-	); err != nil {
-		return "", "", err
-	}
-	titles := []string{"正在根据追加要求重新规划"}
-	firstItemID := ""
-	for index, title := range titles {
-		itemID, idErr := newID()
-		if idErr != nil {
-			return "", "", idErr
-		}
-		if index == 0 {
-			firstItemID = itemID
-		}
-		status, startedAt := core.RunPlanItemPending, ""
-		if index == 0 {
-			status, startedAt = core.RunPlanItemRunning, now
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO run_plan_items (
-				id, organization_id, project_id, task_id, run_id, plan_revision_id,
-				position, title, description, status, started_at, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			itemID, run.OrganizationID, run.ProjectID, run.TaskID, run.RunID, revisionID,
-			index+1, title, "模型将保留已完成结果，并生成覆盖合并目标的完整新语义计划。", status, startedAt, now, now,
-		); err != nil {
-			return "", "", err
-		}
-	}
-	return revisionID, firstItemID, nil
-}
-
-func (s *Store) ApplyConversationSteering(ctx context.Context, scope core.Scope, sourceStep core.ClaimedStep, run core.RunContext, correlationID string) (core.ConversationQueueItem, string, error) {
-	now := formatTime(time.Now())
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := s.queries.WithTx(tx)
-
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	err = tx.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
-		WHERE id = (
-			SELECT id FROM conversation_message_queue
-			WHERE conversation_id = ? AND active_task_id = ? AND kind = 'steering' AND status = 'pending'
-			ORDER BY created_at ASC LIMIT 1
-		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, run.ConversationID, run.TaskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, "", core.ErrNoWork
-	}
-	if err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-
-	history, err := s.collectContinuationHistory(ctx, tx, run)
-	if err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-
-	// Cancel the remainder of the superseded plan. Finished steps stay as
-	// context; anything not started is replaced by the steering replan.
-	supersededRows, err := tx.QueryContext(ctx, `SELECT id FROM steps WHERE run_id = ? AND status IN ('queued', 'waiting_approval')`, run.RunID)
-	if err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	supersededStepIDs := make([]string, 0)
-	for supersededRows.Next() {
-		var stepID string
-		if err := supersededRows.Scan(&stepID); err != nil {
-			_ = supersededRows.Close()
-			return core.ConversationQueueItem{}, "", err
-		}
-		supersededStepIDs = append(supersededStepIDs, stepID)
-	}
-	if err := supersededRows.Close(); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	for _, stepID := range supersededStepIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = 'canceled', error_code = 'PLAN_SUPERSEDED', updated_at = ? WHERE id = ?`, now, stepID); err != nil {
-			return core.ConversationQueueItem{}, "", err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'rejected', error_code = 'PLAN_SUPERSEDED', updated_at = ? WHERE step_id = ?`, now, stepID); err != nil {
-			return core.ConversationQueueItem{}, "", err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'rejected', decided_by = 'system', decision_note = '计划已由用户引导重新规划', decided_at = ? WHERE step_id = ? AND status = 'pending'`, now, stepID); err != nil {
-			return core.ConversationQueueItem{}, "", err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE human_action_requests
-			SET status = 'superseded', response_json = '{"reason":"steering_replan"}',
-			    decided_by = 'system', decided_at = ?, version = version + 1
-			WHERE step_id = ? AND status IN ('waiting_user', 'reviewing')`, now, stepID); err != nil {
-			return core.ConversationQueueItem{}, "", err
-		}
-	}
-
-	planRevisionID, planItemID, err := replaceRunPlanForSteering(ctx, tx, run, item.Content, scope.UserID, now)
-	if err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	replanInput := map[string]any{"history": history, "stage": "steering_replan", "steering": item.Content, "source_step_id": sourceStep.ID}
-	replanStepID, err := insertQueuedModelStep(ctx, tx, run, replanInput, now)
-	if err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE steps SET plan_revision_id = ?, run_plan_item_id = ? WHERE id = ?`, planRevisionID, planItemID, replanStepID); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-
-	if err := q.UpdateTaskResult(ctx, sqlitegen.UpdateTaskResultParams{Status: core.StatusRunning, ResultSummary: "", ErrorCode: "", UpdatedAt: now, ID: run.TaskID}); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	if err := q.UpdateRunStatus(ctx, sqlitegen.UpdateRunStatusParams{Status: core.StatusRunning, UpdatedAt: now, ID: run.RunID}); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "conversation.steered", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"queue_item_id": item.ID, "task_id": run.TaskID, "content": item.Content, "source_step_id": sourceStep.ID, "replan_step_id": replanStepID}}); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "model.replan_queued", ActorType: "system", ActorID: sourceStep.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": replanStepID, "source_step_id": sourceStep.ID, "queue_item_id": item.ID, "history_items": len(history)}}); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "plan.published", ActorType: "user", ActorID: scope.UserID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"plan_revision_id": planRevisionID, "trigger": "steering", "goal_summary": item.Content}}); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE conversation_message_queue SET status = 'consumed', consumed_at = ? WHERE id = ? AND status = 'claimed'`, now, item.ID); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	if err := tx.Commit(); err != nil {
-		return core.ConversationQueueItem{}, "", err
-	}
-	return item, replanStepID, nil
-}
-
-func (s *Store) ClaimNextFollowUp(ctx context.Context, scope core.Scope, conversationID string) (core.ConversationQueueItem, error) {
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	now := formatTime(time.Now())
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
-		WHERE id = (
-			SELECT id FROM conversation_message_queue
-			WHERE conversation_id = ? AND kind IN ('follow_up', 'steering') AND status = 'pending'
-			ORDER BY created_at ASC LIMIT 1
-		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, conversationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, core.ErrNoWork
-	}
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-	return item, nil
-}
-
-// ClaimNextIdleFollowUp lets an idle worker retry queued turns even when no
-// step is executing. It first resets items whose claim went stale (worker crash
-// between claim and consume), then claims the oldest pending follow-up whose
-// conversation has no active task and no other claimed item. Pending items
-// claimed since retryBefore are skipped so a repeatedly failing starter backs
-// off instead of hot-looping; claimed_at doubles as the last-attempt marker.
-func (s *Store) ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time) (core.ConversationQueueItem, error) {
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	now := formatTime(time.Now())
-	stale := formatTime(retryBefore)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE conversation_message_queue SET status = 'pending', claimed_at = ''
-		WHERE status = 'claimed' AND claimed_at < ?`, stale); err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	err = tx.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
-		WHERE id = (
-			SELECT q.id FROM conversation_message_queue q
-			WHERE q.status = 'pending'
-			  AND (q.claimed_at = '' OR q.claimed_at < ?)
-			  AND NOT EXISTS (
-			      SELECT 1 FROM conversation_message_queue c
-			      WHERE c.conversation_id = q.conversation_id AND c.status = 'claimed'
-			  )
-			  AND NOT EXISTS (
-			      SELECT 1 FROM tasks t
-			      WHERE t.conversation_id = q.conversation_id
-			        AND t.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')
-			  )
-			ORDER BY q.created_at ASC LIMIT 1
-		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, stale).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, core.ErrNoWork
-	}
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-	return item, nil
-}
-
-func (s *Store) MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string) (core.ConversationQueueItem, error) {
-	now := formatTime(time.Now())
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE conversation_message_queue SET status = 'consumed', consumed_at = ?
-		WHERE id = ? AND organization_id = ? AND status = 'claimed'
-	`, now, itemID, scope.OrganizationID)
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	return core.ConversationQueueItem{ID: itemID, Status: "consumed"}, nil
-}
-
-func (s *Store) PromoteConversationQueueItemToSteering(ctx context.Context, scope core.Scope, conversationID, itemID string) (core.ConversationQueueItem, error) {
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET kind = 'steering'
-		WHERE id = ? AND conversation_id = ? AND organization_id = ? AND status = 'pending' AND kind = 'follow_up'
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, core.ErrNoWork
-	}
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-	return item, nil
-}
-
-// RequeueConversationQueueItem restores a claimed item to pending after a
-// failed start attempt. claimed_at keeps the attempt timestamp so idle drains
-// back off instead of immediately retrying a failing item.
-func (s *Store) RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE conversation_message_queue SET status = 'pending', claimed_at = ?
-		WHERE id = ? AND organization_id = ? AND status = 'claimed'
-	`, formatTime(time.Now()), itemID, scope.OrganizationID)
-	return err
-}
-
-func (s *Store) CancelConversationQueueItems(ctx context.Context, scope core.Scope, conversationID, taskID string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE conversation_message_queue SET status = 'canceled'
-		WHERE conversation_id = ? AND active_task_id = ? AND organization_id = ? AND status = 'pending'
-	`, conversationID, taskID, scope.OrganizationID)
-	return err
-}
-
-func (s *Store) CancelConversationQueueItem(ctx context.Context, scope core.Scope, conversationID, itemID string) (core.ConversationQueueItem, error) {
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET status = 'canceled'
-		WHERE id = ? AND conversation_id = ? AND organization_id = ? AND status = 'pending'
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, core.ErrNoWork
-	}
-	if err != nil {
-		return core.ConversationQueueItem{}, err
-	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-	return item, nil
 }
 
 func formatTime(value time.Time) string {

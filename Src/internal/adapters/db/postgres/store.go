@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -235,6 +236,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		body, err := fs.ReadFile(sqlitemigrations.FS, name)
 		if err != nil {
 			return err
+		}
+		if bytes.Contains(body, []byte("-- oktapod:sqlite-only")) {
+			if _, err := db.ExecContext(ctx, `INSERT INTO schema_versions(version, applied_at) VALUES ($1, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING`, version); err != nil {
+				return err
+			}
+			continue
 		}
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
