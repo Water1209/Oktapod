@@ -472,6 +472,7 @@ Ubuntu CI 额外执行 `pnpm test:race`；Ubuntu 与 Windows CI 都执行 clean 
 - `SQLITE_BUSY`：检查活跃 Worker/Lease；应用会有限重试，不要改成无限重试。
 - `document runtime package is not installed`：确认归档解压为主程序同级的 `runtime/document-runtime`，而不是多套一层目录。
 - `document runtime signature is not trusted`：确认配置指向与当前发布集合一起分发的 `trusted-keys.json`；不要通过关闭验证或使用开发模式绕过。
+- 本地开发启动后所有预置文档 Skill 显示"需要修复"：通常是 `capabilities.trusted_keys_file` 未配置导致签名校验失败；把 `Build/document-runtime-trusted-keys.json` 复制到数据配置目录并在 `config.yaml` 的 `capabilities.trusted_keys_file` 中填写完整路径，重启后资源中心应全部转为"可用"。
 - Linux 服务启动但自定义 npm/uv MCP 不可用：核心 Document Runtime 是自包含的，但自定义 MCP 仍依赖 systemd 服务用户可见的固定可执行路径；在资源定义中使用受审核绝对路径，或为 unit 配置最小 PATH 后重启。
 - 预算申请反复出现：先确认运行的是 2026-08-13 之后的构建；新版本不会以“每次只增加 1 次模型调用”的方式循环申请，失败或停止的终态任务也不会继续占用“待我处理”徽标。
 - 版本不符：运行 `<binary> version`，不要发布显示为 `dev` 的开发构建。
