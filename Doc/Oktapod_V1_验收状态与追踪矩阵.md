@@ -1,6 +1,6 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.23
+> 版本：v1.24
 > 更新日期：2026-09-04
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
@@ -225,3 +225,4 @@
 | 2026-08-24 | 并行项目资料上传恢复 | 双 Worker Success E2E 捕获项目资料上传在并发 SQLite 写入时偶发返回 500；单用例串行通过，确认不是 React Query 列表失效。修复将重试边界放在 SQLite Adapter：文件内容只写入一次不可变 Blob，随后仅重试资产登记事务，避免重放一次性 Reader 或重复上传。定向 SQLite 测试、foundation 初始化/重启解锁和 success 27/27 通过。 |
 | 2026-08-24 | MCP 授权、资源能力与失败链收口 | L3 MCP 增加“本任务允许此工具”，复用既有 `run_approval_rules` 严格绑定当前 Run、完整动态工具和冻结策略，不新增授权事实表；同一计划项 12 个终态 MCP 调用后进入无工具收尾。资源中心从 Skill Manifest/instructions 与 MCP 在线发现生成能力和场景，显示 Playwright MCP 等人类可读名称；预置修复先验证真实 Runtime。DeepSeek + Playwright 真实百度任务复用导航授权，在桌面验证码后切换移动版、打开 `https://www.znv.com.cn/` 并终态 `3/3`；最终最小回归只调用 `browser_navigate` 打开本地站点，审批与执行记录均隐藏 UUID，标题 `Oktapod · Agent OS`，终态 `1/1`。双 Worker E2E 同时暴露一次 `ERR_NETWORK_CHANGED`，现仅对同一幂等键的连接失败重试一次，Agent JSON 用例与 success 27/27 通过。 |
 | 2026-09-04 | 项目库治理与软删除 | 项目库支持编辑、重命名和移除；删除写入 `projects.status=deleted` 与 `project.deleted {"mode":"soft"}` 审计，但不删除工作区、任务、会话、运行历史、用量、记忆或产物，项目列表和普通入口按 active 项目过滤。工作文件改为常规文件浏览并显示绝对路径、目录导航、状态、大小和修改时间。隔离运行态浏览器实测编辑与重命名即时刷新，删除确认完整说明保留边界，工作文件可进入两级目录并由面包屑返回根目录；此前软删除实测确认列表隐藏、详情入口不可用、数据库记录/审计/工作区文件仍保留。`pnpm verify`、Vitest 16 文件/67 用例、构建、SQLite 迁移、OpenAPI 生成漂移与 `git diff --check` 通过。软删除项目暂无恢复 UI。 |
+| 2026-09-04 | 文档 Runtime 跨平台路径校验 | 远端 Ubuntu 门禁发现 Windows 盘符路径在非 Windows 主机上无法由 `filepath.VolumeName` 识别；路径合同增加平台无关的盘符前缀拒绝，签名 Runtime 清单路径与工作句柄在 Windows/Linux 上保持同一逃逸边界。定向测试及后续双平台 CI 作为关闭证据。 |

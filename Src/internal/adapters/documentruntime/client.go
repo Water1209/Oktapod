@@ -218,7 +218,7 @@ func (c *Client) Version() string { return c.manifest.Version }
 func (c *Client) HandlePath(handle string) (string, error) {
 	raw := strings.TrimSpace(handle)
 	clean := filepath.Clean(filepath.FromSlash(raw))
-	if clean == "." || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "\\") || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.VolumeName(clean) != "" {
+	if clean == "." || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "\\") || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.VolumeName(clean) != "" || hasDriveLetterPrefix(raw) {
 		return "", fmt.Errorf("invalid document runtime handle")
 	}
 	target := filepath.Join(c.workRoot, clean)
@@ -427,7 +427,7 @@ func securePackagePath(root, relative string) (string, error) {
 	}
 	raw := strings.TrimSpace(relative)
 	clean := filepath.Clean(filepath.FromSlash(raw))
-	if clean == "." || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "\\") || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if clean == "." || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "\\") || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || hasDriveLetterPrefix(raw) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("runtime manifest contains an unsafe path")
 	}
 	path := filepath.Join(root, clean)
@@ -448,6 +448,14 @@ func securePackagePath(root, relative string) (string, error) {
 		return "", fmt.Errorf("runtime package file is missing or unsafe: %s", relative)
 	}
 	return path, nil
+}
+
+func hasDriveLetterPrefix(value string) bool {
+	if len(value) < 2 || value[1] != ':' {
+		return false
+	}
+	letter := value[0]
+	return letter >= 'a' && letter <= 'z' || letter >= 'A' && letter <= 'Z'
 }
 
 func hashFile(path string) (string, error) {

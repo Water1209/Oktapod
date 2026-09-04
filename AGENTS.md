@@ -97,7 +97,7 @@ Oktapod 是一套面向个人与企业团队的多用户 Agent OS，不按个人
 | `Doc/Oktapod_V1.1_Agent_Runtime_优化执行计划.md` | V1.9 | 2026-08-24 | V1.1 Runtime、语义计划、Web Access、文档 Runtime、资源/Provider 生命周期与 Task 流式模型传输实施证据 |
 | `Doc/Oktapod_预置文档能力与_Artifact_Runtime_实现说明_V1.0.md` | V1.0 | 2026-08-22 | 预置资源、固定文档协议、签名 Runtime、格式矩阵与未关闭门禁 |
 | `Doc/Oktapod_部署与运维指南_v1.0.md` | V1.1.1 | 2026-08-22 | Windows/Linux 原生部署、签名 Runtime、升级回滚与运维 |
-| `Doc/Oktapod_V1_验收状态与追踪矩阵.md` | V1.23 | 2026-09-04 | 发布状态与功能完成度唯一权威 |
+| `Doc/Oktapod_V1_验收状态与追踪矩阵.md` | V1.24 | 2026-09-04 | 发布状态与功能完成度唯一权威 |
 | `Doc/Oktapod_V1_发布说明_V1.0.0.md` | V1.0.0 RC | 2026-08-22 | 发布范围、限制、安装和回滚 |
 | `Doc/Oktapod_PRD_v1.1_轻量化架构优化版.md` | V1.1 | 历史产品蓝图 | 完整产品愿景，V1 范围以审定版为准 |
 | `Doc/Oktapod_三阶段递进式架构设计_V1.0.md` | V1.0 | 架构基线 | 长期演进路线图（Phase 1→2→3） |
