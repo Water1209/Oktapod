@@ -338,6 +338,8 @@ type CreateProjectInput struct {
 }
 
 type UpdateProjectSettingsInput struct {
+	Name            *string
+	Description     *string
 	ModelProviderID *string
 	DefaultModel    *string
 	FallbackModel   *string

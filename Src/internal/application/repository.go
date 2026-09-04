@@ -60,6 +60,7 @@ type ProviderRepository interface {
 type ProjectRepository interface {
 	CreateProject(ctx context.Context, scope core.Scope, input core.CreateProjectInput, idempotency core.Idempotency) (core.Project, error)
 	UpdateProjectSettings(ctx context.Context, scope core.Scope, projectID string, input core.UpdateProjectSettingsInput, idempotency core.Idempotency) (core.Project, error)
+	DeleteProject(ctx context.Context, scope core.Scope, projectID, correlationID string) error
 	GetProject(ctx context.Context, scope core.Scope, projectID string) (core.Project, error)
 	ListProjects(ctx context.Context, scope core.Scope, limit int) ([]core.Project, error)
 	AddProjectMember(ctx context.Context, scope core.Scope, projectID string, input core.AddProjectMemberInput, correlationID string, idempotency core.Idempotency) (core.ProjectMember, error)

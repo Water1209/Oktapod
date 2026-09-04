@@ -54,6 +54,7 @@ type ToolRuntime struct {
 	webAccess       WebAccess
 	mcpSecrets      application.ProviderSecretStore
 	mcpSessions     *mcpadapter.SessionBroker
+	webCallTimeout  time.Duration
 	mcpCallTimeout  time.Duration
 	logger          *slog.Logger
 }
@@ -69,7 +70,7 @@ func (w *Worker) toolRuntime() ToolRuntime {
 	return ToolRuntime{
 		ledger: w.repository, repository: w.repository, workspace: w.workspace,
 		artifactCapture: w.artifactCapture, assetStager: w.assetStager, documentRuntime: w.documentRuntime,
-		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpSessions: w.mcpSessions, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
+		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpSessions: w.mcpSessions, webCallTimeout: w.webCallTimeout, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
 	}
 }
 
@@ -283,11 +284,17 @@ func (runtime ToolRuntime) preflightWeb(run core.RunContext, invocation FrozenTo
 	if invocation.Name == core.ToolWebFetch {
 		return preparedTool{
 			dispatch: func(ctx context.Context) core.ToolExecution {
+				callContext, cancel := runtime.webContext(ctx)
+				defer cancel()
 				result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusSucceeded, ExitCode: 0, Idempotent: true, Output: map[string]any{}}
-				fetched, err := runtime.webAccess.Fetch(ctx, core.WebFetchRequest{URL: stringArgument(call.Arguments, "url"), PolicySnapshot: run.ConfigSnapshotJSON})
+				fetched, err := runtime.webAccess.Fetch(callContext, core.WebFetchRequest{URL: stringArgument(call.Arguments, "url"), PolicySnapshot: run.ConfigSnapshotJSON})
 				if err != nil {
 					result.Status, result.ExitCode = core.StatusFailed, -1
 					result.ErrorCode, result.Output["reason"], result.Output["redirect_target"] = webAccessError(err)
+					if errors.Is(callContext.Err(), context.DeadlineExceeded) {
+						result.ErrorCode = "WEB_FETCH_TIMEOUT"
+						result.Output["reason"] = "web fetch exceeded the configured execution deadline"
+					}
 					if result.Output["redirect_target"] == "" {
 						delete(result.Output, "redirect_target")
 					}
@@ -303,11 +310,19 @@ func (runtime ToolRuntime) preflightWeb(run core.RunContext, invocation FrozenTo
 	}
 	return preparedTool{
 		dispatch: func(ctx context.Context) core.ToolExecution {
+			callContext, cancel := runtime.webContext(ctx)
+			defer cancel()
 			var execution core.ToolExecution
 			if runtime.webAccess == nil {
-				execution = runtime.webSearch.Execute(ctx, call)
+				execution = runtime.webSearch.Execute(callContext, call)
 			} else {
-				execution = executeWebSearch(ctx, runtime.webAccess, call)
+				execution = executeWebSearch(callContext, runtime.webAccess, call)
+			}
+			if errors.Is(callContext.Err(), context.DeadlineExceeded) {
+				execution.Status = core.StatusFailed
+				execution.ExitCode = -1
+				execution.ErrorCode = "WEB_SEARCH_TIMEOUT"
+				execution.Output = map[string]any{"query": stringArgument(call.Arguments, "query"), "reason": "web search exceeded the configured execution deadline"}
 			}
 			if execution.Output == nil {
 				execution.Output = map[string]any{}
@@ -317,6 +332,13 @@ func (runtime ToolRuntime) preflightWeb(run core.RunContext, invocation FrozenTo
 		},
 		receiptUnknown: "互联网搜索收据状态未知，已停止自动重试。", successSummary: "互联网搜索完成，结果已保存并进入来源综合。", failureSummary: "互联网搜索失败，已记录受控错误收据。",
 	}, nil
+}
+
+func (runtime ToolRuntime) webContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if runtime.webCallTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, runtime.webCallTimeout)
 }
 
 func executeWebSearch(ctx context.Context, access WebAccess, call core.ToolCall) core.ToolExecution {

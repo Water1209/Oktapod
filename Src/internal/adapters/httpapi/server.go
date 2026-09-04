@@ -1099,6 +1099,14 @@ func (s *Server) UpdateProjectSettings(ctx context.Context, request generated.Up
 		return nil, &core.ValidationError{Field: "body", Message: "is required"}
 	}
 	input := core.UpdateProjectSettingsInput{}
+	if request.Body.Name != nil {
+		value := *request.Body.Name
+		input.Name = &value
+	}
+	if request.Body.Description != nil {
+		value := *request.Body.Description
+		input.Description = &value
+	}
 	if request.Body.ModelProviderId != nil {
 		value := *request.Body.ModelProviderId
 		input.ModelProviderID = &value
@@ -1122,6 +1130,13 @@ func (s *Server) UpdateProjectSettings(ctx context.Context, request generated.Up
 		return nil, err
 	}
 	return generated.UpdateProjectSettings200JSONResponse(response), nil
+}
+
+func (s *Server) DeleteProject(ctx context.Context, request generated.DeleteProjectRequestObject) (generated.DeleteProjectResponseObject, error) {
+	if err := s.service.DeleteProject(ctx, request.ProjectId.String(), correlationID(ctx)); err != nil {
+		return nil, err
+	}
+	return generated.DeleteProject204Response{}, nil
 }
 
 func (s *Server) ListProjectTasks(ctx context.Context, request generated.ListProjectTasksRequestObject) (generated.ListProjectTasksResponseObject, error) {
@@ -2872,7 +2887,11 @@ func (s *Server) ListWorkspaceFiles(ctx context.Context, request generated.ListW
 	if request.Params.Limit != nil {
 		limit = *request.Params.Limit
 	}
-	page, err := s.service.ListWorkspaceFiles(ctx, request.ProjectId.String(), cursor, limit)
+	directory := ""
+	if request.Params.Path != nil {
+		directory = *request.Params.Path
+	}
+	page, err := s.service.ListWorkspaceFiles(ctx, request.ProjectId.String(), directory, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2880,7 +2899,11 @@ func (s *Server) ListWorkspaceFiles(ctx context.Context, request generated.ListW
 	for _, item := range page.Items {
 		items = append(items, generated.WorkspaceFile{Path: item.Path, Kind: generated.WorkspaceFileKind(item.Kind), LifecycleRole: generated.WorkspaceFileLifecycleRole(item.LifecycleRole), SizeBytes: item.SizeBytes, ModifiedAt: item.ModifiedAt, GitStatus: item.GitStatus})
 	}
-	return generated.ListWorkspaceFiles200JSONResponse{Items: items, HasMore: page.HasMore, NextCursor: page.NextCursor}, nil
+	response := generated.ListWorkspaceFiles200JSONResponse{Items: items, HasMore: page.HasMore, NextCursor: page.NextCursor}
+	if page.Root != "" {
+		response.Root = &page.Root
+	}
+	return response, nil
 }
 
 func (s *Server) DownloadWorkspaceFileContent(ctx context.Context, request generated.DownloadWorkspaceFileContentRequestObject) (generated.DownloadWorkspaceFileContentResponseObject, error) {

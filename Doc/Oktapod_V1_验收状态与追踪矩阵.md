@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.21
-> 更新日期：2026-08-24
+> 版本：v1.23
+> 更新日期：2026-09-04
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
 
@@ -114,7 +114,7 @@
 | R1A-015 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-016 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt、真实命令进程树取消与 kill 后 Lease 恢复自动化通过；工具恢复次数按 source model Step 的连续失败 lineage 继承，成功后的普通 continuation 会重置，下一项无关失败从 1/5 开始；项目/Agent 创建和预置资源确保复用幂等 BUSY/BUSY_SNAPSHOT 有界重试，浏览器只对携带同一 `Idempotency-Key` 且未收到响应的连接失败重试一次；项目资料上传只持久化一次不可变 Blob，并对后续登记事务有界重试；MCP 取消归类 `TOOL_CANCELED`、超时保留 Timeout Code；Finish commit failure、Lease/Fence 丢失继续由 Durable Recovery 收敛 |
 | R1A-017 | 语义计划与 Human Action | `PASS` | 新 Run 用 `replace_plan/advance_plan` 将目标级步骤与首批业务工具放在同一响应；计划只表达结果和验收，工具、审批与 Receipt 只进入执行记录；continuation 冻结活动进度且工具成功不自动推进。MCP Human Action 使用 Capability 名称与工具短名，并提供“批准一次/本任务允许此工具”；后者只授权同一 Run 的同一工具。历史 Run 保持 `update_plan`；Steering/Next Turn、统一 Human Action、三种权限模式和有界修复保持兼容 |
-| R1A-018 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件 API 提供五类生命周期并在 UI 折叠过程/临时项，嵌套缓存、依赖和虚拟环境同样识别为临时；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
+| R1A-018 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件按常规浏览器展示绝对路径、目录进入、面包屑、状态、大小和修改时间，嵌套缓存、依赖和虚拟环境保留临时治理语义；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
 | R1A-019 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；Auto 不再产生分类模型调用，首个业务响应可直接回答、规划或调用工具；Tool Schema 是工具元数据唯一模型来源，Prompt、Messages、Definitions、AllowedTools、ModelRef、Thinking、Token 上限和 ContextPlan 仍由同一次 Assembly 生成并写入 `assembly_hash`；Task/Auto 裸“继续”、逐项冻结审批与预算决策语义保持兼容 |
 | R1A-020 | Web Access 与受控私网 Fetch | `PASS` | Search 保持单 `query` 与 DDG→Bing RSS；Fetch 单 URL、GET-only、安全 DNS/Dial/重定向/代理隔离/内容上限已实现；精确私网 origin 配置、Run 冻结交集、`run_origin` 强制人工审批、Receipt/Web 卡片/OpenAPI 均有确定性测试。浏览器完成配置校验、保存待重启、重启生效、390px 无横向溢出，以及一次人工授权后同 origin 两页自动读取、执行流从用户消息迁移到助手结果消息仍保持展开、私网卡文本重放和控制台零错误闭环 |
 | R1A-021 | 稳定计划与否定能力约束 | `PASS` | 已绑定计划的普通 continuation/plan_execute 不再暴露也不接受 `replace_plan`；显式重规划保留 Durable 完成项、过滤规范化重复项并限制总项数。用户明确“不联网/离线”时冻结零搜索预算且完成门禁不要求新 Web Receipt；`.oktapod/` 内部写入跳过自动 Capture 而保持成功，公开交付仍严格登记。DeepSeek + `frontend-design` 真实 Task 以固定两项计划完成核对与 Artifact 登记，终态 `2/2` |
@@ -224,3 +224,4 @@
 | 2026-08-24 | 语义计划、内部工作文件与否定约束完成门禁 | DeepSeek `deepseek-v4-flash` 真实 Task 实际加载重装后的 `frontend-design`，只用 Workspace 工具核对 `skill-regression.html`，生成并登记 `skill-regression-check-v2.md`；执行计划始终只有“核对页面/登记验收结果”两项并终态 `2/2`，具体工具仅在执行记录。“不联网、不调用 MCP”正确冻结零搜索预算，不再产生错误 Human Action；`.oktapod/` 内部写入跳过自动 Capture。`pnpm verify`（Web 61/61、Integration 全包）、Playwright foundation 1/1 + 重启 1/1 + success 27/27 通过；签名文档 Runtime 发布输入仍缺失，release build/smoke 保持 `BLOCKED_ENV`。 |
 | 2026-08-24 | 并行项目资料上传恢复 | 双 Worker Success E2E 捕获项目资料上传在并发 SQLite 写入时偶发返回 500；单用例串行通过，确认不是 React Query 列表失效。修复将重试边界放在 SQLite Adapter：文件内容只写入一次不可变 Blob，随后仅重试资产登记事务，避免重放一次性 Reader 或重复上传。定向 SQLite 测试、foundation 初始化/重启解锁和 success 27/27 通过。 |
 | 2026-08-24 | MCP 授权、资源能力与失败链收口 | L3 MCP 增加“本任务允许此工具”，复用既有 `run_approval_rules` 严格绑定当前 Run、完整动态工具和冻结策略，不新增授权事实表；同一计划项 12 个终态 MCP 调用后进入无工具收尾。资源中心从 Skill Manifest/instructions 与 MCP 在线发现生成能力和场景，显示 Playwright MCP 等人类可读名称；预置修复先验证真实 Runtime。DeepSeek + Playwright 真实百度任务复用导航授权，在桌面验证码后切换移动版、打开 `https://www.znv.com.cn/` 并终态 `3/3`；最终最小回归只调用 `browser_navigate` 打开本地站点，审批与执行记录均隐藏 UUID，标题 `Oktapod · Agent OS`，终态 `1/1`。双 Worker E2E 同时暴露一次 `ERR_NETWORK_CHANGED`，现仅对同一幂等键的连接失败重试一次，Agent JSON 用例与 success 27/27 通过。 |
+| 2026-09-04 | 项目库治理与软删除 | 项目库支持编辑、重命名和移除；删除写入 `projects.status=deleted` 与 `project.deleted {"mode":"soft"}` 审计，但不删除工作区、任务、会话、运行历史、用量、记忆或产物，项目列表和普通入口按 active 项目过滤。工作文件改为常规文件浏览并显示绝对路径、目录导航、状态、大小和修改时间。隔离运行态浏览器实测编辑与重命名即时刷新，删除确认完整说明保留边界，工作文件可进入两级目录并由面包屑返回根目录；此前软删除实测确认列表隐藏、详情入口不可用、数据库记录/审计/工作区文件仍保留。`pnpm verify`、Vitest 16 文件/67 用例、构建、SQLite 迁移、OpenAPI 生成漂移与 `git diff --check` 通过。软删除项目暂无恢复 UI。 |

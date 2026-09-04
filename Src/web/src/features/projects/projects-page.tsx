@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Activity, AlertCircle, ArrowRight, CheckCircle2, Clock3, Code2, FolderClosed, FolderOpen, FolderPlus, Gauge, LockKeyhole, Search, ShieldCheck, X } from 'lucide-react'
-import { api, type ModelDescriptor, type Scene, type TaskStatus } from '../../shared/api/client'
+import { Activity, AlertCircle, ArrowRight, CheckCircle2, Clock3, Code2, FolderClosed, FolderOpen, FolderPlus, Gauge, LockKeyhole, Pencil, Search, ShieldCheck, Trash2, X } from 'lucide-react'
+import { api, type ModelDescriptor, type Project, type Scene, type TaskStatus } from '../../shared/api/client'
 import { backgroundInboxRefetchInterval } from '../../shared/query-refresh'
 import { hasLiveTasks } from '../../shared/task-status'
 
@@ -75,6 +75,8 @@ export function ProjectLibraryPage() {
   const models = useQuery({ queryKey: ['models'], queryFn: api.models, retry: false, staleTime: 60_000 })
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [editingProject, setEditingProject] = useState<Project | null>(null)
+  const [deletingProject, setDeletingProject] = useState<Project | null>(null)
   const filtered = useMemo(() => [...(projects.data?.items ?? [])]
     .filter((project) => `${project.name} ${project.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
     .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()), [projects.data, query])
@@ -84,10 +86,17 @@ export function ProjectLibraryPage() {
       <header><span><FolderClosed size={14} />个人项目 <em>{filtered.length}</em></span><label className="project-search"><Search size={14} /><input aria-label="搜索全部项目" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或说明" /></label></header>
       {projects.isLoading ? <ProjectSkeleton /> : null}
       {projects.error ? <div className="inline-error">项目读取失败：{projects.error.message}</div> : null}
-      {filtered.length ? <div className="project-library-grid">{filtered.map((project) => <Link key={project.id} to="/projects/$projectId" params={{ projectId: project.id }}><span className={`project-row-icon ${project.scene}`}><FolderClosed size={18} /></span><span><strong>{project.name}</strong><small>{project.description || (project.scene === 'code' ? '代码项目' : '通用项目')}</small></span><dl><div><dt>场景</dt><dd>{project.scene === 'code' ? '代码' : '通用'}</dd></div><div><dt>最近更新</dt><dd>{formatRecent(project.updated_at)}</dd></div></dl><ArrowRight size={14} /></Link>)}</div> : null}
+      {filtered.length ? <div className="project-library-grid">{filtered.map((project) => (
+        <article key={project.id} className="library-project-card">
+          <Link to="/projects/$projectId" params={{ projectId: project.id }}><span className={`project-row-icon ${project.scene}`}><FolderClosed size={18} /></span><span><strong>{project.name}</strong><small>{project.description || (project.scene === 'code' ? '代码项目' : '通用项目')}</small></span><dl><div><dt>场景</dt><dd>{project.scene === 'code' ? '代码' : '通用'}</dd></div><div><dt>最近更新</dt><dd>{formatRecent(project.updated_at)}</dd></div></dl><ArrowRight size={14} /></Link>
+          <span className="project-card-actions"><button aria-label={`编辑 ${project.name}`} title={`编辑 ${project.name}`} type="button" onClick={() => setEditingProject(project)}><Pencil size={14} /></button><button aria-label={`删除 ${project.name}`} title={`删除 ${project.name}`} type="button" onClick={() => setDeletingProject(project)}><Trash2 size={14} /></button></span>
+        </article>
+      ))}</div> : null}
       {!projects.isLoading && filtered.length === 0 ? <HomeEmpty icon={<FolderPlus />} text={query ? '没有匹配的项目' : '还没有个人项目'} action={!query ? <button type="button" onClick={() => setCreateOpen(true)}>创建第一个项目</button> : undefined} /> : null}
     </section>
     <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} models={models.data?.items ?? []} providerDefaultModel={models.data?.default_model ?? ''} modelsError={models.error?.message} />
+    {editingProject ? <EditProjectDialog key={editingProject.id} project={editingProject} onClose={() => setEditingProject(null)} /> : null}
+    {deletingProject ? <DeleteProjectDialog key={deletingProject.id} project={deletingProject} onClose={() => setDeletingProject(null)} /> : null}
   </main>
 }
 
@@ -159,4 +168,82 @@ function formatRecent(value: string) {
   if (delta < 60 * 60_000) return `${Math.floor(delta / 60_000)} 分钟前`
   if (delta < 24 * 60 * 60_000) return `${Math.floor(delta / (60 * 60_000))} 小时前`
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+function EditProjectDialog({ project, onClose }: { project: Project; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [name, setName] = useState(project.name)
+  const [description, setDescription] = useState(project.description || '')
+  const update = useMutation({
+    mutationFn: (input: { name: string; description: string }) => api.updateProject(project.id, input),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      onClose()
+    },
+  })
+
+  return (
+    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose() }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog-content create-project-dialog">
+          <div className="dialog-heading">
+            <div><Dialog.Title>编辑项目</Dialog.Title><Dialog.Description>修改项目名称和目标说明。</Dialog.Description></div>
+            <Dialog.Close asChild><button className="icon-control" type="button" aria-label="关闭" title="关闭"><X size={18} /></button></Dialog.Close>
+          </div>
+          <form onSubmit={(event) => { event.preventDefault(); update.mutate({ name, description }) }}>
+            <label className="form-field"><span>项目名称</span><input aria-label="项目名称" autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
+            <label className="form-field"><span>目标说明</span><textarea aria-label="目标说明" maxLength={2000} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+            {update.error ? <div className="form-error">{update.error.message}</div> : null}
+            <div className="dialog-actions"><Dialog.Close asChild><button className="secondary-button" type="button">取消</button></Dialog.Close><button className="primary-button" disabled={update.isPending || !name.trim()} type="submit">{update.isPending ? '正在保存...' : '保存'}</button></div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
+function DeleteProjectDialog({ project, onClose }: { project: Project; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [confirmName, setConfirmName] = useState('')
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteProject(project.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      onClose()
+      await navigate({ to: '/projects' })
+    },
+  })
+
+  const canDelete = confirmName.trim() === project.name
+
+  return (
+    <Dialog.Root open onOpenChange={(open) => { if (!open && !deleteMutation.isPending) onClose() }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog-content create-project-dialog">
+          <div className="dialog-heading">
+            <div><Dialog.Title>删除项目</Dialog.Title><Dialog.Description>项目会从个人项目列表移除，历史记录保留。</Dialog.Description></div>
+            <Dialog.Close asChild><button className="icon-control" type="button" aria-label="关闭" title="关闭"><X size={18} /></button></Dialog.Close>
+          </div>
+          <form onSubmit={(event) => { event.preventDefault(); if (canDelete) deleteMutation.mutate() }}>
+            <div className="form-warning">
+              <AlertCircle size={16} />
+              <span>删除项目 <strong>{project.name}</strong> 后，它将不再显示在个人项目中：</span>
+            </div>
+            <ul className="delete-project-scope">
+              <li>项目工作目录及全部文件会完整保留</li>
+              <li>会话、任务、运行历史和记忆会完整保留</li>
+              <li>任务输出和项目资料会完整保留</li>
+            </ul>
+            <label className="form-field"><span>输入项目名称确认</span><input aria-label="输入项目名称确认删除" autoFocus value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={project.name} /></label>
+            {deleteMutation.error ? <div className="form-error">{deleteMutation.error.message}</div> : null}
+            <div className="dialog-actions"><Dialog.Close asChild><button className="secondary-button" type="button" disabled={deleteMutation.isPending}>取消</button></Dialog.Close><button className="delete-project-button" disabled={deleteMutation.isPending || !canDelete} type="submit">{deleteMutation.isPending ? '正在移除...' : '移出项目库'}</button></div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
 }

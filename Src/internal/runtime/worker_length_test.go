@@ -21,6 +21,13 @@ type countingSearch struct {
 
 type blockingStreamingModel struct{}
 
+type blockingSearch struct{}
+
+func (blockingSearch) Execute(ctx context.Context, call core.ToolCall) core.ToolExecution {
+	<-ctx.Done()
+	return core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ErrorCode: "SEARCH_ABORTED", Output: map[string]any{"reason": ctx.Err().Error()}}
+}
+
 func (blockingStreamingModel) Complete(context.Context, ModelRequest) (core.ModelResult, error) {
 	panic("streaming path was not used")
 }
@@ -38,6 +45,28 @@ func TestMCPCallsHaveABoundedExecutionDeadline(t *testing.T) {
 	worker.WithMCPCallTimeout(25 * time.Millisecond)
 	if worker.mcpCallTimeout != 25*time.Millisecond {
 		t.Fatalf("configured MCP timeout = %s, want 25ms", worker.mcpCallTimeout)
+	}
+}
+
+func TestBuiltInWebCallsHaveABoundedExecutionDeadline(t *testing.T) {
+	worker := NewWorker("web-timeout-worker", nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if worker.webCallTimeout != 2*time.Minute {
+		t.Fatalf("default web timeout = %s, want 2m", worker.webCallTimeout)
+	}
+	worker.WithWebCallTimeout(20 * time.Millisecond).WithWebSearchExecutor(blockingSearch{})
+	prepared, failure := worker.toolRuntime().preflightWeb(core.RunContext{}, FrozenToolInvocation{
+		ToolCallID: "search-timeout", Name: core.ToolWebSearch, Arguments: map[string]any{"query": "bounded search"},
+	})
+	if failure != nil {
+		t.Fatalf("preflight failure = %#v", failure)
+	}
+	started := time.Now()
+	execution := prepared.dispatch(t.Context())
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("web timeout returned after %s", elapsed)
+	}
+	if execution.Status != core.StatusFailed || execution.ErrorCode != "WEB_SEARCH_TIMEOUT" {
+		t.Fatalf("execution = %#v", execution)
 	}
 }
 

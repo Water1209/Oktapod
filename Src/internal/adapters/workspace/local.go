@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -126,6 +125,12 @@ func (l *Local) projectRoot(projectID string) (string, error) {
 		return "", fmt.Errorf("project workspace is not a real directory")
 	}
 	return target, nil
+}
+
+// WorkspaceProjectRoot exposes the resolved project directory for read-only
+// presentation (the workspace file browser shows it to users).
+func (l *Local) WorkspaceProjectRoot(projectID string) (string, error) {
+	return l.projectRoot(projectID)
 }
 
 func (l *Local) writeFile(projectRoot string, call core.ToolCall, planned core.PlannedTool) core.ToolExecution {

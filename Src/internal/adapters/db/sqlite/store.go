@@ -520,7 +520,13 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, scope core.Scope, pro
 		return core.Project{}, err
 	}
 	now := formatTime(time.Now())
-	if _, err := tx.ExecContext(ctx, `UPDATE projects SET model_provider_id = ?, default_model = ?, fallback_model = ?, updated_at = ? WHERE id = ? AND organization_id = ?`, *input.ModelProviderID, *input.DefaultModel, *input.FallbackModel, now, projectID, scope.OrganizationID); err != nil {
+	if input.Name != nil {
+		row.Name = *input.Name
+	}
+	if input.Description != nil {
+		row.Description = *input.Description
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET name = ?, description = ?, model_provider_id = ?, default_model = ?, fallback_model = ?, updated_at = ? WHERE id = ? AND organization_id = ?`, row.Name, row.Description, *input.ModelProviderID, *input.DefaultModel, *input.FallbackModel, now, projectID, scope.OrganizationID); err != nil {
 		return core.Project{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -544,7 +550,7 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, scope core.Scope, pro
 	}
 	project.MaxModelCalls, project.MaxTokens = *input.MaxModelCalls, *input.MaxTokens
 	project.ModelProviderID = *input.ModelProviderID
-	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'project.settings_updated', 'project', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, projectID, fmt.Sprintf(`{"default_model":%q,"fallback_model":%q,"max_model_calls":%d,"max_tokens":%d}`, project.DefaultModel, project.FallbackModel, project.MaxModelCalls, project.MaxTokens), auditID, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, 'project.settings_updated', 'project', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, projectID, fmt.Sprintf(`{"name":%q,"description":%q,"default_model":%q,"fallback_model":%q,"max_model_calls":%d,"max_tokens":%d}`, project.Name, project.Description, project.DefaultModel, project.FallbackModel, project.MaxModelCalls, project.MaxTokens), auditID, now); err != nil {
 		return core.Project{}, err
 	}
 	if idempotency.Key != "" {
@@ -576,6 +582,91 @@ func (s *Store) ListProjects(ctx context.Context, scope core.Scope, limit int) (
 		projects = append(projects, project)
 	}
 	return projects, nil
+}
+
+// DeleteProject soft-deletes a project. The workspace, tasks, conversations,
+// run history, memories, artifacts, and audit records remain available for
+// recovery and traceability.
+func (s *Store) DeleteProject(ctx context.Context, scope core.Scope, projectID, correlationID string) error {
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		err = s.deleteProjectTx(ctx, scope, projectID, correlationID)
+		if err == nil || !sqliteBusyError(err) {
+			return err
+		}
+		if waitErr := waitSQLiteRetry(ctx, attempt); waitErr != nil {
+			return waitErr
+		}
+	}
+	return err
+}
+
+func (s *Store) deleteProjectTx(ctx context.Context, scope core.Scope, projectID, correlationID string) error {
+	var ownerRole string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT pm.role FROM project_memberships pm
+		WHERE pm.project_id = ?
+		  AND pm.user_id = ?
+		  AND pm.status = 'active'
+		  AND EXISTS (
+		      SELECT 1 FROM memberships m
+		      WHERE m.organization_id = ? AND m.user_id = pm.user_id AND m.status = 'active'
+		  )`,
+		projectID, scope.UserID, scope.OrganizationID,
+	).Scan(&ownerRole); err != nil {
+		return err
+	}
+	if ownerRole != "owner" {
+		return &core.ForbiddenError{Message: "only the project owner can delete this project"}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var active int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tasks
+		WHERE project_id = ? AND status IN ('queued','running','waiting_approval','waiting_input','paused','blocked')`,
+		projectID,
+	).Scan(&active); err != nil {
+		return err
+	}
+	if active > 0 {
+		return &core.ResourceConflictError{Resource: "project", Reason: "stop active tasks before deleting this project"}
+	}
+	auditID, err := newID()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_events (
+			id, organization_id, project_id, actor_user_id, action,
+			target_type, target_id, outcome, detail_json, correlation_id, occurred_at
+		) VALUES (?, ?, ?, ?, 'project.deleted', 'project', ?, 'succeeded', '{"mode":"soft"}', ?, ?)`,
+		auditID, scope.OrganizationID, projectID, scope.UserID,
+		projectID, correlationID, formatTime(time.Now()),
+	); err != nil {
+		return fmt.Errorf("write project deletion audit: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		SET status = 'deleted', updated_at = ?
+		WHERE id = ? AND organization_id = ? AND owner_user_id = ? AND status = 'active'`,
+		formatTime(time.Now()),
+		projectID, scope.OrganizationID, scope.UserID,
+	)
+	if err != nil {
+		return fmt.Errorf("soft-delete project: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if removed != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 func (s *Store) AddProjectMember(ctx context.Context, scope core.Scope, projectID string, input core.AddProjectMemberInput, correlationID string, idempotency core.Idempotency) (core.ProjectMember, error) {
@@ -11250,8 +11341,15 @@ func projectContinuationHistoryV2(history []map[string]any, tokenBudget int) ([]
 			delete(item, "reasoning_content")
 		}
 	}
+	// The newest exchange carries the current tool contract. bounded history
+	// and the budget selector below both preserve it even when the calculated
+	// budget is zero or the latest group itself exceeds the budget.
 	if tokenBudget <= 0 {
-		return boundedContinuationHistory(projected, 96*1024), nil, 0
+		projected = boundedContinuationHistory(projected, 96*1024)
+		if len(projected) == 0 {
+			projected = append(projected, history[len(history)-1])
+		}
+		return projected, nil, 0
 	}
 	type historyGroup struct {
 		id    string
@@ -11278,6 +11376,9 @@ func projectContinuationHistoryV2(history []map[string]any, tokenBudget int) ([]
 		}
 		used += cost
 		selectedFrom = index
+	}
+	if selectedFrom >= len(groups) {
+		selectedFrom = len(groups) - 1
 	}
 	if selectedFrom == 0 {
 		return projected, nil, 0

@@ -64,6 +64,7 @@ type Worker struct {
 	webAccess         WebAccess
 	mcpSecrets        application.ProviderSecretStore
 	mcpSessions       *mcpadapter.SessionBroker
+	webCallTimeout    time.Duration
 	mcpCallTimeout    time.Duration
 	modelCallTimeout  time.Duration
 	modelTurnTimeouts ModelTurnTimeouts
@@ -112,6 +113,13 @@ func (w *Worker) WithWebSearchExecutor(executor WebSearchExecutor) *Worker {
 
 func (w *Worker) WithWebAccess(access WebAccess) *Worker {
 	w.webAccess = access
+	return w
+}
+
+// WithWebCallTimeout bounds one built-in web search or fetch. The Step lease
+// protects ownership, but it is not a user-facing completion deadline.
+func (w *Worker) WithWebCallTimeout(timeout time.Duration) *Worker {
+	w.webCallTimeout = timeout
 	return w
 }
 
@@ -185,6 +193,7 @@ func NewWorker(id string, repository WorkerRepository, model ModelGateway, logge
 		logger:            logger,
 		lease:             90 * time.Second,
 		pollInterval:      250 * time.Millisecond,
+		webCallTimeout:    2 * time.Minute,
 		mcpCallTimeout:    10 * time.Minute,
 		modelCallTimeout:  2 * time.Minute,
 		modelTurnTimeouts: DefaultModelTurnTimeouts(),

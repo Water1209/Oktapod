@@ -33,6 +33,7 @@ const (
 )
 
 type WorkspaceFilePage struct {
+	Root       string
 	Items      []WorkspaceFile
 	NextCursor int
 	HasMore    bool
@@ -75,12 +76,19 @@ type bufferedWorkspaceFile struct {
 
 func (f *bufferedWorkspaceFile) Close() error { return f.closer.Close() }
 
-func (s *Service) ListWorkspaceFiles(ctx context.Context, projectID string, cursor, limit int) (WorkspaceFilePage, error) {
+func (s *Service) ListWorkspaceFiles(ctx context.Context, projectID, directory string, cursor, limit int) (WorkspaceFilePage, error) {
 	if s.workspaceReader == nil {
 		return WorkspaceFilePage{}, &core.ResourceConflictError{Resource: "workspace files", Reason: "workspace reader is unavailable"}
 	}
 	if _, err := s.repository.GetProject(ctx, s.ScopeFor(ctx), projectID); err != nil {
 		return WorkspaceFilePage{}, err
+	}
+	cleanDirectory := filepath.ToSlash(filepath.Clean(strings.TrimSpace(directory)))
+	if cleanDirectory == "." {
+		cleanDirectory = ""
+	}
+	if cleanDirectory == ".." || strings.HasPrefix(cleanDirectory, "../") || strings.HasPrefix(cleanDirectory, "/") || strings.Contains(cleanDirectory, "\\") {
+		return WorkspaceFilePage{}, &core.ValidationError{Field: "path", Message: "must name one project-relative directory"}
 	}
 	if cursor < 0 {
 		return WorkspaceFilePage{}, &core.ValidationError{Field: "cursor", Message: "must not be negative"}
@@ -93,7 +101,7 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, projectID string, curs
 	}
 	// The adapter scans the project root under its own path and symlink guard.
 	// Internal runtime files are filtered here so they never become public API.
-	execution := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{ID: "workspace-files", Name: core.ToolWorkspaceListFiles, Arguments: map[string]any{"path": "", "recursive": true, "cursor": float64(cursor), "limit": float64(limit)}})
+	execution := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{ID: "workspace-files", Name: core.ToolWorkspaceListFiles, Arguments: map[string]any{"path": cleanDirectory, "recursive": false, "cursor": float64(cursor), "limit": float64(limit)}})
 	if execution.Status != core.StatusSucceeded {
 		return WorkspaceFilePage{}, fmt.Errorf("list workspace files: %s", execution.ErrorCode)
 	}
@@ -127,6 +135,15 @@ func (s *Service) ListWorkspaceFiles(ctx context.Context, projectID string, curs
 	}
 	if !page.HasMore {
 		page.NextCursor = 0
+	}
+	if s.profile == core.ProfilePersonal {
+		lifecycle, ok := s.chatToolExec.(ProjectWorkspaceLifecycle)
+		if !ok {
+			return page, nil
+		}
+		if root, err := lifecycle.WorkspaceProjectRoot(projectID); err == nil {
+			page.Root = root
+		}
 	}
 	return page, nil
 }

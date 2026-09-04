@@ -81,6 +81,13 @@ type ProjectWorkspaceInitializer interface {
 	InitializeProject(ctx context.Context, projectID string) error
 }
 
+// ProjectWorkspaceLifecycle exposes the workspace directory contract needed by
+// the workspace file browser. It is separate from generic tool execution so
+// this path never depends on a model-generated command.
+type ProjectWorkspaceLifecycle interface {
+	WorkspaceProjectRoot(projectID string) (string, error)
+}
+
 type AdvisorReportFinalizer interface {
 	FinalizeAdvisorReport(ctx context.Context, scope core.Scope, reportID string, model core.ModelResult, modelErr error) (core.AdvisorReport, error)
 }

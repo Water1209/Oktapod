@@ -390,6 +390,23 @@ func (s *Service) UpdateProjectSettings(ctx context.Context, projectID string, i
 	if err != nil {
 		return core.Project{}, err
 	}
+	if input.Name != nil {
+		value := strings.TrimSpace(*input.Name)
+		if value == "" {
+			return core.Project{}, &core.ValidationError{Field: "name", Message: "is required"}
+		}
+		if len([]rune(value)) > 120 {
+			return core.Project{}, &core.ValidationError{Field: "name", Message: "must not exceed 120 characters"}
+		}
+		input.Name = &value
+	}
+	if input.Description != nil {
+		value := strings.TrimSpace(*input.Description)
+		if len([]rune(value)) > 2000 {
+			return core.Project{}, &core.ValidationError{Field: "description", Message: "must not exceed 2000 characters"}
+		}
+		input.Description = &value
+	}
 	if input.ModelProviderID != nil {
 		value := strings.TrimSpace(*input.ModelProviderID)
 		input.ModelProviderID = &value
@@ -444,6 +461,19 @@ func (s *Service) UpdateProjectSettings(ctx context.Context, projectID string, i
 		ProjectID string                          `json:"project_id"`
 		Input     core.UpdateProjectSettingsInput `json:"input"`
 	}{ProjectID: projectID, Input: input})})
+}
+
+// DeleteProject soft-deletes a project. Its workspace and history stay intact
+// while normal project queries treat it as unavailable.
+func (s *Service) DeleteProject(ctx context.Context, projectID, correlationID string) error {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return &core.ValidationError{Field: "project_id", Message: "is required"}
+	}
+	if err := s.authorize(ctx, "delete", "project", projectID); err != nil {
+		return err
+	}
+	return s.repository.DeleteProject(ctx, s.ScopeFor(ctx), projectID, correlationID)
 }
 
 func (s *Service) validateProjectModels(ctx context.Context, providerID *string, modelIDs ...string) error {

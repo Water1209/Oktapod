@@ -773,6 +773,7 @@ export interface WorkspaceFile {
 }
 
 export interface WorkspaceFilePage {
+  root?: string
   items: WorkspaceFile[]
   has_more: boolean
   next_cursor: number
@@ -1085,7 +1086,22 @@ export const api = {
       body: JSON.stringify(input),
     }),
   project: (projectId: string) => request<Project>(`/projects/${projectId}`),
-  workspaceFiles: (projectId: string, cursor = 0, limit = 200) => request<WorkspaceFilePage>(`/projects/${projectId}/workspace/files?cursor=${cursor}&limit=${limit}`),
+  updateProject: (projectId: string, input: { name?: string; description?: string; model_provider_id?: string; default_model?: string; fallback_model?: string; max_model_calls?: number; max_tokens?: number }) =>
+    request<Project>(`/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify(input),
+    }),
+  deleteProject: (projectId: string) =>
+    request<void>(`/projects/${projectId}`, {
+      method: 'DELETE',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+    }),
+  workspaceFiles: (projectId: string, path = '', cursor = 0, limit = 200) => {
+    const params = new URLSearchParams({ cursor: String(cursor), limit: String(limit) })
+    if (path) params.set('path', path)
+    return request<WorkspaceFilePage>(`/projects/${projectId}/workspace/files?${params.toString()}`)
+  },
   workspaceContentUrl: (projectId: string, path: string) => `/api/v1/projects/${projectId}/workspace/files/content?path=${encodeURIComponent(path)}`,
   captureWorkspaceArtifact: (projectId: string, input: { run_id: string; path: string; kind: 'deliverable' | 'evidence' }) =>
     request<Artifact>(`/projects/${projectId}/artifacts`, {

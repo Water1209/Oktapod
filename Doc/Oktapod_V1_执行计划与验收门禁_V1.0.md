@@ -1,7 +1,7 @@
 # Oktapod V1 执行计划与验收门禁
 
-> 版本：V1.7
-> 更新日期：2026-08-20
+> 版本：V1.8
+> 更新日期：2026-09-04
 > 架构基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`
 > 验收真源：`Oktapod_V1_验收状态与追踪矩阵.md`
 
@@ -56,7 +56,7 @@ V1 唯一交付目标：
 |---|---|---|---|
 | F1 | `PASS` | Work/Code 共用工具内核；新 Run 冻结 `scene`、`permission_mode`、Prompt Profile 和项目指令 Hash；历史 `scene_policy` 仍可恢复 | 不新增第三种场景 |
 | F2 | `PASS` | `ArtifactCapture` 统一 Workspace 写入与脚本产物登记；100 MiB、路径/symlink、MIME、Hash 和 PDF 签名校验；PDF 无 Artifact 不得成功；旧 Run 遗漏文件可在明确选择当前任务后保存为任务输出 | 不自动扫描或猜测历史产物归属 |
-| F3 | `PASS` | 文件页固定为“工作文件 / 项目资料 / 任务输出”，工作文件按五类生命周期归组，嵌套缓存/依赖/虚拟环境归入默认收起的临时辅助；Agent 多文件生成先规划路径，内部临时目录隐藏且不可 Capture；“保存到项目资料”仅表示项目内复用；Changes 仍只是 Git 差异；Personal Diagnostics 显示存储根 | 旧工作区不自动搬移；Team 不返回宿主绝对路径 |
+| F3 | `PASS` | 文件页固定为“工作文件 / 项目资料 / 任务输出”，工作文件按常规文件浏览器展示工作区绝对路径、目录进入、面包屑、状态、大小和修改时间；Agent 多文件生成先规划路径，内部临时目录隐藏且不可 Capture；“保存到项目资料”仅表示项目内复用；项目库支持编辑/重命名与软删除，删除后保留工作区和历史；Changes 仍只是 Git 差异；Personal Diagnostics 显示存储根 | 旧工作区不自动搬移；Team 不返回宿主绝对路径；软删除项目的恢复 UI 未进入 V1 |
 | F4 | `PASS` | Composer 多附件、上传进度/重试/移除、Run 附件快照、`asset_stage` 延迟物化与终态/24h 清理 | 更多 Office 格式深度验收进 V1.1 |
 | F5 | `PASS` | Reviewer 仅处理 L2 `Ask`；`reviewer-decision-v1`、脱敏输入、fail-closed 和 Diagnostics 可用性；未配置时 UI 禁用自动审查 | L3 和静态拒绝永不交给 Reviewer 放行 |
 | F6 | `PASS` | 每次用户发送先持久化可见消息，并冻结附件、Skill 与排队展示；后继任务绑定原消息 ID；同计划项审批聚合但逐项审计；预算扩展展示明确增量、收尾、不限额和终止语义 | 不把历史消息展示元数据反推回填到旧 Run |

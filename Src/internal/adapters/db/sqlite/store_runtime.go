@@ -682,6 +682,12 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 						}
 						if queueErr == nil && forceSynthesis {
 							queued, queueErr = s.queueWebSearchSynthesis(ctx, tx, q, step, run, now, correlationID)
+							if queueErr == nil && !queued {
+								var continuationStepID string
+								continuationStepID, queueErr = s.queueModelContinuation(ctx, tx, q, step, run, now, correlationID)
+								queued = continuationStepID != ""
+								queuedStepID = continuationStepID
+							}
 						} else if queueErr == nil {
 							var continuationStepID string
 							continuationStepID, queueErr = s.queueModelContinuation(ctx, tx, q, step, run, now, correlationID)

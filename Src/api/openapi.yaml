@@ -474,6 +474,13 @@ paths:
                 $ref: "#/components/schemas/Project"
         default:
           $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteProject
+      responses:
+        "204":
+          description: Project soft-deleted by an owner; workspace and history are retained
+        default:
+          $ref: "#/components/responses/Problem"
     patch:
       operationId: updateProjectSettings
       parameters:
@@ -1668,6 +1675,9 @@ paths:
     get:
       operationId: listWorkspaceFiles
       parameters:
+        - name: path
+          in: query
+          schema: { type: string, maxLength: 500, default: "" }
         - name: cursor
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
@@ -3111,6 +3121,8 @@ components:
       type: object
       additionalProperties: false
       properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
         model_provider_id: { type: string, maxLength: 255 }
         default_model: { type: string, maxLength: 200 }
         fallback_model: { type: string, maxLength: 200 }
@@ -3834,6 +3846,9 @@ components:
       required: [items, has_more, next_cursor]
       additionalProperties: false
       properties:
+        root:
+          type: string
+          description: Absolute filesystem path of the project workspace directory
         items:
           type: array
           items: { $ref: "#/components/schemas/WorkspaceFile" }
