@@ -1,5 +1,9 @@
 const sandboxPolicy = [
   "default-src 'none'",
+  // HTML deliverables are commonly single-file apps with inline scripts.
+  // The iframe still uses an opaque sandbox origin, so these scripts cannot
+  // reach the host document, cookies, or same-origin application APIs.
+  "script-src 'unsafe-inline'",
   "img-src data: blob:",
   "media-src data: blob:",
   "style-src 'unsafe-inline'",

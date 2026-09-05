@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { buildSandboxedHTML } from './html-preview'
 
 describe('buildSandboxedHTML', () => {
-  it('injects the restrictive policy before document scripts', () => {
-    const rendered = buildSandboxedHTML('<html><head><script>window.bad = true</script></head><body>Preview</body></html>')
+	it('injects an isolated policy that permits inline app scripts', () => {
+		const rendered = buildSandboxedHTML('<html><head><script>window.bad = true</script></head><body>Preview</body></html>')
 
-    expect(rendered).toContain("default-src 'none'")
-    expect(rendered).toContain("form-action 'none'")
+		expect(rendered).toContain("default-src 'none'")
+		expect(rendered).toContain("script-src 'unsafe-inline'")
+		expect(rendered).toContain("form-action 'none'")
     expect(rendered.indexOf('Content-Security-Policy')).toBeLessThan(rendered.indexOf('<script>'))
   })
 

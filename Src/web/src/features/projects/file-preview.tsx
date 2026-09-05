@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Download, ExternalLink, Eye, FileCode2, FileSpreadsheet, FileText, LoaderCircle, Presentation, TriangleAlert } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../../shared/api/client'
 import { filePreviewKind, type FilePreviewKind } from './file-preview-kind'
-import { buildSandboxedHTML } from './html-preview'
 
 export type FilePreviewTarget = {
   projectId: string
@@ -46,7 +45,6 @@ export function FilePreview({ onBack, target }: { onBack: () => void; target: Fi
 
   const externalUrl = target.previewUrl
   const error = text.error || documentPreview.error
-  const sandboxedHTML = useMemo(() => kind === 'html' && text.data !== undefined ? buildSandboxedHTML(text.data) : '', [kind, text.data])
   return <section className="inspector-file-preview" aria-label={`预览 ${target.name}`}>
     <header>
       <button className="file-preview-back" type="button" onClick={onBack}><ArrowLeft size={15} />返回文件</button>
@@ -63,7 +61,7 @@ export function FilePreview({ onBack, target }: { onBack: () => void; target: Fi
     <div className={`file-preview-body ${kind}`}>
       {kind === 'markdown' && textMode === 'preview' && text.data !== undefined ? <article className="file-preview-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a> }}>{text.data}</ReactMarkdown></article> : null}
       {kind === 'markdown' && textMode === 'source' && text.data !== undefined ? <CodePreview content={text.data} label="Markdown 原文" /> : null}
-      {kind === 'html' && textMode === 'preview' && text.data !== undefined ? <iframe sandbox="" referrerPolicy="no-referrer" srcDoc={sandboxedHTML} title={`HTML 预览：${target.name}`} /> : null}
+      {kind === 'html' && textMode === 'preview' && text.data !== undefined ? <iframe sandbox="allow-scripts" referrerPolicy="no-referrer" src={target.previewUrl} title={`HTML 预览：${target.name}`} /> : null}
       {kind === 'html' && textMode === 'source' && text.data !== undefined ? <CodePreview content={text.data} label="HTML 源码" /> : null}
       {kind === 'code' && text.data !== undefined ? <CodePreview content={text.data} /> : null}
       {kind === 'pdf' ? <iframe src={target.previewUrl} title={`PDF 预览：${target.name}`} /> : null}

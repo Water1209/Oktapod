@@ -190,7 +190,9 @@ func writeInlinePreview(w http.ResponseWriter, content io.ReadCloser, name, medi
 	} else {
 		previewType = "application/octet-stream"
 	}
-	if previewType == "application/pdf" {
+	if isHTMLPreviewContent(name, previewType) {
+		allowHTMLPreviewContent(w)
+	} else if previewType == "application/pdf" {
 		allowSameOriginPreviewFrame(w)
 	}
 	w.Header().Set("Content-Type", previewType)
@@ -2975,7 +2977,9 @@ func (response workspaceFileContentResponse) VisitDownloadWorkspaceFileContentRe
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
-	if mediaType == "application/pdf" {
+	if isHTMLPreviewContent(response.path, mediaType) {
+		allowHTMLPreviewContent(w)
+	} else if mediaType == "application/pdf" {
 		allowSameOriginPreviewFrame(w)
 	}
 	w.Header().Set("Content-Type", mediaType)
@@ -4358,6 +4362,21 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 func allowSameOriginPreviewFrame(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'self'; base-uri 'none'")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+}
+
+// HTML files are user-authored deliverables and are often single-file apps
+// with inline scripts. Keep the preview isolated from Oktapod while allowing
+// that local interaction to work: no network, forms, child frames, objects,
+// or host-origin access are permitted by this policy. The UI's iframe adds a
+// sandbox without allow-same-origin, so the document runs under an opaque
+// origin even when opened from the file endpoint.
+func allowHTMLPreviewContent(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+}
+
+func isHTMLPreviewContent(name, mediaType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mediaType)), "text/html") || strings.EqualFold(filepath.Ext(strings.TrimSpace(name)), ".html") || strings.EqualFold(filepath.Ext(strings.TrimSpace(name)), ".htm")
 }
 
 func (s *Server) logMiddleware(next http.Handler) http.Handler {
