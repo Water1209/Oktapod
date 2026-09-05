@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,8 @@ const (
 	parseProfileVersion = "document-extraction-v1:ocr-auto:chi_sim+eng"
 	cacheMaxBytes       = int64(1 << 30)
 	cacheMaxAge         = 30 * 24 * time.Hour
+	filePreviewTTL      = 20 * time.Minute
+	filePreviewMax      = 256
 )
 
 type Executor struct {
@@ -34,13 +37,23 @@ type Executor struct {
 	sources   application.DocumentSourceRepository
 	workspace application.DocumentWorkspace
 	capture   application.ArtifactCapture
+	previewMu sync.Mutex
+	previews  map[string]filePreviewGrant
+}
+
+type filePreviewGrant struct {
+	scope       core.Scope
+	name        string
+	format      string
+	expiresAt   time.Time
+	pageHandles map[string]string
 }
 
 func NewExecutor(client *Client, state application.DocumentStateRepository, sources application.DocumentSourceRepository, workspace application.DocumentWorkspace, capture application.ArtifactCapture) (*Executor, error) {
 	if client == nil || state == nil || sources == nil || workspace == nil || capture == nil {
 		return nil, fmt.Errorf("document runtime client, state, sources, workspace, and capture are required")
 	}
-	executor := &Executor{client: client, state: state, sources: sources, workspace: workspace, capture: capture}
+	executor := &Executor{client: client, state: state, sources: sources, workspace: workspace, capture: capture, previews: make(map[string]filePreviewGrant)}
 	_ = executor.pruneCache(time.Now().UTC())
 	return executor, nil
 }
@@ -341,6 +354,14 @@ func (e *Executor) render(ctx context.Context, run core.RunContext, call core.To
 		}
 	}
 	if !cacheHit {
+		// Runtime v1.0.0 used a fixed LibreOffice profile under the render
+		// directory. Remove a profile left by an interrupted conversion before
+		// invoking that signed runtime; newer packages use a unique profile.
+		if profilePath, pathErr := e.client.HandlePath(filepath.ToSlash(filepath.Join(outputDirHandle, "lo-profile"))); pathErr == nil {
+			if removeErr := os.RemoveAll(profilePath); removeErr != nil {
+				return nil, removeErr
+			}
+		}
 		if err := e.call(ctx, "render", map[string]any{"input_handle": session.WorkingHandle, "output_dir_handle": outputDirHandle, "format": session.Format, "selector": selector}, &rendered); err != nil {
 			return nil, err
 		}
@@ -475,6 +496,219 @@ func (e *Executor) OpenPreview(ctx context.Context, scope core.Scope, runID, doc
 		return application.DocumentPreview{}, err
 	}
 	return application.DocumentPreview{Name: previewName, MediaType: "image/png", SizeBytes: info.Size(), ContentHash: contentHash, Content: content}, nil
+}
+
+func (e *Executor) CreateFilePreview(ctx context.Context, scope core.Scope, request application.FilePreviewSource) (application.FilePreviewSession, error) {
+	source, verify, err := e.authorizeFilePreviewSource(ctx, scope, request)
+	if err != nil {
+		return application.FilePreviewSession{}, err
+	}
+	defer source.reader.Close()
+
+	inputHandle := filepath.ToSlash(filepath.Join("cache", "file-preview-inputs", uuid.NewString()+"."+source.format))
+	contentHash, _, err := e.materialize(inputHandle, source.reader, source.sizeBytes)
+	if err != nil {
+		return application.FilePreviewSession{}, err
+	}
+	if inputPath, pathErr := e.client.HandlePath(inputHandle); pathErr == nil {
+		defer os.Remove(inputPath)
+	}
+	if source.hash != "" && source.hash != contentHash {
+		return application.FilePreviewSession{}, fmt.Errorf("DOCUMENT_SOURCE_HASH_MISMATCH: authorized source bytes changed while previewing")
+	}
+	if verify != nil {
+		if err := verify(contentHash); err != nil {
+			return application.FilePreviewSession{}, fmt.Errorf("DOCUMENT_SOURCE_HASH_MISMATCH: %w", err)
+		}
+	}
+	profileHash := hashStrings(parseProfileVersion, "structure")
+	parsed, _, err := e.parse(ctx, scope.OrganizationID, inputHandle, source.format, "structure", contentHash, profileHash)
+	if err != nil {
+		return application.FilePreviewSession{}, err
+	}
+
+	// Keep the render path comfortably below legacy Windows MAX_PATH because
+	// LibreOffice creates a deeply nested profile beneath this directory. The
+	// cache key still contains 160 bits and includes the complete organization
+	// identity and content hash; the organization prefix is only for grouping.
+	organizationKey := strings.TrimPrefix(hashStrings(scope.OrganizationID), "sha256:")[:12]
+	cacheKey := strings.TrimPrefix(hashStrings("file-preview", scope.OrganizationID, contentHash, e.client.Version(), "scale:1.25"), "sha256:")[:40]
+	outputDirHandle := filepath.ToSlash(filepath.Join("cache", "file-previews", organizationKey, cacheKey))
+	manifestHandle := filepath.ToSlash(filepath.Join(outputDirHandle, "manifest.json"))
+	var rendered runtimeRenderResult
+	cacheHit := false
+	if manifestPath, pathErr := e.client.HandlePath(manifestHandle); pathErr == nil {
+		if body, readErr := os.ReadFile(manifestPath); readErr == nil && json.Unmarshal(body, &rendered) == nil && e.validRenderManifest(rendered.Manifest) {
+			cacheHit = true
+		}
+	}
+	if !cacheHit {
+		// Keep compatibility with the signed v1.0.0 runtime, whose fixed
+		// LibreOffice profile can be left unusable after an interrupted render.
+		if profilePath, pathErr := e.client.HandlePath(filepath.ToSlash(filepath.Join(outputDirHandle, "lo-profile"))); pathErr == nil {
+			if removeErr := os.RemoveAll(profilePath); removeErr != nil {
+				return application.FilePreviewSession{}, removeErr
+			}
+		}
+		if err := e.call(ctx, "render", map[string]any{"input_handle": inputHandle, "output_dir_handle": outputDirHandle, "format": source.format, "selector": ""}, &rendered); err != nil {
+			return application.FilePreviewSession{}, err
+		}
+		if !e.validRenderManifest(rendered.Manifest) {
+			return application.FilePreviewSession{}, fmt.Errorf("RENDER_VALIDATION_FAILED: renderer did not produce validated previews")
+		}
+		if err := e.writeCacheJSON(manifestHandle, rendered); err != nil {
+			return application.FilePreviewSession{}, err
+		}
+	}
+	rendered.Warnings = append(parsed.Warnings, rendered.Warnings...)
+
+	previewID := uuid.NewString()
+	expiresAt := time.Now().UTC().Add(filePreviewTTL)
+	pageNames := make([]string, 0, len(rendered.Manifest.Previews))
+	pageHandles := make(map[string]string, len(rendered.Manifest.Previews))
+	for _, handle := range rendered.Manifest.Previews {
+		name := filepath.Base(handle)
+		pageNames = append(pageNames, name)
+		pageHandles[name] = handle
+	}
+	e.previewMu.Lock()
+	e.pruneFilePreviewGrantsLocked(time.Now().UTC())
+	e.previews[previewID] = filePreviewGrant{scope: scope, name: source.name, format: source.format, expiresAt: expiresAt, pageHandles: pageHandles}
+	e.previewMu.Unlock()
+	return application.FilePreviewSession{ID: previewID, Name: source.name, Format: source.format, PageNames: pageNames, Warnings: rendered.Warnings, ExpiresAt: expiresAt}, nil
+}
+
+func (e *Executor) OpenFilePreview(_ context.Context, scope core.Scope, previewID, previewName string) (application.DocumentPreview, error) {
+	if _, err := uuid.Parse(previewID); err != nil {
+		return application.DocumentPreview{}, fmt.Errorf("FILE_PREVIEW_REF_INVALID: preview_id is not valid")
+	}
+	previewName = filepath.Base(strings.TrimSpace(previewName))
+	if previewName == "." || previewName == "" || !strings.HasSuffix(strings.ToLower(previewName), ".png") {
+		return application.DocumentPreview{}, fmt.Errorf("FILE_PREVIEW_REF_INVALID: preview name is not valid")
+	}
+	now := time.Now().UTC()
+	e.previewMu.Lock()
+	e.pruneFilePreviewGrantsLocked(now)
+	grant, ok := e.previews[previewID]
+	e.previewMu.Unlock()
+	if !ok || grant.scope != scope || !grant.expiresAt.After(now) {
+		return application.DocumentPreview{}, sql.ErrNoRows
+	}
+	handle := grant.pageHandles[previewName]
+	if handle == "" {
+		return application.DocumentPreview{}, sql.ErrNoRows
+	}
+	path, err := e.client.HandlePath(handle)
+	if err != nil {
+		return application.DocumentPreview{}, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return application.DocumentPreview{}, fmt.Errorf("FILE_PREVIEW_INVALID: preview is not a regular runtime output")
+	}
+	contentHash, err := hashFile(path)
+	if err != nil {
+		return application.DocumentPreview{}, err
+	}
+	content, err := os.Open(path)
+	if err != nil {
+		return application.DocumentPreview{}, err
+	}
+	return application.DocumentPreview{Name: previewName, MediaType: "image/png", SizeBytes: info.Size(), ContentHash: contentHash, Content: content}, nil
+}
+
+func (e *Executor) authorizeFilePreviewSource(ctx context.Context, scope core.Scope, request application.FilePreviewSource) (authorizedSource, func(string) error, error) {
+	switch request.Kind {
+	case "asset":
+		if _, err := uuid.Parse(request.Reference); err != nil {
+			return authorizedSource{}, nil, fmt.Errorf("FILE_PREVIEW_SOURCE_INVALID: asset reference is not valid")
+		}
+		asset, content, err := e.sources.OpenAssetContent(ctx, scope, request.Reference)
+		if err != nil {
+			return authorizedSource{}, nil, err
+		}
+		if asset.ProjectID != request.ProjectID {
+			_ = content.Close()
+			return authorizedSource{}, nil, sql.ErrNoRows
+		}
+		format, err := documentFormat(asset.Name, asset.MediaType)
+		if err != nil {
+			_ = content.Close()
+			return authorizedSource{}, nil, err
+		}
+		return authorizedSource{name: asset.Name, format: format, hash: asset.ContentHash, sizeBytes: asset.SizeBytes, reader: content}, nil, nil
+	case "artifact":
+		if _, err := uuid.Parse(request.Reference); err != nil {
+			return authorizedSource{}, nil, fmt.Errorf("FILE_PREVIEW_SOURCE_INVALID: artifact reference is not valid")
+		}
+		artifact, content, err := e.sources.OpenArtifactContent(ctx, scope, request.Reference)
+		if err != nil {
+			return authorizedSource{}, nil, err
+		}
+		if artifact.ProjectID != request.ProjectID {
+			_ = content.Close()
+			return authorizedSource{}, nil, sql.ErrNoRows
+		}
+		format, err := documentFormat(artifact.Name, artifact.MediaType)
+		if err != nil {
+			_ = content.Close()
+			return authorizedSource{}, nil, err
+		}
+		return authorizedSource{name: artifact.Name, format: format, hash: artifact.ContentHash, sizeBytes: artifact.SizeBytes, reader: content}, nil, nil
+	case "workspace":
+		file, err := e.workspace.OpenCaptureFile(ctx, request.ProjectID, request.Reference, application.MaxArtifactCaptureBytes)
+		if err != nil {
+			return authorizedSource{}, nil, err
+		}
+		format, err := documentFormat(file.RelativePath(), "")
+		if err != nil {
+			_ = file.Close()
+			return authorizedSource{}, nil, err
+		}
+		return authorizedSource{name: filepath.Base(file.RelativePath()), format: format, sizeBytes: file.SizeBytes(), reader: file}, file.VerifyUnchanged, nil
+	default:
+		return authorizedSource{}, nil, fmt.Errorf("FILE_PREVIEW_SOURCE_INVALID: source kind is not supported")
+	}
+}
+
+func (e *Executor) validRenderManifest(manifest runtimeRenderManifest) bool {
+	if !manifest.Validated || manifest.PageCount < 1 || manifest.PageCount != len(manifest.Previews) {
+		return false
+	}
+	for _, handle := range manifest.Previews {
+		path, err := e.client.HandlePath(handle)
+		if err != nil {
+			return false
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Executor) pruneFilePreviewGrantsLocked(now time.Time) {
+	for id, grant := range e.previews {
+		if !grant.expiresAt.After(now) {
+			delete(e.previews, id)
+		}
+	}
+	if len(e.previews) < filePreviewMax {
+		return
+	}
+	type expiringGrant struct {
+		id string
+		at time.Time
+	}
+	grants := make([]expiringGrant, 0, len(e.previews))
+	for id, grant := range e.previews {
+		grants = append(grants, expiringGrant{id: id, at: grant.expiresAt})
+	}
+	sort.Slice(grants, func(i, j int) bool { return grants[i].at.Before(grants[j].at) })
+	for index := 0; len(e.previews) >= filePreviewMax && index < len(grants); index++ {
+		delete(e.previews, grants[index].id)
+	}
 }
 
 type runtimeOpenResult struct {
@@ -801,3 +1035,4 @@ func documentErrorRetryable(err error) bool {
 
 var _ application.DocumentExecutor = (*Executor)(nil)
 var _ application.DocumentPreviewOpener = (*Executor)(nil)
+var _ application.FilePreviewer = (*Executor)(nil)

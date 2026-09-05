@@ -440,6 +440,21 @@ const (
 	DiagnosticsStatusOk        DiagnosticsStatus = "ok"
 )
 
+// Defines values for FilePreviewRequestSourceKind.
+const (
+	FilePreviewRequestSourceKindArtifact  FilePreviewRequestSourceKind = "artifact"
+	FilePreviewRequestSourceKindAsset     FilePreviewRequestSourceKind = "asset"
+	FilePreviewRequestSourceKindWorkspace FilePreviewRequestSourceKind = "workspace"
+)
+
+// Defines values for FilePreviewSessionFormat.
+const (
+	Docx FilePreviewSessionFormat = "docx"
+	Pdf  FilePreviewSessionFormat = "pdf"
+	Pptx FilePreviewSessionFormat = "pptx"
+	Xlsx FilePreviewSessionFormat = "xlsx"
+)
+
 // Defines values for HealthProfile.
 const (
 	HealthProfilePersonal HealthProfile = "personal"
@@ -1972,6 +1987,29 @@ type Diagnostics struct {
 
 // DiagnosticsStatus defines model for Diagnostics.Status.
 type DiagnosticsStatus string
+
+// FilePreviewRequest defines model for FilePreviewRequest.
+type FilePreviewRequest struct {
+	Reference  string                       `json:"reference"`
+	SourceKind FilePreviewRequestSourceKind `json:"source_kind"`
+}
+
+// FilePreviewRequestSourceKind defines model for FilePreviewRequest.SourceKind.
+type FilePreviewRequestSourceKind string
+
+// FilePreviewSession defines model for FilePreviewSession.
+type FilePreviewSession struct {
+	ExpiresAt time.Time                `json:"expires_at"`
+	Format    FilePreviewSessionFormat `json:"format"`
+	Id        openapi_types.UUID       `json:"id"`
+	Name      string                   `json:"name"`
+	PageCount int                      `json:"page_count"`
+	Pages     []string                 `json:"pages"`
+	Warnings  []string                 `json:"warnings"`
+}
+
+// FilePreviewSessionFormat defines model for FilePreviewSession.Format.
+type FilePreviewSessionFormat string
 
 // ForkSessionRequest defines model for ForkSessionRequest.
 type ForkSessionRequest struct {
@@ -3745,6 +3783,9 @@ type UploadProjectAssetMultipartRequestBody = UploadAssetRequest
 // CreateCapabilityJSONRequestBody defines body for CreateCapability for application/json ContentType.
 type CreateCapabilityJSONRequestBody = CreateCapabilityRequest
 
+// CreateFilePreviewJSONRequestBody defines body for CreateFilePreview for application/json ContentType.
+type CreateFilePreviewJSONRequestBody = FilePreviewRequest
+
 // CreateProjectInvitationJSONRequestBody defines body for CreateProjectInvitation for application/json ContentType.
 type CreateProjectInvitationJSONRequestBody = CreateProjectInvitationRequest
 
@@ -3999,6 +4040,9 @@ type ServerInterface interface {
 	// (GET /diagnostics)
 	GetDiagnostics(w http.ResponseWriter, r *http.Request)
 
+	// (GET /file-previews/{preview_id}/pages/{page_name})
+	OpenFilePreviewPage(w http.ResponseWriter, r *http.Request, previewId openapi_types.UUID, pageName string)
+
 	// (GET /health)
 	Health(w http.ResponseWriter, r *http.Request)
 
@@ -4097,6 +4141,9 @@ type ServerInterface interface {
 
 	// (GET /projects/{project_id}/conversations)
 	ListProjectConversations(w http.ResponseWriter, r *http.Request, projectId ProjectId)
+
+	// (POST /projects/{project_id}/file-previews)
+	CreateFilePreview(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 
 	// (GET /projects/{project_id}/invitations)
 	ListProjectInvitations(w http.ResponseWriter, r *http.Request, projectId ProjectId)
@@ -4479,6 +4526,11 @@ func (_ Unimplemented) GetDiagnostics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (GET /file-previews/{preview_id}/pages/{page_name})
+func (_ Unimplemented) OpenFilePreviewPage(w http.ResponseWriter, r *http.Request, previewId openapi_types.UUID, pageName string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (GET /health)
 func (_ Unimplemented) Health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -4641,6 +4693,11 @@ func (_ Unimplemented) CreateCapability(w http.ResponseWriter, r *http.Request, 
 
 // (GET /projects/{project_id}/conversations)
 func (_ Unimplemented) ListProjectConversations(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /projects/{project_id}/file-previews)
+func (_ Unimplemented) CreateFilePreview(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6082,6 +6139,40 @@ func (siw *ServerInterfaceWrapper) GetDiagnostics(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// OpenFilePreviewPage operation middleware
+func (siw *ServerInterfaceWrapper) OpenFilePreviewPage(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "preview_id" -------------
+	var previewId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "preview_id", chi.URLParam(r, "preview_id"), &previewId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "preview_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "page_name" -------------
+	var pageName string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "page_name", chi.URLParam(r, "page_name"), &pageName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "page_name", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OpenFilePreviewPage(w, r, previewId, pageName)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // Health operation middleware
 func (siw *ServerInterfaceWrapper) Health(w http.ResponseWriter, r *http.Request) {
 
@@ -7307,6 +7398,31 @@ func (siw *ServerInterfaceWrapper) ListProjectConversations(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListProjectConversations(w, r, projectId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateFilePreview operation middleware
+func (siw *ServerInterfaceWrapper) CreateFilePreview(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateFilePreview(w, r, projectId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9454,6 +9570,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/diagnostics", wrapper.GetDiagnostics)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/file-previews/{preview_id}/pages/{page_name}", wrapper.OpenFilePreviewPage)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/health", wrapper.Health)
 	})
 	r.Group(func(r chi.Router) {
@@ -9551,6 +9670,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/projects/{project_id}/conversations", wrapper.ListProjectConversations)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/projects/{project_id}/file-previews", wrapper.CreateFilePreview)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/projects/{project_id}/invitations", wrapper.ListProjectInvitations)
@@ -10898,6 +11020,54 @@ func (response GetDiagnosticsdefaultApplicationProblemPlusJSONResponse) VisitGet
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type OpenFilePreviewPageRequestObject struct {
+	PreviewId openapi_types.UUID `json:"preview_id"`
+	PageName  string             `json:"page_name"`
+}
+
+type OpenFilePreviewPageResponseObject interface {
+	VisitOpenFilePreviewPageResponse(w http.ResponseWriter) error
+}
+
+type OpenFilePreviewPage200ResponseHeaders struct {
+	ContentLength  int64
+	XContentSHA256 string
+}
+
+type OpenFilePreviewPage200ImagepngResponse struct {
+	Body          io.Reader
+	Headers       OpenFilePreviewPage200ResponseHeaders
+	ContentLength int64
+}
+
+func (response OpenFilePreviewPage200ImagepngResponse) VisitOpenFilePreviewPageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "image/png")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.Header().Set("Content-Length", fmt.Sprint(response.Headers.ContentLength))
+	w.Header().Set("X-Content-SHA256", fmt.Sprint(response.Headers.XContentSHA256))
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type OpenFilePreviewPagedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response OpenFilePreviewPagedefaultApplicationProblemPlusJSONResponse) VisitOpenFilePreviewPageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type HealthRequestObject struct {
 }
 
@@ -11877,6 +12047,36 @@ type ListProjectConversationsdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListProjectConversationsdefaultApplicationProblemPlusJSONResponse) VisitListProjectConversationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateFilePreviewRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Body      *CreateFilePreviewJSONRequestBody
+}
+
+type CreateFilePreviewResponseObject interface {
+	VisitCreateFilePreviewResponse(w http.ResponseWriter) error
+}
+
+type CreateFilePreview201JSONResponse FilePreviewSession
+
+func (response CreateFilePreview201JSONResponse) VisitCreateFilePreviewResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateFilePreviewdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CreateFilePreviewdefaultApplicationProblemPlusJSONResponse) VisitCreateFilePreviewResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -13873,6 +14073,9 @@ type StrictServerInterface interface {
 	// (GET /diagnostics)
 	GetDiagnostics(ctx context.Context, request GetDiagnosticsRequestObject) (GetDiagnosticsResponseObject, error)
 
+	// (GET /file-previews/{preview_id}/pages/{page_name})
+	OpenFilePreviewPage(ctx context.Context, request OpenFilePreviewPageRequestObject) (OpenFilePreviewPageResponseObject, error)
+
 	// (GET /health)
 	Health(ctx context.Context, request HealthRequestObject) (HealthResponseObject, error)
 
@@ -13971,6 +14174,9 @@ type StrictServerInterface interface {
 
 	// (GET /projects/{project_id}/conversations)
 	ListProjectConversations(ctx context.Context, request ListProjectConversationsRequestObject) (ListProjectConversationsResponseObject, error)
+
+	// (POST /projects/{project_id}/file-previews)
+	CreateFilePreview(ctx context.Context, request CreateFilePreviewRequestObject) (CreateFilePreviewResponseObject, error)
 
 	// (GET /projects/{project_id}/invitations)
 	ListProjectInvitations(ctx context.Context, request ListProjectInvitationsRequestObject) (ListProjectInvitationsResponseObject, error)
@@ -15273,6 +15479,33 @@ func (sh *strictHandler) GetDiagnostics(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// OpenFilePreviewPage operation middleware
+func (sh *strictHandler) OpenFilePreviewPage(w http.ResponseWriter, r *http.Request, previewId openapi_types.UUID, pageName string) {
+	var request OpenFilePreviewPageRequestObject
+
+	request.PreviewId = previewId
+	request.PageName = pageName
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OpenFilePreviewPage(ctx, request.(OpenFilePreviewPageRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OpenFilePreviewPage")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OpenFilePreviewPageResponseObject); ok {
+		if err := validResponse.VisitOpenFilePreviewPageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Health operation middleware
 func (sh *strictHandler) Health(w http.ResponseWriter, r *http.Request) {
 	var request HealthRequestObject
@@ -16219,6 +16452,39 @@ func (sh *strictHandler) ListProjectConversations(w http.ResponseWriter, r *http
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListProjectConversationsResponseObject); ok {
 		if err := validResponse.VisitListProjectConversationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateFilePreview operation middleware
+func (sh *strictHandler) CreateFilePreview(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+	var request CreateFilePreviewRequestObject
+
+	request.ProjectId = projectId
+
+	var body CreateFilePreviewJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateFilePreview(ctx, request.(CreateFilePreviewRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateFilePreview")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateFilePreviewResponseObject); ok {
+		if err := validResponse.VisitCreateFilePreviewResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

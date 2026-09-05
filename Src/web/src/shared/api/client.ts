@@ -779,6 +779,16 @@ export interface WorkspaceFilePage {
   next_cursor: number
 }
 
+export interface FilePreviewSession {
+  id: string
+  name: string
+  format: 'docx' | 'xlsx' | 'pptx' | 'pdf'
+  page_count: number
+  pages: string[]
+  warnings: string[]
+  expires_at: string
+}
+
 export interface MCPDefinitionV1 {
   schema_version: 'oktapod.mcp/v1'
   source: { type: 'official' | 'registry' | 'npm' | 'pypi' | 'url' | 'local' | 'manual'; reference?: string; version?: string; publisher?: string }
@@ -1103,6 +1113,8 @@ export const api = {
     return request<WorkspaceFilePage>(`/projects/${projectId}/workspace/files?${params.toString()}`)
   },
   workspaceContentUrl: (projectId: string, path: string) => `/api/v1/projects/${projectId}/workspace/files/content?path=${encodeURIComponent(path)}`,
+  createFilePreview: (projectId: string, input: { source_kind: 'workspace' | 'asset' | 'artifact'; reference: string }) =>
+    request<FilePreviewSession>(`/projects/${projectId}/file-previews`, { method: 'POST', body: JSON.stringify(input) }),
   captureWorkspaceArtifact: (projectId: string, input: { run_id: string; path: string; kind: 'deliverable' | 'evidence' }) =>
     request<Artifact>(`/projects/${projectId}/artifacts`, {
       method: 'POST',
@@ -1295,6 +1307,15 @@ export const api = {
     const response = await fetch(`/api/v1/artifacts/${artifactId}/preview`, { credentials: 'same-origin' })
     if (!response.ok) throw new Error(`Failed to load artifact: ${response.status}`)
     return response.text()
+  },
+  fetchPreviewText: async (url: string, maxBytes = 2 * 1024 * 1024): Promise<string> => {
+    const response = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'text/plain, text/markdown, application/json' } })
+    if (!response.ok) throw new Error(`文件读取失败：HTTP ${response.status}`)
+    const contentLength = Number(response.headers.get('Content-Length') || 0)
+    if (contentLength > maxBytes) throw new Error(`文件超过 ${Math.round(maxBytes / 1024 / 1024)} MB，暂不在面板内加载。`)
+    const content = await response.text()
+    if (new Blob([content]).size > maxBytes) throw new Error(`文件超过 ${Math.round(maxBytes / 1024 / 1024)} MB，暂不在面板内加载。`)
+    return content
   },
   saveArtifactAsProjectFile: (artifactId: string, input: { name: string; parent_id?: string; visibility: Visibility }) =>
     request<Asset>(`/artifacts/${artifactId}/project-files`, {

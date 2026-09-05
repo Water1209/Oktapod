@@ -88,15 +88,16 @@ export function resourceProfile(item: ResourceItem, toolsJSON = ''): ResourcePro
 
   const manifest = parseResourceManifest(item.manifest_json)
   const discoveredTools = parseMCPTools(toolsJSON)
-  const declaredSummary = conciseText(item.description || stringValue(manifest.description) || '', 220)
+  const rawDeclaredSummary = conciseText(item.description || stringValue(manifest.description) || '', 220)
+  const declaredSummary = containsChinese(rawDeclaredSummary) ? rawDeclaredSummary : ''
   const summary = declaredSummary || inferredResourceSummary(item, discoveredTools)
   const declaredCapabilities = uniqueStrings(stringList(manifest.capabilities))
   let abilities: ResourceAbility[] = []
   if (item.kind === 'mcp') {
     abilities = discoveredTools.slice(0, 12).map((tool) => ({
-      title: tool.title || humanizeToolName(tool.name),
+      title: containsChinese(tool.title) ? tool.title : humanizeToolName(tool.name),
       technicalName: tool.name,
-      detail: conciseText(tool.description || '由 MCP Server 在连接握手时声明的可调用工具。', 180),
+      detail: localizedToolDescription(tool.name, tool.description),
     }))
   } else if (item.kind === 'skill') {
     abilities = skillInstructionAbilities(stringValue(manifest.instructions))
@@ -158,6 +159,9 @@ function inferredResourceSummary(item: ResourceItem, tools: Array<{ name: string
   if (item.kind === 'mcp' && toolNames.some((name) => name.startsWith('browser_'))) {
     return '通过在线发现的 browser_* 工具控制真实浏览器，完成导航、内容读取、页面交互与测试诊断。'
   }
+  if (item.kind === 'mcp' && toolNames.some((name) => /(?:^|_)(?:search|extract|crawl|map|research)(?:_|$)/.test(name))) {
+    return '提供联网检索、网页内容提取、站点遍历与专题研究能力，并返回可引用的外部信息。'
+  }
   if (item.kind === 'mcp') return '把外部服务提供的实际工具接入当前项目，供 Agent 在任务中按需调用。'
   if (item.kind === 'skill') return '提供一套面向具体目标的专业工作方法，帮助 Agent 稳定完成相应任务。'
   if (item.kind === 'agent') return '以固定角色、模型策略和输出要求处理项目任务。'
@@ -172,7 +176,8 @@ function skillInstructionAbilities(instructions: string): ResourceAbility[] {
     const end = matches[index + 1]?.index ?? instructions.length
     const section = instructions.slice(start, end).trim()
     const detail = section.split(/\n\s*\n/).map(stripMarkdown).find(Boolean) || ''
-    return detail ? [{ title: conciseText((match[1] ?? '').trim(), 80), detail: conciseText(detail, 220) }] : []
+    const title = conciseText((match[1] ?? '').trim(), 80)
+    return detail && containsChinese(`${title}${detail}`) ? [{ title, detail: conciseText(detail, 220) }] : []
   })
 }
 
@@ -265,8 +270,30 @@ function humanizeToolName(value: string) {
     browser_navigate: '打开网页', browser_snapshot: '读取页面结构', browser_find: '查找页面内容', browser_click: '点击元素',
     browser_type: '输入文本', browser_fill_form: '填写表单', browser_evaluate: '读取或执行页面脚本', browser_take_screenshot: '页面截图',
     browser_console_messages: '控制台消息', browser_network_requests: '网络请求', browser_tabs: '标签页管理', browser_run_code_unsafe: '执行浏览器脚本（高风险）',
+    tavily_search: '联网搜索', tavily_extract: '网页内容提取', tavily_crawl: '网站遍历', tavily_map: '网站结构梳理', tavily_research: '专题研究',
   }
   return aliases[value] || value.replace(/^browser_/, '').split(/[_-]+/).filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(' ')
+}
+
+function localizedToolDescription(name: string, description: string) {
+  const declared = conciseText(description, 180)
+  if (containsChinese(declared)) return declared
+  const normalized = name.toLowerCase()
+  if (/(?:^|_)search(?:_|$)/.test(normalized)) return '搜索最新网页信息，返回结果摘要与可引用的来源链接。'
+  if (/(?:^|_)extract(?:_|$)/.test(normalized)) return '提取指定网页的正文内容，并以结构化文本返回。'
+  if (/(?:^|_)crawl(?:_|$)/.test(normalized)) return '从指定网址开始遍历站点页面，并按范围提取内容。'
+  if (/(?:^|_)map(?:_|$)/.test(normalized)) return '梳理网站结构，返回从起始网址发现的页面列表。'
+  if (/(?:^|_)research(?:_|$)/.test(normalized)) return '围绕指定主题开展多来源研究，并整理可核对的综合结果。'
+  if (/(?:^|_)navigate(?:_|$)/.test(normalized)) return '打开指定网页地址，并返回页面加载后的状态。'
+  if (/(?:^|_)(?:snapshot|content|read)(?:_|$)/.test(normalized)) return '读取当前页面的结构与内容，供后续判断和操作。'
+  if (/(?:^|_)click(?:_|$)/.test(normalized)) return '点击页面中的目标元素，并返回操作后的页面状态。'
+  if (/(?:^|_)(?:type|fill)(?:_|$)/.test(normalized)) return '在页面控件中输入内容，并返回操作结果。'
+  if (/(?:^|_)screenshot(?:_|$)/.test(normalized)) return '截取当前页面画面，作为检查与诊断证据。'
+  return `调用“${humanizeToolName(name)}”完成对应操作；具体输入和结果以服务端工具协议为准。`
+}
+
+function containsChinese(value: string) {
+  return /[\u3400-\u9fff]/.test(value)
 }
 
 function stringList(value: unknown) {

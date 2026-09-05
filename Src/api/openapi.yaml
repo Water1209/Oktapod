@@ -1715,6 +1715,49 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         default: { $ref: "#/components/responses/Problem" }
+  /projects/{project_id}/file-previews:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      operationId: createFilePreview
+      description: Create a short-lived, scope-bound preview for an authorized Office document without changing task or Run state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FilePreviewRequest" }
+      responses:
+        "201":
+          description: Short-lived file preview session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FilePreviewSession" }
+        default: { $ref: "#/components/responses/Problem" }
+  /file-previews/{preview_id}/pages/{page_name}:
+    get:
+      operationId: openFilePreviewPage
+      description: Open one rendered preview page. The current principal must match the short-lived preview grant.
+      parameters:
+        - name: preview_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: page_name
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      responses:
+        "200":
+          description: Rendered preview page
+          headers:
+            Content-Length:
+              schema: { type: integer, format: int64 }
+            X-Content-SHA256:
+              schema: { type: string }
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        default: { $ref: "#/components/responses/Problem" }
   /projects/{project_id}/artifacts:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -3854,6 +3897,29 @@ components:
           items: { $ref: "#/components/schemas/WorkspaceFile" }
         has_more: { type: boolean }
         next_cursor: { type: integer, minimum: 0 }
+    FilePreviewRequest:
+      type: object
+      required: [source_kind, reference]
+      additionalProperties: false
+      properties:
+        source_kind: { type: string, enum: [workspace, asset, artifact] }
+        reference: { type: string, minLength: 1, maxLength: 500 }
+    FilePreviewSession:
+      type: object
+      required: [id, name, format, page_count, pages, warnings, expires_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        format: { type: string, enum: [docx, xlsx, pptx, pdf] }
+        page_count: { type: integer, minimum: 1 }
+        pages:
+          type: array
+          items: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+        expires_at: { type: string, format: date-time }
     CreateAssetFolderRequest:
       type: object
       required: [name, visibility]

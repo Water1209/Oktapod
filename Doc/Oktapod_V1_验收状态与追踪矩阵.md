@@ -1,7 +1,7 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.24
-> 更新日期：2026-09-04
+> 版本：v1.28
+> 更新日期：2026-09-05
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
 
@@ -60,13 +60,13 @@
 | ID | 验收项 | 状态 | 当前证据 |
 |---|---|---|---|
 | BASE-001 | `pnpm install --frozen-lockfile` 可复现依赖 | `PASS` | 2026-07-26 初始基线执行成功；随后为根目录 E2E import 补充 Playwright 依赖并更新锁文件，重新安装成功 |
-| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-08-24 最终执行通过：Go vet/test、ESLint、Web 16 文件 67/67、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
+| BASE-002 | `pnpm verify` 全绿 | `PASS` | 2026-09-05 最终执行通过：Go vet/test、ESLint、Web 17 文件 78/78、TypeScript、Vite、Go build、SQLite migration 和 OpenAPI drift 全绿 |
 | BASE-003 | 默认 E2E foundation/turn/success | `PASS` | 2026-08-24 最终执行 success 27/27 通过；foundation 初始化 1/1 + Vault 服务重启自动解锁 1/1、turn 1/1 证据继续有效。Runtime V2 回归同时覆盖无计划 Run 零合法 404、Auto answer 最终助手消息刷新和并行项目资料上传后的即时可见性 |
 | BASE-004 | auth/turn/approval E2E | `PASS` | auth desktop/mobile 2/2、turn 1/1、approval 1/1 通过 |
 | BASE-005 | Windows 与 Linux 构建边界 | `PARTIAL` | Windows `pnpm verify`/浏览器套件与旧 WSL Ubuntu Go/Web 证据保留；本批 Document Runtime 变更尚未产生 Windows/Linux 双平台签名包、原生加载烟测和 Ubuntu race，不能用旧证据覆盖新代码 |
 | BASE-006 | 前端首包容量 | `PASS` | 主 JS 约 334KB；Terminal、Settings、Import/Export 已拆分为约 3.35KB、7.57KB、8.27KB 的懒加载路由块 |
 | BASE-007 | Vault 与可移植配置 | `PASS` | Crypto/SQLite 覆盖篡改、互换、错误口令、旋转、Provider/MCP/OAuth CRUD、重启、Locked 恢复和明文 Sentinel 扫描；Playwright foundation 两阶段覆盖 UI 初始化确认及服务重启自动解锁，Success 覆盖 Reviewer 与 MCP 重录 |
-| BASE-008 | Document Runtime 四格式烟测 | `PASS_LOCAL` | 本机自包含 Python 依赖 + LibreOffice 执行 `pnpm test:document-runtime`，25 次 JSON-RPC 覆盖 PPTX/DOCX/XLSX/PDF 创建、打开、结构编辑、再次打开、渲染和导出；Tesseract 本机缺失，OCR 发布证据待签名包 |
+| BASE-008 | Document Runtime 四格式烟测 | `PASS_LOCAL` | 2026-09-05 以本机自包含 Python、LibreOffice、PDFium 和源码 Runtime 执行 `pnpm test:document-runtime`，25 次 JSON-RPC 覆盖 PPTX/DOCX/XLSX/PDF 创建、打开、结构编辑、再次打开、渲染和导出；Windows 同步控制台启动器、独立临时 Profile 与短预览缓存路径已覆盖本次真实 Word 故障，OCR 发布证据仍待签名包 |
 | BASE-009 | Document Runtime 双平台签名发布 | `PARTIAL` | 构建脚本已强制许可证、SPDX SBOM、逐文件 Hash、Ed25519 签名和平台归档，并在归档前以包内 Python 验证全部锁定依赖、LibreOffice、Tesseract `chi_sim + eng` 和四格式 25 次 RPC；release smoke 强制加载签名包且资源必须为 `available`。部署指南已补齐 Windows 版本目录/任务计划、Linux systemd、同渠道信任键、Hash、首次验收、旁路升级和空 DataRoot 回滚合同；真实 Windows/Linux 发布 Key、离线安装、卸载、升级回滚仍无 CI 工件证据，不能因文档完成改为 `PASS` |
 | BASE-010 | 预置资源与代码场景真实浏览器验收 | `PASS_LOCAL` | 最终本机构建在 `127.0.0.1:8787` 验证五个预置资源均可用、六个 Runtime 工具可见、级联删除提示准确且取消无变更；代码项目的已完成任务、四个不可变输出、下载/预览与 Changes 正常。`.oktapod` 在后端关闭式排除，82 个历史 pip/解析残留默认折叠且不进入变更操作，公开成果文件 19 个，控制台 `error/warn=0` |
 
@@ -106,7 +106,7 @@
 | R1A-007 | 多实例 Provider | `PASS` | 000048 单例回填、000056 启用模型真源；同协议多实例与同名模型按 Provider 隔离；API 目录显式刷新且不覆盖用户选择；删除实例时项目、会话偏好、Agent 和治理设置事务性切到剩余默认实例，历史 Run/调用保持冻结 ModelRef；运行时请求已删除实例时记录 requested/effective 差异并回退默认；手动模型能力未知 |
 | R1A-008 | 文件与 Git 工具 | `PASS` | Provider-neutral Registry；read/edit/list/find/grep/write/capture/stage；status/diff/log/branch/commit/restore；新项目初始化空 Git 基线；Git 根目录以文件系统身份而非路径文本比较，兼容 Windows 短路径/规范路径别名；未跟踪/中文路径、symlink、二进制、分页、脱敏、CAS、100 MiB、MIME/PDF 签名、Artifact、Policy、审批和 Receipt 测试通过 |
 | R1A-009 | 全局 Run 并发 | `PASS` | 默认 4 个唯一 lease owner；配置可降至 1–4；数据库限制不同活跃 Run；Durable ToolBatch 内并行与整批串行覆盖均保留；Begin 前取消不派发，Task Cancel 将遗留 `started` Receipt 原子收敛为 `unknown/SIDE_EFFECT_STATUS_UNKNOWN`，非幂等 unknown 禁止自动重试 |
-| R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；无项目上下文的全局“新建任务”已移除，只有明确项目内提供“新建会话”；项目文件/Changes 只在右侧“任务面板”，会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出；项目空闲时不持续轮询任务、动态和消息列表 |
+| R1A-010 | Codex 式工作台 | `PASS` | `/` 工作台与 `/projects` 项目库分离；无项目上下文的全局“新建任务”已移除，只有明确项目内提供“新建会话”；项目文件/Changes 只在无重复标题的右侧面板，V1 固定展示“文件、变更、用量、项目、追踪”，工作文件支持逐级返回与直达项目根目录；桌面最大化保持对话区 ≥420px 且面板限制在 520～820px，不覆盖中间内容，项目栏收起后主区铺满全局导航之外的剩余区域，窄屏才全覆盖；会话树从会话菜单进入；Composer、Activity Spine、内联任务/审批保持不变；账号菜单避免头像误触退出；项目空闲时不持续轮询任务、动态和消息列表 |
 | R1A-011 | 可恢复 SSE | `PASS` | Durable `run_event` 继续使用 stream_seq/after 重放；同一 SSE 追加无 cursor 的 `run_live`，只发布安全正文和粗粒度阶段，50ms/2KiB 合并、64 项慢消费者溢出不阻塞 Worker；前端以 `run_id + model_call_id` 保存 provisional text，并由持久 `model.message` 替换。共享连接、退避、去重、迟到订阅、auth/logout 与可见性回归通过 |
 | R1A-012 | Runtime 轻量职责收敛 | `PASS_LOCAL` | `StepDispatcher` 固定路由 Main/Reviewer/Synthesis/Agent Team/Tool，`ModelInvoker` 统一单次采样与总截止，Skill/Web/Workspace/Document/MCP 五类 Preparer 替代 family switch且启动校验唯一 owner；Context 配对合同和计划/工具/审批/Artifact Golden Trace 通过。未改 API、Schema、Migration、历史 Run 或 Durable 真源 |
 | R1A-013 | 首页与核心路由 | `PASS` | 首页、Thread、Tree、Approvals、Resources、Provider、Diagnostics 均有真实路由和浏览器验收 |
@@ -114,7 +114,7 @@
 | R1A-015 | 安全验收 | `PASS` | 跨用户、无身份 401、路径/symlink/CAS/TTL、敏感导入拒绝、Secret/Provider 脱敏、无共享默认口令及真实 Provider SecretStore 证据通过 |
 | R1A-016 | 恢复验收 | `PASS` | 模型、工具、审批、Compaction、Tree、SQLite Busy、SSE、未知 Receipt、真实命令进程树取消与 kill 后 Lease 恢复自动化通过；工具恢复次数按 source model Step 的连续失败 lineage 继承，成功后的普通 continuation 会重置，下一项无关失败从 1/5 开始；项目/Agent 创建和预置资源确保复用幂等 BUSY/BUSY_SNAPSHOT 有界重试，浏览器只对携带同一 `Idempotency-Key` 且未收到响应的连接失败重试一次；项目资料上传只持久化一次不可变 Blob，并对后续登记事务有界重试；MCP 取消归类 `TOOL_CANCELED`、超时保留 Timeout Code；Finish commit failure、Lease/Fence 丢失继续由 Durable Recovery 收敛 |
 | R1A-017 | 语义计划与 Human Action | `PASS` | 新 Run 用 `replace_plan/advance_plan` 将目标级步骤与首批业务工具放在同一响应；计划只表达结果和验收，工具、审批与 Receipt 只进入执行记录；continuation 冻结活动进度且工具成功不自动推进。MCP Human Action 使用 Capability 名称与工具短名，并提供“批准一次/本任务允许此工具”；后者只授权同一 Run 的同一工具。历史 Run 保持 `update_plan`；Steering/Next Turn、统一 Human Action、三种权限模式和有界修复保持兼容 |
-| R1A-018 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件按常规浏览器展示绝对路径、目录进入、面包屑、状态、大小和修改时间，嵌套缓存、依赖和虚拟环境保留临时治理语义；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
+| R1A-018 | 场景、Files 与产物闭环 | `PASS` | 新 Work/Code Run 共用命令/Git/Artifact 工具，旧 `scene_policy` 恢复兼容；工作文件/项目资料/任务输出/Changes 分层查询与 Scope 通过，工作文件按常规浏览器展示绝对路径、目录进入、面包屑、状态、大小和修改时间；三类文件共用侧边预览：Markdown、PDF、图片、脚本/文本直接只读，DOCX/XLSX/PPTX 由签名 Runtime 校验后分页渲染，短期页面能力绑定 Organization + User，未支持格式才打开新页面；Prompt 与 ToolSpec 要求多文件任务先规划目录，`.oktapod/work/<run-id>` 隐藏且不可 Capture；明确 Run 的历史遗漏文件可经同一 Capture 端口保存为任务输出，不做无归属扫描；多附件冻结、`asset_stage` 只读物化/清理通过；Work + Ask/Full Access 真实 `go run` 生成 PDF，分别验证审批差异、Capture、Artifact Hash、Receipt 和 Validation |
 | R1A-019 | 消息真源与预算决策 | `PASS` | 发送即写入 `messages`，展示快照保存附件、Skill 与排队类型；Auto 不再产生分类模型调用，首个业务响应可直接回答、规划或调用工具；Tool Schema 是工具元数据唯一模型来源，Prompt、Messages、Definitions、AllowedTools、ModelRef、Thinking、Token 上限和 ContextPlan 仍由同一次 Assembly 生成并写入 `assembly_hash`；Task/Auto 裸“继续”、逐项冻结审批与预算决策语义保持兼容 |
 | R1A-020 | Web Access 与受控私网 Fetch | `PASS` | Search 保持单 `query` 与 DDG→Bing RSS；Fetch 单 URL、GET-only、安全 DNS/Dial/重定向/代理隔离/内容上限已实现；精确私网 origin 配置、Run 冻结交集、`run_origin` 强制人工审批、Receipt/Web 卡片/OpenAPI 均有确定性测试。浏览器完成配置校验、保存待重启、重启生效、390px 无横向溢出，以及一次人工授权后同 origin 两页自动读取、执行流从用户消息迁移到助手结果消息仍保持展开、私网卡文本重放和控制台零错误闭环 |
 | R1A-021 | 稳定计划与否定能力约束 | `PASS` | 已绑定计划的普通 continuation/plan_execute 不再暴露也不接受 `replace_plan`；显式重规划保留 Durable 完成项、过滤规范化重复项并限制总项数。用户明确“不联网/离线”时冻结零搜索预算且完成门禁不要求新 Web Receipt；`.oktapod/` 内部写入跳过自动 Capture 而保持成功，公开交付仍严格登记。DeepSeek + `frontend-design` 真实 Task 以固定两项计划完成核对与 Artifact 登记，终态 `2/2` |
@@ -125,7 +125,7 @@
 |---|---|---|---|
 | R1B-001 | 受控命令执行 | `PASS` | 命令在 Thread 内通过 Policy/审批/Receipt 持久 Task 执行，支持状态、结果、取消和上下文回填；交互式 xterm 已按 V1 范围决策排除 |
 | R1B-002 | Oktapod 导入导出 | `PASS` | 浏览器预览、原始敏感字段 fail-closed、正文模式脱敏、JSON/JSONL/HTML、Oktapod JSONL Thread round-trip、事务化重建/幂等和 E2E 通过；Pi 精确兼容已转 V1.1 |
-| R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；单一输入框只接收来源，解析后再展示版本、传输、工具与凭据。详情从 Skill Manifest/instructions 与 MCP 在线发现生成真实能力、场景、用法和治理边界，前端不按资源身份维护第二份事实表。内部 `mcp__<uuid>__<tool>` 仅用于冻结身份，界面使用 Capability 名称与工具短名。进程级 `SessionBroker` 按 Run/Capability 隔离有状态 MCP 会话且每次调用仍独立授权/收据。Playwright `0.0.78` 已完成删除、固定版重装、24 工具发现；DeepSeek 真实百度任务在验证码后改用移动版并打开 `https://www.znv.com.cn/`，计划 `3/3` 完成。`frontend-design` 完成删除与 ZIP 重装。OAuth/Secret/ZIP/故障矩阵继续保持原合同。 |
+| R1B-003 | Extensions/Packages | `PASS` | 通用 `MCPDefinition v1`、官方 Go SDK、本地 stdio/远端 Streamable HTTP、Registry/`server.json`/URL/固定版包/命令解析、资源中心/自然语言双入口、多 Secret、稳定可用状态和 Skill/MCP/Agent 启停删除已实现；单一输入框只接收来源，解析后再展示版本、传输、工具与凭据。详情从 Skill Manifest/instructions 与 MCP 在线发现生成真实能力、场景、用法和治理边界；用户可见介绍和描述统一为中文，技术工具名保留原文，外部纯英文说明按通用工具语义生成中文投影，前端不按资源身份维护第二份事实表。内部 `mcp__<uuid>__<tool>` 仅用于冻结身份，界面使用 Capability 名称与工具短名。进程级 `SessionBroker` 按 Run/Capability 隔离有状态 MCP 会话且每次调用仍独立授权/收据。Playwright `0.0.78` 已完成删除、固定版重装、24 工具发现；DeepSeek 真实百度任务在验证码后改用移动版并打开 `https://www.znv.com.cn/`，计划 `3/3` 完成。`frontend-design` 完成删除与 ZIP 重装。OAuth/Secret/ZIP/故障矩阵继续保持原合同。 |
 | R1B-004 | Provider 协议与真实主链路 | `PASS` | 原生 Anthropic/Gemini 增量合同通过；OpenAI 兼容通道已经真实 MiniMax 端到端验证可见流式、工具、文件修改和回读哈希；更多原生真实凭据已按 V1 范围决策排除 |
 | R1B-005 | 高级 Git | `PASS` | `git_conflicts`、按 Hunk 恢复、选择路径提交具备状态 Hash、Policy、审批与 Receipt；Changes UI 通过原 Thread 创建受治理动作。远程 Git 不进入 V1 |
 | R1B-006 | V1 设置 | `PASS` | 配置中心按七类职责拆分；运行与上下文提供 Owner/Admin 精确私网 origin 编辑、普通成员脱敏计数和重启提示；Provider 一次保存并自动验证，Reviewer 不再混入模型连接。系统 Backup 与单项目交换明确分界；设置页深链与主题恢复保持稳定 |
@@ -226,3 +226,7 @@
 | 2026-08-24 | MCP 授权、资源能力与失败链收口 | L3 MCP 增加“本任务允许此工具”，复用既有 `run_approval_rules` 严格绑定当前 Run、完整动态工具和冻结策略，不新增授权事实表；同一计划项 12 个终态 MCP 调用后进入无工具收尾。资源中心从 Skill Manifest/instructions 与 MCP 在线发现生成能力和场景，显示 Playwright MCP 等人类可读名称；预置修复先验证真实 Runtime。DeepSeek + Playwright 真实百度任务复用导航授权，在桌面验证码后切换移动版、打开 `https://www.znv.com.cn/` 并终态 `3/3`；最终最小回归只调用 `browser_navigate` 打开本地站点，审批与执行记录均隐藏 UUID，标题 `Oktapod · Agent OS`，终态 `1/1`。双 Worker E2E 同时暴露一次 `ERR_NETWORK_CHANGED`，现仅对同一幂等键的连接失败重试一次，Agent JSON 用例与 success 27/27 通过。 |
 | 2026-09-04 | 项目库治理与软删除 | 项目库支持编辑、重命名和移除；删除写入 `projects.status=deleted` 与 `project.deleted {"mode":"soft"}` 审计，但不删除工作区、任务、会话、运行历史、用量、记忆或产物，项目列表和普通入口按 active 项目过滤。工作文件改为常规文件浏览并显示绝对路径、目录导航、状态、大小和修改时间。隔离运行态浏览器实测编辑与重命名即时刷新，删除确认完整说明保留边界，工作文件可进入两级目录并由面包屑返回根目录；此前软删除实测确认列表隐藏、详情入口不可用、数据库记录/审计/工作区文件仍保留。`pnpm verify`、Vitest 16 文件/67 用例、构建、SQLite 迁移、OpenAPI 生成漂移与 `git diff --check` 通过。软删除项目暂无恢复 UI。 |
 | 2026-09-04 | 文档 Runtime 跨平台路径校验 | 远端 Ubuntu 门禁发现 Windows 盘符路径在非 Windows 主机上无法由 `filepath.VolumeName` 识别；路径合同增加平台无关的盘符前缀拒绝，签名 Runtime 清单路径与工作句柄在 Windows/Linux 上保持同一逃逸边界。定向测试及后续双平台 CI 作为关闭证据。 |
+| 2026-09-04 | 侧边面板与资源中文展示收口 | 右侧面板移除重复标题和“更多”，V1 固定展示“文件、变更、用量、项目、追踪”；旧深链按语义映射到保留入口。工作文件在加载中、空目录和普通目录均保留“返回上一级”与“项目根目录”。资源中心对外部纯英文 Skill/MCP 说明生成通用中文投影，资源名与工具技术名保持原文；Tavily 5 个在线工具的标题、用途与场景已在真实浏览器核对为中文。`pnpm verify`（Vitest 16 文件/68 用例）、构建、SQLite 迁移、OpenAPI drift、服务新 PID/JSON 健康检查、真实两级目录返回与浏览器控制台零错误通过。 |
+| 2026-09-05 | Codex 式面板布局与统一文件预览 | 工作文件、项目资料和任务输出统一路由到面板预览：Markdown、PDF、图片、脚本/文本直接只读，DOCX/XLSX/PPTX 经 Document Runtime 安全解析和分页 PNG；仅未支持格式继续打开新页面。新增短期 Scope 预览 API、同源 PDF frame 策略和 2 MiB 文本上限。真实 Word 失败定位为 Windows GUI 启动器异步返回叠加 205 字符缓存路径，改用受签名覆盖的 `soffice.com`、独立 Profile 与 129 字符短路径后渲染 5 页；四格式 25 RPC 通过。Playwright foundation 覆盖项目栏收起、Markdown/脚本内嵌与 ZIP 新页面回退并通过；`pnpm verify`（Web 17 文件/78 用例）、Go 集成、构建、SQLite migration 与 OpenAPI drift 全绿。 |
+| 2026-09-05 | 最大化窗口下项目栏收起回归修复 | 浏览器最大化后发现已隐藏项目栏仍占用 Grid 首行单元，主区因自动排版落入第二行并造成上半屏空白；收起态改为让主区明确占据第三列首行，在全局导航右侧占满剩余宽度和全高。文件行同时移除通用按钮边框污染，名称恢复左对齐，工作区长路径单行省略。Playwright 在收起态校验主区与 Shell 的上、右、下边界及与全局导航的左边界均不超过 1px。 |
+| 2026-09-05 | 覆盖式最大化与 HTML/Markdown 双模式预览 | 根据真实 Codex 交互澄清最大化语义：普通右栏保持 360px，最大化保留左侧导航并覆盖整个对话工作区，项目栏收起后从全局栏右侧铺满。HTML 从通用代码路由独立为沙箱预览，禁用脚本、表单、子框架、对象、Base URL 与外部网络，并可切换带行号源码；Markdown 可在渲染结果和原文间切换。文件行对可预览格式显示眼睛图标，未支持格式显示新页面图标。Vitest 新增 HTML 路由与 CSP 注入用例；Playwright 校验覆盖边界、HTML 脚本未执行、HTML 源码和 Markdown 原文切换。 |

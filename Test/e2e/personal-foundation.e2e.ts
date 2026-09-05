@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test'
+import { writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 const restartCheck = process.env.OKTAPOD_E2E_RESTART_CHECK === '1'
 const statePath = process.env.OKTAPOD_E2E_STATE_PATH
+const dataRoot = process.env.OKTAPOD_E2E_DATA_ROOT
 if (restartCheck && statePath) test.use({ storageState: statePath })
 
 test('Personal 用户能创建项目并看到缺少凭证的可恢复阻塞证据', async ({ page }) => {
@@ -39,25 +42,111 @@ test('Personal 用户能创建项目并看到缺少凭证的可恢复阻塞证�
   await page.getByRole('button', { name: '建立工作空间' }).click()
 
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/)
+  const projectId = page.url().match(/\/projects\/([0-9a-f-]+)/)?.[1]
+  expect(projectId).toBeTruthy()
   await page.getByRole('button', { name: '打开任务面板' }).click()
-  for (const tab of ['运行', '文件', '变更', '安全', '追踪']) {
+  for (const tab of ['文件', '变更', '用量', '项目', '追踪']) {
     await expect(page.getByRole('button', { name: tab, exact: true })).toBeVisible()
   }
   await page.getByRole('button', { name: '文件', exact: true }).click()
   for (const section of ['工作文件', '项目资料', '任务输出']) {
     await expect(page.getByRole('button', { name: section, exact: true })).toBeVisible()
   }
-  await expect(page.getByText('工作文件暂无内容')).toBeVisible()
-  await page.getByRole('button', { name: '最大化任务面板' }).click()
+  await expect(page.getByText('这个目录暂无内容')).toBeVisible()
+  if (!dataRoot) throw new Error('OKTAPOD_E2E_DATA_ROOT is required')
+  const workspace = resolve(dataRoot, 'workspaces', projectId!)
+  writeFileSync(resolve(workspace, 'preview.md'), '# 面板内 Markdown 预览\n\n保持当前任务上下文。\n', 'utf8')
+  writeFileSync(resolve(workspace, 'preview.html'), '<!doctype html><html><head><title>Preview</title><style>body{font-family:sans-serif;padding:32px}</style></head><body><main><h1>安全 HTML 预览</h1><p>脚本保持停用。</p></main><script>document.body.dataset.scriptRan="true"</script></body></html>', 'utf8')
+  writeFileSync(resolve(workspace, 'sample.py'), 'def answer():\n    return 42\n', 'utf8')
+  writeFileSync(resolve(workspace, 'archive.zip'), 'unsupported fixture', 'utf8')
+  await page.getByRole('button', { name: '刷新工作文件' }).click()
+  await expect(page.getByRole('button', { name: 'preview.md', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '预览 preview.html', exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: '最大化侧边面板' }).click()
   await expect(page.locator('.project-chat-workspace')).toHaveClass(/drawer-maximized/)
-  expect(await page.locator('.project-management-panel').evaluate((panel) => panel.getBoundingClientRect().width)).toBeGreaterThan(500)
-  await page.getByRole('button', { name: '还原任务面板' }).click()
+  const maximizedLayout = await page.locator('.project-chat-workspace').evaluate((workspace) => {
+    const workspaceBounds = workspace.getBoundingClientRect()
+    const conversation = workspace.querySelector('.conversation-main')!.getBoundingClientRect()
+    const panel = workspace.querySelector('.project-management-panel')!.getBoundingClientRect()
+    return {
+      workspaceTop: workspaceBounds.top,
+      workspaceRight: workspaceBounds.right,
+      workspaceBottom: workspaceBounds.bottom,
+      workspaceLeft: workspaceBounds.left,
+      conversationWidth: conversation.width,
+      panelTop: panel.top,
+      panelRight: panel.right,
+      panelBottom: panel.bottom,
+      panelLeft: panel.left,
+      overlap: conversation.right - panel.left,
+    }
+  })
+  expect(Math.abs(maximizedLayout.workspaceTop - maximizedLayout.panelTop)).toBeLessThanOrEqual(1)
+  expect(Math.abs(maximizedLayout.workspaceRight - maximizedLayout.panelRight)).toBeLessThanOrEqual(1)
+  expect(Math.abs(maximizedLayout.workspaceBottom - maximizedLayout.panelBottom)).toBeLessThanOrEqual(1)
+  expect(Math.abs(maximizedLayout.workspaceLeft - maximizedLayout.panelLeft)).toBeLessThanOrEqual(1)
+  expect(maximizedLayout.overlap).toBeGreaterThanOrEqual(maximizedLayout.conversationWidth - 1)
+  await page.getByRole('button', { name: '收起项目栏' }).click()
+  const collapsedLayout = await page.locator('.codex-shell').evaluate((shell) => {
+    const rail = shell.querySelector('.global-rail')!.getBoundingClientRect()
+    const main = shell.querySelector('.codex-main')!.getBoundingClientRect()
+    const panel = shell.querySelector('.project-management-panel')!.getBoundingClientRect()
+    const shellBounds = shell.getBoundingClientRect()
+    return {
+      shellTop: shellBounds.top,
+      shellRight: shellBounds.right,
+      shellBottom: shellBounds.bottom,
+      railRight: rail.right,
+      mainTop: main.top,
+      mainRight: main.right,
+      mainBottom: main.bottom,
+      mainLeft: main.left,
+      panelTop: panel.top,
+      panelRight: panel.right,
+      panelBottom: panel.bottom,
+      panelLeft: panel.left,
+    }
+  })
+  expect(Math.abs(collapsedLayout.shellTop - collapsedLayout.mainTop)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.shellRight - collapsedLayout.mainRight)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.shellBottom - collapsedLayout.mainBottom)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.railRight - collapsedLayout.mainLeft)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.mainTop - collapsedLayout.panelTop)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.mainRight - collapsedLayout.panelRight)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.mainBottom - collapsedLayout.panelBottom)).toBeLessThanOrEqual(1)
+  expect(Math.abs(collapsedLayout.mainLeft - collapsedLayout.panelLeft)).toBeLessThanOrEqual(1)
+  await page.getByRole('button', { name: '展开项目栏' }).click()
+
+  await page.getByRole('button', { name: 'preview.md', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '面板内 Markdown 预览' })).toBeVisible()
+  await expect(page.getByText('保持当前任务上下文。')).toBeVisible()
+  await page.getByRole('button', { name: '原文', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Markdown 原文' })).toContainText('# 面板内 Markdown 预览')
+  await page.getByRole('button', { name: '预览', exact: true }).click()
+  await page.getByRole('button', { name: '返回文件' }).click()
+  await page.getByRole('button', { name: '预览 preview.html', exact: true }).click()
+  const htmlPreview = page.frameLocator('iframe[title="HTML 预览：preview.html"]')
+  await expect(htmlPreview.getByRole('heading', { name: '安全 HTML 预览' })).toBeVisible()
+  await expect(htmlPreview.locator('body')).not.toHaveAttribute('data-script-ran', 'true')
+  await page.getByRole('button', { name: '源码', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'HTML 源码' })).toContainText('<!doctype html>')
+  await page.getByRole('button', { name: '返回文件' }).click()
+  await page.getByRole('button', { name: 'sample.py', exact: true }).click()
+  await expect(page.locator('.file-preview-code')).toContainText('return 42')
+  await page.getByRole('button', { name: '返回文件' }).click()
+  const popupPromise = page.waitForEvent('popup')
+  await page.getByRole('button', { name: 'archive.zip', exact: true }).click()
+  const unsupportedPage = await popupPromise
+  await expect(unsupportedPage).toHaveURL(/workspace\/files\/content\?path=archive\.zip/)
+  await unsupportedPage.close()
+
+  await page.getByRole('button', { name: '还原侧边面板' }).click()
   await expect(page.locator('.project-chat-workspace')).not.toHaveClass(/drawer-maximized/)
-  await page.getByRole('button', { name: '更多' }).click()
   await expect(page.getByRole('button', { name: '能力', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '自动化', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '记忆', exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: '关闭任务面板' }).click()
+  await page.getByRole('button', { name: '关闭侧边面板' }).click()
   await expect(page.getByRole('button', { name: '添加附件' })).toBeVisible()
   await expect(page.getByRole('button', { name: '安装能力附件' })).toHaveCount(0)
   await expect(page.getByRole('combobox', { name: '模型' })).toBeVisible()

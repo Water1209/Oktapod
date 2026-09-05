@@ -88,6 +88,29 @@ func TestDevelopmentRuntimePassesOnlyExplicitRegularRendererExecutables(t *testi
 	}
 }
 
+func TestPackagedRuntimeUsesConsoleLibreOfficeOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific LibreOffice launcher behavior")
+	}
+	packageRoot := t.TempDir()
+	executable := "libreoffice/program/soffice.exe"
+	console := "libreoffice/program/soffice.com"
+	writeRuntimeFixture(t, packageRoot, executable, []byte("gui launcher"))
+	writeRuntimeFixture(t, packageRoot, console, []byte("console launcher"))
+	client := &Client{
+		packageRoot: packageRoot,
+		manifest: manifestPayload{
+			Version:     "1.0.0",
+			LibreOffice: executable,
+			Files:       map[string]string{console: mustHashFile(t, filepath.Join(packageRoot, filepath.FromSlash(console)))},
+		},
+	}
+	path, ok := client.libreOfficeExecutable()
+	if !ok || !strings.EqualFold(path, filepath.Join(packageRoot, filepath.FromSlash(console))) {
+		t.Fatalf("libreOfficeExecutable() = %q, %v; want signed console launcher", path, ok)
+	}
+}
+
 func writeRuntimeFixture(t *testing.T, root, name string, content []byte) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(name))

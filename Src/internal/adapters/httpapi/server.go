@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -188,6 +189,9 @@ func writeInlinePreview(w http.ResponseWriter, content io.ReadCloser, name, medi
 		}
 	} else {
 		previewType = "application/octet-stream"
+	}
+	if previewType == "application/pdf" {
+		allowSameOriginPreviewFrame(w)
 	}
 	w.Header().Set("Content-Type", previewType)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": filepath.Base(name)}))
@@ -2915,6 +2919,43 @@ func (s *Server) DownloadWorkspaceFileContent(ctx context.Context, request gener
 	return workspaceFileContentResponse{body: content.Body, path: content.Path, mediaType: content.MediaType, disposition: disposition, sizeBytes: content.SizeBytes}, nil
 }
 
+func (s *Server) CreateFilePreview(ctx context.Context, request generated.CreateFilePreviewRequestObject) (generated.CreateFilePreviewResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	preview, err := s.service.CreateFilePreview(ctx, application.FilePreviewSource{
+		ProjectID: request.ProjectId.String(),
+		Kind:      string(request.Body.SourceKind),
+		Reference: request.Body.Reference,
+	})
+	if err != nil {
+		return nil, err
+	}
+	previewID, err := uuid.Parse(preview.ID)
+	if err != nil {
+		return nil, err
+	}
+	pages := make([]string, 0, len(preview.PageNames))
+	for _, pageName := range preview.PageNames {
+		pages = append(pages, fmt.Sprintf("/api/v1/file-previews/%s/pages/%s", previewID.String(), url.PathEscape(pageName)))
+	}
+	return generated.CreateFilePreview201JSONResponse{
+		Id: previewID, Name: preview.Name, Format: generated.FilePreviewSessionFormat(preview.Format),
+		PageCount: len(pages), Pages: pages, Warnings: preview.Warnings, ExpiresAt: preview.ExpiresAt,
+	}, nil
+}
+
+func (s *Server) OpenFilePreviewPage(ctx context.Context, request generated.OpenFilePreviewPageRequestObject) (generated.OpenFilePreviewPageResponseObject, error) {
+	preview, err := s.service.OpenFilePreview(ctx, request.PreviewId.String(), request.PageName)
+	if err != nil {
+		return nil, err
+	}
+	return generated.OpenFilePreviewPage200ImagepngResponse{
+		Body: preview.Content, ContentLength: preview.SizeBytes,
+		Headers: generated.OpenFilePreviewPage200ResponseHeaders{ContentLength: preview.SizeBytes, XContentSHA256: preview.ContentHash},
+	}, nil
+}
+
 type workspaceFileContentResponse struct {
 	body        io.ReadCloser
 	path        string
@@ -2933,6 +2974,9 @@ func (response workspaceFileContentResponse) VisitDownloadWorkspaceFileContentRe
 	}
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
+	}
+	if mediaType == "application/pdf" {
+		allowSameOriginPreviewFrame(w)
 	}
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Disposition", response.disposition)
@@ -4297,7 +4341,7 @@ func requestBodyLimitMiddleware(next http.Handler) http.Handler {
 
 func securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -4309,6 +4353,11 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func allowSameOriginPreviewFrame(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'self'; base-uri 'none'")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 }
 
 func (s *Server) logMiddleware(next http.Handler) http.Handler {

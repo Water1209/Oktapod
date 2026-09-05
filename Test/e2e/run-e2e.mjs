@@ -66,7 +66,11 @@ try {
   if (mode === 'auth') args.push('--config', 'playwright.auth.config.ts')
   if (mode === 'approval') args.push('--grep', 'L2 命令')
   args.push(...process.argv.slice(3))
-  const playwrightEnvironment = mode === 'foundation' ? { ...process.env, OKTAPOD_E2E_STATE_PATH: browserStatePath } : process.env
+  const playwrightEnvironment = mode === 'foundation' ? {
+    ...process.env,
+    OKTAPOD_E2E_STATE_PATH: browserStatePath,
+    OKTAPOD_E2E_DATA_ROOT: dataRoot,
+  } : process.env
   activeTest = start(process.execPath, [playwrightCLI, ...args], webRoot, playwrightEnvironment, 'inherit')
   let code = await waitForExit(activeTest)
   if (mode === 'foundation' && code === 0) {

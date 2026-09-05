@@ -1,6 +1,6 @@
 # Oktapod V1 总体架构与产品优化方案（总架构师审定版）
 
-> **文档版本**：V2.13（项目软删除与工作区文件浏览收口）
+> **文档版本**：V2.17（覆盖式面板与双模式文件预览）
 > **文档类型**：架构决策 / 发布基线 / 后续演进边界
 > **编制日期**：2026-09-04
 > **基线**：GPT-5.6《Oktapod V1 总体架构与产品优化方案 V1.0》、`Doc/research/pi-vs-oktapod-tools-security.md`、`Doc/research/pi-vs-oktapod-agent-loop.md`、`Doc/archive/Oktapod_第一阶段补全改造方案_V1.0.md`（历史内核先行方案）
@@ -75,7 +75,7 @@ Team、Schedule、Memory、Advisor、Agent Team 等已有代码与入口可以�
 - 已保存主题在 React 首次绘制前应用，避免刷新时先出现相反主题；选择只保存在当前浏览器，不伪装为项目或服务端策略。
 - Light、Dark、System 均要求正文与状态文字可读，主要文本目标对比度不低于 WCAG AA 4.5:1；主题不能只改变容器背景而保留另一主题的文字、表格或表单颜色。
 - 全局导航保留 `#071454` 品牌深蓝，不视为内容区主题混用；其交互与文字仍需满足可读性和焦点要求。
-- 导航以用户目标分层：`/` 是工作台，`/projects` 是项目库；没有项目上下文时不展示“新建任务”，只有进入明确项目后才提供“新建会话”。项目标题是带当前状态的真实项目切换器，不得使用无行为按钮；项目文件和 Git 变更只属于右侧任务面板，会话树保留领域能力并从 Thread 菜单进入。头像只打开账号菜单，退出是菜单内的第二次明确操作。
+- 导航以用户目标分层：`/` 是工作台，`/projects` 是项目库；没有项目上下文时不展示“新建任务”，只有进入明确项目后才提供“新建会话”。项目标题是带当前状态的真实项目切换器，不得使用无行为按钮；项目文件和 Git 变更只属于右侧面板。右侧面板不重复显示标题，V1 固定只暴露“文件、变更、用量、项目、追踪”，其他兼容视图先隐藏；工作文件在任意子目录都必须提供逐级返回和直达项目根目录。普通状态使用 360px 右栏且不遮挡对话；桌面最大化遵循 Codex 覆盖式工作面板，保留左侧全局栏和项目栏，面板覆盖其余整个 `codex-main`，允许遮挡当前对话。项目栏收起后隐藏栏不得继续参与 Grid 自动排版，主区必须与全局导航处于同一首行，最大化面板从全局栏右侧扩展到全部剩余宽度和全高。会话树保留领域能力并从 Thread 菜单进入。头像只打开账号菜单，退出是菜单内的第二次明确操作。
 - Provider 的 `model_catalog_entries` 是 API 发现缓存，`provider_enabled_models` 是用户选择真源；`GET /models` 只暴露活动 Provider 的启用模型。项目冻结 `model_provider_id + default_model + fallback_model`，新 Run 再冻结有效 ModelRef；删除 Provider 时，项目、会话偏好、Agent 和治理设置等可变引用必须在同一事务切换到剩余默认实例，历史 Run 与模型调用保持冻结事实；运行时收到已删除的请求实例时记录 requested/effective 差异并回退当前默认。手动模型能力保持未知。
 - Provider 连接配置与模型启用列表是两个阶段；“测试连接”调用受控服务端探测并只展示脱敏错误、延迟和模型数量，不以保存配置或刷新目录替代显式反馈。
 
@@ -308,6 +308,8 @@ PPTX/PDF/DOCX/XLSX 不再走“模型生成脚本 → 临时安装库 → 每次
 
 工作文件使用常规文件浏览模型：顶部显示当前工作区绝对路径，列表先展示文件夹再展示文件，文件夹名称和进入按钮都进入对应目录，面包屑可返回项目根目录；每行提供文件状态、大小和修改时间。缓存、依赖、测试覆盖率和虚拟环境的治理分类继续用于 API 语义和 Capture 边界，该分类只影响展示，不移动或删除旧文件。
 
+文件打开统一先在右侧面板内完成：Markdown 提供渲染预览与带行号原文，HTML 提供沙箱预览与带行号源码；HTML 沙箱禁用脚本、表单提交、子框架、对象、Base URL 与外部网络，只允许内联样式及 `data:`/`blob:` 媒体。PDF 使用同源只读嵌入，图片直接预览，常见脚本和文本使用带行号的只读查看器；DOCX/XLSX/PPTX 先经过签名 Document Runtime 的结构安全校验，再渲染为只读分页图片。工作文件、项目资料和任务输出共用同一预览组件与返回/新页面/下载动作，可预览文件在列表中使用明确的眼睛图标。Office 预览只向浏览器发放绑定 Principal 与 Organization、20 分钟有效的短期页面能力，不暴露宿主绝对路径；缓存按 Organization 和内容 Hash 隔离，命中仍重新授权。只有未支持的格式或内嵌加载失败时才保留原有新页面打开方式。
+
 - **Workspace（界面名“工作文件”）**：项目当前可变文件，包括 Shell/脚本生成但尚未登记的文件；API 以 `source | input | working | temporary | candidate_output` 标注生命周期，只做展示与治理，不移动既有文件或取代项目目录约定；
 - **Project Asset（界面名“项目资料”）**：上传附件和从 Artifact 明确保存的可复用输入，只在当前项目内使用，不表示向外部系统发布；
 - **Artifact**：按 Run 和逻辑路径版本化的不可变交付物/证据；
@@ -331,7 +333,7 @@ Agent 创建多个文件前必须先检查项目约定并给出简洁文件计�
 
 Provider、MCP 多字段 Secret 与 OAuth Token 统一经 Application `SecretStore` Port 进入 `DatabaseSecretStore`。SQLite Repository 只保存 AES-256-GCM 密文：每组织随机 256-bit DEK，每条记录独立 Nonce，AAD 绑定 Schema、Organization、Secret Ref、Kind 和 Key Version。业务层只观察 `ready | locked | missing | corrupt`；解密或认证失败必须返回 `SECRET_CIPHERTEXT_INVALID`，不得回退为空值或继续调用外部系统。正常运行路径不读取 Windows Credential Manager、Linux Secret Service 或 macOS Keychain，也不接受模型 Key、Reviewer 和价格环境变量作为第二真源。
 
-配置中心按用户职责而非存储位置组织：模型服务负责连接、密钥与启用模型并一次保存；治理与审批负责 Reviewer；运行与上下文、费用与用量分别承载启动/压缩和版本化价格；数据与备份必须显式区分系统级 Backup/Restore 与不含 Secret 的单项目交换。诊断返回非敏感 `credential_issues` 清单，使缺失 Provider/MCP 可定位、可跳转修复，不暴露 `credential_ref`。Provider 按组织配置，MCP 诊断必须使用当前 Principal 可访问的项目 Scope，与资源中心读取合同一致；资源中心先选择“项目资源/系统能力”，类型筛选只属于项目资源，禁止形成“系统能力 + MCP”之类无业务含义的组合状态。资源列表必须提供一句话能力说明，详情按“能力定位、真实工具或工作流、适用场景、怎么使用、治理边界”分层展示；Skill 明细从冻结 Manifest 的 description/instructions 章节生成，MCP 明细从在线工具名称和服务端 description 生成，前端只做人类可读名称与版式投影，不维护按某个 Skill/MCP 身份硬编码的第二份能力事实表。
+配置中心按用户职责而非存储位置组织：模型服务负责连接、密钥与启用模型并一次保存；治理与审批负责 Reviewer；运行与上下文、费用与用量分别承载启动/压缩和版本化价格；数据与备份必须显式区分系统级 Backup/Restore 与不含 Secret 的单项目交换。诊断返回非敏感 `credential_issues` 清单，使缺失 Provider/MCP 可定位、可跳转修复，不暴露 `credential_ref`。Provider 按组织配置，MCP 诊断必须使用当前 Principal 可访问的项目 Scope，与资源中心读取合同一致；资源中心先选择“项目资源/系统能力”，类型筛选只属于项目资源，禁止形成“系统能力 + MCP”之类无业务含义的组合状态。资源列表必须提供一句话能力说明，详情按“能力定位、真实工具或工作流、适用场景、怎么使用、治理边界”分层展示；Skill 明细从冻结 Manifest 的 description/instructions 章节生成，MCP 明细从在线工具名称和服务端 description 生成。用户可见的介绍、能力说明和场景统一投影为中文，资源名与工具技术名保留原文；无法可靠本地化的外部英文说明退化为按工具语义生成的中文说明，不混排英文描述，也不维护按某个 Skill/MCP 身份硬编码的第二份能力事实表。
 
 `VaultKeyManager` 将 DEK 分别用本地 KEK 和恢复 KEK 包装。本地 KEK 位于 `$DATA_ROOT/vault/bootstrap.key`，只负责无人值守重启自动解锁；恢复 KEK 由一次性 Base64url 恢复口令经 HKDF-SHA256 派生。初始化采用 `pending → active` 两阶段，必须重新输入恢复口令确认。跨机器恢复缺少本地 KEK 时服务保持可登录和可恢复，但模型、MCP、OAuth 与计划任务关闭式阻塞；成功恢复后生成新的本地 KEK。正式 Backup V2 带数据库密文与恢复包装，不带本地 KEK或恢复口令；项目逻辑导出不带 Secret，并清空 Capability `credential_ref`。
 

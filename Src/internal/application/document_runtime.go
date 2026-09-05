@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
@@ -22,6 +24,31 @@ type DocumentPreview struct {
 
 type DocumentPreviewOpener interface {
 	OpenPreview(ctx context.Context, scope core.Scope, runID, documentID, previewName string) (DocumentPreview, error)
+}
+
+// FilePreviewSource names an already-authorized product file without exposing
+// an absolute host path to the browser or the document runtime.
+type FilePreviewSource struct {
+	ProjectID string
+	Kind      string
+	Reference string
+}
+
+type FilePreviewSession struct {
+	ID        string
+	Name      string
+	Format    string
+	PageNames []string
+	Warnings  []string
+	ExpiresAt time.Time
+}
+
+// FilePreviewer is the read-only document-runtime boundary used by the Files
+// inspector. Preview sessions are short-lived capabilities: page requests must
+// still match the user and organization that created the session.
+type FilePreviewer interface {
+	CreateFilePreview(ctx context.Context, scope core.Scope, source FilePreviewSource) (FilePreviewSession, error)
+	OpenFilePreview(ctx context.Context, scope core.Scope, previewID, previewName string) (DocumentPreview, error)
 }
 
 type DocumentRuntimeHealth struct {
@@ -57,4 +84,35 @@ func (s *Service) OpenDocumentPreview(ctx context.Context, runID, documentID, pr
 		return DocumentPreview{}, &core.ResourceConflictError{Resource: "document preview", Reason: "document runtime is unavailable"}
 	}
 	return opener.OpenPreview(ctx, s.ScopeFor(ctx), runID, documentID, previewName)
+}
+
+func (s *Service) CreateFilePreview(ctx context.Context, source FilePreviewSource) (FilePreviewSession, error) {
+	source.ProjectID = strings.TrimSpace(source.ProjectID)
+	source.Kind = strings.ToLower(strings.TrimSpace(source.Kind))
+	source.Reference = strings.TrimSpace(source.Reference)
+	if source.ProjectID == "" {
+		return FilePreviewSession{}, &core.ValidationError{Field: "project_id", Message: "is required"}
+	}
+	if source.Kind != "workspace" && source.Kind != "asset" && source.Kind != "artifact" {
+		return FilePreviewSession{}, &core.ValidationError{Field: "source_kind", Message: "must be workspace, asset, or artifact"}
+	}
+	if source.Reference == "" {
+		return FilePreviewSession{}, &core.ValidationError{Field: "reference", Message: "is required"}
+	}
+	if _, err := s.repository.GetProject(ctx, s.ScopeFor(ctx), source.ProjectID); err != nil {
+		return FilePreviewSession{}, err
+	}
+	previewer, ok := s.documentRuntime.(FilePreviewer)
+	if !ok || previewer == nil {
+		return FilePreviewSession{}, &core.ResourceConflictError{Resource: "file preview", Reason: "document runtime is unavailable"}
+	}
+	return previewer.CreateFilePreview(ctx, s.ScopeFor(ctx), source)
+}
+
+func (s *Service) OpenFilePreview(ctx context.Context, previewID, previewName string) (DocumentPreview, error) {
+	previewer, ok := s.documentRuntime.(FilePreviewer)
+	if !ok || previewer == nil {
+		return DocumentPreview{}, &core.ResourceConflictError{Resource: "file preview", Reason: "document runtime is unavailable"}
+	}
+	return previewer.OpenFilePreview(ctx, s.ScopeFor(ctx), previewID, previewName)
 }

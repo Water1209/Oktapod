@@ -3,7 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteD
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import * as Select from '@radix-ui/react-select'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowRight, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, File as FileIcon, FileBox, FileCheck2, Folder, FolderInput, FolderPlus, FolderOpen, HardDrive, Infinity as InfinityIcon, LockKeyhole, Maximize2, MessageSquare, Minimize2, MoreHorizontal, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, RefreshCw, Search, Settings2, ShieldAlert, SlidersHorizontal, Sparkles, Square, Upload, Users, Workflow, X, XCircle } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, Download, ExternalLink, Eye, File as FileIcon, FileBox, FileCheck2, Folder, FolderInput, FolderOpen, FolderPlus, HardDrive, Infinity as InfinityIcon, LockKeyhole, Maximize2, MessageSquare, Minimize2, PanelRight, PanelRightClose, Paperclip, Plus, Puzzle, RefreshCw, Search, Settings2, ShieldAlert, SlidersHorizontal, Sparkles, Square, Upload, Users, Workflow, X, XCircle } from 'lucide-react'
 import { api, type Artifact, type Asset, type Capability, type CapabilityKind, type CapabilityScope, type CapabilityStatus, type ConversationMessage, type MCPHealth, type Memory, type PermissionMode, type PlanItem, type PlanStatus, type ProjectActivity, type ProjectInvitation, type ProviderInstance, type ResourceInstallDraft, type Scene, type TaskMode, type TeamDefinition, type Visibility, type WorkspaceFile, type WorkspaceFilePage } from '../../shared/api/client'
 import { AssistantContent } from '../../shared/assistant-content'
 import { useBootstrap } from '../../shared/bootstrap-context'
@@ -20,6 +20,8 @@ import { useRunEvents } from '../runs/use-run-events'
 import { isCompactCommand, parseSkillInvocation, skillCommandName } from './skill-command'
 import { InspectorChanges, InspectorContext, InspectorEvents, InspectorRun, InspectorSecurity, InspectorUsage } from './project-inspector'
 import { ResourceInstallDialog } from '../resources/resources-page'
+import { FilePreview, type FilePreviewTarget } from './file-preview'
+import { canPreviewFile } from './file-preview-kind'
 
 const statusLabels: Record<string, string> = {
   queued: '待开始', running: '运行中', waiting_approval: '等待审批', waiting_input: '等待输入', paused: '已暂停', blocked: '执行受阻', succeeded: '已完成', failed: '失败', canceled: '已取消',
@@ -64,7 +66,6 @@ function ProjectWorkspace() {
   const inspectorStorageKey = `oktapod.inspector.${bootstrap.user.id}.${projectId}`
   const [managementOpen, setManagementOpen] = useState(Boolean(inspectorSearch))
   const [managementTab, setManagementTab] = useState(() => visibleInspectorTab(inspectorSearch || window.localStorage.getItem(inspectorStorageKey) || undefined))
-  const [managementMoreOpen, setManagementMoreOpen] = useState(false)
   const [managementMaximized, setManagementMaximized] = useState(false)
   const [filesSection, setFilesSection] = useState<'workspace' | 'project' | 'outputs'>('workspace')
   const project = useQuery({ queryKey: ['project', projectId], queryFn: () => api.project(projectId) })
@@ -102,7 +103,6 @@ function ProjectWorkspace() {
     setComposerDraft(draft)
     setManagementOpen(true)
     setManagementTab(draft.kind === 'capability' ? 'tools' : 'agents')
-    setManagementMoreOpen(true)
   }
 
   const selectedConversation = conversations.data?.items.find((item) => item.id === activeConversationId)
@@ -284,17 +284,13 @@ function ProjectWorkspace() {
       }} /> : null}
 
       {managementOpen ? <aside className="project-management-panel">
-        <header><div><strong>任务面板</strong><span>{inspectedTask?.title || project.data.name}</span></div><span className="panel-header-actions"><button className="icon-control" type="button" aria-label={managementMaximized ? '还原任务面板' : '最大化任务面板'} title={managementMaximized ? '还原任务面板' : '最大化任务面板'} onClick={() => setManagementMaximized((value) => !value)}>{managementMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button><button className="icon-control" type="button" aria-label="关闭任务面板" title="关闭任务面板" onClick={() => { setManagementOpen(false); setManagementMaximized(false); updateInspectorLocation() }}><PanelRightClose size={17} /></button></span></header>
-        <nav aria-label="任务面板导航">
-          {([['run', '运行'], ['files', '文件'], ['changes', '变更'], ['security', '安全'], ['trace', '追踪']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => selectInspectorTab(value)}>{label}</button>)}
-          <button className={managementMoreOpen || ['tools', 'context', 'usage', 'overview', 'tasks', 'activity', 'plan', 'agents', 'project_usage'].includes(managementTab) ? 'active' : ''} type="button" aria-expanded={managementMoreOpen} onClick={() => setManagementMoreOpen((value) => !value)}><MoreHorizontal size={14} />更多</button>
+        <nav className="panel-primary-nav" aria-label="任务面板导航">
+          {([['files', '文件'], ['changes', '变更'], ['usage', '用量'], ['overview', '项目'], ['trace', '追踪']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => selectInspectorTab(value)}>{label}</button>)}
+          <span className="panel-header-actions"><button className="icon-control" type="button" aria-label={managementMaximized ? '还原侧边面板' : '最大化侧边面板'} title={managementMaximized ? '还原侧边面板' : '最大化侧边面板'} onClick={() => setManagementMaximized((value) => !value)}>{managementMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button><button className="icon-control" type="button" aria-label="关闭侧边面板" title="关闭侧边面板" onClick={() => { setManagementOpen(false); setManagementMaximized(false); updateInspectorLocation() }}><PanelRightClose size={17} /></button></span>
         </nav>
-        {managementMoreOpen ? <div className="panel-secondary-nav" aria-label="更多任务与项目视图">
-          {([['context', '上下文'], ['usage', '用量'], ['tools', '工具'], ['overview', '项目'], ['tasks', '任务'], ['activity', '动态'], ['plan', '计划'], ['agents', '智能体'], ['project_usage', '项目用量']] as Array<[string, string]>).map(([value, label]) => <button className={managementTab === value ? 'active' : ''} type="button" key={value} onClick={() => { selectInspectorTab(value); setManagementMoreOpen(false) }}>{label}</button>)}
-        </div> : null}
         <div className="panel-content">
           {managementTab === 'run' ? <InspectorRun task={inspectedTask} events={inspectedRunEvents.data.items} usage={inspectedUsage.data} artifacts={inspectedArtifactVersions} agentTeam={inspectedAgentTeam.data} /> : null}
-          {managementTab === 'files' ? <FilesInspector projectId={projectId} task={inspectedTask} section={filesSection} onSectionChange={setFilesSection} /> : null}
+          {managementTab === 'files' ? <FilesInspector projectId={projectId} task={inspectedTask} section={filesSection} onSectionChange={setFilesSection} onPreviewOpen={() => setManagementMaximized(true)} /> : null}
           {managementTab === 'context' ? <InspectorContext projectModel={project.data.default_model} events={inspectedRunEvents.data.items} /> : null}
           {managementTab === 'tools' ? <InspectorEvents events={inspectedRunEvents.data.items.filter((item) => item.event_type.includes('tool'))} empty="当前 Run 尚无工具事件。" /> : null}
           {managementTab === 'security' ? <InspectorSecurity projectId={projectId} taskId={inspectedTask?.id} approvals={inspectedApprovals.data?.items ?? []} /> : null}
@@ -656,10 +652,11 @@ function TasksView({ tasks, loading }: { tasks: Awaited<ReturnType<typeof api.ta
   return <div className="task-table"><div className="task-table-head"><span>任务</span><span>模式</span><span>状态</span><span>更新时间</span></div>{tasks.map((task) => <Link className="task-table-row" key={task.id} to="/tasks/$taskId" params={{ taskId: task.id }}><span><strong>{task.title}</strong><small>{task.goal}</small>{task.error_code ? <em className="task-error-code">{task.error_code}</em> : null}</span><span>{task.mode === 'answer' ? '直接回答' : task.mode === 'single_agent' ? '单智能体' : 'Agent Team'}</span><span><em className={`status-pill ${task.status}`}>{statusLabels[task.status]}</em></span><span>{new Date(task.updated_at).toLocaleString('zh-CN')}</span></Link>)}</div>
 }
 
-function FilesInspector({ projectId, task, section, onSectionChange }: { projectId: string; task?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; section: 'workspace' | 'project' | 'outputs'; onSectionChange: (section: 'workspace' | 'project' | 'outputs') => void }) {
+function FilesInspector({ projectId, task, section, onSectionChange, onPreviewOpen }: { projectId: string; task?: Awaited<ReturnType<typeof api.tasks>>['items'][number]; section: 'workspace' | 'project' | 'outputs'; onSectionChange: (section: 'workspace' | 'project' | 'outputs') => void; onPreviewOpen: () => void }) {
   const [outputScope, setOutputScope] = useState<'current' | 'project'>('current')
   const [outputVersions, setOutputVersions] = useState<'latest' | 'all'>('latest')
   const [workspaceDirectory, setWorkspaceDirectory] = useState('')
+  const [preview, setPreview] = useState<FilePreviewTarget>()
   const includeHistory = outputVersions === 'all'
   const allOutputs = outputScope === 'project'
   const workspace = useInfiniteQuery<WorkspaceFilePage, Error, InfiniteData<WorkspaceFilePage, number>, Array<string | number>, number>({
@@ -676,17 +673,27 @@ function FilesInspector({ projectId, task, section, onSectionChange }: { project
   const savedArtifactIds = new Set((rootProjectFiles.data?.items ?? []).filter((asset) => asset.source_type === 'artifact').map((asset) => asset.source_artifact_id))
   const workspaceFiles = workspace.data?.pages.flatMap((page) => page.items) ?? []
   const uncapturedPDFs = workspaceFiles.filter((file) => file.kind === 'file' && file.path.toLowerCase().endsWith('.pdf') && !currentArtifactNames.has(file.path))
+  const openFile = (target: FilePreviewTarget) => {
+    if (!canPreviewFile(target)) {
+      const opened = window.open(target.previewUrl, '_blank', 'noopener,noreferrer')
+      if (opened) opened.opener = null
+      return
+    }
+    setPreview(target)
+    onPreviewOpen()
+  }
+  if (preview) return <FilePreview target={preview} onBack={() => setPreview(undefined)} />
   return <div className="files-inspector">
     <nav className="files-inspector-tabs" aria-label="文件类型">
       {([['workspace', '工作文件'], ['project', '项目资料'], ['outputs', '任务输出']] as const).map(([value, label]) => <button type="button" className={section === value ? 'active' : ''} key={value} onClick={() => onSectionChange(value)}>{label}</button>)}
     </nav>
-    {section === 'workspace' ? <section className="files-inspector-section workspace"><header><div><span className="file-lifecycle-label">可编辑 · 工作区</span><strong>工作文件</strong><small title={workspace.data?.pages[0]?.root || ''}>{workspace.data?.pages[0]?.root || '正在读取工作区路径…'}</small></div><button type="button" aria-label="刷新工作文件" title="刷新工作文件" onClick={() => workspace.refetch()}><RefreshCw size={14} /></button></header><WorkspaceBrowser currentArtifactNames={currentArtifactNames} directory={workspaceDirectory} files={workspaceFiles} hasMore={Boolean(workspace.hasNextPage && !workspace.isFetchingNextPage)} isLoading={workspace.isLoading} onLoadMore={() => { void workspace.fetchNextPage() }} projectId={projectId} runId={task?.run_id} onNavigate={setWorkspaceDirectory} />{workspace.error ? <div className="panel-error">{workspace.error.message}</div> : null}</section> : null}
-    {section === 'project' ? <section className="files-inspector-section project"><header><div><span className="file-lifecycle-label">可复用输入</span><strong>项目资料</strong><small>上传的资料，或从任务输出明确保存的成果；供后续任务作为附件使用，不等于任务交付。</small></div></header><AssetsView projectId={projectId} compact /></section> : null}
-    {section === 'outputs' ? <section className="files-inspector-section outputs"><header><div><span className="file-lifecycle-label">不可变</span><strong>任务输出</strong><small>{allOutputs ? '查看这个项目所有任务登记的输出' : task ? `本次任务 · Run ${task.run_id.slice(0, 12)}` : '当前会话尚无任务'}</small></div></header><div className="files-output-filters" aria-label="任务输出筛选"><label><span>范围</span><select aria-label="任务输出范围" value={outputScope} onChange={(event) => setOutputScope(event.target.value as 'current' | 'project')}><option value="current">本次任务</option><option value="project">项目全部任务</option></select></label><label><span>版本</span><select aria-label="任务输出版本" value={outputVersions} onChange={(event) => setOutputVersions(event.target.value as 'latest' | 'all')}><option value="latest">仅最新版本</option><option value="all">包含旧版本</option></select></label></div>{!allOutputs && task?.run_id && uncapturedPDFs.length ? <div className="files-recovery-card"><div><strong>发现尚未保存的 PDF</strong><small>文件已生成在工作区，但这个旧任务没有登记为输出。确认后会归属到本次任务。</small></div>{uncapturedPDFs.map((file) => <WorkspaceCaptureAction file={file} key={file.path} projectId={projectId} runId={task.run_id} />)}</div> : null}{outputs.error ? <div className="panel-error">{outputs.error.message}</div> : null}<div className="files-inspector-list">{outputs.data?.items.map((artifact) => <TaskOutputRow artifact={artifact} key={artifact.id} saved={savedArtifactIds.has(artifact.id)} />)}</div>{outputs.isLoading ? <div className="inspector-empty compact"><FileBox size={16} /><strong>正在读取任务输出…</strong></div> : null}{!outputs.isLoading && outputs.data?.items.length === 0 ? <div className="inspector-empty compact"><FileBox size={16} /><strong>这个范围还没有任务输出</strong><span>{uncapturedPDFs.length ? '上方检测到工作区 PDF，可以明确保存到本次任务。' : '脚本生成的文件需要登记后才会成为不可变任务输出。'}</span></div> : null}</section> : null}
+    {section === 'workspace' ? <section className="files-inspector-section workspace"><header><div><span className="file-lifecycle-label">可编辑 · 工作区</span><strong>工作文件</strong><small title={workspace.data?.pages[0]?.root || ''}>{workspace.data?.pages[0]?.root || '正在读取工作区路径…'}</small></div><button type="button" aria-label="刷新工作文件" title="刷新工作文件" onClick={() => workspace.refetch()}><RefreshCw size={14} /></button></header><WorkspaceBrowser currentArtifactNames={currentArtifactNames} directory={workspaceDirectory} files={workspaceFiles} hasMore={Boolean(workspace.hasNextPage && !workspace.isFetchingNextPage)} isLoading={workspace.isLoading} onLoadMore={() => { void workspace.fetchNextPage() }} projectId={projectId} runId={task?.run_id} onNavigate={setWorkspaceDirectory} onOpenFile={openFile} />{workspace.error ? <div className="panel-error">{workspace.error.message}</div> : null}</section> : null}
+    {section === 'project' ? <section className="files-inspector-section project"><header><div><span className="file-lifecycle-label">可复用输入</span><strong>项目资料</strong><small>上传的资料，或从任务输出明确保存的成果；供后续任务作为附件使用，不等于任务交付。</small></div></header><AssetsView projectId={projectId} compact onOpenFile={openFile} /></section> : null}
+    {section === 'outputs' ? <section className="files-inspector-section outputs"><header><div><span className="file-lifecycle-label">不可变</span><strong>任务输出</strong><small>{allOutputs ? '查看这个项目所有任务登记的输出' : task ? `本次任务 · Run ${task.run_id.slice(0, 12)}` : '当前会话尚无任务'}</small></div></header><div className="files-output-filters" aria-label="任务输出筛选"><label><span>范围</span><select aria-label="任务输出范围" value={outputScope} onChange={(event) => setOutputScope(event.target.value as 'current' | 'project')}><option value="current">本次任务</option><option value="project">项目全部任务</option></select></label><label><span>版本</span><select aria-label="任务输出版本" value={outputVersions} onChange={(event) => setOutputVersions(event.target.value as 'latest' | 'all')}><option value="latest">仅最新版本</option><option value="all">包含旧版本</option></select></label></div>{!allOutputs && task?.run_id && uncapturedPDFs.length ? <div className="files-recovery-card"><div><strong>发现尚未保存的 PDF</strong><small>文件已生成在工作区，但这个旧任务没有登记为输出。确认后会归属到本次任务。</small></div>{uncapturedPDFs.map((file) => <WorkspaceCaptureAction file={file} key={file.path} projectId={projectId} runId={task.run_id} />)}</div> : null}{outputs.error ? <div className="panel-error">{outputs.error.message}</div> : null}<div className="files-inspector-list">{outputs.data?.items.map((artifact) => <TaskOutputRow artifact={artifact} key={artifact.id} saved={savedArtifactIds.has(artifact.id)} onOpenFile={openFile} />)}</div>{outputs.isLoading ? <div className="inspector-empty compact"><FileBox size={16} /><strong>正在读取任务输出…</strong></div> : null}{!outputs.isLoading && outputs.data?.items.length === 0 ? <div className="inspector-empty compact"><FileBox size={16} /><strong>这个范围还没有任务输出</strong><span>{uncapturedPDFs.length ? '上方检测到工作区 PDF，可以明确保存到本次任务。' : '脚本生成的文件需要登记后才会成为不可变任务输出。'}</span></div> : null}</section> : null}
   </div>
 }
 
-function WorkspaceBrowser({ currentArtifactNames, directory, files, hasMore, isLoading, onLoadMore, onNavigate, projectId, runId }: {
+function WorkspaceBrowser({ currentArtifactNames, directory, files, hasMore, isLoading, onLoadMore, onNavigate, onOpenFile, projectId, runId }: {
   currentArtifactNames: Set<string>
   directory: string
   files: WorkspaceFile[]
@@ -694,6 +701,7 @@ function WorkspaceBrowser({ currentArtifactNames, directory, files, hasMore, isL
   isLoading: boolean
   onLoadMore: () => void
   onNavigate: (path: string) => void
+  onOpenFile: (target: FilePreviewTarget) => void
   projectId: string
   runId?: string
 }) {
@@ -701,13 +709,12 @@ function WorkspaceBrowser({ currentArtifactNames, directory, files, hasMore, isL
     if (left.kind !== right.kind) return left.kind === 'directory' ? -1 : 1
     return left.path.localeCompare(right.path, 'zh-CN')
   })
-  if (isLoading) return <div className="inspector-empty compact"><Folder size={16} /><strong>正在读取工作文件…</strong></div>
-  if (sortedFiles.length === 0) return <div className="inspector-empty compact"><Folder size={16} /><strong>这个目录暂无内容</strong></div>
+  const parentDirectory = directory.split('/').slice(0, -1).join('/')
   return <div className="workspace-browser">
-    {directory ? <div className="workspace-browser-breadcrumb"><button type="button" onClick={() => onNavigate('')}><FolderOpen size={13} /> 项目根目录</button><span>{directory}</span></div> : null}
-    <div className="files-inspector-list">
-      {sortedFiles.map((file) => <WorkspaceBrowserRow currentArtifactNames={currentArtifactNames} file={file} key={file.path} onNavigate={onNavigate} projectId={projectId} runId={runId} />)}
-    </div>
+    {directory ? <div className="workspace-browser-breadcrumb"><button type="button" onClick={() => onNavigate(parentDirectory)}><ArrowLeft size={13} />返回上一级</button><button className="workspace-root-link" type="button" onClick={() => onNavigate('')}>项目根目录</button><span>/ {directory}</span></div> : null}
+    {isLoading ? <div className="inspector-empty compact"><Folder size={16} /><strong>正在读取工作文件…</strong></div> : sortedFiles.length === 0 ? <div className="inspector-empty compact"><Folder size={16} /><strong>这个目录暂无内容</strong></div> : <div className="files-inspector-list">
+      {sortedFiles.map((file) => <WorkspaceBrowserRow currentArtifactNames={currentArtifactNames} file={file} key={file.path} onNavigate={onNavigate} onOpenFile={onOpenFile} projectId={projectId} runId={runId} />)}
+    </div>}
     {hasMore ? <button className="workspace-load-more" type="button" onClick={onLoadMore}>加载更多</button> : null}
   </div>
 }
@@ -730,10 +737,11 @@ function MessagePresentation({ presentation }: { presentation?: ConversationMess
   </div>
 }
 
-function WorkspaceBrowserRow({ currentArtifactNames, file, onNavigate, projectId, runId }: {
+function WorkspaceBrowserRow({ currentArtifactNames, file, onNavigate, onOpenFile, projectId, runId }: {
   currentArtifactNames: Set<string>
   file: WorkspaceFile
   onNavigate: (path: string) => void
+  onOpenFile: (target: FilePreviewTarget) => void
   projectId: string
   runId?: string
 }) {
@@ -746,9 +754,11 @@ function WorkspaceBrowserRow({ currentArtifactNames, file, onNavigate, projectId
       <span className="files-row-actions"><button className="file-icon-action" type="button" aria-label={`进入 ${name}`} title={`进入 ${name}`} onClick={() => onNavigate(file.path)}><ArrowRight size={14} /></button></span>
     </div>
   }
+  const target: FilePreviewTarget = { projectId, sourceKind: 'workspace', reference: file.path, name, sizeBytes: file.size_bytes, previewUrl: api.workspaceContentUrl(projectId, file.path), downloadUrl: api.workspaceContentUrl(projectId, file.path) }
+  const previewable = canPreviewFile(target)
   return <div className="workspace-browser-row">
-    <span><FileIcon size={15} /><span><a href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer" title={file.path}>{name}</a><small>{file.git_status || '未变更'} · {formatBytes(file.size_bytes)} · {new Date(file.modified_at).toLocaleString('zh-CN')}</small></span></span>
-    <span className="files-row-actions">{file.lifecycle_role === 'candidate_output' && runId && !currentArtifactNames.has(file.path) ? <WorkspaceCaptureAction compact file={file} projectId={projectId} runId={runId} /> : null}<a aria-label={`打开 ${file.path}`} href={api.workspaceContentUrl(projectId, file.path)} target="_blank" rel="noreferrer"><ChevronRight size={14} /></a></span>
+    <span><FileIcon size={15} /><span><button className="file-name-button" type="button" title={file.path} onClick={() => onOpenFile(target)}>{name}</button><small>{file.git_status || '未变更'} · {formatBytes(file.size_bytes)} · {new Date(file.modified_at).toLocaleString('zh-CN')}</small></span></span>
+    <span className="files-row-actions">{file.lifecycle_role === 'candidate_output' && runId && !currentArtifactNames.has(file.path) ? <WorkspaceCaptureAction compact file={file} projectId={projectId} runId={runId} /> : null}<button className="file-icon-action" type="button" aria-label={previewable ? `预览 ${file.path}` : `在新页面打开 ${file.path}`} title={previewable ? '在面板内预览' : '在新页面打开'} onClick={() => onOpenFile(target)}>{previewable ? <Eye size={14} /> : <ExternalLink size={14} />}</button></span>
   </div>
 }
 
@@ -759,15 +769,16 @@ function WorkspaceCaptureAction({ compact = false, file, projectId, runId }: { c
   return <span className={compact ? 'workspace-capture-action compact' : 'workspace-capture-action'}>{compact ? null : <span><FileBox size={14} /><strong>{file.path}</strong></span>}<button className="file-icon-action" type="button" aria-label={`${label}：${file.path}`} title={`${label}；保存后成为本次任务的不可变输出`} disabled={capture.isPending || capture.isSuccess} onClick={() => capture.mutate()}><FileCheck2 size={15} /></button>{capture.error ? <small>{capture.error.message}</small> : null}</span>
 }
 
-function TaskOutputRow({ artifact, saved }: { artifact: Artifact; saved: boolean }) {
+function TaskOutputRow({ artifact, saved, onOpenFile }: { artifact: Artifact; saved: boolean; onOpenFile: (target: FilePreviewTarget) => void }) {
   const queryClient = useQueryClient()
   const save = useMutation({ mutationFn: () => api.saveArtifactAsProjectFile(artifact.id, { name: artifact.name, visibility: 'private' }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['assets', artifact.project_id] }) })
   const alreadySaved = saved || save.isSuccess
   const saveLabel = alreadySaved ? '已保存到项目资料' : save.isPending ? '正在保存到项目资料' : '保存到项目资料'
-  return <div><span><FileIcon size={15} /><span><a href={api.artifactPreviewUrl(artifact.id)} target="_blank" rel="noreferrer">{artifact.name}</a><small>{artifact.kind === 'evidence' ? '过程证据' : '交付物'} · {artifact.media_type} · {formatBytes(artifact.size_bytes)}</small></span></span><span className="files-row-actions"><button className="file-icon-action" type="button" aria-label={`${saveLabel}：${artifact.name}`} title={`${saveLabel}；供本项目后续任务复用，不会发布到项目外`} disabled={save.isPending || alreadySaved} onClick={() => save.mutate()}><FolderInput size={15} /></button><a aria-label={`下载 ${artifact.name}`} title={`下载 ${artifact.name}`} href={api.artifactContentUrl(artifact.id)}><Download size={14} /></a></span></div>
+  const target: FilePreviewTarget = { projectId: artifact.project_id, sourceKind: 'artifact', reference: artifact.id, name: artifact.name, mediaType: artifact.media_type, sizeBytes: artifact.size_bytes, previewUrl: api.artifactPreviewUrl(artifact.id), downloadUrl: api.artifactContentUrl(artifact.id) }
+  return <div><span><FileIcon size={15} /><span><button className="file-name-button" type="button" onClick={() => onOpenFile(target)}>{artifact.name}</button><small>{artifact.kind === 'evidence' ? '过程证据' : '交付物'} · {artifact.media_type} · {formatBytes(artifact.size_bytes)}</small></span></span><span className="files-row-actions"><button className="file-icon-action" type="button" aria-label={`${saveLabel}：${artifact.name}`} title={`${saveLabel}；供本项目后续任务复用，不会发布到项目外`} disabled={save.isPending || alreadySaved} onClick={() => save.mutate()}><FolderInput size={15} /></button><a aria-label={`下载 ${artifact.name}`} title={`下载 ${artifact.name}`} href={api.artifactContentUrl(artifact.id)}><Download size={14} /></a></span></div>
 }
 
-function AssetsView({ projectId, compact = false }: { projectId: string; compact?: boolean }) {
+function AssetsView({ projectId, compact = false, onOpenFile }: { projectId: string; compact?: boolean; onOpenFile: (target: FilePreviewTarget) => void }) {
   const [folderStack, setFolderStack] = useState<Asset[]>([])
   const [search, setSearch] = useState('')
   const [kind, setKind] = useState<'file' | 'folder' | ''>('')
@@ -814,7 +825,7 @@ function AssetsView({ projectId, compact = false }: { projectId: string; compact
       <div className="asset-table-head"><span>名称</span><span>类型 / 来源</span><span>更新人</span><span>更新时间</span><span>大小</span><span /></div>
       {assets.isLoading ? <div className="asset-empty">正在渐进加载元数据…</div> : null}
       {assets.data?.items.map((asset) => <div className="asset-row" key={asset.id}>
-        <span className="asset-name">{asset.kind === 'folder' ? <Folder size={19} /> : <FileIcon size={19} />}{asset.kind === 'folder' ? <button type="button" onClick={() => setFolderStack((current) => [...current, asset])}>{asset.name}</button> : <a href={api.assetPreviewUrl(asset.id)} target="_blank" rel="noreferrer">{asset.name}</a>}<em>{asset.visibility === 'private' ? '仅自己' : '项目'}</em></span>
+        <span className="asset-name">{asset.kind === 'folder' ? <Folder size={19} /> : <FileIcon size={19} />}{asset.kind === 'folder' ? <button type="button" onClick={() => setFolderStack((current) => [...current, asset])}>{asset.name}</button> : <button type="button" onClick={() => onOpenFile({ projectId, sourceKind: 'asset', reference: asset.id, name: asset.name, mediaType: asset.media_type, sizeBytes: asset.size_bytes, previewUrl: api.assetPreviewUrl(asset.id), downloadUrl: api.assetContentUrl(asset.id) })}>{asset.name}</button>}<em>{asset.visibility === 'private' ? '仅自己' : '项目'}</em></span>
         <span>{asset.kind === 'folder' ? '文件夹' : asset.media_type || '文件'}<small>{asset.source_type === 'artifact' ? '任务产物' : '上传'}</small></span>
         <span title={asset.owner_user_id}>{asset.owner_user_id.slice(0, 8)}</span>
         <span>{new Date(asset.updated_at).toLocaleString('zh-CN')}</span>

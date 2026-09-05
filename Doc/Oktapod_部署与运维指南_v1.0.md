@@ -1,7 +1,7 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.1.2
-> 更新日期：2026-08-24
+> 版本：v1.1.3
+> 更新日期：2026-09-05
 > 发布路径：注册用户 + 个人私有项目 + SQLite
 
 ## 1. 部署结论
@@ -66,6 +66,8 @@ pnpm verify
 pnpm release:build
 pnpm release:smoke
 ```
+
+Windows 暂存目录必须同时包含 LibreOffice 的 `soffice.exe` 与同目录 `soffice.com`，并由签名 Manifest 覆盖两者。配置仍填写 `soffice.exe`；宿主在验证 `.com` 也属于同一签名包后改用控制台启动器同步等待转换完成，避免 GUI 启动器提前返回。文件预览的派生缓存使用短 Hash 路径并为每次转换创建独立 Profile，以兼容未启用长路径的 Windows 主机。
 
 ```bash
 export OKTAPOD_DOCUMENT_RUNTIME_STAGE=/srv/release-stage/linux-amd64

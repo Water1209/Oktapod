@@ -494,6 +494,12 @@ def apply_document(params: dict) -> dict:
 def _libreoffice() -> str | None:
     configured = os.environ.get("OKTAPOD_LIBREOFFICE", "").strip()
     if configured and Path(configured).is_file():
+        # The Windows GUI launcher detaches immediately. Prefer the sibling
+        # console launcher so subprocess.run observes conversion completion.
+        if os.name == "nt" and Path(configured).name.lower() == "soffice.exe":
+            console = Path(configured).with_suffix(".com")
+            if console.is_file():
+                return str(console)
         return configured
     return shutil.which("soffice") or shutil.which("libreoffice")
 
@@ -503,15 +509,17 @@ def _to_pdf(source: Path, output_dir: Path) -> Path:
     if not executable:
         raise RuntimeFailure("RENDERER_UNAVAILABLE", "LibreOffice Headless is not installed in the document runtime package")
     output_dir.mkdir(parents=True, exist_ok=True)
-    profile = output_dir / "lo-profile"
-    profile.mkdir(exist_ok=True)
-    command = [executable, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--norestore", f"-env:UserInstallation={profile.as_uri()}", "--convert-to", "pdf", "--outdir", str(output_dir), str(source)]
-    completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
-    candidate = output_dir / (source.stem + ".pdf")
-    if completed.returncode != 0 or not candidate.is_file():
-        raise RuntimeFailure("RENDER_FAILED", "LibreOffice conversion failed", {"stderr": completed.stderr.decode("utf-8", "replace")[-2000:]})
-    _format(candidate, "pdf")
-    return candidate
+    profile = Path(tempfile.mkdtemp(prefix="lo-profile-", dir=output_dir))
+    try:
+        command = [executable, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--norestore", f"-env:UserInstallation={profile.as_uri()}", "--convert-to", "pdf", "--outdir", str(output_dir), str(source)]
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
+        candidate = output_dir / (source.stem + ".pdf")
+        if completed.returncode != 0 or not candidate.is_file():
+            raise RuntimeFailure("RENDER_FAILED", "LibreOffice conversion failed", {"stderr": completed.stderr.decode("utf-8", "replace")[-2000:]})
+        _format(candidate, "pdf")
+        return candidate
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def render_document(params: dict) -> dict:

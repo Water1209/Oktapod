@@ -11,10 +11,13 @@ export const V1_VISIBILITY = {
 } as const
 
 export const V1_INSPECTOR_TABS = new Set([
-  'run', 'files', 'context', 'usage', 'changes', 'trace', 'tools', 'security',
-  'overview', 'tasks', 'assets', 'activity', 'plan', 'agents', 'project_usage',
+  'files', 'changes', 'usage', 'overview', 'trace',
 ])
 
 export function visibleInspectorTab(value: string | undefined) {
-  return value && V1_INSPECTOR_TABS.has(value) ? value : 'run'
+  if (value && V1_INSPECTOR_TABS.has(value)) return value
+  if (value === 'project_usage') return 'usage'
+  if (value && ['run', 'context', 'tools', 'security'].includes(value)) return 'trace'
+  if (value && ['tasks', 'assets', 'activity', 'plan', 'agents'].includes(value)) return 'overview'
+  return 'files'
 }

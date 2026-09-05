@@ -362,7 +362,7 @@ func runtimeEnvironment(c *Client, tempRoot, python string) []string {
 	}
 	pathParts := []string{filepath.Dir(python)}
 	if c.manifest.LibreOffice != "" {
-		if path, ok := c.runtimeExecutable(c.manifest.LibreOffice); ok {
+		if path, ok := c.libreOfficeExecutable(); ok {
 			values = append(values, "OKTAPOD_LIBREOFFICE="+path)
 			pathParts = append(pathParts, filepath.Dir(path))
 		}
@@ -382,6 +382,35 @@ func runtimeEnvironment(c *Client, tempRoot, python string) []string {
 	}
 	values = append(values, "PATH="+strings.Join(pathParts, string(os.PathListSeparator)))
 	return values
+}
+
+// soffice.exe detaches from its parent process on Windows, so a successful
+// process return does not mean the requested conversion has finished. The
+// console launcher stays attached and gives the runtime a deterministic exit
+// code and output contract. Only use it when the sibling binary is covered by
+// the signed manifest (or is an explicitly configured development binary).
+func (c *Client) libreOfficeExecutable() (string, bool) {
+	configured := strings.TrimSpace(c.manifest.LibreOffice)
+	path, ok := c.runtimeExecutable(configured)
+	if !ok || runtime.GOOS != "windows" || !strings.EqualFold(filepath.Base(path), "soffice.exe") {
+		return path, ok
+	}
+	consolePath := strings.TrimSuffix(path, filepath.Ext(path)) + ".com"
+	if strings.HasSuffix(c.manifest.Version, "-dev") && filepath.IsAbs(configured) {
+		info, err := os.Lstat(consolePath)
+		if err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			return consolePath, true
+		}
+		return path, true
+	}
+	consoleRelative := strings.TrimSuffix(filepath.ToSlash(configured), filepath.Ext(configured)) + ".com"
+	if c.manifest.Files[consoleRelative] == "" {
+		return path, true
+	}
+	if candidate, err := securePackagePath(c.packageRoot, consoleRelative); err == nil {
+		return candidate, true
+	}
+	return path, true
 }
 
 func (c *Client) runtimeExecutable(configured string) (string, bool) {

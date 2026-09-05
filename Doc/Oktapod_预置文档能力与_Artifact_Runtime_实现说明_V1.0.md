@@ -1,7 +1,7 @@
 # Oktapod 预置文档能力与 Artifact Runtime 实现说明
 
-> 版本：V1.0  
-> 更新日期：2026-08-22  
+> 版本：V1.1
+> 更新日期：2026-09-05
 > 状态：核心实现完成，跨平台签名包与性能发布门禁待 CI/标准夹具证明
 
 ## 1. 结论与用户影响
@@ -23,11 +23,12 @@ Oktapod 已采用“可卸载预置 Skill + 共享签名 Document Runtime”两�
 - `document_sessions` 与 `document_revisions` 保存 Run、Runtime 版本、修订 Hash、操作 Hash、工作句柄和最终渲染证据；CAS 防止重复或乱序编辑。
 - 解析缓存键包含 Organization、源内容 Hash、Runtime 版本和提取配置；渲染缓存键包含修订 Hash、渲染器和选项。缓存仅位于 DataRoot 派生目录，执行 1 GiB / 30 天 LRU，每次命中仍重新授权源对象。
 - Task 流展示“结构读取、分页读取、修订、渲染校验、输出”，渲染预览通过 Principal + Run + Document 授权的只读路由提供，版式警告和缓存命中可见。
+- 文件面板复用同一 Runtime，为 Workspace、Project Asset 和 Artifact 创建 20 分钟短期预览能力；每次创建重新核对项目 Scope、源 Hash 和当前工作文件未变化，页面路由继续核对 Organization + User。DOCX/XLSX/PPTX 输出分页 PNG，浏览器不接触 Runtime 句柄或宿主绝对路径。
 - `document_export` 只接受当前修订且最后一次渲染成功的文档；OOXML 再校验 ZIP、Content Types、必需部件、路径、加密、宏和压缩炸弹，PDF 再校验签名、页数和可渲染性，最终复用 ArtifactCapture。同一任务修改多个文档时，每个文档都必须分别匹配当前修订、渲染 Hash 和 Artifact，不能由单一导出替代。
 
 ## 3. Runtime 与发布边界
 
-Runtime 是 stdio newline JSON-RPC 子进程，不监听端口；Go 只传 DataRoot 内受控相对句柄。子进程使用最小环境、隔离 HOME/TEMP、清空代理并禁用 Python socket API。Office 渲染使用隔离用户目录的 LibreOffice Headless，PDF 页面使用 PDFium；扫描 PDF 只在 Tesseract 与 `chi_sim + eng` 实际可用时 OCR，结果标注来源和置信度。
+Runtime 是 stdio newline JSON-RPC 子进程，不监听端口；Go 只传 DataRoot 内受控相对句柄。子进程使用最小环境、隔离 HOME/TEMP、清空代理并禁用 Python socket API。Office 渲染使用隔离用户目录的 LibreOffice Headless，PDF 页面使用 PDFium；扫描 PDF 只在 Tesseract 与 `chi_sim + eng` 实际可用时 OCR，结果标注来源和置信度。Windows 使用同步等待的 `soffice.com`（Manifest 仍可声明 `soffice.exe`，宿主只在同目录 `.com` 也受签名覆盖时切换），每次转换创建独立临时 Profile；文件预览缓存目录使用短 Hash，避免 LibreOffice 深层 Profile 越过传统 `MAX_PATH`。
 
 `pnpm release:build` 会调用 `Test/build-document-runtime.mjs`。发布环境必须通过受保护文件提供 Ed25519 PKCS8 私钥，并暂存带 Python、LibreOffice、Tesseract `chi_sim + eng`、锁定依赖和完整 `LICENSES/` 的自包含平台 Runtime；脚本生成 SPDX 2.3 SBOM、第三方声明、逐文件 SHA256、签名 Manifest、平台归档和归档校验和。归档前必须用包内依赖通过健康探测和四格式 25 次 RPC；`release:smoke` 还会验证服务确实信任并加载该包。生产加载器校验信任 Key、算法、平台、协议、必需文件 Hash、所有路径组件和符号链接；开发源码 Runtime 只有显式 `OKTAPOD_DOCUMENT_RUNTIME_DEV=1` 才可发现，宿主 LibreOffice/Tesseract 也只能通过开发专用环境变量传入绝对、普通、非符号链接文件。
 
