@@ -1,6 +1,6 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.1.5
+> 版本：v1.1.6
 > 更新日期：2026-09-10
 > 发布路径：注册用户 + 个人私有项目 + SQLite
 
@@ -140,6 +140,12 @@ Windows Runtime 使用 Python 3.13、LibreOffice 26.2.4.2、Tesseract 5.4.0；Li
 本次 Key ID 对应的私钥仅存在于仓库外受保护位置。进入真实生产前必须完成离线备份、访问控制和组织密钥登记；若使用组织正式密钥，应重新运行两平台构建并重新分发对应的 `document-runtime-trusted-keys.json`，不能只替换公钥文件。
 
 ## 3. Windows 部署
+
+### 源码工作区日常启动
+
+在仓库根目录执行 `.\Deploy\start-local.ps1`。代码更新后先执行 `pnpm build`；日常启动无需重建。脚本复用同路径的已有进程，以隐藏窗口启动新进程，最多等待 180 秒，并同时确认进程拥有监听端口、健康响应为 JSON 且 `status=ok`。本地健康请求禁用代理。发布目录可通过 `-Executable 'C:\Oktapod\oktapod.exe'` 指定主程序；慢盘可设置 `-TimeoutSeconds 300`。脚本退出后服务继续运行。
+
+启动前会验证签名 Document Runtime 的全部文件，2026-09-10 本机 16,388 个文件校验及健康探测约 32 秒，数据库打开约 22 毫秒。耗时随磁盘与缓存变化。不要因十几秒尚未监听而终止或反复启动，也不要删除 SQLite WAL/SHM。日志位于 DataRoot 的 `logs/oktapod-startup.log`，包含 `database_open`、`database_ready`、`vault_open`、`document_runtime_discovery`、`document_runtime_complete`（含耗时）与 `Oktapod started`。脚本超时会报告日志路径并保留进程，供检查具体阶段；配置检查成功不代表服务已经就绪。历史 SQLite ACL 错误需以明确错误日志另行诊断，不能由未监听推断。
 
 以下命令在管理员 PowerShell 中执行。示例部署当前 `windows-amd64` 工件；ARM64 使用对应归档名。
 

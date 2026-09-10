@@ -129,6 +129,7 @@ func run() (runErr error) {
 		secretstore.VaultRepository
 		io.Closer
 	}
+	logger.Info("startup stage", "stage", "database_open")
 	if config.Profile == core.ProfileTeam && strings.TrimSpace(config.DatabaseURL) != "" {
 		store, err = postgresdb.Open(ctx, config.DatabaseURL, config.WorkspaceRoot)
 	} else {
@@ -138,6 +139,7 @@ func run() (runErr error) {
 		return err
 	}
 	defer store.Close()
+	logger.Info("startup stage", "stage", "database_ready")
 	if configurable, ok := store.(interface {
 		SetExecutionPolicy(application.ExecutionPolicy)
 	}); ok {
@@ -154,6 +156,7 @@ func run() (runErr error) {
 		return err
 	}
 	configManager := bootstrap.NewConfigManager(config)
+	logger.Info("startup stage", "stage", "vault_open")
 	vaultKeys, err := secretstore.NewVaultKeyManager(ctx, store, organization.ID, config.DataRoot)
 	if err != nil {
 		return err
@@ -221,6 +224,8 @@ func run() (runErr error) {
 	service.WithArtifactCapture(artifactCapture)
 	var documentExecutor application.DocumentExecutor
 	var documentClient *documentruntime.Client
+	logger.Info("startup stage", "stage", "document_runtime_discovery")
+	documentStartup := time.Now()
 	if discovered, discoverErr := documentruntime.Discover(config.DataRoot, trustedCapabilityKeys); discoverErr != nil {
 		logger.Info("document runtime is not available; preset document resources are degraded", "reason", discoverErr.Error())
 	} else if documentState, ok := store.(application.DocumentStateRepository); !ok {
@@ -245,6 +250,7 @@ func run() (runErr error) {
 			logger.Info("document runtime is ready", "version", health.Version, "protocol", health.Protocol, "renderer", health.Renderer)
 		}
 	}
+	logger.Info("startup stage", "stage", "document_runtime_complete", "duration_ms", time.Since(documentStartup).Milliseconds())
 	if documentClient != nil {
 		defer documentClient.Close()
 	}

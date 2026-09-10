@@ -1,9 +1,13 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.32
+> 版本：v1.33
 > 更新日期：2026-09-10
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
+
+## 2026-09-10 Windows 启动就绪与诊断
+
+状态：PASS_LOCAL。本机复现表明数据库打开约 22 毫秒，签名 Document Runtime 16,388 文件校验及健康探测约 32 秒；此前在就绪前中断进程，且代理将未监听表现为 502，不能据此判定 SQLite 故障。新增 `Deploy/start-local.ps1`，复用同路径进程，等待 JSON 健康并核对监听 PID，禁用健康请求代理；超时保留进程并指向阶段日志。保留全部 Runtime 签名与逐文件完整性验证。启动阶段日志覆盖数据库、Vault 和 Runtime，记录 Runtime 耗时。`pnpm verify` 通过（含前端 95 项测试）；Windows 自带 PowerShell 验证停止状态启动及重复调用成功，最终构建 Runtime 就绪耗时 8,036 毫秒（受缓存影响），健康 JSON 为 SQLite/personal/ok，前端 HTTP 200 且包含应用根节点，脚本退出后 PID 25928 持续运行。无数据库修复或文件删除，未进行真实模型调用或生产部署验收。
 
 ## 2026-09-10 开源发布文档收尾
 
