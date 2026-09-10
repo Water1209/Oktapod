@@ -20,7 +20,7 @@ export interface TaskFailureInfo {
   retryable: boolean
 }
 
-export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'>): TaskFailureInfo | undefined {
+export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'>, events: RunEvent[] = []): TaskFailureInfo | undefined {
   const code = task.error_code?.trim()
   if (!code) return undefined
   const summary = task.result_summary?.trim() ?? ''
@@ -59,7 +59,18 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   if (code === 'PROVIDER_TOOL_ARGUMENTS_INVALID') return { title: '模型工具参数格式异常', detail: '模型生成的工具参数不是完整 JSON，系统没有执行这次工具调用。', action: '系统会自动修复并重试，连续 3 次失败后才停止。', retryable: true }
   if (code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED') return { title: '模型工具参数被截断', detail: '模型没有完整输出工具参数，系统已拒绝执行不完整动作。', action: '系统会拆分长参数并重试，连续 3 次失败后才停止。', retryable: true }
   if (code === 'SCENE_POLICY_DENIED') return { title: '当前场景不允许该操作', detail: '任务规划了当前场景禁止的命令，相关动作没有执行，已完成步骤仍会保留。', action: '从当前检查点重试，系统会改用本场景允许的工具重新规划。', retryable: true }
-  if (code === 'TOOL_POLICY_DENIED') return { title: '工具动作被安全策略拒绝', detail: '冻结的工具或参数不在允许范围内，相关动作没有执行。', action: '修订目标或参数后重新创建任务。', retryable: false }
+  if (code === 'TOOL_POLICY_DENIED') {
+    const ordered = [...events].sort((a, b) => a.stream_seq - b.stream_seq)
+    const batchStart = ordered.reduce((last, event, index) => event.event_type === 'tool.batch_created' ? index : last, -1)
+    const reasons = ordered.slice(Math.max(0, batchStart)).filter((event) => event.event_type === 'tool.planned' && event.payload.policy_decision === 'deny').map((event) => {
+      const reason = String(event.payload.reason ?? '')
+      const tool = String(event.payload.tool_name ?? '工具')
+      if (reason.includes('shell interpreters are denied')) return `${tool} 不接受 Shell 解释器；应改用 workspace_shell，或直接指定程序及参数。`
+      if (reason.includes('unsupported argument')) return `${tool} 使用了不支持的参数 ${reason.split('unsupported argument').pop()?.trim()}；应按工具定义修正。`
+      return `${tool}：${reason || '未通过执行约束检查'}`
+    })
+    return { title: '工具动作被安全策略拒绝', detail: [...new Set(reasons)].join(' ') || '工具或参数不符合执行约束，被拒动作未执行，已完成步骤和文件仍保留。', action: '点击“恢复任务”，系统会在原任务中改用允许的工具或修正参数；此操作不会批准被禁止的动作。', retryable: true }
+  }
   if (code === 'SIDE_EFFECT_STATUS_UNKNOWN') return { title: '外部操作结果未知', detail: '系统无法确认上一次非幂等操作是否完成，因此停止自动重试。', action: '先核查外部状态，再在任务详情中确认处理方式。', retryable: false }
   if (code === 'MCP_CALL_TIMEOUT') return { title: 'MCP 工具执行超时', detail: '外部 MCP 在执行截止时间内没有返回结果，系统已结束本次调用并保留此前进度。', action: '系统会让模型改用更小的查询或其他可用工具恢复；自动恢复用尽后再由你决定是否继续。', retryable: true }
   if (code === 'COMMAND_EXIT_NONZERO') return { title: '命令执行失败', detail: '命令已经运行，但退出码不是 0。', action: '查看工具事件和输出，修订命令后重试。', retryable: true }

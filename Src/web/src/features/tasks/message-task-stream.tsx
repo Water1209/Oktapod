@@ -65,7 +65,7 @@ export function MessageTaskStream({ taskId, runId, active, detailsOpen, onDetail
   const liveEvents = eventsQuery.data.items
 	const provisionalText = eventsQuery.provisionalText
   const timeline = buildTaskTimeline(taskQuery.data, liveEvents)
-  const failure = taskFailureInfo(taskQuery.data)
+  const failure = taskFailureInfo(taskQuery.data, liveEvents)
   const artifacts = latestDeliverableArtifacts(artifactsQuery.data?.items ?? [])
   const runningStep = timeline.find((step) => step.state === 'running')
   const taskOngoing = ['queued', 'running', 'waiting_approval', 'waiting_input', 'paused'].includes(taskQuery.data.status)

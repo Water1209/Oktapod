@@ -3776,6 +3776,19 @@ func (s *Store) retryDeniedToolThroughModel(ctx context.Context, tx *sql.Tx, run
 	if err != nil {
 		return nil, false, err
 	}
+	// A user-requested retry starts a fresh bounded repair episode. Never
+	// replay the denied invocation or change the frozen permission snapshot.
+	var manualInput map[string]any
+	if err := json.Unmarshal([]byte(sourceStep.InputJSON), &manualInput); err != nil {
+		return nil, false, err
+	}
+	delete(manualInput, "model_retry_count")
+	delete(manualInput, "model_compat_retry_count")
+	manualBytes, err := json.Marshal(manualInput)
+	if err != nil {
+		return nil, false, err
+	}
+	sourceStep.InputJSON = string(manualBytes)
 	recoveryStepID, retryCount, queued, err := s.queueModelInteractionRetry(ctx, tx, sourceStep, run, "TOOL_POLICY_DENIED", now)
 	if err != nil {
 		return nil, false, err
@@ -3794,10 +3807,30 @@ func (s *Store) retryDeniedToolThroughModel(ctx context.Context, tx *sql.Tx, run
 		return nil, false, fmt.Errorf("MODEL_RETRY_INPUT_INVALID: policy repair input is not JSON")
 	}
 	recoveryInput["manual_retry"] = true
-	recoveryInput["model_policy_denials"] = []map[string]any{{
-		"tool_name": toolName,
-		"reason":    "该工具或参数被确定性策略禁止，不能通过审批放行",
-	}}
+	denials := []map[string]any{}
+	deniedRows, err := tx.QueryContext(ctx, `SELECT tool_name, arguments_json FROM tool_calls WHERE run_id = ? AND tool_batch_id = ? AND policy_decision = 'deny'`, runID, toolBatchID)
+	if err != nil {
+		return nil, false, err
+	}
+	for deniedRows.Next() {
+		var name, arguments string
+		if err := deniedRows.Scan(&name, &arguments); err != nil {
+			_ = deniedRows.Close()
+			return nil, false, err
+		}
+		call := core.ToolCall{Name: name}
+		if err := json.Unmarshal([]byte(arguments), &call.Arguments); err != nil {
+			_ = deniedRows.Close()
+			return nil, false, err
+		}
+		denials = append(denials, map[string]any{"tool_name": name, "reason": core.PlanTool(call).Reason})
+	}
+	rowsErr := deniedRows.Err()
+	_ = deniedRows.Close()
+	if rowsErr != nil {
+		return nil, false, rowsErr
+	}
+	recoveryInput["model_policy_denials"] = denials
 	encodedRecoveryInput, err := json.Marshal(recoveryInput)
 	if err != nil {
 		return nil, false, err
@@ -4930,9 +4963,8 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 			return &core.ValidationError{Field: "answer", Message: "budget request has invalid proposed limits"}
 		}
 		budgetStatus := "approved_exception"
-		if choice == "unlimited" {
-			budgetStatus = "unlimited_exception"
-		}
+		// Unlimited is represented by zero limits, not a new status. Keep the
+		// same contract as UpdateRunBudget and the persisted budget schema.
 		if _, err := tx.ExecContext(ctx, `UPDATE run_budgets SET max_model_calls = ?, max_tokens = ?, status = ?, updated_at = ? WHERE run_id = ?`, maxCalls, maxTokens, budgetStatus, now, action.RunID); err != nil {
 			return err
 		}

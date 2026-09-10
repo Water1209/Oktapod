@@ -135,7 +135,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
   const total = planItems.length
   const current = planItems.find((item) => ['running', 'waiting_user', 'blocked'].includes(item.status))
     ?? planItems.find((item) => item.status === 'pending')
-  const failure = terminal ? taskFailureInfo(terminal) : undefined
+  const failure = terminal ? taskFailureInfo(terminal, events.data.items) : undefined
   const currentLabel = failure?.title ?? current?.title ?? taskStatusView[task.status].label
   const pendingQueue = queue.data?.items ?? []
   const statusLabel = taskStatusView[task.status].label
@@ -167,6 +167,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
           {failure ? <div className="task-capsule-terminal">
             <p>{failure.detail}</p>
             <small>{failure.action}</small>
+            {retry.error ? <p role="alert">恢复未成功：{retry.error.message}</p> : null}
             {failure.retryable ? <button type="button" disabled={retry.isPending} onClick={() => retry.mutate()}><RotateCw size={12} />{retry.isPending ? '正在恢复' : '恢复任务'}</button> : null}
           </div> : null}
           {planItems.length > 0 ? (

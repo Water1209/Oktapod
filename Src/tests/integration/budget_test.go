@@ -193,6 +193,45 @@ func numericValueForBudgetTest(value any) (int64, bool) {
 	}
 }
 
+func TestBudgetHumanActionUnlimitedResumesSameRun(t *testing.T) {
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	ctx := context.Background()
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID}, core.Organization{ID: testOrgID}, func() string { return "" })
+	project, err := service.CreateProject(ctx, core.CreateProjectInput{Name: "Unlimited approval", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "生成报告", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, MaxModelCalls: 10, MaxTokens: 4096}, "unlimited-action", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := okruntime.NewWorker("unlimited-action-worker", repository, openaicompat.New("https://provider.invalid/v1", "", func() string { return "" }), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if _, err := worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	actions, err := service.ListHumanActions(ctx, core.HumanActionWaitingUser, task.ConversationID, task.RunID)
+	if err != nil || len(actions) != 1 {
+		t.Fatalf("actions=%v err=%v", actions, err)
+	}
+	if _, err := service.DecideHumanAction(ctx, actions[0].ID, core.DecideHumanActionInput{Decision: core.ApprovalApproved, Answer: "unlimited", Version: actions[0].Version}, "unlimited-choice", "unlimited-choice"); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := service.GetRunUsage(ctx, task.RunID)
+	if err != nil || usage.BudgetStatus != "approved_exception" || usage.BudgetMaxCalls != 0 || usage.BudgetMaxTokens != 0 {
+		t.Fatalf("usage=%+v err=%v", usage, err)
+	}
+	resumed, err := service.GetTask(ctx, task.ID)
+	if err != nil || resumed.RunID != task.RunID || resumed.Status != core.StatusQueued {
+		t.Fatalf("task=%+v err=%v", resumed, err)
+	}
+	pending, err := service.ListHumanActions(ctx, core.HumanActionWaitingUser, task.ConversationID, task.RunID)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("unresolved action=%v err=%v", pending, err)
+	}
+}
+
 func TestUnlimitedBudgetAllowsReservation(t *testing.T) {
 	t.Parallel()
 	repository, _ := newRepository(t)

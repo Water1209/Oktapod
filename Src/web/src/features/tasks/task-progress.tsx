@@ -79,7 +79,7 @@ export function ConversationTaskCard({ task, inStrip = false }: { task: Task; in
   const liveEvents = events.data.items
   const timelineItems = buildTaskTimeline(task, liveEvents)
   const executionPlan = buildTaskExecutionPlan(liveEvents, timelineItems)
-  const failure = taskFailureInfo(task)
+  const failure = taskFailureInfo(task, liveEvents)
   const status = taskStatusView[task.status]
   const pendingApprovals = approvals.data?.items.filter((approval) => approval.task_id === task.id) ?? []
   const artifactCount = artifacts.data?.items.length ?? 0

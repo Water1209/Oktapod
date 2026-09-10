@@ -73,7 +73,7 @@ export function TaskPage() {
   if (task.isLoading) return <div className="page-loading">正在恢复任务现场…</div>
   if (task.error || !task.data) return <div className="empty-panel"><h1>任务无法打开</h1><p>{task.error?.message ?? '任务不存在或当前不可见。'}</p></div>
   const status = taskStatusView[task.data.status]
-  const failure = taskFailureInfo(task.data)
+  const failure = taskFailureInfo(task.data, liveEvents)
   const timeline = buildTaskTimeline(task.data, liveEvents)
   const modeLabel = task.data.mode === 'agent_team' ? 'Agent Team' : task.data.mode === 'single_agent' ? '单智能体' : task.data.mode === 'answer' ? '直接回答' : '自动'
   const actionError = control.error?.message ?? acceptOutcome.error?.message

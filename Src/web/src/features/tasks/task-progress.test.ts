@@ -11,6 +11,19 @@ const task: Task = {
 }
 
 describe('task progress presentation', () => {
+  it('shows current policy reasons and offers repair in the same task', () => {
+    const events = [
+      { stream_seq: 1, event_type: 'tool.planned', payload: { policy_decision: 'deny', reason: 'old denial', tool_name: 'old' } },
+      { stream_seq: 2, event_type: 'tool.batch_created', payload: {} },
+      { stream_seq: 3, event_type: 'tool.planned', payload: { policy_decision: 'deny', tool_name: 'workspace_read_file', reason: 'workspace_read_file received unsupported argument selector' } },
+    ] as RunEvent[]
+    const failure = taskFailureInfo({ error_code: 'TOOL_POLICY_DENIED', result_summary: '' }, events)
+    expect(failure?.retryable).toBe(true)
+    expect(failure?.detail).toContain('selector')
+    expect(failure?.detail).not.toContain('old denial')
+    expect(failure?.action).toContain('原任务')
+    expect(failure?.action).toContain('不会批准')
+  })
   it('offers recovery for missing attachment evidence without discarding completed reads', () => {
     const failure = taskFailureInfo({ error_code: 'ATTACHMENT_NOT_READ', result_summary: 'legacy asset_stage message' })
     expect(failure).toMatchObject({ title: '附件尚未全部读取', retryable: true })

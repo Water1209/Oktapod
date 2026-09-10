@@ -616,6 +616,7 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 	}
 	if input.RetryReason == "TOOL_POLICY_DENIED" || strings.HasPrefix(input.RetryReason, "SKILL_") || input.RetryReason == "UPDATE_PLAN_MUST_BE_EXCLUSIVE" {
 		hint += " 这是不可审批的确定性策略限制，不代表用户拒绝。请换用允许的工具或参数继续执行；不要再次调用相同的被拒动作，也不要把任务判失败。"
+		hint += " workspace_run_command 必须使用 program 与 args，不接受 command，也不能把 cmd、powershell 或 bash 作为 program。需要 Shell 语法时只使用已提供的 workspace_shell(command)，仍须经过正常策略与审批。workspace_read_file 不接受 selector；workspace_edit_file 使用 old_text/new_text；仅使用当前工具定义列出的参数。用用户使用的语言说明进展，不要声称尚未成功的复制或验证已完成。"
 		if len(input.PolicyDenials) > 0 {
 			details := make([]string, 0, len(input.PolicyDenials))
 			for _, denial := range input.PolicyDenials {
@@ -1347,7 +1348,7 @@ func skillContextForPrompt(snapshot, prompt string) (string, map[string]any) {
 	toolScopeDeclared := false
 	const maxSkillBody = 6000
 	for _, skill := range skills {
-		if strings.TrimSpace(skill.Name) == "" || (len(tokens) > 0 && !skillRelevant(skill, tokens, prompt)) {
+		if strings.TrimSpace(skill.Name) == "" || !skillRelevant(skill, tokens, prompt) {
 			continue
 		}
 		var manifest map[string]any
@@ -1571,28 +1572,27 @@ func filterOutToolDefinition(definitions []ToolDefinition, toolName string) []To
 	return filtered
 }
 
-func skillRelevant(skill skillSnapshot, tokens map[string]struct{}, prompt string) bool {
-	text := strings.ToLower(skill.Name + " " + skill.Version)
+func skillRelevant(skill skillSnapshot, _ map[string]struct{}, prompt string) bool {
+	normalized := strings.ToLower(prompt)
+	if strings.TrimSpace(skill.Name) != "" && strings.Contains(normalized, strings.ToLower(skill.Name)) {
+		return true
+	}
 	var manifest map[string]any
 	if json.Unmarshal([]byte(skill.ManifestJSON), &manifest) == nil {
 		for _, trigger := range append(manifestStringList(manifest["triggers"]), manifestStringList(manifest["keywords"])...) {
-			if strings.Contains(strings.ToLower(prompt), strings.ToLower(trigger)) {
+			if strings.TrimSpace(trigger) != "" && strings.Contains(strings.ToLower(prompt), strings.ToLower(strings.TrimSpace(trigger))) {
 				return true
 			}
 		}
-		// Match only metadata. Searching full instructions turns generic workflow
-		// words such as "skill", "file", or "verify" into false positives and
-		// defeats metadata-first lazy loading.
-		for _, key := range []string{"description", "keywords", "triggers"} {
-			if value, ok := manifest[key]; ok {
-				encoded, _ := json.Marshal(value)
-				text += " " + strings.ToLower(string(encoded))
-			}
-		}
 	}
-	for token := range tokens {
-		if strings.Contains(text, token) {
-			return true
+	// CJK relevance windows can contain ASCII fragments (three -> "he").
+	// Match complete name words, never n-grams or prose descriptions.
+	words := strings.FieldsFunc(normalized, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	for _, name := range strings.FieldsFunc(strings.ToLower(skill.Name), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		for _, word := range words {
+			if len([]rune(name)) >= 3 && name == word {
+				return true
+			}
 		}
 	}
 	return false

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -81,5 +82,51 @@ func TestDeriveRunStatusIgnoresSettledPolicyRepairs(t *testing.T) {
 	}
 	if status, code := derive(); status != core.StatusBlocked || code != "TOOL_POLICY_DENIED" {
 		t.Fatalf("a genuine unresolved rejection must still block the run: status=%s code=%s", status, code)
+	}
+
+	// Exhausted automatic repairs must not consume a later explicit retry.
+	if _, err := store.db.ExecContext(ctx, `UPDATE steps SET input_json = '{"model_retry_count":3,"history":[{"content":"retained evidence"}]}' WHERE id = ?`, stepID); err != nil {
+		t.Fatal(err)
+	}
+	frontierID, _ := newID()
+	frontierInput, _ := json.Marshal(map[string]any{"model_source_step_id": stepID})
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO steps (id, organization_id, project_id, run_id, step_type, position, status, input_json, tool_batch_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'workspace_run_command', 2, 'blocked', ?, 'denied-batch', ?, ?)`, frontierID, task.OrganizationID, task.ProjectID, task.RunID, string(frontierInput), now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tool_calls SET step_id = ?, status = 'blocked', tool_batch_id = 'denied-batch', arguments_json = '{"program":"powershell.exe","args":["-Command","dir"]}', error_code = '' WHERE position = 1 AND run_id = ?`, frontierID, task.RunID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	result, repaired, err := store.retryDeniedToolThroughModel(ctx, tx, task.RunID, taskControlStep{ID: frontierID, InputJSON: string(frontierInput)}, now, "manual-repair")
+	if err != nil || !repaired {
+		t.Fatalf("manual retry failed after exhausted automatic retries: %v", err)
+	}
+	var encoded string
+	if err := tx.QueryRowContext(ctx, `SELECT input_json FROM steps WHERE id = ?`, result["step_id"]).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	var restored struct {
+		Count   int   `json:"model_retry_count"`
+		Manual  bool  `json:"manual_retry"`
+		History []any `json:"history"`
+		Denials []struct {
+			Reason string `json:"reason"`
+		} `json:"model_policy_denials"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Count != 1 || !restored.Manual || len(restored.History) != 1 || len(restored.Denials) != 1 || restored.Denials[0].Reason == "" {
+		t.Fatalf("bad manual recovery context: %s", encoded)
+	}
+	var deniedStatus, originalCount string
+	_ = tx.QueryRowContext(ctx, `SELECT status FROM steps WHERE id = ?`, frontierID).Scan(&deniedStatus)
+	_ = tx.QueryRowContext(ctx, `SELECT json_extract(input_json, '$.model_retry_count') FROM steps WHERE id = ?`, stepID).Scan(&originalCount)
+	if deniedStatus != "canceled" || originalCount != "3" {
+		t.Fatalf("denied invocation replayed or historical budget mutated: %s %s", deniedStatus, originalCount)
 	}
 }

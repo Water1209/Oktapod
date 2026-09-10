@@ -59,6 +59,16 @@ func TestSkillContextLoadsRelevantInstructionBodyLazily(t *testing.T) {
 	}
 }
 
+func TestWebVillageDoesNotAutoLoadOfficeSkillsFromDescription(t *testing.T) {
+	snapshot := `{"skill_capabilities":[{"id":"sheet","name":"spreadsheets","manifest_json":"{\"description\":\"构建内容，规划网页版表格\",\"triggers\":[\"Excel\",\"工作簿\"],\"allowed_tools\":[\"document_create\"],\"instructions\":\"Create a workbook.\"}"}]}`
+	for _, prompt := range []string{"帮我使用three.js构建一个网页版的3D的小村中，村庄内有啥你自己规划", ""} {
+		body, plan := skillContextForPrompt(snapshot, prompt)
+		if body != "" || plan["loaded"] != 0 || plan["tool_scope_declared"] != false {
+			t.Fatalf("unrelated Skill restricted tools for %q: %v", prompt, plan)
+		}
+	}
+}
+
 func TestSkillContextDoesNotMatchGenericWordsInsideInstructionBodies(t *testing.T) {
 	snapshot := `{"skill_capabilities":[{"id":"skill-frontend","name":"frontend-design","version":"1.0.0","content_hash":"sha256:x","manifest_json":"{\"description\":\"distinctive frontend design\",\"instructions\":\"Create a polished webpage and verify files.\"}"},{"id":"skill-research","name":"researchpilot","version":"1.0.0","content_hash":"sha256:y","manifest_json":"{\"description\":\"deep research workflow\",\"instructions\":\"Use this skill to create files and verify delivery.\"}"}]}`
 	context, plan := skillContextForPrompt(snapshot, "use the frontend-design skill to create a webpage")
