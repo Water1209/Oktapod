@@ -144,6 +144,18 @@ func (policy StaticExecutionPolicy) EvaluateExecution(_ context.Context, _ Princ
 
 type principalContextKey struct{}
 
+type remoteContextKey struct{}
+
+// WithRemoteRequest prevents an HTTP request from using the offline identity.
+func WithRemoteRequest(ctx context.Context) context.Context {
+	return context.WithValue(ctx, remoteContextKey{}, true)
+}
+
+func isRemoteRequest(ctx context.Context) bool {
+	remote, _ := ctx.Value(remoteContextKey{}).(bool)
+	return remote
+}
+
 func WithPrincipal(ctx context.Context, principal Principal) context.Context {
 	ctx = context.WithValue(ctx, principalContextKey{}, principal)
 	ctx = WithScope(ctx, principal.Scope())

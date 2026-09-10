@@ -35,6 +35,8 @@ tmp/
 *.tmp
 
 # Caches
+__pycache__/
+*.py[cod]
 .cache/
 .playwright-mcp/
 playwright-report/

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -118,11 +119,17 @@ func TestModelSkillInvokeQueuesResumeAndAppliesToolScope(t *testing.T) {
 			t.Fatal("resume step exposed recursive skill_invoke")
 		}
 	}
-	if !model.requests[1].ToolScopeDeclared || len(model.requests[1].AllowedTools) != 1 || model.requests[1].AllowedTools[0] != core.ToolWebSearch {
+	if !model.requests[1].ToolScopeDeclared || !slices.Contains(model.requests[1].AllowedTools, core.ToolWebSearch) || !slices.Contains(model.requests[1].AllowedTools, core.ToolReplacePlan) || slices.Contains(model.requests[1].AllowedTools, core.ToolWorkspaceWriteFile) {
 		t.Fatalf("resume tool scope declared=%v allowed=%#v", model.requests[1].ToolScopeDeclared, model.requests[1].AllowedTools)
 	}
 	if !strings.Contains(model.requests[1].SystemPrompt, "frozen release checklist") || !strings.Contains(model.requests[1].SystemPrompt, "production") {
 		t.Fatalf("resume prompt=%q", model.requests[1].SystemPrompt)
+	}
+	if !strings.Contains(model.requests[1].SystemPrompt, "Skill 已加载，但当前尚无持久化语义执行计划") {
+		t.Fatal("Skill resume did not require the initial plan alongside business tools")
+	}
+	if strings.Contains(model.requests[2].SystemPrompt, "当前尚无持久化语义执行计划") {
+		t.Fatal("existing plan was treated as missing after Skill continuation")
 	}
 	if !model.requests[2].EnableTools || !strings.Contains(model.requests[2].SystemPrompt, "frozen release checklist") || !strings.Contains(model.requests[2].SystemPrompt, "production") || !strings.Contains(model.requests[2].UserPrompt, "verified") {
 		t.Fatalf("continuation request=%#v", model.requests[2])
@@ -169,6 +176,54 @@ func TestModelSkillInvokeQueuesResumeAndAppliesToolScope(t *testing.T) {
 	}
 	if skill.ID == "" {
 		t.Fatal("test Skill has no id")
+	}
+}
+
+func TestV2SkillPlanFailureRecoversWithoutExistingPlan(t *testing.T) {
+	ctx := t.Context()
+	store, service, project, skill := setupSkillProject(t, `{"description":"release verification","instructions":"Use the retained Skill evidence.","allowed_tools":["web_search"]}`)
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "collect bounded evidence", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate, SkillID: skill.ID}, "recover-skill", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedSkillModel{}
+	for index := range core.DefaultModelRetryLimit + 1 {
+		model.results = append(model.results, core.ModelResult{CallID: fmt.Sprintf("invalid-plan-%d", index), Provider: "test", Model: "test", ToolCalls: []core.ToolCall{{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "evidence"}}}})
+	}
+	model.results = append(model.results,
+		core.ModelResult{CallID: "valid-recovered-plan", Provider: "test", Model: "test", ToolCalls: []core.ToolCall{semanticPlanCall(), {Name: core.ToolWebSearch, Arguments: map[string]any{"query": "evidence"}}}},
+		core.ModelResult{CallID: "recovered-final", Provider: "test", Model: "test", Content: "Evidence collected successfully."},
+	)
+	worker := NewWorker("recover-skill-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(successfulSkillSearch{})
+	for range core.DefaultModelRetryLimit + 1 {
+		if worked, err := worker.RunOnce(ctx); err != nil || !worked {
+			t.Fatalf("before recovery: %v %v", worked, err)
+		}
+	}
+	blocked, err := service.GetTask(ctx, task.ID)
+	if err != nil || blocked.Status != core.StatusBlocked || blocked.ErrorCode != "TRANSITION_RUN_PLAN_REQUIRED" {
+		t.Fatalf("blocked: %+v %v", blocked, err)
+	}
+	if _, err := service.ControlTask(ctx, task.ID, core.ControlTaskInput{Command: core.TaskCommandRetry}, "manual-recovery", "manual-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if worked, err := worker.RunOnce(ctx); err != nil || !worked {
+			t.Fatalf("after recovery: %v %v", worked, err)
+		}
+	}
+	completed, err := service.GetTask(ctx, task.ID)
+	if err != nil || completed.Status != core.StatusSucceeded || completed.RunID != task.RunID {
+		t.Fatalf("completed: %+v %v", completed, err)
+	}
+	request := model.requests[core.DefaultModelRetryLimit+1]
+	if !strings.Contains(request.SystemPrompt, "retained Skill evidence") || !slices.Contains(request.AllowedTools, core.ToolReplacePlan) || !slices.Contains(request.AllowedTools, core.ToolAdvancePlan) || slices.Contains(request.AllowedTools, core.ToolWorkspaceWriteFile) {
+		t.Fatalf("lost scoped recovery tools or Skill: %+v", request.AllowedTools)
+	}
+	for _, definition := range request.ToolDefinitions {
+		if !slices.Contains(request.AllowedTools, definition.Name) {
+			t.Fatalf("provider would filter %s", definition.Name)
+		}
 	}
 }
 

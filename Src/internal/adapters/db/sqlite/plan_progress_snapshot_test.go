@@ -93,4 +93,46 @@ func TestQueuedContinuationFreezesActivePlanProgress(t *testing.T) {
 	if input.Total != 3 || input.Remaining != 2 {
 		t.Fatalf("frozen plan progress = %d/%d, want 3/2: %s", input.Total, input.Remaining, inputJSON)
 	}
+
+	// Reproduce advance_plan + rejected export: the durable plan advanced,
+	// while the source model input still says two items remain. The retry must
+	// keep history/Skill scope but freeze the now-current final item.
+	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_items SET status = 'running', completed_at = '' WHERE plan_revision_id = ? AND position = 3`, revisionID); err != nil {
+		t.Fatal(err)
+	}
+	run.ConfigSnapshotJSON = `{"plan_protocol_version":"transition_v2"}`
+	var staleInput map[string]any
+	if err := json.Unmarshal([]byte(inputJSON), &staleInput); err != nil {
+		t.Fatal(err)
+	}
+	staleInput["invoked_skill_ids"] = []string{"documents-skill"}
+	staleInput["model_policy_denials"] = []map[string]any{{"tool_name": "document_export", "reason": "extension missing"}}
+	staleBytes, _ := json.Marshal(staleInput)
+	retryID, count, queued, err := store.queueModelInteractionRetry(ctx, tx, core.ClaimedStep{ID: stepID, StepType: core.StepModelContinue, InputJSON: string(staleBytes)}, run, "TOOL_POLICY_DENIED", now)
+	if err != nil || !queued || count != 1 {
+		t.Fatalf("retry queued=%v count=%d err=%v", queued, count, err)
+	}
+	var retryJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT input_json FROM steps WHERE id = ?`, retryID).Scan(&retryJSON); err != nil {
+		t.Fatal(err)
+	}
+	var retry struct {
+		Total     int `json:"active_plan_total"`
+		Remaining int `json:"active_plan_remaining"`
+		Plan      []struct {
+			Status string `json:"status"`
+		} `json:"active_plan"`
+		Skills  []string `json:"invoked_skill_ids"`
+		History []any    `json:"history"`
+		Denials []any    `json:"model_policy_denials"`
+	}
+	if err := json.Unmarshal([]byte(retryJSON), &retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry.Total != 3 || retry.Remaining != 1 || len(retry.Plan) != 3 || retry.Plan[1].Status != "completed" || retry.Plan[2].Status != "running" {
+		t.Fatalf("retry retained stale plan: %s", retryJSON)
+	}
+	if len(retry.Skills) != 1 || retry.Skills[0] != "documents-skill" || len(retry.History) != 1 || len(retry.Denials) != 1 {
+		t.Fatalf("retry lost original context: %s", retryJSON)
+	}
 }

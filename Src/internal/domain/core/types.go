@@ -288,12 +288,17 @@ type Organization struct {
 }
 
 type Bootstrap struct {
+	Permissions     InstancePermissions
 	Profile         string
 	ModelEndpoint   string
 	ModelConfigured bool
 	Actor           Actor
 	Organization    Organization
 	Capabilities    RuntimeCapabilities
+}
+
+type InstancePermissions struct {
+	ManageInstance bool `json:"manage_instance"`
 }
 
 // RuntimeCapabilities is an explicit, user-visible statement of the
@@ -557,6 +562,7 @@ type ConversationCompaction struct {
 // composer. It deliberately reuses the task execution knobs so an Auto turn
 // can be promoted to a Task without asking the user to fill a second form.
 type ProjectTurnInput struct {
+	Admission        Idempotency `json:"-"`
 	ConversationID   string
 	TaskID           string
 	Content          string
@@ -659,6 +665,8 @@ type ConversationFileContext struct {
 }
 
 type ProjectTurnResult struct {
+	QueueReason          string
+	BlockingTaskID       string
 	Queued               bool
 	QueueItem            *ConversationQueueItem
 	ResourceInstallDraft *ResourceInstallDraft
@@ -670,6 +678,7 @@ type ProjectTurnResult struct {
 }
 
 type ConversationQueueItem struct {
+	ClaimVersion   int64
 	ID             string
 	OrganizationID string
 	ProjectID      string
@@ -726,27 +735,30 @@ type MovePlanItemInput struct {
 }
 
 type CreateTaskInput struct {
-	ConversationID   string
-	Title            string
-	Goal             string
-	Acceptance       string
-	Model            string
-	FallbackModel    string
-	ProviderID       string
-	Thinking         string
-	Mode             string
-	Visibility       string
-	PermissionMode   string
-	SceneOverride    string
-	MaxModelCalls    int64
-	MaxTokens        int64
-	AgentID          string
-	TeamDefinitionID string
-	TeamRoles        []TeamRole
-	ContextAssetIDs  []string
-	ContextMemoryIDs []string
-	SkillID          string
-	SkillArgs        string
+	QueueClaimID      string      `json:"-"`
+	QueueClaimVersion int64       `json:"-"`
+	Admission         Idempotency `json:"-"`
+	ConversationID    string
+	Title             string
+	Goal              string
+	Acceptance        string
+	Model             string
+	FallbackModel     string
+	ProviderID        string
+	Thinking          string
+	Mode              string
+	Visibility        string
+	PermissionMode    string
+	SceneOverride     string
+	MaxModelCalls     int64
+	MaxTokens         int64
+	AgentID           string
+	TeamDefinitionID  string
+	TeamRoles         []TeamRole
+	ContextAssetIDs   []string
+	ContextMemoryIDs  []string
+	SkillID           string
+	SkillArgs         string
 	// UserMessageContent and MessagePresentation keep presentation separate
 	// from the normalized execution Goal (for example /skill arguments).
 	// ExistingUserMessageID binds a queued user turn to its successor Task

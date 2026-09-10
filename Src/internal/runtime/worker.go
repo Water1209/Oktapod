@@ -37,8 +37,8 @@ type WorkerRepository interface {
 	GetTask(ctx context.Context, scope core.Scope, taskID string) (core.Task, error)
 	ClaimNextFollowUp(ctx context.Context, scope core.Scope, conversationID string) (core.ConversationQueueItem, error)
 	ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time) (core.ConversationQueueItem, error)
-	MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string) (core.ConversationQueueItem, error)
-	RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string) error
+	MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string, versions ...int64) (core.ConversationQueueItem, error)
+	RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string, versions ...int64) error
 	ListMemories(ctx context.Context, scope core.Scope, projectID, query string, limit int) ([]core.Memory, error)
 	OpenAssetContent(ctx context.Context, scope core.Scope, assetID string) (core.Asset, io.ReadCloser, error)
 }
@@ -275,6 +275,17 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("claim step: %w", err)
 	}
 	step, run, correlationID := execution.Step, execution.Run, execution.CorrelationID
+	if stopped, ok := w.repository.(interface {
+		AcknowledgeStoppedStep(context.Context, core.ClaimedStep) error
+	}); ok {
+		defer func() {
+			ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer ackCancel()
+			if err := stopped.AcknowledgeStoppedStep(ackCtx, step); err != nil {
+				w.logger.WarnContext(ctx, "acknowledge stopped step", "step_id", step.ID, "error", err)
+			}
+		}()
+	}
 
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -359,15 +370,15 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 // lost; only a successful start consumes it.
 func (w *Worker) startQueuedTurn(ctx context.Context, scope core.Scope, item core.ConversationQueueItem) bool {
 	if w.queuedTurnStarter == nil {
-		_ = w.repository.RequeueConversationQueueItem(ctx, scope, item.ID)
+		_ = w.repository.RequeueConversationQueueItem(ctx, scope, item.ID, item.ClaimVersion)
 		return false
 	}
 	if _, startErr := w.queuedTurnStarter(ctx, scope, item); startErr != nil {
 		w.logger.ErrorContext(ctx, "start queued conversation turn failed", "queue_item_id", item.ID, "error", startErr)
-		_ = w.repository.RequeueConversationQueueItem(ctx, scope, item.ID)
+		_ = w.repository.RequeueConversationQueueItem(ctx, scope, item.ID, item.ClaimVersion)
 		return false
 	}
-	if _, consumeErr := w.repository.MarkConversationQueueItemConsumed(ctx, scope, item.ID); consumeErr != nil {
+	if _, consumeErr := w.repository.MarkConversationQueueItemConsumed(ctx, scope, item.ID, item.ClaimVersion); consumeErr != nil {
 		w.logger.ErrorContext(ctx, "consume queue item failed", "queue_item_id", item.ID, "error", consumeErr)
 	}
 	return true
@@ -588,12 +599,17 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 		hint += " 上一次 update_plan 试图把已完成项改回未完成，系统已拒绝并保留原计划。先读取当前持久化计划，再提交同一完整清单；所有 completed 项必须继续保持 completed，只推进当前项和后续项。"
 	}
 	if isRunPlanRepairReason(input.RetryReason) {
-		if input.RetryReason == "TRANSITION_RUN_PLAN_REPLACEMENT_NOT_ALLOWED" || input.RetryReason == "TRANSITION_RUN_PLAN_NO_UNFINISHED_ITEMS" {
+		if input.RetryReason == "RUN_PLAN_ALREADY_AT_FINAL_ITEM" {
+			hint += " 当前持久化计划已经处于最后一项，禁止再次调用 advance_plan，也不要重建计划。直接执行最后一项尚未完成的业务工具（例如修正参数后导出）；交付与验证完成后才返回最终答复。"
+		} else if input.RetryReason == "TRANSITION_RUN_PLAN_REPLACEMENT_NOT_ALLOWED" || input.RetryReason == "TRANSITION_RUN_PLAN_NO_UNFINISHED_ITEMS" {
 			hint += " 当前已有稳定的语义计划，系统已保留完成项并拒绝重建。禁止再次调用 replace_plan；继续当前未完成项，必要时用 advance_plan 推进。若交付物与验收已经完成，直接返回最终答复，Runtime 会通过完成门禁收敛计划终态。"
 		} else if input.RetryReason == "TRANSITION_RUN_PLAN_DUPLICATE_ITEM" {
 			hint += " replace_plan 的 items 只能包含互不重复的未完成目标，不得重新提交 Runtime 已保留的完成项。"
 		} else if isTransitionPlanRepairReason(input.RetryReason) {
 			hint += " 请在同一响应中修正计划控制并调用下一批必要业务工具：初次或重规划使用 replace_plan，推进当前语义项使用 advance_plan；每个响应最多一个计划控制，不得单独发送计划控制。最后一项完成后直接返回最终答复，不要调用 advance_plan。"
+			if input.RetryReason == "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL" {
+				hint += " 若实际工作已经完成，只是计划状态尚未更新，即使仍显示多个未完成项，也应直接返回最终答复，由 Runtime 验证证据并收敛计划；禁止为了推进状态重复读取或渲染。若还有未读取附件或其他未完成工作，下一次响应必须包含对应的真实业务工具。"
+			}
 		} else {
 			hint += " 请重新单独调用一次 update_plan：提交 1 到 12 个目标特定的完整语义步骤，每项包含具体 title、description 和合法 status；不要使用“制定执行计划”等占位文案，不要同时调用其他工具，也不要在尚无执行证据时把所有步骤标为 completed。"
 		}
@@ -813,13 +829,26 @@ func completionRecoveryHint(inputJSON string) string {
 		DeliverableFormat  string `json:"completion_deliverable_format"`
 		RequiredCharacters int64  `json:"completion_required_characters"`
 		ActualCharacters   int64  `json:"completion_actual_characters"`
+		MissingAssets      []struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			MediaType string `json:"media_type"`
+		} `json:"completion_missing_assets"`
 	}
 	if json.Unmarshal([]byte(inputJSON), &input) != nil || strings.TrimSpace(input.Reason) == "" {
 		return ""
 	}
 	switch input.Reason {
 	case "ATTACHMENT_NOT_READ":
-		return "确定性完成检查未通过：本次任务包含尚未读取的二进制附件。请根据冻结的附件元数据调用 asset_stage(asset_id)，再使用返回的只读路径通过合适的脚本或命令解析真实内容；不得改查空的项目 Workspace，也不得在未读取附件时直接总结。"
+		hint := "确定性完成检查未通过：本次任务包含尚未读取的二进制附件。必须逐一核对全部冻结附件，不能只处理首个文件或当前 Skill 名称对应的格式。"
+		if len(input.MissingAssets) > 0 {
+			missing := make([]string, 0, len(input.MissingAssets))
+			for _, asset := range input.MissingAssets {
+				missing = append(missing, fmt.Sprintf("asset:%s（%s，%s）", strings.TrimSpace(asset.ID), strings.TrimSpace(asset.Name), strings.TrimSpace(asset.MediaType)))
+			}
+			hint += " 尚缺成功读取证据的附件是：" + strings.Join(missing, "；") + "。"
+		}
+		return hint + " 工具目录包含 document_open/document_read 时，使用 document_open(source_ref=asset:<asset_id>) 打开上述每个附件并分页 document_read；不同办公格式共用这些工具。仅在目录允许 asset_stage 且没有合适文档工具时，才调用 asset_stage(asset_id)，使用返回的只读路径解析真实内容。遵守已加载 Skill 的工具范围，不得生成其禁止的脚本，不得改查空的项目 Workspace，也不得在未读取附件时直接总结。"
 	case "WEB_EVIDENCE_MISSING":
 		return "确定性完成检查未通过：任务要求联网检索，但当前 Run 没有任何成功的 web_search 收据。不得用“无法联网”说明冒充交付；请继续调用 web_search 获取真实证据，或在受控恢复耗尽后请求用户决定。"
 	case "DELIVERABLE_MISSING":
@@ -1521,7 +1550,7 @@ func filterToolDefinitionsBySkill(definitions []ToolDefinition, plan map[string]
 	}
 	filtered := make([]ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
-		if definition.Name == core.ToolUpdatePlan || definition.Name == core.ToolRequestInput || definition.Name == core.ToolRequestPermission {
+		if definition.Name == core.ToolUpdatePlan || definition.Name == core.ToolReplacePlan || definition.Name == core.ToolAdvancePlan || definition.Name == core.ToolRequestInput || definition.Name == core.ToolRequestPermission {
 			filtered = append(filtered, definition)
 			continue
 		}

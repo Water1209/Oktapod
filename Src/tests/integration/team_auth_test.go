@@ -41,7 +41,7 @@ func TestTeamAdminCanIssueRevocableMemberSession(t *testing.T) {
 	if err != nil || resolved.UserID != member.UserID {
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
-	if err := repository.RevokeAuthSession(context.Background(), session.ID, testOrgID); err != nil {
+	if err := repository.RevokeAuthSession(context.Background(), session.ID, testOrgID, session.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.ResolveAuthSession(context.Background(), session.Token); err == nil {

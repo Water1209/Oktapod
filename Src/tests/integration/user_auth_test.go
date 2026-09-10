@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -108,6 +109,101 @@ func TestLocalRegistrationPasswordLengthBoundary(t *testing.T) {
 	}
 	if _, err := service.RegisterLocalUser(t.Context(), core.LocalRegisterInput{Username: "valid.password", DisplayName: "Valid", Password: password[:8]}); err != nil {
 		t.Fatalf("eight-character password was rejected: %v", err)
+	}
+}
+
+func TestPersonalSessionIdentityBoundary(t *testing.T) {
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID}, core.Organization{ID: testOrgID}, func() string { return "" })
+	server := httptest.NewServer(httpapi.NewHandlerWithUI(service, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler()))
+	defer server.Close()
+	a, b := newSessionClient(t), newSessionClient(t)
+	registerUser(t, a, server.URL, "session.a", "A", randomTestPassword(t))
+	registerUser(t, b, server.URL, "session.b", "B", randomTestPassword(t))
+	bs, err := repository.ResolveAuthSession(t.Context(), cookieValue(b, server.URL, "oktapod_session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, client := range []*http.Client{a, b} {
+		response := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/sessions", map[string]any{"user_id": bs.UserID}, cookieValue(client, server.URL, "oktapod_csrf"))
+		response.Body.Close()
+		if response.StatusCode != http.StatusForbidden {
+			t.Errorf("HTTP session issuance status=%d", response.StatusCode)
+		}
+	}
+	for _, id := range []string{bs.ID, "00000000-0000-7000-8000-000000000099"} {
+		response := doJSON(t, a, http.MethodDelete, server.URL+"/api/v1/auth/sessions/"+id, nil, cookieValue(a, server.URL, "oktapod_csrf"))
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Errorf("foreign or missing revoke status=%d", response.StatusCode)
+		}
+	}
+	if _, err := repository.ResolveAuthSession(t.Context(), cookieValue(b, server.URL, "oktapod_session")); err != nil {
+		t.Fatalf("foreign revoke mutated B session: %v", err)
+	}
+	response := doJSON(t, b, http.MethodDelete, server.URL+"/api/v1/auth/sessions/"+bs.ID, nil, cookieValue(b, server.URL, "oktapod_csrf"))
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Errorf("own revoke status=%d", response.StatusCode)
+	}
+}
+
+func TestPrivateUsersInstancePermissions(t *testing.T) {
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID}, core.Organization{ID: testOrgID}, func() string { return "" })
+	owner, err := service.RegisterLocalUser(t.Context(), core.LocalRegisterInput{Username: "instance.owner", Password: randomTestPassword(t), DisplayName: "Owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := service.RegisterLocalUser(t.Context(), core.LocalRegisterInput{Username: "instance.member", Password: randomTestPassword(t), DisplayName: "Member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct{ id, role string }{{owner.UserID, "owner"}, {member.UserID, "member"}} {
+		role, err := repository.GetOrganizationRole(t.Context(), testOrgID, entry.id)
+		if err != nil || role != entry.role {
+			t.Errorf("role=%q want=%q err=%v", role, entry.role, err)
+		}
+	}
+	ctx := application.WithPrincipal(t.Context(), application.Principal{OrganizationID: testOrgID, UserID: member.UserID, AuthenticationMethod: application.AuthenticationSession})
+	checks := map[string]func() error{
+		"provider save":   func() error { _, e := service.SaveProvider(ctx, "", application.SaveProviderInput{}); return e },
+		"provider delete": func() error { return service.DeleteProvider(ctx, "missing") },
+		"provider test":   func() error { _, e := service.TestProvider(ctx, "missing"); return e },
+		"model refresh":   func() error { _, e := service.RefreshProviderModels(ctx, "missing"); return e },
+		"model selection": func() error {
+			_, e := service.SaveProviderModels(ctx, "missing", application.SaveProviderModelsInput{})
+			return e
+		},
+		"vault initialize": func() error { _, _, e := service.InitializeVault(ctx); return e },
+		"runtime configuration": func() error {
+			_, e := service.UpdateBootstrapConfiguration(ctx, core.UpdateBootstrapConfiguration{})
+			return e
+		},
+		"governance": func() error { _, e := service.UpdateAIGovernanceSettings(ctx, core.AIGovernanceSettings{}); return e },
+		"pricing":    func() error { _, e := service.UpdateModelPricing(ctx, nil); return e },
+	}
+	for name, check := range checks {
+		t.Run(name, func(t *testing.T) {
+			var forbidden *core.ForbiddenError
+			if err := check(); !errors.As(err, &forbidden) {
+				t.Fatalf("expected permission rejection before side effects, got %v", err)
+			}
+		})
+	}
+	if err := repository.SetLocalOwner(t.Context(), core.Scope{OrganizationID: testOrgID, UserID: testUserID}, "instance.member"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := service.Bootstrap(ctx)
+	if err != nil || !state.Permissions.ManageInstance {
+		t.Fatalf("local owner recovery failed: %v", err)
+	}
+	if err := repository.SetLocalOwner(t.Context(), core.Scope{OrganizationID: testOrgID, UserID: testUserID}, "missing.account"); err == nil {
+		t.Fatal("missing account was promoted")
 	}
 }
 

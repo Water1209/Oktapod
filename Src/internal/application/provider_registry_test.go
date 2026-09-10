@@ -260,6 +260,9 @@ func TestProviderChangeAppliesToNextRunWithoutMutatingExistingSnapshot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.ControlTask(t.Context(), first.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "", "finish-first-model-test"); err != nil {
+		t.Fatal(err)
+	}
 	second, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{
 		Goal: "second", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate,
 		ProviderID: updated.ProviderID,

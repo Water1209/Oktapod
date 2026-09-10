@@ -8,7 +8,7 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
-func TestDocumentCompletionRequiresEveryMutatedDocumentToHaveCurrentExport(t *testing.T) {
+func TestDocumentCompletionAcceptsCurrentExportAfterDiscardedDraft(t *testing.T) {
 	database, err := sql.Open("sqlite", "file:"+t.TempDir()+"/document-completion.db")
 	if err != nil {
 		t.Fatal(err)
@@ -41,14 +41,12 @@ func TestDocumentCompletionRequiresEveryMutatedDocumentToHaveCurrentExport(t *te
 			t.Fatal(err)
 		}
 	}
-	insertValidDocumentExport(t, tx, "export-1", "document-1")
-
 	valid, err := validDocumentExportEvidence(context.Background(), tx, []string{"run-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if valid {
-		t.Fatal("one exported document incorrectly satisfied two mutated documents")
+		t.Fatal("mutated documents without a valid export were accepted")
 	}
 
 	insertValidDocumentExport(t, tx, "export-2", "document-2")
@@ -57,7 +55,7 @@ func TestDocumentCompletionRequiresEveryMutatedDocumentToHaveCurrentExport(t *te
 		t.Fatal(err)
 	}
 	if !valid {
-		t.Fatal("current render and Artifact evidence for every mutated document was rejected")
+		t.Fatal("current render and Artifact evidence for the final document was rejected because another draft was discarded")
 	}
 }
 
@@ -76,5 +74,32 @@ func insertValidDocumentExport(t *testing.T, tx *sql.Tx, callID, documentID stri
 	}
 	if _, err := tx.Exec(`INSERT INTO artifacts VALUES (?, 'document_export', ?)`, stepID, contentHash); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDocumentReadbackCountsAsVerificationOnlyAfterMutation(t *testing.T) {
+	database, err := sql.Open("sqlite", "file:"+t.TempDir()+"/verification.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`CREATE TABLE tool_calls (run_id TEXT, status TEXT, position INTEGER, tool_name TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := database.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, name := range []string{core.ToolDocumentOpen, core.ToolDocumentRead} {
+		if _, err := tx.Exec(`INSERT INTO tool_calls VALUES ('run', 'succeeded', 2, ?)`, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct{ after, want int64 }{{1, 2}, {2, 0}, {3, 0}} {
+		got, err := successfulVerificationEvidence(context.Background(), tx, "run", test.after)
+		if err != nil || got != test.want {
+			t.Fatalf("after=%d count=%d want=%d err=%v", test.after, got, test.want, err)
+		}
 	}
 }

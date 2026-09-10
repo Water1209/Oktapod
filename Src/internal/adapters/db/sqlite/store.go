@@ -359,8 +359,8 @@ func (s *Store) ResolveAuthSession(ctx context.Context, token string) (core.Auth
 	return session, nil
 }
 
-func (s *Store) RevokeAuthSession(ctx context.Context, sessionID, organizationID string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND revoked_at = ''`, formatTime(time.Now()), sessionID, organizationID)
+func (s *Store) RevokeAuthSession(ctx context.Context, sessionID, organizationID, userID string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND organization_id = ? AND user_id = ? AND revoked_at = ''`, formatTime(time.Now()), sessionID, organizationID, userID)
 	if err != nil {
 		return err
 	}
@@ -882,12 +882,16 @@ func (s *Store) ListConversations(ctx context.Context, scope core.Scope, project
 }
 
 func (s *Store) GetConversation(ctx context.Context, scope core.Scope, conversationID string) (core.Conversation, error) {
+	return getConversation(ctx, s.db, scope, conversationID)
+}
+
+func getConversation(ctx context.Context, queryer idempotencyRunner, scope core.Scope, conversationID string) (core.Conversation, error) {
 	var row struct {
 		ID, OrganizationID, ProjectID, OwnerUserID, Title, Visibility, CreatedAt, UpdatedAt, LastMessage string
 		ActiveLeafEntryID, ParentSessionID, ForkedFromEntryID                                            string
 		NextMessageSeq                                                                                   int64
 	}
-	err := s.db.QueryRowContext(ctx, `
+	err := queryer.QueryRowContext(ctx, `
 		SELECT c.id, c.organization_id, c.project_id, c.owner_user_id, c.title, c.visibility,
 		       c.next_message_seq, c.created_at, c.updated_at,
 		       COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.server_seq DESC LIMIT 1), ''),
@@ -1035,7 +1039,13 @@ func (s *Store) deleteConversationTx(ctx context.Context, scope core.Scope, conv
 }
 
 func (s *Store) ListMessages(ctx context.Context, scope core.Scope, conversationID string, after int64, limit int) ([]core.Message, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return listMessages(ctx, s.db, scope, conversationID, after, limit)
+}
+
+func listMessages(ctx context.Context, queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, scope core.Scope, conversationID string, after int64, limit int) ([]core.Message, error) {
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT msg.id, msg.organization_id, msg.project_id, msg.conversation_id,
 		       msg.owner_user_id, msg.task_id, msg.server_seq, msg.role,
 		       msg.visibility, msg.content, msg.created_at,
@@ -1829,6 +1839,9 @@ func (s *Store) SaveConversationCompaction(ctx context.Context, scope core.Scope
 }
 
 func (s *Store) AppendChatTurn(ctx context.Context, scope core.Scope, projectID string, input core.ProjectTurnInput, assistant string, calls []core.ConversationModelCall, idempotency core.Idempotency) (core.ProjectTurnResult, error) {
+	if input.Admission.Key != "" {
+		idempotency = input.Admission
+	}
 	route := "POST /projects/" + projectID + "/turns"
 	if idempotency.Key != "" {
 		s.idempotencyMu.Lock()
@@ -1914,6 +1927,17 @@ func (s *Store) AppendChatTurn(ctx context.Context, scope core.Scope, projectID 
 		return core.ProjectTurnResult{}, err
 	}
 	result := core.ProjectTurnResult{Route: "chat", Conversation: core.Conversation{ID: conversationID, OrganizationID: scope.OrganizationID, ProjectID: projectID, OwnerUserID: scope.UserID, Title: title, Visibility: input.Visibility, MessageCount: count, LastMessage: assistant, ActiveLeafEntryID: activeLeafEntryID, ParentSessionID: parentSessionID, ForkedFromEntryID: forkedFromEntryID, CreatedAt: createdAt, UpdatedAt: updatedAt}, Messages: created}
+	if input.TaskID != "" {
+		row, err := q.GetTaskForUser(ctx, sqlitegen.GetTaskForUserParams{ID: input.TaskID, OrganizationID: scope.OrganizationID, UserID: scope.UserID, OwnerUserID: scope.UserID})
+		if err != nil {
+			return core.ProjectTurnResult{}, err
+		}
+		task, err := taskFromGetRow(row)
+		if err != nil {
+			return core.ProjectTurnResult{}, err
+		}
+		result.Route, result.Task = "task", &task
+	}
 	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusOK, result); err != nil {
 		return core.ProjectTurnResult{}, err
 	}
@@ -2979,7 +3003,8 @@ func mapAssetConflict(err error, name string) error {
 
 func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID string, input core.CreateTaskInput, configSnapshot map[string]any, correlationID string, idempotency core.Idempotency) (core.Task, error) {
 	route := "POST /projects/" + projectID + "/tasks"
-	if idempotency.Key != "" {
+	externalTx, _ := ctx.Value(taskCreationTxKey{}).(*sql.Tx)
+	if idempotency.Key != "" && externalTx == nil {
 		s.idempotencyMu.Lock()
 		defer s.idempotencyMu.Unlock()
 		var replay core.Task
@@ -3048,11 +3073,14 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 		return core.Task{}, fmt.Errorf("encode step input: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return core.Task{}, err
+	tx := externalTx
+	if tx == nil {
+		tx, err = s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return core.Task{}, err
+		}
+		defer func() { _ = tx.Rollback() }()
 	}
-	defer func() { _ = tx.Rollback() }()
 	q := s.queries.WithTx(tx)
 	if idempotency.Key != "" {
 		var replay core.Task
@@ -3065,6 +3093,9 @@ func (s *Store) CreateTask(ctx context.Context, scope core.Scope, projectID stri
 		}
 	}
 	if _, err := q.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
+		return core.Task{}, err
+	}
+	if err := conversationStartAllowed(ctx, tx, scope, projectID, conversationID, "", input.QueueClaimID, input.QueueClaimVersion); err != nil {
 		return core.Task{}, err
 	}
 	if input.ConversationID == "" {
@@ -3276,11 +3307,38 @@ WHERE id = ?`,
 		return core.Task{}, err
 	}
 	task.PresentationKind = presentationKind
+	if input.Admission.Key != "" {
+		result, err := taskTurnReceipt(ctx, tx, scope, task)
+		if err != nil {
+			return core.Task{}, err
+		}
+		if err := saveIdempotency(ctx, tx, scope, "POST /projects/"+projectID+"/turns", input.Admission, httpStatusAccepted, result); err != nil {
+			return core.Task{}, err
+		}
+	}
 	if err := saveIdempotency(ctx, tx, scope, route, idempotency, httpStatusAccepted, task); err != nil {
 		return core.Task{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return core.Task{}, err
+	if input.QueueClaimID != "" {
+		result, err := taskTurnReceipt(ctx, tx, scope, task)
+		if err != nil {
+			return core.Task{}, err
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return core.Task{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE idempotency_records SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND route = ? AND json_extract(response_json, '$.QueueItem.ID') = ?`, string(encoded), scope.OrganizationID, scope.UserID, "POST /projects/"+projectID+"/turns", input.QueueClaimID); err != nil {
+			return core.Task{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE conversation_message_queue SET status = 'consumed', consumed_at = ? WHERE id = ? AND claim_version = ? AND status = 'claimed'`, formatTime(time.Now()), input.QueueClaimID, input.QueueClaimVersion); err != nil {
+			return core.Task{}, err
+		}
+	}
+	if externalTx == nil {
+		if err := tx.Commit(); err != nil {
+			return core.Task{}, err
+		}
 	}
 	return task, nil
 }
@@ -3389,6 +3447,11 @@ func (s *Store) ControlTask(ctx context.Context, scope core.Scope, taskID string
 	if err != nil {
 		return core.Task{}, err
 	}
+	if changed && (input.Command == core.TaskCommandRetry || input.Command == core.TaskCommandResume) {
+		if err := conversationStartAllowed(ctx, tx, scope, current.ProjectID, current.ConversationID, current.ID, "", 0); err != nil {
+			return core.Task{}, err
+		}
+	}
 	if changed && input.Command == core.TaskCommandRetry {
 		if current.ErrorCode == "BUDGET_RESERVATION_EXCEEDED" || current.ErrorCode == "BUDGET_EXCEEDED" {
 			var budgetStatus string
@@ -3449,6 +3512,7 @@ type taskControlStep struct {
 	Position    int64
 	Status      string
 	InputJSON   string
+	ToolBatchID string
 	RetrySource string
 	IsRetry     bool
 }
@@ -3481,7 +3545,8 @@ func (s *Store) applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, com
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE steps
-			SET status = 'canceled', owner_id = '', lease_until = '',
+			SET status = 'canceled', owner_id = '',
+			    lease_until = CASE WHEN status = 'running' THEN lease_until ELSE '' END,
 			    fence_token = CASE WHEN status = 'running' THEN fence_token + 1 ELSE fence_token END,
 			    error_code = CASE WHEN error_code = '' THEN 'TASK_CANCELED' ELSE error_code END,
 			    updated_at = ?
@@ -3526,7 +3591,7 @@ func (s *Store) applyTaskStepControl(ctx context.Context, tx *sql.Tx, runID, com
 }
 
 func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, now, correlationID string) (map[string]any, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, position, status, input_json FROM steps WHERE run_id = ? ORDER BY position, id`, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT id, position, status, input_json, tool_batch_id FROM steps WHERE run_id = ? ORDER BY position, id`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -3534,7 +3599,7 @@ func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, no
 	steps := make([]taskControlStep, 0)
 	for rows.Next() {
 		var step taskControlStep
-		if err := rows.Scan(&step.ID, &step.Position, &step.Status, &step.InputJSON); err != nil {
+		if err := rows.Scan(&step.ID, &step.Position, &step.Status, &step.InputJSON, &step.ToolBatchID); err != nil {
 			return nil, err
 		}
 		step.RetrySource, step.IsRetry = retryStepMetadata(step.InputJSON)
@@ -3600,6 +3665,41 @@ func (s *Store) retryTaskFromFrontier(ctx context.Context, tx *sql.Tx, runID, no
 				superseded += int(count)
 			}
 		}
+	}
+	if strings.TrimSpace(frontier.ToolBatchID) != "" {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE steps
+			SET status = 'queued', owner_id = '', lease_until = '', error_code = '', updated_at = ?
+			WHERE run_id = ? AND tool_batch_id = ? AND status IN ('failed', 'blocked', 'queued')`,
+			now, runID, frontier.ToolBatchID)
+		if err != nil {
+			return nil, err
+		}
+		resetSteps, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if resetSteps == 0 {
+			return nil, &core.ResourceConflictError{Resource: "task", Reason: "retry tool batch changed concurrently"}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE tool_calls
+			SET status = 'queued', error_code = '', completed_at = '', updated_at = ?
+			WHERE run_id = ? AND tool_batch_id = ? AND status IN ('failed', 'blocked', 'queued')`,
+			now, runID, frontier.ToolBatchID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE tool_batches
+			SET status = 'running', continuation_claimed = 0, continuation_step_id = '', updated_at = ?
+			WHERE id = ? AND run_id = ?`, now, frontier.ToolBatchID, runID); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"step_id": frontier.ID, "step_position": frontier.Position,
+			"retry_scope": "tool_batch_frontier", "tool_batch_id": frontier.ToolBatchID,
+			"reset_steps": resetSteps, "superseded_steps": superseded,
+		}, nil
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE steps
@@ -3801,6 +3901,10 @@ func (s *Store) retryCompletionValidationFailure(ctx context.Context, tx *sql.Tx
 	if err != nil {
 		return nil, false, err
 	}
+	currentValidation, err := s.completionInvariantFailure(ctx, tx, run)
+	if err != nil {
+		return nil, false, err
+	}
 	history, err := s.collectContinuationHistory(ctx, tx, run)
 	if err != nil {
 		return nil, false, err
@@ -3819,6 +3923,13 @@ func (s *Store) retryCompletionValidationFailure(ctx context.Context, tx *sql.Tx
 	recoveryInput["model_retry_reason"] = errorCode
 	recoveryInput["model_retry_source_step_id"] = source.ID
 	recoveryInput["manual_retry"] = true
+	if currentValidation.Reason != "" {
+		recoveryInput["completion_recovery_reason"] = currentValidation.Reason
+		recoveryInput["completion_deliverable_format"] = currentValidation.DeliverableFormat
+		recoveryInput["completion_required_characters"] = currentValidation.RequiredCharacters
+		recoveryInput["completion_actual_characters"] = currentValidation.ActualCharacters
+		recoveryInput["completion_missing_assets"] = currentValidation.MissingAssets
+	}
 
 	stepID, err := insertQueuedModelStep(ctx, tx, run, recoveryInput, now)
 	if err != nil {
@@ -3864,7 +3975,7 @@ func isCompletionValidationError(errorCode string) bool {
 	switch errorCode {
 	case "ATTACHMENT_NOT_READ", "WEB_EVIDENCE_MISSING", "DELIVERABLE_MISSING",
 		"DELIVERABLE_TOO_SHORT", "DELIVERABLE_CITATIONS_MISSING", "DELIVERABLE_INCOMPLETE",
-		"WORKSPACE_MUTATION_MISSING", "VERIFICATION_MISSING":
+		"DOCUMENT_EXPORT_INVALID", "WORKSPACE_MUTATION_MISSING", "VERIFICATION_MISSING":
 		return true
 	default:
 		return false
@@ -3996,30 +4107,134 @@ func (s *Store) recoverCompletedToolBatchWithoutRunnableStep(ctx context.Context
 	return true, nil
 }
 
-// recoverFailedSequentialToolBatch heals runs wedged by a sequential tool
-// batch whose failure left later items permanently queued: ClaimNextStep
-// refuses to dispatch further items of a failed sequential batch, while the
-// failure path deferred recovery until the batch turned terminal. Older builds
-// could therefore leave a Run marked running with no claimable step.
-func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.Time) (bool, error) {
-	var runID string
+// recoverPartialBatchRetry upgrades the historical state written by older
+// retry logic that queued only the latest member of a failed parallel batch.
+// The queued member is intentionally unclaimable while any sibling remains
+// blocked, so repair the unfinished batch atomically before the idle worker
+// concludes that no work exists.
+func (s *Store) recoverPartialBatchRetry(ctx context.Context, now time.Time) (bool, error) {
+	var runID, batchID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT r.id
+		SELECT r.id, batch.id
+		FROM runs r
+		JOIN tool_batches batch ON batch.run_id = r.id
+		WHERE r.status IN ('queued', 'running')
+		  AND batch.status = 'blocked'
+		  AND batch.continuation_claimed = 1
+		  AND batch.continuation_step_id = ''
+		  AND EXISTS (
+		      SELECT 1 FROM steps queued_step
+		      WHERE queued_step.tool_batch_id = batch.id AND queued_step.status = 'queued'
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM steps blocked_step
+		      WHERE blocked_step.tool_batch_id = batch.id AND blocked_step.status IN ('failed', 'blocked')
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM steps active_step
+		      WHERE active_step.run_id = r.id
+		        AND active_step.status IN ('running', 'waiting_approval', 'waiting_input', 'paused')
+		  )
+		ORDER BY r.updated_at, r.id
+		LIMIT 1`).Scan(&runID, &batchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	nowText := formatTime(now)
+	result, err := tx.ExecContext(ctx, `
+		UPDATE tool_batches
+		SET status = 'running', continuation_claimed = 0, continuation_step_id = '', updated_at = ?
+		WHERE id = ? AND run_id = ? AND status = 'blocked'
+		  AND continuation_claimed = 1 AND continuation_step_id = ''`, nowText, batchID, runID)
+	if err != nil {
+		return false, err
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE steps
+		SET status = 'queued', owner_id = '', lease_until = '', error_code = '', updated_at = ?
+		WHERE run_id = ? AND tool_batch_id = ? AND status IN ('failed', 'blocked', 'queued')`,
+		nowText, runID, batchID); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tool_calls
+		SET status = 'queued', error_code = '', completed_at = '', updated_at = ?
+		WHERE run_id = ? AND tool_batch_id = ? AND status IN ('failed', 'blocked', 'queued')`,
+		nowText, runID, batchID); err != nil {
+		return false, err
+	}
+	run, err := getRunContextTx(ctx, tx, runID)
+	if err != nil {
+		return false, err
+	}
+	correlationID, err := newID()
+	if err != nil {
+		return false, err
+	}
+	if err := s.appendEvent(ctx, s.queries.WithTx(tx), eventInput{
+		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: runID,
+		EventType: "tool.batch_retry_recovered", ActorType: "system", ActorID: "runtime",
+		CorrelationID: correlationID, Visibility: run.Visibility,
+		Payload: map[string]any{"batch_id": batchID, "reason": "historical_partial_batch_retry"},
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// recoverStrandedToolBatch heals two historical crash windows: a sequential
+// failure with an undispatched remainder, and a parallel preflight failure
+// whose Step became terminal before its Tool Call was classified. Both states
+// leave a running Run with no claimable Step.
+func (s *Store) recoverStrandedToolBatch(ctx context.Context, now time.Time) (bool, error) {
+	var runID, batchID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT r.id, batch.id
 		FROM runs r
 		JOIN tool_batches batch ON batch.run_id = r.id
 		WHERE r.status IN ('queued', 'running')
 		  AND batch.status IN ('planned', 'running')
-		  AND batch.execution_mode <> 'parallel'
 		  AND batch.continuation_claimed = 0
 		  AND EXISTS (
 		      SELECT 1 FROM steps batch_step
 		      WHERE batch_step.tool_batch_id = batch.id
 		        AND batch_step.status IN ('failed', 'blocked')
 		  )
-		  AND EXISTS (
-		      SELECT 1 FROM steps batch_step
-		      WHERE batch_step.tool_batch_id = batch.id
-		        AND batch_step.status IN ('queued', 'waiting_approval')
+		  AND (
+		      (batch.execution_mode <> 'parallel' AND EXISTS (
+		          SELECT 1 FROM steps batch_step
+		          WHERE batch_step.tool_batch_id = batch.id
+		            AND batch_step.status IN ('queued', 'waiting_approval')
+		      ))
+		      OR (
+		          NOT EXISTS (
+		              SELECT 1 FROM steps batch_step
+		              WHERE batch_step.tool_batch_id = batch.id
+		                AND batch_step.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')
+		          )
+		          AND EXISTS (
+		              SELECT 1 FROM tool_calls call
+		              JOIN steps batch_step ON batch_step.id = call.step_id
+		              WHERE call.tool_batch_id = batch.id
+		                AND call.status IN ('planned', 'queued', 'running', 'waiting_approval')
+		                AND batch_step.status IN ('failed', 'blocked', 'canceled')
+		          )
+		      )
 		  )
 		  AND NOT EXISTS (
 		      SELECT 1 FROM steps active
@@ -4027,7 +4242,7 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 		        AND active.status IN ('running', 'waiting_input', 'paused')
 		  )
 		ORDER BY r.updated_at, r.id
-		LIMIT 1`).Scan(&runID)
+		LIMIT 1`).Scan(&runID, &batchID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -4046,17 +4261,31 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 		return false, err
 	}
 	nowText := formatTime(now)
-	var sourceStepID, sourceInput, sourceError, sourceOwner string
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tool_calls
+		SET status = CASE (SELECT status FROM steps WHERE steps.id = tool_calls.step_id)
+		                 WHEN 'failed' THEN 'failed'
+		                 ELSE 'blocked'
+		             END,
+		    error_code = COALESCE(NULLIF((SELECT error_code FROM steps WHERE steps.id = tool_calls.step_id), ''), error_code),
+		    completed_at = CASE WHEN completed_at = '' THEN ? ELSE completed_at END,
+		    updated_at = ?
+		WHERE tool_batch_id = ?
+		  AND status IN ('planned', 'queued', 'running', 'waiting_approval')
+		  AND EXISTS (
+		      SELECT 1 FROM steps terminal
+		      WHERE terminal.id = tool_calls.step_id
+		        AND terminal.status IN ('failed', 'blocked', 'canceled')
+		  )`, nowText, nowText, batchID); err != nil {
+		return false, err
+	}
+	var sourceStepID, sourceInput, sourceStatus, sourceError, sourceOwner string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, input_json, error_code, owner_id
+		SELECT id, input_json, status, error_code, owner_id
 		FROM steps
-		WHERE run_id = ? AND status IN ('failed', 'blocked')
-		  AND tool_batch_id IN (
-		      SELECT batch.id FROM tool_batches batch
-		      WHERE batch.run_id = ? AND batch.status IN ('planned', 'running')
-		        AND batch.execution_mode <> 'parallel' AND batch.continuation_claimed = 0
-		  )
-		ORDER BY position LIMIT 1`, runID, runID).Scan(&sourceStepID, &sourceInput, &sourceError, &sourceOwner); err != nil {
+		WHERE run_id = ? AND tool_batch_id = ? AND status IN ('failed', 'blocked')
+		ORDER BY CASE WHEN status = 'failed' THEN 0 ELSE 1 END, position
+		LIMIT 1`, runID, batchID).Scan(&sourceStepID, &sourceInput, &sourceStatus, &sourceError, &sourceOwner); err != nil {
 		return false, err
 	}
 	run, err := getRunContextTx(ctx, tx, runID)
@@ -4066,7 +4295,7 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 	sourceStep := core.ClaimedStep{ID: sourceStepID, RunID: runID, InputJSON: sourceInput, OwnerID: sourceOwner}
 	// completeToolBatchState cancels the not-yet-started sequential remainder,
 	// closes the batch, and claims its continuation exactly once.
-	ready, claimed, batchID, err := s.completeToolBatchState(ctx, tx, q, sourceStep, run, nowText, correlationID)
+	ready, claimed, completedBatchID, err := s.completeToolBatchState(ctx, tx, q, sourceStep, run, nowText, correlationID)
 	if err != nil {
 		return false, err
 	}
@@ -4074,7 +4303,7 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 		return false, nil
 	}
 	taskStatus, taskSummary, taskErrorCode := core.StatusRunning, "", ""
-	if isRecoverableToolExecutionFailure(sourceError) {
+	if sourceStatus == core.StatusFailed && isRecoverableToolExecutionFailure(sourceError) {
 		recoveryStepID, recoveryCount, recoveryCallID, queued, recoveryErr := s.queueToolFailureRecovery(ctx, tx, q, sourceStep, run, sourceError, nowText, correlationID)
 		if recoveryErr != nil {
 			return false, recoveryErr
@@ -4096,7 +4325,12 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 			}
 		}
 	} else {
-		taskStatus, taskSummary, taskErrorCode = core.StatusFailed, "顺序工具批次中的步骤失败且不可自动恢复，剩余动作已取消。", sourceError
+		taskStatus, taskErrorCode = sourceStatus, sourceError
+		if sourceStatus == core.StatusBlocked {
+			taskSummary = "工具批次在运行时预检阶段停止；已完成动作和检查点仍保留。"
+		} else {
+			taskSummary = "工具批次中的步骤失败且不可自动恢复；已完成动作和检查点仍保留。"
+		}
 	}
 	if err := s.syncRunPlanState(ctx, tx, q, run, taskStatus, taskSummary, nowText, correlationID); err != nil {
 		return false, err
@@ -4116,7 +4350,7 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 		OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: runID,
 		EventType: "tool.batch_recovered", ActorType: "system", ActorID: "runtime",
 		CorrelationID: correlationID, Visibility: run.Visibility,
-		Payload: map[string]any{"batch_id": batchID, "reason": "failed_sequential_batch_with_queued_remainder"},
+		Payload: map[string]any{"batch_id": completedBatchID, "reason": "stranded_tool_batch_without_claimable_step"},
 	}); err != nil {
 		return false, err
 	}
@@ -4124,10 +4358,11 @@ func (s *Store) recoverFailedSequentialToolBatch(ctx context.Context, now time.T
 		return false, err
 	}
 	return true, nil
-} // retryPlanControlFailure recovers older task-level plan failures whose model
-// step was persisted as succeeded before the plan update was rejected. Those
-// runs have no failed Step frontier, but the active plan plus continuation
-// history is still a valid durable checkpoint.
+}
+
+// retryPlanControlFailure resumes plan failures whose model step succeeded
+// before its transition was rejected. Persisted continuation history remains
+// a checkpoint even when a V2 run has not created its first plan yet.
 func (s *Store) retryPlanControlFailure(ctx context.Context, tx *sql.Tx, runID string, steps []taskControlStep, now string) (map[string]any, error) {
 	var errorCode string
 	if err := tx.QueryRowContext(ctx, `
@@ -4145,18 +4380,24 @@ func (s *Store) retryPlanControlFailure(ctx context.Context, tx *sql.Tx, runID s
 		return nil, err
 	}
 	var planRevisionID string
-	if err := tx.QueryRowContext(ctx, `
+	planErr := tx.QueryRowContext(ctx, `
 		SELECT id FROM run_plan_revisions
 		WHERE run_id = ? AND status IN ('active', 'blocked')
-		ORDER BY revision DESC LIMIT 1`, runID).Scan(&planRevisionID); err != nil {
-		return nil, err
+		ORDER BY revision DESC LIMIT 1`, runID).Scan(&planRevisionID)
+	transitionV2 := snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2"
+	if planErr != nil && !(transitionV2 && errors.Is(planErr, sql.ErrNoRows)) {
+		return nil, planErr
 	}
 	var planItemID string
-	if err := tx.QueryRowContext(ctx, `
+	if planRevisionID != "" {
+		if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM run_plan_items
 		WHERE plan_revision_id = ? AND status IN ('running', 'blocked', 'waiting_user', 'pending')
 		ORDER BY position LIMIT 1`, planRevisionID).Scan(&planItemID); err != nil {
-		return nil, err
+			if !transitionV2 || !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE run_plan_revisions SET status = 'active' WHERE id = ?`, planRevisionID); err != nil {
 		return nil, err
@@ -4188,6 +4429,9 @@ func (s *Store) retryPlanControlFailure(ctx context.Context, tx *sql.Tx, runID s
 		"model_retry_reason":         errorCode,
 		"model_retry_source_step_id": sourceStepID,
 		"manual_retry":               true,
+	}
+	if transitionV2 {
+		recoveryInput["stage"] = "recovery"
 	}
 	stepID, err := insertQueuedModelStep(ctx, tx, run, recoveryInput, now)
 	if err != nil {
@@ -7710,21 +7954,32 @@ type completionInvariantResult struct {
 	DeliverableFormat  string
 	RequiredCharacters int64
 	ActualCharacters   int64
+	MissingAssets      []completionAssetReference
+}
+
+type completionAssetReference struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
 }
 
 func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run core.RunContext) (completionInvariantResult, error) {
 	requirements := core.InferTaskCompletionRequirements(run.Goal, run.Acceptance)
 	evidenceRunIDs := completionEvidenceRunIDs(run)
-	requiredStagedAssets := binaryContextAssetIDs(run.ConfigSnapshotJSON)
+	requiredStagedAssets := binaryContextAssets(run.ConfigSnapshotJSON)
 	if len(requiredStagedAssets) > 0 {
 		stagedAssets, err := successfulStagedAssetIDs(ctx, tx, evidenceRunIDs)
 		if err != nil {
 			return completionInvariantResult{}, err
 		}
-		for _, assetID := range requiredStagedAssets {
-			if !stagedAssets[assetID] {
-				return completionInvariantResult{Reason: "ATTACHMENT_NOT_READ"}, nil
+		missing := make([]completionAssetReference, 0, len(requiredStagedAssets))
+		for _, asset := range requiredStagedAssets {
+			if !stagedAssets[asset.ID] {
+				missing = append(missing, asset)
 			}
+		}
+		if len(missing) > 0 {
+			return completionInvariantResult{Reason: "ATTACHMENT_NOT_READ", MissingAssets: missing}, nil
 		}
 	}
 	runFilter := strings.TrimSuffix(strings.Repeat("?,", len(evidenceRunIDs)), ",")
@@ -7804,20 +8059,25 @@ func (s *Store) completionInvariantFailure(ctx context.Context, tx *sql.Tx, run 
 }
 
 func binaryContextAssetIDs(snapshotJSON string) []string {
+	assets := binaryContextAssets(snapshotJSON)
+	result := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		result = append(result, asset.ID)
+	}
+	return result
+}
+
+func binaryContextAssets(snapshotJSON string) []completionAssetReference {
 	var snapshot struct {
-		Assets []struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			MediaType string `json:"media_type"`
-		} `json:"context_asset_snapshots"`
+		Assets []completionAssetReference `json:"context_asset_snapshots"`
 	}
 	if json.Unmarshal([]byte(snapshotJSON), &snapshot) != nil {
 		return nil
 	}
-	result := make([]string, 0, len(snapshot.Assets))
+	result := make([]completionAssetReference, 0, len(snapshot.Assets))
 	for _, asset := range snapshot.Assets {
 		if strings.TrimSpace(asset.ID) != "" && contextAssetNeedsStaging(asset.MediaType, asset.Name) {
-			result = append(result, asset.ID)
+			result = append(result, asset)
 		}
 	}
 	return result
@@ -7825,7 +8085,9 @@ func binaryContextAssetIDs(snapshotJSON string) []string {
 
 func contextAssetNeedsStaging(mediaType, name string) bool {
 	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
-	if strings.HasPrefix(mediaType, "text/") || strings.Contains(mediaType, "json") || strings.Contains(mediaType, "xml") || strings.Contains(mediaType, "javascript") {
+	if strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") ||
+		mediaType == "application/xml" || strings.HasSuffix(mediaType, "+xml") ||
+		mediaType == "application/javascript" || mediaType == "application/x-javascript" {
 		return false
 	}
 	lowerName := strings.ToLower(strings.TrimSpace(name))
@@ -8031,7 +8293,7 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 	err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM tool_calls
 		WHERE run_id = ? AND status = 'succeeded' AND position > ? AND (
-			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
+			tool_name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) OR (
 				tool_name LIKE 'mcp__%__%' AND (
 					lower(tool_name) LIKE '%playwright%' OR lower(tool_name) LIKE '%browser%' OR
 					lower(tool_name) LIKE '%test%' OR lower(tool_name) LIKE '%verify%' OR
@@ -8045,6 +8307,7 @@ func successfulVerificationEvidence(ctx context.Context, tx *sql.Tx, runID strin
 		core.ToolWorkspaceReadFile, core.ToolWorkspaceListFiles, core.ToolWorkspaceFindFiles, core.ToolWorkspaceGrep,
 		core.ToolGitStatus, core.ToolGitDiff, core.ToolGitLog, core.ToolArtifactCapture,
 		core.ToolDocumentRender, core.ToolDocumentExport,
+		core.ToolDocumentOpen, core.ToolDocumentRead,
 	).Scan(&count)
 	return count, err
 }
@@ -8060,7 +8323,7 @@ func validDocumentExportEvidence(ctx context.Context, tx *sql.Tx, runIDs []strin
 		args = append(args, runID)
 	}
 	args = append(args, core.ToolDocumentExport)
-	var mutatedDocuments, missingValidExports int64
+	var mutatedDocuments, validExports int64
 	err := tx.QueryRowContext(ctx, `
 		WITH mutated_documents AS (
 			SELECT DISTINCT replace(
@@ -8084,10 +8347,10 @@ func validDocumentExportEvidence(ctx context.Context, tx *sql.Tx, runIDs []strin
 			  AND documents.render_hash = json_extract(receipts.output_json, '$.render_hash')
 			  AND outputs.content_hash = json_extract(receipts.output_json, '$.content_hash')
 		)
-		SELECT COUNT(*), COALESCE(SUM(CASE WHEN valid_exports.document_id IS NULL THEN 1 ELSE 0 END), 0)
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN valid_exports.document_id IS NOT NULL THEN 1 ELSE 0 END), 0)
 		FROM mutated_documents
-		LEFT JOIN valid_exports ON valid_exports.document_id = mutated_documents.document_id`, args...).Scan(&mutatedDocuments, &missingValidExports)
-	return err == nil && (mutatedDocuments == 0 || missingValidExports == 0), err
+		LEFT JOIN valid_exports ON valid_exports.document_id = mutated_documents.document_id`, args...).Scan(&mutatedDocuments, &validExports)
+	return err == nil && (mutatedDocuments == 0 || validExports > 0), err
 }
 
 func (s *Store) syncRunPlanState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, run core.RunContext, taskStatus, summary, now, correlationID string) error {
@@ -9218,7 +9481,9 @@ func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Quer
 
 func isRepairableRunPlanError(errorCode string) bool {
 	switch errorCode {
-	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_PREMATURE_COMPLETION", "RUN_PLAN_REQUIRED", "UPDATE_PLAN_MUST_BE_EXCLUSIVE":
+	case "RUN_PLAN_INVALID", "RUN_PLAN_PLACEHOLDER_DENIED", "RUN_PLAN_PREMATURE_COMPLETION", "RUN_PLAN_REQUIRED", "UPDATE_PLAN_MUST_BE_EXCLUSIVE",
+		"PLAN_CONTROL_MULTIPLE", "PLAN_CONTROL_REQUIRES_BUSINESS_TOOL", "LEGACY_PLAN_CONTROL_DENIED", "RUN_PLAN_ITEM_HAS_UNFINISHED_WORK", "RUN_PLAN_ALREADY_AT_FINAL_ITEM",
+		"TRANSITION_RUN_PLAN_INVALID", "TRANSITION_RUN_PLAN_PLACEHOLDER_DENIED", "TRANSITION_RUN_PLAN_REQUIRED", "TRANSITION_RUN_PLAN_DUPLICATE_ITEM", "TRANSITION_RUN_PLAN_NO_UNFINISHED_ITEMS", "TRANSITION_RUN_PLAN_REPLACEMENT_NOT_ALLOWED":
 		return true
 	default:
 		return false
@@ -10558,6 +10823,31 @@ func deriveRunStatus(ctx context.Context, tx *sql.Tx, runID string) (string, str
 	return core.StatusSucceeded, "", nil
 }
 
+func toolBatchTerminalFailure(ctx context.Context, tx *sql.Tx, batchID string) (status, errorCode string, step core.ClaimedStep, found bool, err error) {
+	if strings.TrimSpace(batchID) == "" {
+		return "", "", core.ClaimedStep{}, false, nil
+	}
+	err = tx.QueryRowContext(ctx, `
+		SELECT tc.status, tc.error_code, s.id, s.input_json, s.owner_id
+		FROM tool_calls tc
+		JOIN steps s ON s.id = tc.step_id
+		WHERE tc.tool_batch_id = ?
+		  AND tc.status IN ('failed', 'blocked', 'rejected')
+		  AND tc.error_code NOT LIKE 'BATCH_CANCELED_AFTER_%'
+		ORDER BY CASE WHEN tc.status = 'failed' THEN 0 ELSE 1 END, tc.batch_index
+		LIMIT 1`, batchID).Scan(&status, &errorCode, &step.ID, &step.InputJSON, &step.OwnerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", core.ClaimedStep{}, false, nil
+	}
+	if err != nil {
+		return "", "", core.ClaimedStep{}, false, err
+	}
+	if status == "rejected" {
+		status = core.StatusBlocked
+	}
+	return status, errorCode, step, true, nil
+}
+
 func (s *Store) completeToolBatchState(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, step core.ClaimedStep, run core.RunContext, now, correlationID string) (ready, continuationClaimed bool, batchID string, err error) {
 	if err = tx.QueryRowContext(ctx, `SELECT tool_batch_id FROM steps WHERE id = ?`, step.ID).Scan(&batchID); err != nil {
 		return false, false, "", err
@@ -10904,6 +11194,56 @@ func (s *Store) collectContinuationHistory(ctx context.Context, tx *sql.Tx, run 
 	return history, nil
 }
 
+func refreshModelPlanSnapshot(ctx context.Context, tx *sql.Tx, run core.RunContext, input map[string]any) error {
+	// Retries must observe plan controls already committed before a tool was
+	// rejected. Copying the source input would replay stale plan advancement.
+	delete(input, "active_plan")
+	delete(input, "active_plan_total")
+	delete(input, "active_plan_remaining")
+	if stage, _ := input["stage"].(string); stage == "continue" || snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
+		total, remaining, err := activePlanProgressTx(ctx, tx, run.RunID)
+		if err != nil {
+			return err
+		}
+		if total > 0 {
+			input["active_plan_total"] = total
+			input["active_plan_remaining"] = remaining
+		}
+	}
+	if snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT i.position, i.title, i.description, i.status, i.result_summary
+			FROM run_plan_items i
+			JOIN run_plan_revisions r ON r.id = i.plan_revision_id
+			WHERE r.run_id = ? AND r.status = 'active' AND i.status <> 'canceled'
+			ORDER BY i.position`, run.RunID)
+		if err != nil {
+			return err
+		}
+		activePlan := make([]map[string]any, 0, 8)
+		for rows.Next() {
+			var position int64
+			var title, description, status, summary string
+			if err := rows.Scan(&position, &title, &description, &status, &summary); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			activePlan = append(activePlan, map[string]any{"position": position, "title": title, "description": description, "status": status, "result_summary": summary})
+		}
+		iterationErr := rows.Err()
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if iterationErr != nil {
+			return iterationErr
+		}
+		if len(activePlan) > 0 {
+			input["active_plan"] = activePlan
+		}
+	}
+	return nil
+}
+
 // insertQueuedModelStep appends a queued model_continue step carrying input to
 // the run. Shared by the Agent Loop continuation and the steering replan path.
 func insertQueuedModelStep(ctx context.Context, tx *sql.Tx, run core.RunContext, input map[string]any, now string) (string, error) {
@@ -10933,42 +11273,8 @@ func insertQueuedModelStep(ctx context.Context, tx *sql.Tx, run core.RunContext,
 			return "", iterationErr
 		}
 	}
-	if stage, _ := input["stage"].(string); stage == "continue" {
-		total, remaining, err := activePlanProgressTx(ctx, tx, run.RunID)
-		if err != nil {
-			return "", err
-		}
-		if total > 1 {
-			input["active_plan_total"] = total
-			input["active_plan_remaining"] = remaining
-		}
-	}
-	if snapshotStringFromJSON(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
-		rows, err := tx.QueryContext(ctx, `
-			SELECT i.position, i.title, i.description, i.status, i.result_summary
-			FROM run_plan_items i
-			JOIN run_plan_revisions r ON r.id = i.plan_revision_id
-			WHERE r.run_id = ? AND r.status = 'active' AND i.status <> 'canceled'
-			ORDER BY i.position`, run.RunID)
-		if err != nil {
-			return "", err
-		}
-		activePlan := make([]map[string]any, 0, 8)
-		for rows.Next() {
-			var position int64
-			var title, description, status, summary string
-			if err := rows.Scan(&position, &title, &description, &status, &summary); err != nil {
-				_ = rows.Close()
-				return "", err
-			}
-			activePlan = append(activePlan, map[string]any{"position": position, "title": title, "description": description, "status": status, "result_summary": summary})
-		}
-		if err := rows.Close(); err != nil {
-			return "", err
-		}
-		if len(activePlan) > 0 {
-			input["active_plan"] = activePlan
-		}
+	if err := refreshModelPlanSnapshot(ctx, tx, run, input); err != nil {
+		return "", err
 	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
@@ -11236,6 +11542,9 @@ func (s *Store) queueModelInteractionRetry(ctx context.Context, tx *sql.Tx, sour
 	delete(input, "model_compat_retry_count")
 	delete(input, "model_compat_retry_reason")
 	delete(input, "model_compat_retry_source_step_id")
+	if err := refreshModelPlanSnapshot(ctx, tx, run, input); err != nil {
+		return "", 0, false, err
+	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return "", 0, false, err

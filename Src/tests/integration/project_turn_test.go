@@ -20,6 +20,49 @@ type projectTurnModelStub struct {
 	prompts []string
 }
 
+func TestTurnAdmissionReplaysBeforeModelAndActiveTaskRouting(t *testing.T) {
+	model := &projectTurnModelStub{results: []core.ModelResult{turnModelResult("answer", "one answer")}}
+	service, _, closeStore := newProjectTurnService(t, model)
+	defer closeStore()
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Admission", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := core.ProjectTurnInput{Content: "explain the project", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate}
+	first, err := service.SubmitProjectTurn(t.Context(), project.ID, ask, "", "ask-key-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := service.SubmitProjectTurnStream(t.Context(), project.ID, ask, "", "ask-key-0001", nil, nil)
+	if err != nil || replay.Messages[0].ID != first.Messages[0].ID || len(model.prompts) != 1 {
+		t.Fatalf("Ask replay invoked model or duplicated messages: %v", err)
+	}
+	taskInput := core.ProjectTurnInput{ConversationID: first.Conversation.ID, Content: "implement isolated feature", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}
+	task, err := service.SubmitProjectTurn(t.Context(), project.ID, taskInput, "", "task-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err = service.SubmitProjectTurnStream(t.Context(), project.ID, taskInput, "", "task-key", nil, nil)
+	if err != nil || replay.Queued || replay.Task == nil || replay.Task.ID != task.Task.ID {
+		t.Fatalf("Task replay routed into queue: %v", err)
+	}
+	taskInput.Content = "next independent feature"
+	queued, err := service.SubmitProjectTurn(t.Context(), project.ID, taskInput, "", "queue-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err = service.SubmitProjectTurnStream(t.Context(), project.ID, taskInput, "", "queue-key", nil, nil)
+	if err != nil || replay.QueueItem == nil || replay.QueueItem.ID != queued.QueueItem.ID {
+		t.Fatalf("queue replay duplicated admission: %v", err)
+	}
+	taskInput.Content = "different input under the same key"
+	_, err = service.SubmitProjectTurn(t.Context(), project.ID, taskInput, "", "queue-key")
+	var conflict *core.IdempotencyConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected content conflict, got %v", err)
+	}
+}
+
 type streamingProjectTurnModelStub struct {
 	classification core.ModelResult
 	answer         core.ModelResult

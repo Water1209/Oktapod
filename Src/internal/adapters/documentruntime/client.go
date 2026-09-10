@@ -71,6 +71,8 @@ type Client struct {
 	decoder     *json.Decoder
 	stderr      *boundedWriter
 	nextID      atomic.Int64
+	healthMu    sync.RWMutex
+	healthCache *application.DocumentRuntimeHealth
 }
 
 func Discover(dataRoot string, trustedKeys map[string]ed25519.PublicKey) (*Client, error) {
@@ -289,13 +291,27 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 }
 
 func (c *Client) Health(ctx context.Context) application.DocumentRuntimeHealth {
+	c.healthMu.RLock()
+	if c.healthCache != nil {
+		cached := *c.healthCache
+		cached.OCRLanguages = append([]string(nil), c.healthCache.OCRLanguages...)
+		c.healthMu.RUnlock()
+		return cached
+	}
+	c.healthMu.RUnlock()
 	result := application.DocumentRuntimeHealth{}
 	if err := c.Call(ctx, "health", map[string]any{}, &result); err != nil {
 		result.Available = false
 		result.Version = c.manifest.Version
 		result.Protocol = protocolVersion
 		result.DegradedReason = err.Error()
+		return result
 	}
+	c.healthMu.Lock()
+	remembered := result
+	remembered.OCRLanguages = append([]string(nil), result.OCRLanguages...)
+	c.healthCache = &remembered
+	c.healthMu.Unlock()
 	return result
 }
 

@@ -79,6 +79,9 @@ func TestTaskBudgetInheritsProjectDefaultsAndFreezesPerRun(t *testing.T) {
 	if err != nil || updated.MaxModelCalls != 0 || updated.MaxTokens != 0 {
 		t.Fatalf("unlimited project=%#v err=%v", updated, err)
 	}
+	if _, err := service.ControlTask(t.Context(), firstTask.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "", "finish-budget-first"); err != nil {
+		t.Fatal(err)
+	}
 	secondTask, err := service.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "inherit unlimited project budget", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "budget-project-unlimited", "")
 	if err != nil {
 		t.Fatal(err)

@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	parseProfileVersion = "document-extraction-v1:ocr-auto:chi_sim+eng"
-	cacheMaxBytes       = int64(1 << 30)
-	cacheMaxAge         = 30 * 24 * time.Hour
-	filePreviewTTL      = 20 * time.Minute
-	filePreviewMax      = 256
+	parseProfileVersion  = "document-extraction-v1:ocr-auto:chi_sim+eng"
+	createProfileVersion = "document-create-v2:pdf-visible-content-required"
+	cacheMaxBytes        = int64(1 << 30)
+	cacheMaxAge          = 30 * 24 * time.Hour
+	filePreviewTTL       = 20 * time.Minute
+	filePreviewMax       = 256
 )
 
 type Executor struct {
@@ -272,7 +273,7 @@ func (e *Executor) create(ctx context.Context, run core.RunContext, call core.To
 	} else {
 		sourceHash = inputHash
 	}
-	openKey := hashStrings("create", inputHash, sourceHash, e.client.Version())
+	openKey := hashStrings(createProfileVersion, inputHash, sourceHash, e.client.Version())
 	if existing, err := e.state.GetDocumentSessionByOpenKey(ctx, runScope(run), run.RunID, openKey); err == nil {
 		return documentOpenOutput(existing, true, false), nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -293,6 +294,11 @@ func (e *Executor) create(ctx context.Context, run core.RunContext, call core.To
 	if err != nil {
 		return nil, err
 	}
+	if templateHandle == "" {
+		if err := validateCreatedDocument(format, call.Arguments["specification"], parsed.Structure); err != nil {
+			return nil, err
+		}
+	}
 	structureJSON, warningsJSON := mustJSON(parsed.Structure), mustJSON(parsed.Warnings)
 	session := core.DocumentSession{ID: documentID, OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, OwnerUserID: run.OwnerUserID, TaskID: run.TaskID, RunID: run.RunID, OpenKey: openKey, SourceRef: templateRef, SourceContentHash: sourceHash, Format: format, Mode: "create", RuntimeVersion: e.client.Version(), ExtractionProfileHash: profileHash, Revision: 1, RevisionHash: parsed.ContentHash, WorkingHandle: handle, StructureJSON: structureJSON, WarningsJSON: warningsJSON, Status: "ready"}
 	createdSession, err := e.state.CreateDocumentSession(ctx, runScope(run), session, core.DocumentRevision{DocumentID: documentID, Revision: 1, RevisionHash: parsed.ContentHash, OperationHash: openKey, WorkingHandle: handle, StructureJSON: structureJSON, WarningsJSON: warningsJSON})
@@ -300,6 +306,40 @@ func (e *Executor) create(ctx context.Context, run core.RunContext, call core.To
 		return nil, err
 	}
 	return documentOpenOutput(createdSession, false, false), nil
+}
+
+func validateCreatedDocument(format string, specification any, structure map[string]any) error {
+	if format != "pdf" || !containsText(specification) {
+		return nil
+	}
+	units, _ := structure["units"].([]any)
+	for _, unit := range units {
+		item, _ := unit.(map[string]any)
+		if strings.TrimSpace(stringValue(item["text"])) != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("DOCUMENT_CONTENT_EMPTY: created PDF contains no extractable text from its non-empty specification")
+}
+
+func containsText(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		for _, item := range typed {
+			if containsText(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if containsText(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (e *Executor) apply(ctx context.Context, run core.RunContext, call core.ToolCall, operationHash string) (map[string]any, error) {

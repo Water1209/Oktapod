@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ const (
 type Local struct {
 	root            string
 	executionPolicy application.ExecutionPolicy
+	mutationGates   sync.Map
 }
 
 func NewLocal(root string) (*Local, error) {
@@ -80,6 +82,20 @@ func (l *Local) Execute(ctx context.Context, projectID string, call core.ToolCal
 	}
 	resolvedCall := call
 	resolvedCall.Name = core.ResolveToolName(call.Name)
+	// Local threads share files. Serialize individual mutations, not whole
+	// agent turns: model calls and approvals must not monopolize the project.
+	if workspaceMutation(resolvedCall.Name) {
+		value, _ := l.mutationGates.LoadOrStore(projectID, make(chan struct{}, 1))
+		gate := value.(chan struct{})
+		select {
+		case gate <- struct{}{}:
+			defer func() { <-gate }()
+		case <-ctx.Done():
+			result.ErrorCode = "WORKSPACE_OPERATION_CANCELED"
+			result.Output = map[string]any{"reason": "workspace operation canceled before execution"}
+			return result
+		}
+	}
 	switch resolvedCall.Name {
 	case core.ToolWorkspaceReadFile:
 		return l.readFile(projectRoot, resolvedCall, planned)
@@ -105,6 +121,16 @@ func (l *Local) Execute(ctx context.Context, projectID string, call core.ToolCal
 		return l.executeGit(ctx, projectRoot, resolvedCall, planned)
 	default:
 		return result
+	}
+}
+
+func workspaceMutation(name string) bool {
+	switch name {
+	case core.ToolWorkspaceEditFile, core.ToolWorkspaceWriteFile, core.ToolWorkspaceRunCommand, core.ToolWorkspaceShell, core.ToolWorkspaceExtractArchive,
+		core.ToolGitBranch, core.ToolGitCommit, core.ToolGitCommitPaths, core.ToolGitRestore, core.ToolGitRestoreHunk:
+		return true
+	default:
+		return false
 	}
 }
 

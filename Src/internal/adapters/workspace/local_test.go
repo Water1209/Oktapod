@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,38 @@ import (
 )
 
 const workspaceTestProjectID = "00000000-0000-7000-8000-000000000099"
+
+func TestConcurrentEditsCannotBothConsumeSamePreimage(t *testing.T) {
+	executor, projectRoot := newWorkspaceTestExecutor(t)
+	initial := []byte("shared sentinel\n")
+	if err := os.WriteFile(filepath.Join(projectRoot, "shared.txt"), initial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan core.ToolExecution, 2)
+	var group sync.WaitGroup
+	for _, replacement := range []string{"thread A", "thread B"} {
+		group.Go(func() {
+			<-start
+			results <- executor.Execute(t.Context(), workspaceTestProjectID, core.ToolCall{Name: core.ToolWorkspaceEditFile, Arguments: map[string]any{"path": "shared.txt", "preimage_hash": hashBytes(initial), "old_text": "shared sentinel", "new_text": replacement}})
+		})
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	success, conflict := 0, 0
+	for result := range results {
+		if result.Status == core.StatusSucceeded {
+			success++
+		}
+		if result.ErrorCode == "WORKSPACE_EDIT_CONFLICT" {
+			conflict++
+		}
+	}
+	if success != 1 || conflict != 1 {
+		t.Fatalf("success=%d conflict=%d", success, conflict)
+	}
+}
 
 func TestWorkspaceReadListFindGrepEditAndConflict(t *testing.T) {
 	executor, projectRoot := newWorkspaceTestExecutor(t)

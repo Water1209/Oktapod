@@ -25,7 +25,7 @@ func (s *Store) HasActiveTask(ctx context.Context, scope core.Scope, conversatio
 			LIMIT 1
 		)
 		WHERE t.conversation_id = ? AND t.organization_id = ?
-		  AND r.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')
+		  AND r.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused', 'blocked', 'unknown')
 		ORDER BY t.created_at DESC, t.id DESC
 		LIMIT 1
 	`, conversationID, scope.OrganizationID).Scan(&taskID)
@@ -38,7 +38,22 @@ func (s *Store) HasActiveTask(ctx context.Context, scope core.Scope, conversatio
 	return true, taskID, nil
 }
 
-func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation) (core.ConversationQueueItem, error) {
+func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation, admission ...core.Idempotency) (core.ConversationQueueItem, error) {
+	var key core.Idempotency
+	if len(admission) > 0 {
+		key = admission[0]
+	}
+	if key.Key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		result, found, err := s.ReplayProjectTurn(ctx, scope, projectID, key)
+		if err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+		if found && result.QueueItem != nil {
+			return *result.QueueItem, nil
+		}
+	}
 	id, err := newID()
 	if err != nil {
 		return core.ConversationQueueItem{}, err
@@ -54,6 +69,18 @@ func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, p
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := s.queries.WithTx(tx)
+	if conversationID == "" {
+		if _, err := q.GetProjectForUser(ctx, sqlitegen.GetProjectForUserParams{ID: projectID, OrganizationID: scope.OrganizationID, UserID: scope.UserID}); err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+		conversationID, err = newID()
+		if err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+		if _, err := q.CreateConversation(ctx, sqlitegen.CreateConversationParams{ID: conversationID, OrganizationID: scope.OrganizationID, ProjectID: projectID, OwnerUserID: scope.UserID, Title: titleFromMessage(content), Visibility: core.VisibilityPrivate, CreatedAt: now, UpdatedAt: now}); err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+	}
 	var conversationProjectID, visibility string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT c.project_id, c.visibility
@@ -82,25 +109,40 @@ func (s *Store) EnqueueConversationTurn(ctx context.Context, scope core.Scope, p
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO conversation_message_queue (id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', '', ?)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, 'pending', ?, '', '', ?)
 	`, id, scope.OrganizationID, projectID, conversationID, activeTaskID, content, inputJSON, kind, now, messageID); err != nil {
 		return core.ConversationQueueItem{}, fmt.Errorf("enqueue conversation turn: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return core.ConversationQueueItem{}, err
-	}
 	createdAt, _ := parseTime(now)
-	return core.ConversationQueueItem{
+	item := core.ConversationQueueItem{
 		ID: id, OrganizationID: scope.OrganizationID, ProjectID: projectID,
 		ConversationID: conversationID, ActiveTaskID: activeTaskID, MessageID: messageID,
 		Content: content, InputJSON: inputJSON, Kind: kind, Status: "pending",
 		CreatedAt: createdAt,
-	}, nil
+	}
+	if key.Key != "" {
+		conversation, err := getConversation(ctx, tx, scope, conversationID)
+		if err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+		messages, err := listMessages(ctx, tx, scope, conversationID, 0, 200)
+		if err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+		result := core.ProjectTurnResult{Route: "task", Conversation: conversation, Messages: messages, Queued: true, QueueItem: &item}
+		if err := saveIdempotency(ctx, tx, scope, "POST /projects/"+projectID+"/turns", key, httpStatusAccepted, result); err != nil {
+			return core.ConversationQueueItem{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return core.ConversationQueueItem{}, err
+	}
+	return item, nil
 }
 
 func (s *Store) ListConversationQueue(ctx context.Context, scope core.Scope, conversationID string, status string) ([]core.ConversationQueueItem, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
+		SELECT id, organization_id, project_id, conversation_id, COALESCE(active_task_id, ''), content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id, claim_version
 		FROM conversation_message_queue
 		WHERE conversation_id = ? AND organization_id = ? AND status = ?
 		ORDER BY created_at ASC
@@ -113,7 +155,7 @@ func (s *Store) ListConversationQueue(ctx context.Context, scope core.Scope, con
 	for rows.Next() {
 		var item core.ConversationQueueItem
 		var createdAt, claimedAt, consumedAt string
-		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID); err != nil {
+		if err := rows.Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID, &item.ClaimVersion); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = parseTime(createdAt)
@@ -130,14 +172,14 @@ func (s *Store) ClaimSteeringAfterStep(ctx context.Context, scope core.Scope, ta
 	now := formatTime(time.Now())
 	err := s.db.QueryRowContext(ctx, `
 		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
+		SET status = 'claimed', claimed_at = ?, claim_version = claim_version + 1
 		WHERE id = (
 			SELECT id FROM conversation_message_queue
 			WHERE conversation_id = ? AND active_task_id = ? AND kind = 'steering' AND status = 'pending'
 			ORDER BY created_at ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, conversationID, taskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
+		RETURNING id, organization_id, project_id, conversation_id, COALESCE(active_task_id, ''), content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id, claim_version
+	`, now, conversationID, taskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID, &item.ClaimVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -224,14 +266,14 @@ func (s *Store) ApplyConversationSteering(ctx context.Context, scope core.Scope,
 	var createdAt, claimedAt, consumedAt string
 	err = tx.QueryRowContext(ctx, `
 		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
+		SET status = 'claimed', claimed_at = ?, claim_version = claim_version + 1
 		WHERE id = (
 			SELECT id FROM conversation_message_queue
 			WHERE conversation_id = ? AND active_task_id = ? AND kind = 'steering' AND status = 'pending'
 			ORDER BY created_at ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, run.ConversationID, run.TaskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
+		RETURNING id, organization_id, project_id, conversation_id, COALESCE(active_task_id, ''), content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id, claim_version
+	`, now, run.ConversationID, run.TaskID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID, &item.ClaimVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, "", core.ErrNoWork
 	}
@@ -323,29 +365,11 @@ func (s *Store) ApplyConversationSteering(ctx context.Context, scope core.Scope,
 }
 
 func (s *Store) ClaimNextFollowUp(ctx context.Context, scope core.Scope, conversationID string) (core.ConversationQueueItem, error) {
-	var item core.ConversationQueueItem
-	var createdAt, claimedAt, consumedAt string
-	now := formatTime(time.Now())
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
-		WHERE id = (
-			SELECT id FROM conversation_message_queue
-			WHERE conversation_id = ? AND kind IN ('follow_up', 'steering') AND status = 'pending'
-			ORDER BY created_at ASC LIMIT 1
-		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, conversationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.ConversationQueueItem{}, core.ErrNoWork
-	}
+	conversation, err := s.GetConversation(ctx, scope, conversationID)
 	if err != nil {
 		return core.ConversationQueueItem{}, err
 	}
-	item.CreatedAt, _ = parseTime(createdAt)
-	item.ClaimedAt, _ = parseTime(claimedAt)
-	item.ConsumedAt, _ = parseTime(consumedAt)
-	return item, nil
+	return s.ClaimProjectFollowUp(ctx, scope, conversation.ProjectID, "")
 }
 
 // ClaimNextIdleFollowUp lets an idle worker retry queued turns even when no
@@ -371,11 +395,14 @@ func (s *Store) ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time
 	}
 	err = tx.QueryRowContext(ctx, `
 		UPDATE conversation_message_queue
-		SET status = 'claimed', claimed_at = ?
+		SET status = 'claimed', claimed_at = ?, claim_version = claim_version + 1
 		WHERE id = (
 			SELECT q.id FROM conversation_message_queue q
 			WHERE q.status = 'pending'
 			  AND (q.claimed_at = '' OR q.claimed_at < ?)
+			  AND NOT EXISTS (SELECT 1 FROM conversation_message_queue earlier WHERE earlier.conversation_id = q.conversation_id AND earlier.status IN ('pending','claimed') AND (earlier.created_at < q.created_at OR (earlier.created_at = q.created_at AND earlier.id < q.id)))
+ AND NOT EXISTS (SELECT 1 FROM steps held JOIN runs held_run ON held_run.id = held.run_id JOIN tasks held_task ON held_task.id = held_run.task_id WHERE held.organization_id = q.organization_id AND held_task.conversation_id = q.conversation_id AND held.lease_until <> '' AND julianday(held.lease_until) > julianday('now'))
+ AND NOT EXISTS (SELECT 1 FROM side_effect_receipts unsettled JOIN runs effect_run ON effect_run.id = unsettled.run_id JOIN tasks effect_task ON effect_task.id = effect_run.task_id WHERE unsettled.organization_id = q.organization_id AND effect_task.conversation_id = q.conversation_id AND unsettled.status IN ('started', 'unknown'))
 			  AND NOT EXISTS (
 			      SELECT 1 FROM conversation_message_queue c
 			      WHERE c.conversation_id = q.conversation_id AND c.status = 'claimed'
@@ -383,12 +410,12 @@ func (s *Store) ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time
 			  AND NOT EXISTS (
 			      SELECT 1 FROM tasks t
 			      WHERE t.conversation_id = q.conversation_id
-			        AND t.status IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused')
+			        AND COALESCE((SELECT r.status FROM runs r WHERE r.task_id = t.id ORDER BY r.created_at DESC, r.id DESC LIMIT 1), t.status) IN ('queued', 'running', 'waiting_approval', 'waiting_input', 'paused', 'blocked', 'unknown')
 			  )
-			ORDER BY q.created_at ASC LIMIT 1
+			ORDER BY q.created_at ASC, q.id ASC LIMIT 1
 		)
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, now, stale).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
+		RETURNING id, organization_id, project_id, conversation_id, COALESCE(active_task_id, ''), content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id, claim_version
+	`, now, stale).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID, &item.ClaimVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -404,12 +431,16 @@ func (s *Store) ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time
 	return item, nil
 }
 
-func (s *Store) MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string) (core.ConversationQueueItem, error) {
+func (s *Store) MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string, versions ...int64) (core.ConversationQueueItem, error) {
+	version := int64(0)
+	if len(versions) > 0 {
+		version = versions[0]
+	}
 	now := formatTime(time.Now())
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE conversation_message_queue SET status = 'consumed', consumed_at = ?
-		WHERE id = ? AND organization_id = ? AND status = 'claimed'
-	`, now, itemID, scope.OrganizationID)
+		WHERE id = ? AND organization_id = ? AND status = 'claimed' AND claim_version = ?
+	`, now, itemID, scope.OrganizationID, version)
 	if err != nil {
 		return core.ConversationQueueItem{}, err
 	}
@@ -423,8 +454,8 @@ func (s *Store) PromoteConversationQueueItemToSteering(ctx context.Context, scop
 		UPDATE conversation_message_queue
 		SET kind = 'steering'
 		WHERE id = ? AND conversation_id = ? AND organization_id = ? AND status = 'pending' AND kind = 'follow_up'
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
+		RETURNING id, organization_id, project_id, conversation_id, COALESCE(active_task_id, ''), content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id, claim_version
+	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID, &item.ClaimVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}
@@ -440,11 +471,15 @@ func (s *Store) PromoteConversationQueueItemToSteering(ctx context.Context, scop
 // RequeueConversationQueueItem restores a claimed item to pending after a
 // failed start attempt. claimed_at keeps the attempt timestamp so idle drains
 // back off instead of immediately retrying a failing item.
-func (s *Store) RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string) error {
+func (s *Store) RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string, versions ...int64) error {
+	version := int64(0)
+	if len(versions) > 0 {
+		version = versions[0]
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE conversation_message_queue SET status = 'pending', claimed_at = ?
-		WHERE id = ? AND organization_id = ? AND status = 'claimed'
-	`, formatTime(time.Now()), itemID, scope.OrganizationID)
+		WHERE id = ? AND organization_id = ? AND status = 'claimed' AND claim_version = ?
+	`, formatTime(time.Now()), itemID, scope.OrganizationID, version)
 	return err
 }
 
@@ -463,8 +498,8 @@ func (s *Store) CancelConversationQueueItem(ctx context.Context, scope core.Scop
 		UPDATE conversation_message_queue
 		SET status = 'canceled'
 		WHERE id = ? AND conversation_id = ? AND organization_id = ? AND status = 'pending'
-		RETURNING id, organization_id, project_id, conversation_id, active_task_id, content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id
-	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID)
+		RETURNING id, organization_id, project_id, conversation_id, COALESCE(active_task_id, ''), content, input_json, kind, status, created_at, claimed_at, consumed_at, message_id, claim_version
+	`, itemID, conversationID, scope.OrganizationID).Scan(&item.ID, &item.OrganizationID, &item.ProjectID, &item.ConversationID, &item.ActiveTaskID, &item.Content, &item.InputJSON, &item.Kind, &item.Status, &createdAt, &claimedAt, &consumedAt, &item.MessageID, &item.ClaimVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.ConversationQueueItem{}, core.ErrNoWork
 	}

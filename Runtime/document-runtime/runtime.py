@@ -293,6 +293,183 @@ def open_document(params: dict) -> dict:
     return {"format": document_format, "structure": structure, "warnings": sorted(set(warnings)), "content_hash": _sha256(path), "size_bytes": path.stat().st_size}
 
 
+def _pdf_text_blocks(specification: dict) -> list[dict]:
+    """Normalize the supported PDF specification shapes into visible text blocks."""
+    blocks: list[dict] = []
+
+    def add(kind: str, value, level: int = 0) -> None:
+        text = str(value or "").strip()
+        if text:
+            blocks.append({"kind": kind, "text": text, "level": level})
+
+    def add_items(items) -> None:
+        if isinstance(items, str):
+            add("paragraph", items)
+            return
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, str):
+                add("paragraph", item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or item.get("type") or "paragraph").lower()
+            if kind in {"heading", "title"}:
+                add("heading", item.get("text") or item.get("title"), int(item.get("level") or 1))
+            elif kind in {"bullets", "bullet_list", "list"}:
+                for bullet in item.get("items") or item.get("bullets") or []:
+                    add("bullet", bullet.get("text") if isinstance(bullet, dict) else bullet)
+            else:
+                add("paragraph", item.get("text") or item.get("body") or item.get("value"))
+
+    add("title", specification.get("title"))
+    add("subtitle", specification.get("subtitle"))
+    sections = specification.get("sections")
+    if isinstance(sections, list):
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            add("heading", section.get("heading") or section.get("title"), 1)
+            body = section.get("body") or section.get("paragraphs") or []
+            add_items(body if isinstance(body, list) else [body])
+            for bullet in section.get("bullets") or []:
+                add("bullet", bullet.get("text") if isinstance(bullet, dict) else bullet)
+    for key in ("content", "blocks", "elements", "body", "items"):
+        add_items(specification.get(key))
+    nested = specification.get("document")
+    if isinstance(nested, dict):
+        add("heading", nested.get("title"), 1)
+        add_items(nested.get("paragraphs"))
+    markdown = specification.get("markdown")
+    if isinstance(markdown, str):
+        for raw_line in markdown.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                heading = line.lstrip("#").strip()
+                add("heading", heading, max(1, min(3, len(line) - len(line.lstrip("#")))))
+            elif line.startswith(("- ", "* ", "+ ")):
+                add("bullet", line[2:])
+            else:
+                add("paragraph", line)
+    if not blocks:
+        add("paragraph", specification.get("text"))
+    footer = str(specification.get("footer") or "").strip()
+    if footer:
+        blocks.append({"kind": "footer", "text": footer, "level": 0})
+    return blocks
+
+
+def _pdf_wrap(text: str, font: str, size: float, width: float) -> list[str]:
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    lines: list[str] = []
+    for paragraph in str(text).splitlines() or [""]:
+        current = ""
+        for character in paragraph:
+            candidate = current + character
+            if current and stringWidth(candidate, font, size) > width:
+                lines.append(current.rstrip())
+                current = character.lstrip()
+            else:
+                current = candidate
+        lines.append(current.rstrip())
+    return lines or [""]
+
+
+def _create_pdf(output: Path, specification: dict) -> None:
+    from reportlab.lib.pagesizes import A4, LETTER
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen.canvas import Canvas
+
+    page_size = LETTER if str(specification.get("page_size", "A4")).lower() == "letter" else A4
+    font = "STSong-Light"
+    pdfmetrics.registerFont(UnicodeCIDFont(font))
+    canvas = Canvas(str(output), pagesize=page_size)
+    width, height = page_size
+    left, right, top, bottom = 54, 54, 54, 58
+    usable_width = width - left - right
+    footer_blocks: list[dict] = []
+
+    def draw_footer() -> None:
+        if not footer_blocks:
+            return
+        canvas.setFont(font, 8.5)
+        canvas.setFillColorRGB(0.38, 0.42, 0.48)
+        footer = " ".join(item["text"] for item in footer_blocks)
+        lines = _pdf_wrap(footer, font, 8.5, usable_width)
+        canvas.drawString(left, 28, lines[0])
+
+    def new_page() -> float:
+        draw_footer()
+        canvas.showPage()
+        return height - top
+
+    def draw_blocks(blocks: list[dict], *, force_page_after: bool = False) -> None:
+        nonlocal_y = height - top
+        for block in blocks:
+            kind = block["kind"]
+            if kind == "footer":
+                footer_blocks.append(block)
+                continue
+            if kind == "title":
+                size, leading, before, after = 20, 27, 0, 10
+            elif kind == "subtitle":
+                size, leading, before, after = 10.5, 16, 0, 12
+            elif kind == "heading":
+                level = int(block.get("level") or 1)
+                size, leading, before, after = (14, 21, 9, 5) if level <= 1 else (12, 18, 7, 4)
+            else:
+                size, leading, before, after = 10.5, 17, 2, 5
+            prefix = "•  " if kind == "bullet" else ""
+            text_width = usable_width - (14 if kind == "bullet" else 0)
+            lines = _pdf_wrap(prefix + block["text"], font, size, text_width)
+            required = before + len(lines) * leading + after
+            if nonlocal_y - required < bottom and nonlocal_y < height - top:
+                nonlocal_y = new_page()
+            nonlocal_y -= before
+            canvas.setFont(font, size)
+            canvas.setFillColorRGB(0.10, 0.13, 0.18)
+            x = left + (14 if kind == "bullet" else 0)
+            for line in lines:
+                if nonlocal_y < bottom:
+                    nonlocal_y = new_page()
+                    canvas.setFont(font, size)
+                    canvas.setFillColorRGB(0.10, 0.13, 0.18)
+                canvas.drawString(x, nonlocal_y, line)
+                nonlocal_y -= leading
+            nonlocal_y -= after
+        if force_page_after:
+            new_page()
+
+    pages = specification.get("pages")
+    if isinstance(pages, list) and pages:
+        for index, page in enumerate(pages):
+            if not isinstance(page, dict):
+                page = {"text": page}
+            page_blocks: list[dict] = []
+            title = str(page.get("title") or "").strip()
+            if title:
+                page_blocks.append({"kind": "heading", "text": title, "level": 1})
+            page_blocks.extend(_pdf_text_blocks({key: value for key, value in page.items() if key != "title"}))
+            page_blocks = [block for block in page_blocks if block["kind"] != "footer"]
+            if not page_blocks:
+                raise RuntimeFailure("DOCUMENT_SPECIFICATION_EMPTY", f"PDF page {index + 1} contains no visible text")
+            draw_blocks(page_blocks, force_page_after=index < len(pages) - 1)
+    else:
+        blocks = _pdf_text_blocks(specification)
+        if not any(block["kind"] != "footer" and block["text"].strip() for block in blocks):
+            raise RuntimeFailure("DOCUMENT_SPECIFICATION_EMPTY", "PDF specification contains no visible text")
+        # Register the footer before flowing body content so it is present on
+        # every page, including pages created by automatic overflow.
+        footer_blocks.extend(block for block in blocks if block["kind"] == "footer")
+        draw_blocks([block for block in blocks if block["kind"] != "footer"])
+    draw_footer()
+    canvas.save()
+
+
 def create_document(params: dict) -> dict:
     output = _handle(params.get("output_handle", ""))
     _ensure_parent(output)
@@ -343,18 +520,7 @@ def create_document(params: dict) -> dict:
                     sheet.append(list(row))
             workbook.save(str(output))
         else:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.pdfgen.canvas import Canvas
-            canvas = Canvas(str(output), pagesize=A4)
-            width, height = A4
-            pages = specification.get("pages") or [{"text": specification.get("text", "")}]
-            for page in pages:
-                y = height - 60
-                for line in str(page.get("text", "")).splitlines() or [""]:
-                    canvas.drawString(50, y, line[:160])
-                    y -= 16
-                canvas.showPage()
-            canvas.save()
+            _create_pdf(output, specification)
     _format(output, document_format)
     return {"output_handle": params["output_handle"], "content_hash": _sha256(output), "size_bytes": output.stat().st_size}
 
@@ -509,17 +675,26 @@ def _to_pdf(source: Path, output_dir: Path) -> Path:
     if not executable:
         raise RuntimeFailure("RENDERER_UNAVAILABLE", "LibreOffice Headless is not installed in the document runtime package")
     output_dir.mkdir(parents=True, exist_ok=True)
-    profile = Path(tempfile.mkdtemp(prefix="lo-profile-", dir=output_dir))
-    try:
-        command = [executable, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--norestore", f"-env:UserInstallation={profile.as_uri()}", "--convert-to", "pdf", "--outdir", str(output_dir), str(source)]
+    # LibreOffice creates deeply nested profile files and can crash on Windows
+    # MAX_PATH even when Python can access the requested cache directory. Stage
+    # conversion under the runtime's short temp root, independent of cache keys
+    # and user filenames. Each call owns its profile and removes it on failure.
+    temp_root = ROOT / "tmp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="lo-", dir=temp_root) as temporary:
+        conversion_dir = Path(temporary)
+        profile = conversion_dir / "profile"
+        staged_source = conversion_dir / ("input" + source.suffix)
+        shutil.copyfile(source, staged_source)
+        command = [executable, "--headless", "--nologo", "--nodefault", "--nofirststartwizard", "--norestore", f"-env:UserInstallation={profile.as_uri()}", "--convert-to", "pdf", "--outdir", str(conversion_dir), str(staged_source)]
         completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False)
-        candidate = output_dir / (source.stem + ".pdf")
+        candidate = conversion_dir / "input.pdf"
         if completed.returncode != 0 or not candidate.is_file():
             raise RuntimeFailure("RENDER_FAILED", "LibreOffice conversion failed", {"stderr": completed.stderr.decode("utf-8", "replace")[-2000:]})
         _format(candidate, "pdf")
-        return candidate
-    finally:
-        shutil.rmtree(profile, ignore_errors=True)
+        result = output_dir / (source.stem + ".pdf")
+        shutil.copyfile(candidate, result)
+        return result
 
 
 def render_document(params: dict) -> dict:

@@ -430,6 +430,7 @@ paths:
   /auth/sessions:
     post:
       operationId: createAuthSession
+      description: Personal HTTP session issuance is forbidden, including for maintainers. Login and registration issue sessions internally. Team compatibility remains restricted to its existing administrator entry.
       requestBody:
         required: true
         content:
@@ -443,6 +444,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthSession"
+        "403":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /auth/sessions/{session_id}:
@@ -455,9 +458,12 @@ paths:
           format: uuid
     delete:
       operationId: revokeAuthSession
+      description: Revoke only the authenticated user's session. Foreign and nonexistent session IDs both return 404 without modifying any record.
       responses:
         "204":
           description: Session revoked
+        "404":
+          $ref: "#/components/responses/Problem"
         default:
           $ref: "#/components/responses/Problem"
   /projects/{project_id}:
@@ -2980,14 +2986,20 @@ components:
         reason: { type: string }
     Bootstrap:
       type: object
-      required: [profile, model_endpoint, model_configured, user, organization, capabilities]
+      required: [profile, model_endpoint, model_configured, user, organization, capabilities, permissions]
       properties:
+        permissions: { $ref: "#/components/schemas/InstancePermissions" }
         profile: { type: string, enum: [personal, team] }
         model_endpoint: { type: string, format: uri }
         model_configured: { type: boolean }
         user: { $ref: "#/components/schemas/Actor" }
         organization: { $ref: "#/components/schemas/Organization" }
         capabilities: { $ref: "#/components/schemas/RuntimeCapabilities" }
+    InstancePermissions:
+      type: object
+      required: [manage_instance]
+      properties:
+        manage_instance: { type: boolean }
     ModelDescriptor:
       type: object
       required: [id]
@@ -4106,13 +4118,15 @@ components:
         queued:
           type: boolean
           description: whether the turn was queued because an active task exists
+        queue_reason: { type: string }
+        blocking_task_id: { type: string, format: uuid }
         queue_item:
           $ref: "#/components/schemas/ConversationQueueItem"
         resource_install_draft:
           $ref: "#/components/schemas/ResourceInstallDraft"
     ConversationQueueItem:
       type: object
-      required: [id, conversation_id, active_task_id, content, kind, status, created_at]
+      required: [id, conversation_id, content, kind, status, created_at]
       properties:
         id: { type: string, format: uuid }
         conversation_id: { type: string, format: uuid }

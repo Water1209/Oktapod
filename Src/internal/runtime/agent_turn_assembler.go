@@ -125,6 +125,9 @@ func planProgressReminder(step core.ClaimedStep, continuation []map[string]any, 
 		return ""
 	}
 	if len(snapshots) > 0 && snapshotVersion(snapshots[0], "plan_protocol_version") == "transition_v2" {
+		if progress.Remaining == 1 {
+			return "当前持久化计划已处于最后一项。直接执行该项尚未完成的业务工具，不要再调用 advance_plan。只有交付物与验证均完成后才返回最终答复，由 Runtime 完成门禁收敛计划终态。"
+		}
 		return "当前任务存在未完成的语义计划。完成当前语义项后，在下一次需要调用业务工具时同时调用 advance_plan；它只声明语义推进，不替代工具、收据或完成门禁。最终无工具答复通过完成门禁后由 Runtime 收敛计划终态。"
 	}
 	return "当前任务存在未完成的语义计划。每完成一个计划项，必须单独调用 update_plan 提交同一完整清单：把已完成项标记 completed，并把下一项标记 in_progress；不要把工具调用写进计划。全部计划项完成后才返回不含工具调用的最终总结。"
@@ -176,7 +179,7 @@ func continuationInstructionForTurn(step core.ClaimedStep, continuation []map[st
 		instruction = fmt.Sprintf("同一个语义计划项已经完成 %d 次 MCP 工具调用，达到 %d 次收敛上限。当前 Turn 不再提供工具；请基于已有页面证据立即给出最佳可用结论，明确已核验网址、来源和仍存在的缺口，不得继续声称正在查找或等待下一步。", bounded.Used, bounded.Limit)
 	}
 	if len(continuation) > 0 || steering != "" {
-		instruction += "\n\n长文交付必须主动分段：单次 workspace_write_file / workspace_edit_file 的新增正文建议不超过 3000 个字符。用户要求一份或一个完整报告时，必须维护一个可独立阅读的主文件：先创建带稳定尾部锚点的主文件，再读取最新 preimage_hash，用 workspace_edit_file 替换该锚点为下一段正文加同一锚点；完成时移除锚点。过程章节可以保留，但不能用多个分片的合计字数冒充主报告字数。不要等待参数截断后再拆分。"
+		instruction += "\n\n长文交付必须主动分段：单次 workspace_write_file / workspace_edit_file / document_create / document_apply 的新增正文建议不超过 3000 个字符。Office 文档应通过 document_apply 按章节分轮追加到同一工作副本，并使用每轮返回的最新 revision；全部写完后再渲染和导出。用户要求一份或一个完整报告时，必须维护一个可独立阅读的主文件：先创建带稳定尾部锚点的主文件，再读取最新 preimage_hash，用 workspace_edit_file 替换该锚点为下一段正文加同一锚点；完成时移除锚点。过程章节可以保留，但不能用多个分片的合计字数冒充主报告字数。不要等待参数截断后再拆分。"
 	}
 	for _, hint := range []string{modelCompatibilityRetryHint(step.InputJSON), toolRecoveryHint(step.InputJSON), lengthTruncationHint(step.InputJSON), completionRecoveryHint(step.InputJSON)} {
 		if hint != "" {

@@ -1,60 +1,55 @@
 # Oktapod
 
-> **V1.0.0 Release Candidate：本地优先、可控、可审计、可恢复的智能开发 Agent**
+本地优先的 Agent 工作台，让任务执行、文件交付与操作审计留在自己的环境中。
 
-HTML 文件预览在隔离沙箱中允许单文件应用的内联脚本运行，但不允许访问宿主页面、Cookie、外部网络、表单、子框架或对象；源码模式仍可查看原始内容，未支持格式才打开新页面。
-这里的“允许脚本”仅指 HTML 单文件应用在不带 `allow-same-origin` 的隔离 iframe 中执行内联脚本；旧版“禁用脚本”的描述以本条安全边界为准。
-Oktapod V1 面向注册用户的个人私有项目。Work/Code 只决定工作流、Prompt 和默认界面，两种场景都使用同一套 Workspace、脚本、Git、Skill、MCP 和 Artifact 执行内核，审批只由权限模式与 ExecutionPolicy 决定。用户在一个 Thread 中描述目标，Auto 会直接进入一次可恢复 Agent Turn，不再先消耗模型做路由分类；Agent 可以直接回答、直接调用工具，或在同一业务响应中提交语义计划与首批工具，多阶段推进也不产生独立计划模型往返。执行计划只保存面向结果的语义步骤，逐次工具调用、审批和 Receipt 只进入执行记录。运行中可直接说“暂停当前任务”“取消当前任务”“继续当前任务”，也可说“继续当前任务，并……”把新约束合入后继 Run，原目标、显式 Skill、已确认收据和工作区改动不会丢失。只要本次发送选择了附件，Auto 就会进入 Task 并冻结附件快照；PPTX/PDF/DOCX/XLSX 由可卸载预置 Skill 和签名 `document-runtime` 通过固定 `document_*` 工具处理，其他二进制继续使用 `asset_stage`。Runtime 缺失时资源明确显示 degraded，不静默生成解析脚本。选择的 Memory 也会把实际 Prompt 载荷冻结到新 Run，后续编辑或删除不改变正在执行的上下文。未成功读取所选二进制附件的任务不能完成。任务只有在真实 Tool Receipt、变更后验证和最新交付 Artifact 满足目标与验收条件后才会完成；模型只说“已完成”不会改变任务状态。运行中取消会终止受控命令或 MCP 调用；已经开始但无法确认最终副作用的 Receipt 会进入 unknown 并禁止自动重试。文件页将可变“工作文件”、可复用“项目资料”和不可变“任务输出”分开；工作文件按常规文件浏览器展示当前工作区绝对路径、逐级返回、文件状态、大小和修改时间，Agent 多文件任务必须先规划路径，临时文件进入当前 Run 的内部目录，交付仍以 Artifact 为唯一真源。右侧面板不重复显示标题，只保留文件、变更、用量、项目和追踪五个 V1 入口；普通状态不遮挡对话，桌面最大化时保留左侧全局栏和项目栏并覆盖其余整个工作区，项目栏收起后则从全局栏右侧铺满。Markdown 与 HTML 提供“预览 / 原文（源码）”双模式，其中 HTML 在禁用脚本、表单、子框架与外部网络的沙箱中渲染；PDF、DOCX、XLSX、PPTX、图片和常见脚本/文本也默认在面板内只读预览，只有未支持格式继续按原方式打开新页面。项目库支持编辑、重命名和移除；移除是软删除，只从个人项目列表隐藏，工作目录、任务、会话、运行历史和记忆完整保留。新项目默认任务保险丝为 80 次模型调用与 1,000,000 Token。资源中心统一管理预置、自定义和系统资源，列表与详情使用中文展示能力说明、真实工具或工作流、适用场景和治理边界，外部工具技术名保持原样；预置资源可停用、删除和手动恢复，用户删除状态不会因重启或升级被覆盖。Provider、MCP 多项凭据和 OAuth Token 统一进入 SQLite 数据库加密 Vault，操作系统凭据库和模型环境变量不再参与产品状态。删除 Provider 时，可变的项目、会话偏好、Agent 和治理配置会事务性切换到当前默认实例；历史 Run 的冻结 ModelRef 与审计不改写，运行时遇到已删除实例也会明确记录默认回退。自动审查固定到数据库中准确的 Provider + Model + 策略版本，不可用时关闭式转为人工审批。团队项目与 PostgreSQL 只保留兼容边界，不进入 V1 完成度。
+**状态：V1.0.0 RC** · Windows / Linux · Go + React · SQLite · [AGPL-3.0](LICENSE)
 
-任务流摘要以持久化 `Task.status` 为唯一状态真源，暂停、等待、失败、取消和完成不会因事件流停止而混淆。Changes 面板明确区分任务开始、Git HEAD 与暂存区三种基线，按文件展示增删统计、行号和折叠差异；内部 `.oktapod` 路径在后端排除，明确的运行缓存在前端单独折叠且不进入全选、撤销和提交，所有变更操作仍只能通过原 Thread 的受治理工具链。工作文件保持常规文件浏览模型；嵌套缓存、依赖、测试覆盖率和虚拟环境只保留治理分类，不折叠展示、不移动或删除旧文件。Task 与 Ask 统一消费 Provider 流式响应；Task 的安全正文通过无持久 cursor 的 `run_live` 临时显示，最终仍由 SQLite 消息与事件替换。模型传输从请求发出开始限制首个真实正文/推理/工具 Token，空 SSE/keep-alive 不算首 Token；首 Token 后另有流空闲截止。新工具型 Run 的 `Auto` 采用 action-first 有效策略，显式 Off/Low/Medium/High 仍按用户选择执行；整轮硬上限默认分别为 120/120/180/300/600 秒。首 Token、流空闲和各级整轮时间均由 `config.yaml` 的 `model` 段配置并在启动时校验。`Worker` 只协调 Durable Claim/Lease/Checkpoint/Finish、Steering 与 Follow-up；固定 `StepDispatcher`、`ModelInvoker` 和五类 `ToolPreparer` 分别承担步骤路由、单次模型采样与收据前准备，SQLite 仍是唯一恢复真源。网络阶段、首 Token、流空闲、整轮超时和流中断会写入脱敏诊断；网络类故障只从检查点自动重试 1 次，语义响应修复仍保留 3 次。项目运行态优先通过可恢复 SSE 更新；项目空闲时不持续轮询任务、动态和消息列表，只有 live task 或用户打开动态面板时才启用有限轮询，会话列表则在发送、创建、重命名和删除后通过缓存失效更新。全局收件箱为空时退避到 15 秒，有待处理项时保持 5 秒刷新。
+[快速开始](#快速开始) · [安装与部署](Doc/Oktapod_部署与运维指南_v1.0.md) · [架构设计](Doc/Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md) · [验收状态](Doc/Oktapod_V1_验收状态与追踪矩阵.md)
 
-语义与完成合同补充：计划一旦绑定，普通续轮只能推进当前目标，只有 Steering、权限修订、恢复等显式重规划阶段才能替换计划；完成项与规范化重复项不得再次进入新版本。用户明确写出“不联网/离线/禁止搜索”时，搜索预算冻结为零，联网工具从当前目录移除，完成门禁也不会反向要求新的 Web Receipt。对 `.oktapod/` 内部工作文件的受控写入跳过自动 Artifact 登记而保持成功，公开候选文件仍必须严格 Capture。
+## 功能
 
-MCP 在界面中使用资源名与工具短名，内部 UUID 只用于冻结唯一身份和审计。L3 工具可批准当前参数一次，或仅在当前 Task 内复用同一个完整工具身份；不会扩权到整个 MCP、会话或项目，每次调用仍产生独立 Authorization 与 Receipt。同一语义计划项累计 12 个终态 MCP 调用后会停止继续调用工具，基于已有证据收尾并明确缺口。资源能力说明分别来自 Skill Manifest/instructions 与 MCP 在线工具发现；预置文档资源的“安装或修复”只有在当前进程确实加载健康 Runtime 后才会成功。
+- **个人私有项目**：账户登录、项目隔离、实例维护者统一配置模型服务；同项目多会话并发，同会话消息持久排队。
+- **可恢复任务**：语义计划、暂停与恢复、审批、预算和执行收据；重试展示具体原因，并读取最新计划状态。
+- **代码与工作文件**：Workspace、脚本、Git 变更和文件预览；项目移除保留工作目录与历史。
+- **文档交付**：通过预置 Skill 与签名 Document Runtime 读取、生成和渲染 PDF、DOCX、XLSX、PPTX；输出登记为可验证 Artifact。
+- **可扩展能力**：Skill、MCP、Agent、Memory 与多 Provider；凭据统一存入数据库加密 Vault。
+- **集成工作台**：对话旁查看文件、变更、用量、项目与追踪；HTML 单文件应用在隔离沙箱中支持交互。
+
+V1 发布范围为个人私有项目与 SQLite；团队项目、PostgreSQL 和 OS 级强沙箱不属于当前发布范围。签名安装包与跨平台部署验收状态以[验收矩阵](Doc/Oktapod_V1_验收状态与追踪矩阵.md)为准。
 
 ## 快速开始
 
-以下是源码开发方式，需要 Node.js `>=22.12.0`、pnpm `10.28.2`、Go `1.26.5`；正式 Windows/Linux 部署机器不需要这些构建工具，但必须同时安装版本二进制、签名 Document Runtime 和信任键，详见[部署与运维](Doc/Oktapod_部署与运维指南_v1.0.md)。
+源码开发需要 **Node.js ≥22.12.0、pnpm 10.28.2、Go 1.26.5**。在仓库根目录执行：
 
-```powershell
+```sh
 pnpm install --frozen-lockfile
 pnpm build
-New-Item -ItemType Directory -Force "$env:APPDATA\Oktapod" | Out-Null
-Copy-Item Deploy\config.yaml.example "$env:APPDATA\Oktapod\config.yaml"
-.\Build\oktapod.exe serve
 ```
 
-浏览器访问 `http://127.0.0.1:8787/`，首次使用在登录页注册本地账户，然后在“设置 → 凭据与密钥库”生成、保存并确认一次性恢复口令。Vault 变为 active 后重新录入 Provider/MCP 凭据；Secret 只以 AES-256-GCM 应用层密文进入 SQLite。
+Windows 执行 `.\Build\oktapod.exe serve`；Linux 执行 `./Build/oktapod serve`。浏览器打开 <http://127.0.0.1:8787/>，首次注册账户成为实例维护者，在“设置 → 凭据与密钥库”初始化 Vault 后配置模型服务。
 
-配置中心按职责分为“模型服务、治理与审批、运行与上下文、费用与用量、凭据与密钥库、数据与备份、外观与偏好”。“运行与上下文”提供默认关闭的受控私网 `web_fetch`：只接受精确 IP + 端口白名单，新 Run 冻结策略 Hash，每 Run 首次访问一个 origin 必须人工批准；公网 Fetch 保持 80/443 与 DNS/Dial 防 SSRF 边界。Provider 的连接、API Key 与启用模型一次保存；Reviewer 不再混入模型连接页。诊断会列出具体缺失凭据及修复入口。启动配置加载顺序为 `--config > OKTAPOD_CONFIG_FILE > %APPDATA%/Oktapod/config.yaml > 内置默认值`；可用 `oktapod config doctor --json` 和 `oktapod vault status` 诊断。开发模式下，在两终端分别执行 `go run ./Src/cmd/oktapod serve` 与 `pnpm dev`。
+普通构建不包含文档依赖，缺少 Runtime 时文档能力会显示降级；完整安装请按[部署指南](Doc/Oktapod_部署与运维指南_v1.0.md)配置签名 Runtime。需要前端热更新时，分别运行 `go run ./Src/cmd/oktapod serve` 与 `pnpm dev`。
 
-## 发布构建
+## 安装包制作与部署
 
-```powershell
-pnpm release:build
-pnpm release:smoke
-.\Build\oktapod-v1.0.0-windows-amd64.exe version
-```
+发布方在目标 Windows/Linux 主机准备自包含 Python、LibreOffice、PDFium、Tesseract、许可证和仓库外签名私钥，再执行 `pnpm release:build` 与 `pnpm release:smoke`。完整输入、暂存目录和交付清单见[发布方构建](Doc/Oktapod_部署与运维指南_v1.0.md#21-发布方构建)。
 
-发布构建除带版本二进制外，还强制要求已暂存的自包含 Python/LibreOffice/PDFium/Tesseract 运行时、完整许可证目录和 Ed25519 私钥文件，生成签名 `document-runtime`、SPDX SBOM 与逐文件/归档 SHA256；普通 `pnpm build` 仍允许 Runtime 缺失并明确降级。
+部署方校验 SHA256，将主程序、签名 Runtime、信任公钥与配置样例安装到独立版本目录，初始化账户与 Vault，并验证 JSON 健康及文档能力。部署机器无需 Node.js、pnpm、Go 或单独安装 LibreOffice；Linux 仍需满足目标发行版的系统库与字体要求。当前交付原生文件集合，不提供 MSI、DEB、RPM 或 Docker 安装方式。
+
+## 开发与贡献
+
+提交前执行 `pnpm verify`；UI 流程变更执行 `pnpm test:e2e`，Ubuntu 并发检查执行 `pnpm test:race`。Windows 可将 `GOCACHE` 设置为 `$env:TEMP\go-build-cache`。贡献请说明问题、变更范围与验证结果，并遵守 [AGENTS.md](AGENTS.md) 的目录、契约与文档同步约定。
 
 ## 文档
 
-| 文档 | 用途 |
+| 文档 | 内容 |
 |---|---|
-| [V1 发布说明](Doc/Oktapod_V1_发布说明_V1.0.0.md) | 发布范围、已知限制、安装与回滚 |
-| [V1 总体架构](Doc/Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md) | 当前架构事实与演进边界 |
-| [V1 执行计划](Doc/Oktapod_V1_执行计划与验收门禁_V1.0.md) | 差距批次、门禁与剩余工作 |
-| [V1 验收矩阵](Doc/Oktapod_V1_验收状态与追踪矩阵.md) | 发布完成度唯一真源 |
-| [V1.1 Agent Runtime 优化](Doc/Oktapod_V1.1_Agent_Runtime_优化执行计划.md) | 主 Agent Assembly、统一 ToolRuntime、预置文档 Runtime、兼容边界与合并门禁 |
-| [Agent Runtime 性能 V2](Doc/Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md) | Auto 单 Turn、Plan Transition、Live Streaming、Context Projection、Barrier 与性能门禁 |
-| [部署与运维](Doc/Oktapod_部署与运维指南_v1.0.md) | Windows 版本目录/任务计划、Linux systemd、签名 Runtime、升级与空 DataRoot 回滚 |
+| [部署与运维](Doc/Oktapod_部署与运维指南_v1.0.md) | 安装包制作、Windows/Linux 安装、升级、备份与回滚 |
+| [总体架构](Doc/Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md) / [执行计划](Doc/Oktapod_V1_执行计划与验收门禁_V1.0.md) | 产品边界、架构决策与实施门禁 |
+| [验收矩阵](Doc/Oktapod_V1_验收状态与追踪矩阵.md) / [发布说明](Doc/Oktapod_V1_发布说明_V1.0.0.md) | 实现状态、验证证据与已知限制 |
+| [文档 Runtime](Doc/Oktapod_预置文档能力与_Artifact_Runtime_实现说明_V1.0.md) | 预置能力、签名协议与文件交付 |
+| [会话与恢复](Doc/Oktapod_会话并发与任务恢复设计_V1.0.md) | 并发、队列、重试与恢复语义 |
 
-## 验证
+## 许可证
 
-```powershell
-$env:GOCACHE="$env:TEMP\go-build-cache"
-pnpm verify
-pnpm test:e2e
-```
-Ubuntu CI 额外执行 `pnpm test:race`；Ubuntu 与 Windows CI 都执行原生发布构建和产品烟测。项目规则见 [AGENTS.md](AGENTS.md)。
+项目采用 [GNU AGPL v3](LICENSE)。随文档 Runtime 分发的第三方组件保留各自许可证，详见 [第三方声明](Runtime/document-runtime/THIRD_PARTY_NOTICES.md) 及发布包内 `LICENSES/`。

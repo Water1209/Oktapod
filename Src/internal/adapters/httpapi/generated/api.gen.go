@@ -1544,6 +1544,7 @@ type Bootstrap struct {
 	ModelConfigured bool                `json:"model_configured"`
 	ModelEndpoint   string              `json:"model_endpoint"`
 	Organization    Organization        `json:"organization"`
+	Permissions     InstancePermissions `json:"permissions"`
 	Profile         BootstrapProfile    `json:"profile"`
 	User            Actor               `json:"user"`
 }
@@ -1681,7 +1682,7 @@ type ConversationVisibility string
 
 // ConversationQueueItem defines model for ConversationQueueItem.
 type ConversationQueueItem struct {
-	ActiveTaskId   openapi_types.UUID          `json:"active_task_id"`
+	ActiveTaskId   *openapi_types.UUID         `json:"active_task_id,omitempty"`
 	Content        string                      `json:"content"`
 	ConversationId openapi_types.UUID          `json:"conversation_id"`
 	CreatedAt      time.Time                   `json:"created_at"`
@@ -2111,6 +2112,11 @@ type InboxItem struct {
 
 // InboxItemKind defines model for InboxItem.Kind.
 type InboxItemKind string
+
+// InstancePermissions defines model for InstancePermissions.
+type InstancePermissions struct {
+	ManageInstance bool `json:"manage_instance"`
+}
 
 // LabelSessionEntryRequest defines model for LabelSessionEntryRequest.
 type LabelSessionEntryRequest struct {
@@ -2609,9 +2615,11 @@ type ProjectTurnRequestVisibility string
 
 // ProjectTurnResponse defines model for ProjectTurnResponse.
 type ProjectTurnResponse struct {
-	Conversation Conversation           `json:"conversation"`
-	Messages     []Message              `json:"messages"`
-	QueueItem    *ConversationQueueItem `json:"queue_item,omitempty"`
+	BlockingTaskId *openapi_types.UUID    `json:"blocking_task_id,omitempty"`
+	Conversation   Conversation           `json:"conversation"`
+	Messages       []Message              `json:"messages"`
+	QueueItem      *ConversationQueueItem `json:"queue_item,omitempty"`
+	QueueReason    *string                `json:"queue_reason,omitempty"`
 
 	// Queued whether the turn was queued because an active task exists
 	Queued               *bool                    `json:"queued,omitempty"`
@@ -10164,6 +10172,17 @@ func (response CreateAuthSession201JSONResponse) VisitCreateAuthSessionResponse(
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreateAuthSession403ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response CreateAuthSession403ApplicationProblemPlusJSONResponse) VisitCreateAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type CreateAuthSessiondefaultApplicationProblemPlusJSONResponse struct {
 	Body       Problem
 	StatusCode int
@@ -10190,6 +10209,17 @@ type RevokeAuthSession204Response struct {
 func (response RevokeAuthSession204Response) VisitRevokeAuthSessionResponse(w http.ResponseWriter) error {
 	w.WriteHeader(204)
 	return nil
+}
+
+type RevokeAuthSession404ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeAuthSession404ApplicationProblemPlusJSONResponse) VisitRevokeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RevokeAuthSessiondefaultApplicationProblemPlusJSONResponse struct {

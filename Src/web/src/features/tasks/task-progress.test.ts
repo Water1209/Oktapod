@@ -11,6 +11,30 @@ const task: Task = {
 }
 
 describe('task progress presentation', () => {
+  it('offers recovery for missing attachment evidence without discarding completed reads', () => {
+    const failure = taskFailureInfo({ error_code: 'ATTACHMENT_NOT_READ', result_summary: 'legacy asset_stage message' })
+    expect(failure).toMatchObject({ title: '附件尚未全部读取', retryable: true })
+    expect(failure?.action).toContain('补读缺失内容')
+    expect(failure?.detail).not.toContain('asset_stage')
+  })
+  it('offers checkpoint recovery when the frozen document runtime becomes available again', () => {
+    expect(taskFailureInfo({ error_code: 'DOCUMENT_RUNTIME_VERSION_UNAVAILABLE', result_summary: '' })).toMatchObject({
+      title: '文档运行时暂时不可用',
+      retryable: true,
+    })
+  })
+  it('offers recovery when document export evidence is invalid', () => {
+    expect(taskFailureInfo({ error_code: 'DOCUMENT_EXPORT_INVALID', result_summary: '' })).toMatchObject({
+      title: '文档导出证据未通过校验',
+      retryable: true,
+    })
+  })
+  it('shows a recoverable plan failure instead of a stale approval progress message', () => {
+    const failure = taskFailureInfo({ error_code: 'TRANSITION_RUN_PLAN_REQUIRED', result_summary: '已生成 1 个受控工具动作，等待策略执行与验收。' })
+    expect(failure).toMatchObject({ title: '执行计划需要恢复', retryable: true })
+    expect(failure?.detail).toContain('尚未形成可批准的工具动作')
+    expect(failure?.action).toContain('保留附件')
+  })
   it('explains provider header timeout in user-facing language', () => {
     expect(taskFailureInfo(task)).toMatchObject({
       title: '模型服务请求超时',
@@ -129,8 +153,26 @@ describe('task progress presentation', () => {
       { id: 'event-3', run_id: 'run-1', stream_seq: 3, event_type: 'step.started', occurred_at: '2026-07-20T11:06:03Z', payload: { step_id: 'retry-step' } },
     ]
     const timeline = buildTaskTimeline({ ...task, status: 'running', error_code: '', result_summary: '' }, events)
-    expect(timeline[1]).toMatchObject({ label: '修复模型响应（第 1/3 次）', state: 'running' })
+    expect(timeline[1]).toMatchObject({ label: '修正工具参数（本轮第 1 次，最多 3 次）', state: 'running' })
     expect(taskFailureInfo({ error_code: 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED', result_summary: '' })?.retryable).toBe(true)
+  })
+
+  it.each([
+    ['TRANSITION_RUN_PLAN_REQUIRED', '补全执行计划', '尚未建立有效执行计划'],
+    ['RUN_PLAN_ALREADY_AT_FINAL_ITEM', '修正执行计划', '计划已处于最后一项'],
+    ['PROVIDER_REASONING_TRUNCATED', '模型输出达到上限，继续生成', '推理耗尽输出预算'],
+    ['TOOL_POLICY_DENIED', '调整工具调用', '被拒动作未执行'],
+    ['PROVIDER_RATE_LIMIT', '重试模型请求', '模型服务限流'],
+  ])('explains %s without treating every repair as a transport retry', (code, action, reason) => {
+    const events: RunEvent[] = [
+      { id: 'retry', run_id: 'run-1', stream_seq: 1, event_type: 'model.retry_queued', occurred_at: '2026-09-09T08:44:48Z', payload: { step_id: 'retry-step', error_code: code, retry_count: 1, max_retries: 3 } },
+      { id: 'done', run_id: 'run-1', stream_seq: 2, event_type: 'step.succeeded', occurred_at: '2026-09-09T08:44:52Z', payload: { step_id: 'retry-step', result_summary: '已继续执行' } },
+    ]
+    const item = buildTaskTimeline({ ...task, status: 'running', error_code: '' }, events).find((item) => item.id === 'retry-step')
+    expect(item).toMatchObject({ label: `${action}（本轮第 1 次，最多 3 次）`, state: 'succeeded', occurredAt: '2026-09-09T08:44:52Z' })
+    expect(item?.detail).toContain(reason)
+    expect(item?.detail).toContain(code)
+    expect(item?.detail).toContain('已继续执行')
   })
 
   it('turns a persisted model plan into numbered executable steps', () => {

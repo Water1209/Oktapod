@@ -203,7 +203,7 @@ func (s *Service) continueTaskWithUpdate(
 		if err != nil {
 			return core.ProjectTurnResult{}, err
 		}
-		return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &previous, Queued: true, QueueItem: &item}, nil
+		return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &previous, Queued: true, QueueItem: &item, QueueReason: "conversation_busy", BlockingTaskID: previous.ID}, nil
 	}
 	run, err := s.repository.GetRunContext(ctx, previous.RunID)
 	if err != nil {

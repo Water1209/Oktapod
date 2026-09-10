@@ -17,12 +17,12 @@ func TestDatabaseClaimLimitsDistinctConcurrentRunsToFour(t *testing.T) {
 	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1",
 		core.Actor{ID: testUserID, DisplayName: "Test User"},
 		core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
-	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Concurrency", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for index := 0; index < 5; index++ {
-		_, err := service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{
+		project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Concurrency", Kind: core.ProjectKindPersonal, Scene: core.SceneCode}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.CreateTask(t.Context(), project.ID, core.CreateTaskInput{
 			Goal: "task", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate,
 		}, "concurrency-test", "")
 		if err != nil {

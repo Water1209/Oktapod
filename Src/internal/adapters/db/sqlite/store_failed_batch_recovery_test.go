@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -337,5 +338,72 @@ func TestClaimNextStepHealsWedgedFailedSequentialBatch(t *testing.T) {
 	}
 	if taskStatus != core.StatusRunning {
 		t.Fatalf("task status = %s, want running", taskStatus)
+	}
+}
+
+func TestClaimNextStepHealsParallelPreflightFailureWithStaleToolCall(t *testing.T) {
+	ctx := context.Background()
+	store, task, batchID := setupFailedBatchRun(t, ctx)
+	now := time.Now().UTC()
+	nowText := formatTime(now)
+	var firstStepID, secondStepID, firstCallID, secondCallID string
+	if err := store.db.QueryRowContext(ctx, `SELECT id FROM steps WHERE tool_batch_id = ? AND batch_index = 1`, batchID).Scan(&firstStepID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT id FROM steps WHERE tool_batch_id = ? AND batch_index = 2`, batchID).Scan(&secondStepID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT id FROM tool_calls WHERE tool_batch_id = ? AND batch_index = 1`, batchID).Scan(&firstCallID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT id FROM tool_calls WHERE tool_batch_id = ? AND batch_index = 2`, batchID).Scan(&secondCallID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tool_batches SET execution_mode = 'parallel', status = 'running', continuation_claimed = 0, updated_at = ? WHERE id = ?`, nowText, batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE steps SET status = 'blocked', error_code = 'DOCUMENT_RUNTIME_VERSION_UNAVAILABLE', owner_id = '', lease_until = '', updated_at = ? WHERE id = ?`, nowText, firstStepID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE steps SET status = 'succeeded', error_code = '', owner_id = '', lease_until = '', updated_at = ? WHERE id = ?`, nowText, secondStepID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tool_calls SET status = 'queued', error_code = '', completed_at = '', updated_at = ? WHERE id = ?`, nowText, firstCallID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tool_calls SET status = 'succeeded', error_code = '', completed_at = ?, updated_at = ? WHERE id = ?`, nowText, nowText, secondCallID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tasks SET status = 'running', error_code = '', updated_at = ? WHERE id = ?`, nowText, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE runs SET status = 'running', updated_at = ? WHERE id = ?`, nowText, task.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.ClaimNextStep(ctx, "worker-after-restart", now.Add(time.Second), now.Add(time.Minute+time.Second))
+	if !errors.Is(err, core.ErrNoWork) {
+		t.Fatalf("ClaimNextStep error = %v, want no ready work after terminal recovery", err)
+	}
+	var taskStatus, taskError string
+	if err := store.db.QueryRowContext(ctx, `SELECT status, error_code FROM tasks WHERE id = ?`, task.ID).Scan(&taskStatus, &taskError); err != nil {
+		t.Fatal(err)
+	}
+	if taskStatus != core.StatusBlocked || taskError != "DOCUMENT_RUNTIME_VERSION_UNAVAILABLE" {
+		t.Fatalf("task = %s/%s, want blocked/DOCUMENT_RUNTIME_VERSION_UNAVAILABLE", taskStatus, taskError)
+	}
+	var callStatus, callError, batchStatus string
+	var continuationClaimed int
+	if err := store.db.QueryRowContext(ctx, `SELECT status, error_code FROM tool_calls WHERE id = ?`, firstCallID).Scan(&callStatus, &callError); err != nil {
+		t.Fatal(err)
+	}
+	if callStatus != core.StatusBlocked || callError != "DOCUMENT_RUNTIME_VERSION_UNAVAILABLE" {
+		t.Fatalf("stale tool call = %s/%s", callStatus, callError)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT status, continuation_claimed FROM tool_batches WHERE id = ?`, batchID).Scan(&batchStatus, &continuationClaimed); err != nil {
+		t.Fatal(err)
+	}
+	if batchStatus != core.StatusBlocked || continuationClaimed != 1 {
+		t.Fatalf("batch = %s/claimed=%d, want blocked/claimed=1", batchStatus, continuationClaimed)
 	}
 }

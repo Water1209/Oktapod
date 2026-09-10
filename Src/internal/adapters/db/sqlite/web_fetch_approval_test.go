@@ -52,6 +52,13 @@ func TestPrivateWebFetchApprovalIsRunOriginScoped(t *testing.T) {
 	// A new Run freezes the same service policy but never inherits the prior
 	// Run's durable authorization.
 	service.WithWebAccessPolicy(policy)
+	// The receipt above is a simulated read: settle it before ending this Run.
+	if _, err := store.db.Exec(`UPDATE side_effect_receipts SET status = 'succeeded' WHERE run_id = ? AND status = 'started'`, task.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ControlTask(ctx, task.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "", "finish-origin-run"); err != nil {
+		t.Fatal(err)
+	}
 	second := createWebFetchApprovalTask(t, ctx, service, projectID, core.PermissionModeAsk)
 	if status := planWebFetchForTest(t, ctx, store, second.RunID, "http://127.0.0.1:3000/docs", "new-run"); status != core.StatusWaitingApproval {
 		t.Fatalf("new Run inherited private origin authority: %s", status)

@@ -152,7 +152,9 @@ func snapshotStringList(value any) []string {
 
 func isTextAsset(mediaType, name string) bool {
 	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
-	if strings.HasPrefix(mediaType, "text/") || strings.Contains(mediaType, "json") || strings.Contains(mediaType, "xml") || strings.Contains(mediaType, "javascript") {
+	if strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") ||
+		mediaType == "application/xml" || strings.HasSuffix(mediaType, "+xml") ||
+		mediaType == "application/javascript" || mediaType == "application/x-javascript" {
 		return true
 	}
 	ext := strings.ToLower(name)

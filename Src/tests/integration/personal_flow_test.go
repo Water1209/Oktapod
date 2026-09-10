@@ -200,6 +200,9 @@ func TestConversationAppendKeepsSequenceAndSnapshotsSelectedContext(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.ControlTask(t.Context(), first.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "", "finish-conversation-first"); err != nil {
+		t.Fatal(err)
+	}
 	second, err := service.AppendConversationMessage(context.Background(), first.ConversationID, core.CreateTaskInput{Goal: "Now apply the selected checklist", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate, ContextAssetIDs: []string{asset.ID}, ContextMemoryIDs: []string{memory.ID}}, "conversation-second", "")
 	if err != nil {
 		t.Fatal(err)
@@ -354,6 +357,9 @@ func TestConversationAndActivityDoNotLeakPrivateTaskToProjectMember(t *testing.T
 		t.Fatalf("private messages leaked: messages=%#v err=%v", messages, err)
 	}
 
+	if _, err := ownerService.ControlTask(t.Context(), privateTask.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "", "finish-private-history"); err != nil {
+		t.Fatal(err)
+	}
 	sharedTask, err := ownerService.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "project-visible message", Mode: core.ModeAnswer, Visibility: core.VisibilityProject}, "00000000-0000-7000-8000-000000000132", "")
 	if err != nil {
 		t.Fatal(err)

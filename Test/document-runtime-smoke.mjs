@@ -20,7 +20,11 @@ for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
     pptx: { slides: [{ title: 'Runtime smoke', body: 'before' }] },
     docx: { title: 'Runtime smoke', paragraphs: [{ text: 'before' }] },
     xlsx: { sheets: [{ name: 'Smoke', rows: [['before', 1]] }] },
-    pdf: { pages: [{ text: 'Runtime smoke before' }] },
+    pdf: {
+      title: '运行时冒烟测试', subtitle: 'Structured PDF specification',
+      sections: [{ heading: '结论', body: ['Runtime smoke before'], bullets: ['中文要点可见'] }],
+      footer: 'Oktapod Document Runtime',
+    },
   }[format]
   const operations = {
     pptx: [{ op: 'replace_text', find: 'before', replace: 'after' }],
@@ -32,9 +36,12 @@ for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
   call('open', { input_handle: revision1, format, mode: 'full' })
   call('apply', { input_handle: revision1, output_handle: revision2, format, operations })
   call('open', { input_handle: revision2, format, mode: 'full' })
-  call('render', { input_handle: revision2, output_dir_handle: `renders/${format}`, format, selector: '' })
+  // Mirror the deep preview cache path which previously crashed LibreOffice
+  // on Windows while ordinary document renders still passed.
+  call('render', { input_handle: revision2, output_dir_handle: `cache/file-previews/0123456789ab/${'c'.repeat(40)}/${format}`, format, selector: '' })
   call('export', { input_handle: revision2, output_handle: `exports/smoke.${format}`, source_format: format, format })
 }
+call('create', { format: 'pdf', output_handle: 'sessions/smoke/pdf/blank.pdf', specification: { title: '', sections: [] } })
 
 try {
   const result = spawnSync(python, ['-I', '-B', runtime], {
@@ -53,14 +60,22 @@ try {
   if (result.status !== 0) throw new Error(`runtime process failed (${result.status}): ${result.stderr}`)
   const responses = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
   if (responses.length !== requests.length) throw new Error(`runtime returned ${responses.length} responses for ${requests.length} requests`)
-  for (const response of responses) {
+  for (const response of responses.slice(0, -1)) {
     if (response.error) throw new Error(`runtime call ${response.id} failed: ${response.error.code}: ${response.error.message}`)
   }
+  const blank = responses.at(-1)
+  if (blank?.error?.code !== 'DOCUMENT_SPECIFICATION_EMPTY') throw new Error(`blank PDF specification was accepted: ${JSON.stringify(blank)}`)
   const health = responses[0].result
   if (!health.available || health.protocol !== 'oktapod.document/v1') throw new Error(`runtime health is degraded: ${JSON.stringify(health)}`)
   for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
     const output = join(workRoot, 'exports', `smoke.${format}`)
     if (!existsSync(output) || !statSync(output).isFile() || statSync(output).size === 0) throw new Error(`missing exported ${format} fixture`)
+  }
+  const pdfOpenRequest = requests.find((request) => request.method === 'open' && request.params.format === 'pdf')
+  const pdfOpen = responses.find((response) => response.id === pdfOpenRequest?.id)?.result
+  const pdfText = pdfOpen?.structure?.units?.map((unit) => unit.text || '').join('\n') || ''
+  for (const expected of ['运行时冒烟测试', 'Runtime smoke before', '中文要点可见']) {
+    if (!pdfText.includes(expected)) throw new Error(`structured PDF omitted ${expected}: ${JSON.stringify(pdfOpen)}`)
   }
   process.stdout.write(`Document Runtime smoke passed: ${responses.length} RPC calls across PPTX/DOCX/XLSX/PDF\n`)
 } finally {

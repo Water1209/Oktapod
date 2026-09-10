@@ -84,7 +84,7 @@ func (s *Service) GetProvider(ctx context.Context, providerID string) (core.Prov
 }
 
 func (s *Service) SaveProvider(ctx context.Context, providerID string, input SaveProviderInput) (core.ProviderInstance, error) {
-	if _, err := s.principalFor(ctx); err != nil {
+	if err := s.requireOwner(ctx); err != nil {
 		return core.ProviderInstance{}, err
 	}
 	if s.providerSecrets == nil {
@@ -195,7 +195,7 @@ func (s *Service) SaveProvider(ctx context.Context, providerID string, input Sav
 }
 
 func (s *Service) DeleteProvider(ctx context.Context, providerID string) error {
-	if _, err := s.principalFor(ctx); err != nil {
+	if err := s.requireOwner(ctx); err != nil {
 		return err
 	}
 	if s.providerSecrets == nil {
@@ -222,6 +222,9 @@ func (s *Service) DeleteProvider(ctx context.Context, providerID string) error {
 }
 
 func (s *Service) TestProvider(ctx context.Context, providerID string) (core.ProviderTestResult, error) {
+	if err := s.requireOwner(ctx); err != nil {
+		return core.ProviderTestResult{}, err
+	}
 	started := time.Now()
 	result := core.ProviderTestResult{ProviderID: providerID, Stage: "configuration", CatalogStatus: "unavailable"}
 	provider, err := s.GetProvider(ctx, providerID)
@@ -251,6 +254,9 @@ func (s *Service) ListProviderModels(ctx context.Context, providerID string) ([]
 }
 
 func (s *Service) RefreshProviderModels(ctx context.Context, providerID string) ([]core.ProviderModelOption, error) {
+	if err := s.requireOwner(ctx); err != nil {
+		return nil, err
+	}
 	provider, err := s.GetProvider(ctx, providerID)
 	if err != nil {
 		return nil, err
@@ -262,6 +268,9 @@ func (s *Service) RefreshProviderModels(ctx context.Context, providerID string) 
 }
 
 func (s *Service) SaveProviderModels(ctx context.Context, providerID string, input SaveProviderModelsInput) ([]core.ProviderModelOption, error) {
+	if err := s.requireOwner(ctx); err != nil {
+		return nil, err
+	}
 	provider, err := s.GetProvider(ctx, providerID)
 	if err != nil {
 		return nil, err

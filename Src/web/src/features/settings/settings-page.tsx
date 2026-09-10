@@ -11,7 +11,9 @@ type SettingsNavigation = 'providers' | SettingsSection
 
 export function SettingsPage() {
   const { section } = useParams({ from: '/settings/$section' })
+  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
   if (!isSettingsSection(section)) return <Navigate to="/settings/$section" params={{ section: 'runtime' }} />
+  if (!bootstrap.data?.permissions?.manage_instance && ['governance', 'pricing', 'vault'].includes(section)) return <SettingsLayout active={section as SettingsSection}><p>此项公共配置由实例维护者管理。你可以管理自己的项目、上下文与外观偏好。</p></SettingsLayout>
   if (section === 'governance') return <GovernanceSettings />
   if (section === 'runtime') return <RuntimeSettings />
   if (section === 'pricing') return <PricingSettings />
@@ -22,6 +24,8 @@ export function SettingsPage() {
 
 function RuntimeSettings() {
   const queryClient = useQueryClient()
+  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  const canManage = bootstrap.data?.permissions?.manage_instance === true
   const configuration = useQuery({ queryKey: ['configuration'], queryFn: api.configuration })
   const context = useQuery({ queryKey: ['context-settings'], queryFn: api.contextSettings })
   const [bootstrapDraft, setBootstrapDraft] = useState<Partial<BootstrapConfiguration>>({})
@@ -73,7 +77,7 @@ function RuntimeSettings() {
   return <SettingsLayout active="runtime">
     <div className="settings-group settings-ledger-page">
       <SettingsPageHeader icon={<Database />} title="运行与上下文" description="控制服务如何启动，以及长会话何时压缩。价格与治理策略已拆到各自页面。" scope="服务 + 组织" />
-      {effectiveBootstrap ? <>
+      {effectiveBootstrap && canManage ? <>
         <ConfigSourceCard configuration={savedBootstrap ?? configuration.data!} saved={Boolean(savedBootstrap)} />
         <SettingsSectionHeader title="服务启动" description="写入 config.yaml，保存后需重启服务才会使用新值。" />
         <div className="settings-form-grid">
@@ -92,7 +96,7 @@ function RuntimeSettings() {
             {privateFetchValidationError ? <div className="form-error">{privateFetchValidationError}</div> : null}
           </div>}
         </section> : null}
-      </> : <p className="muted-row">正在读取有效配置…</p>}
+      </> : <p className="muted-row">实例运行配置由维护者管理。</p>}
       {effectiveContext ? <>
         <SettingsSectionHeader title="上下文压缩" description="保存在数据库，对新启动的模型调用立即生效。" />
         <div className="settings-form-grid">

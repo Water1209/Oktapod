@@ -28,6 +28,9 @@ func TestForkTaskCreatesIndependentRunWithLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if fork.ConversationID == source.ConversationID {
+		t.Fatal("fork must execute in an independent conversation")
+	}
 	if fork.ID == source.ID || fork.RunID == source.RunID || fork.Title != "Fork: Source" || fork.Goal != source.Goal {
 		t.Fatalf("source=%#v fork=%#v", source, fork)
 	}

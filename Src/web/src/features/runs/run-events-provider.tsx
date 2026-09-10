@@ -1,7 +1,8 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { useQueryClient } from '@tanstack/react-query'
-import type { RunEvent, RunLiveEvent } from '../../shared/api/client'
+import { api, type RunEvent, type RunLiveEvent } from '../../shared/api/client'
+import { authLifecycle } from '../../shared/auth-lifecycle'
 import { RunEventsContext, type ConnectionState, type RunEventListener, type RunLiveEventListener } from './run-events-context'
 
 type StreamEntry = {
@@ -94,6 +95,7 @@ class RunEventStreamManager {
     const source = new EventSource(`/api/v1/runs/${entry.runId}/events/stream?after=${entry.cursor}`)
     entry.source = source
     source.addEventListener('run_event', ((message: MessageEvent<string>) => {
+      if (entry.source !== source || authLifecycle.snapshot()) return
       try {
         const event = JSON.parse(message.data) as RunEvent
         if (!event?.id || typeof event.stream_seq !== 'number' || event.stream_seq <= entry.cursor) return
@@ -117,6 +119,7 @@ class RunEventStreamManager {
       } catch { /* malformed events do not advance the persisted cursor */ }
     }) as EventListener)
     source.addEventListener('run_live', ((message: MessageEvent<string>) => {
+      if (entry.source !== source || authLifecycle.snapshot()) return
       try {
         const event = JSON.parse(message.data) as RunLiveEvent
         if (event?.run_id !== entry.runId || typeof event.ephemeral_seq !== 'number') return
@@ -124,12 +127,18 @@ class RunEventStreamManager {
       } catch { /* ephemeral events never affect the durable cursor */ }
     }) as EventListener)
     source.onopen = () => {
+      if (entry.source !== source || authLifecycle.snapshot()) return
       entry.retry = 0
       this.notify(entry, 'live')
     }
-    source.onerror = () => {
+    source.onerror = async () => {
+      if (entry.source !== source || authLifecycle.snapshot()) return
       source.close()
       if (entry.source === source) entry.source = undefined
+      // EventSource does not expose HTTP status. Only a confirmed API 401
+      // expires authentication; an offline connection remains retryable.
+      try { await api.bootstrap() } catch { /* request handles confirmed 401 */ }
+      if (authLifecycle.snapshot() || !this.streams.has(entry.runId)) return
       if (document.visibilityState === 'hidden' || entry.listeners.size === 0) return
       entry.retry = Math.min((entry.retry ?? 0) + 1, 6)
       this.notify(entry, 'retrying')
@@ -154,7 +163,8 @@ export function RunEventsProvider({ children }: { children: ReactNode }) {
   const manager = useMemo(() => new RunEventStreamManager(queryClient), [queryClient])
   useEffect(() => {
     manager.start()
-    return () => manager.destroy()
+    const unsubscribe = authLifecycle.subscribe(() => manager.destroy())
+    return () => { unsubscribe(); manager.destroy() }
   }, [manager])
   const value = useMemo(() => ({ subscribe: manager.subscribe.bind(manager) }), [manager])
   return <RunEventsContext.Provider value={value}>{children}</RunEventsContext.Provider>

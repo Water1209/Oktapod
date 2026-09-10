@@ -95,7 +95,7 @@ export function TaskPage() {
           <div className="task-detail-actions" aria-label="任务操作">
             {(task.data.status === 'queued' || task.data.status === 'running') ? <button type="button" disabled={control.isPending} onClick={() => control.mutate('pause')}><Pause size={14} />暂停</button> : null}
             {task.data.status === 'paused' ? <button type="button" disabled={control.isPending} onClick={() => control.mutate('resume')}><Play size={14} />继续</button> : null}
-            {(task.data.status === 'failed' || task.data.status === 'blocked') && failure?.retryable ? <button className="primary" type="button" disabled={control.isPending} onClick={() => control.mutate('retry')}><RotateCw size={14} />{control.isPending ? '重试中' : '从检查点重试'}</button> : null}
+            {(task.data.status === 'failed' || task.data.status === 'blocked') && failure?.retryable ? <button className="primary" type="button" disabled={control.isPending} onClick={() => control.mutate('retry')}><RotateCw size={14} />{control.isPending ? '恢复中' : '恢复任务'}</button> : null}
             {!['succeeded', 'failed', 'canceled'].includes(task.data.status) ? <button type="button" disabled={control.isPending} onClick={() => control.mutate('cancel')}><XCircle size={14} />取消</button> : null}
             {task.data.status === 'succeeded' && !task.data.accepted ? <button className="primary" type="button" disabled={acceptOutcome.isPending} onClick={() => acceptOutcome.mutate()}><Check size={14} />接受成果</button> : null}
           </div>

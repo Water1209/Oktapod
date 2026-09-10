@@ -342,6 +342,24 @@ func TestHistoricalSelectedMemoryUsesMarkedLiveFallback(t *testing.T) {
 	}
 }
 
+func TestOfficeOpenXMLAssetsRemainBinaryContext(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mediaType string
+	}{
+		{name: "slides.pptx", mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+		{name: "notes.docx", mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{name: "plan.xlsx", mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+	} {
+		if isTextAsset(test.mediaType, test.name) {
+			t.Fatalf("Office Open XML asset %s was classified as inline text", test.name)
+		}
+	}
+	if !isTextAsset("application/xml", "feed.xml") || !isTextAsset("application/problem+json", "problem") {
+		t.Fatal("true XML/JSON text assets were not classified as inline text")
+	}
+}
+
 func TestSelectedMemorySnapshotBoundsAggregateUTF8Payload(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, t.TempDir()+"/oktapod.db", t.TempDir()+"/workspaces")

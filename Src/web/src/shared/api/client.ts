@@ -1,3 +1,5 @@
+import { authLifecycle } from '../auth-lifecycle'
+
 export type Profile = 'personal' | 'team'
 export type ProjectKind = 'personal' | 'team'
 export type Scene = 'work' | 'code'
@@ -27,6 +29,7 @@ export type TaskStatus =
   | 'canceled'
 
 export interface Bootstrap {
+	permissions: { manage_instance: boolean }
   profile: Profile
   model_endpoint: string
   model_configured: boolean
@@ -482,7 +485,7 @@ export interface ConversationQueueItem {
   organization_id?: string
   project_id?: string
   conversation_id: string
-  active_task_id: string
+  active_task_id?: string
   content: string
   input_json?: string
   kind: 'follow_up' | 'steering'
@@ -493,6 +496,8 @@ export interface ConversationQueueItem {
 }
 
 export interface ProjectTurnResult {
+	queue_reason?: string
+	blocking_task_id?: string
   route: 'chat' | 'task' | 'resource'
   conversation: Conversation
   messages: ConversationMessage[]
@@ -955,6 +960,7 @@ export function displayError(error: unknown) {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+	const authentication = path === '/auth/login' || path === '/auth/register'
 	const method = (init?.method || 'GET').toUpperCase()
 	const csrf = (typeof document === 'undefined' ? '' : document.cookie)
 		.split('; ')
@@ -963,6 +969,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const requestInit: RequestInit = {
     credentials: 'same-origin',
     ...init,
+    signal: authentication ? init?.signal : init?.signal ? AbortSignal.any([init.signal, authLifecycle.signal]) : authLifecycle.signal,
     headers: {
       Accept: 'application/json',
       ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
@@ -972,6 +979,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 	const response = await fetchWithIdempotentNetworkRetry(`/api/v1${path}`, requestInit)
   if (!response.ok) {
+    if (response.status === 401 && !authentication) authLifecycle.invalidate()
     let problem: ProblemDetails
     try {
       problem = (await response.json()) as ProblemDetails
@@ -1001,23 +1009,25 @@ async function fetchWithIdempotentNetworkRetry(input: RequestInfo | URL, init: R
   }
 }
 
-async function streamProjectTurn(path: string, input: ProjectTurnInput, handlers: StreamProjectTurnHandlers): Promise<ProjectTurnResult> {
+async function streamProjectTurn(path: string, input: ProjectTurnInput, handlers: StreamProjectTurnHandlers, options: { key: string; signal?: AbortSignal }): Promise<ProjectTurnResult> {
 	const csrf = (typeof document === 'undefined' ? '' : document.cookie)
 		.split('; ')
 		.find((item) => item.startsWith('oktapod_csrf='))
 		?.slice('oktapod_csrf='.length)
 	const response = await fetch(`/api/v1${path}`, {
+		signal: options.signal ? AbortSignal.any([options.signal, authLifecycle.signal]) : authLifecycle.signal,
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: {
 			Accept: 'text/event-stream',
 			'Content-Type': 'application/json',
 			...(csrf ? { 'X-CSRF-Token': decodeURIComponent(csrf) } : {}),
-			'Idempotency-Key': crypto.randomUUID(),
+			'Idempotency-Key': options.key,
 		},
 		body: JSON.stringify(input),
 	})
 	if (!response.ok) {
+		if (response.status === 401) authLifecycle.invalidate()
 		let problem: ProblemDetails
 		try { problem = (await response.json()) as ProblemDetails } catch { problem = { type: 'about:blank', title: '请求失败', status: response.status, code: 'HTTP_ERROR', correlation_id: response.headers.get('X-Request-ID') || 'unknown' } }
 		throw new ApiProblem(problem)
@@ -1231,8 +1241,8 @@ export const api = {
 		request<ProjectTurnResult>(`/projects/${projectId}/turns`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   importTranscript: (projectId: string, input: { source_format: 'oktapod-browser-export-v1' | 'pi-jsonl-preview-v1'; conversations: Array<{ title: string; messages: Array<{ role: ConversationMessage['role']; content: string; created_at: string }> }> }) =>
     request<{ project_id: string; conversation_ids: string[]; message_count: number }>(`/projects/${projectId}/transcript-import`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
-	streamProjectTurn: (projectId: string, input: ProjectTurnInput, handlers: StreamProjectTurnHandlers) =>
-		streamProjectTurn(`/projects/${projectId}/turns/stream`, input, handlers),
+	streamProjectTurn: (projectId: string, input: ProjectTurnInput, handlers: StreamProjectTurnHandlers, options: { key: string; signal?: AbortSignal }) =>
+		streamProjectTurn(`/projects/${projectId}/turns/stream`, input, handlers, options),
   appendConversationMessage: (conversationId: string, input: { content: string; acceptance?: string; mode?: TaskMode; visibility?: Visibility; permission_mode?: PermissionMode | 'default'; scene?: Scene; model?: string; fallback_model?: string; max_model_calls?: number; max_tokens?: number; agent_id?: string; team_definition_id?: string; team_roles?: { role: string; name: string }[]; context_asset_ids?: string[]; context_memory_ids?: string[]; skill_id?: string; skill_args?: string }) =>
     request<Task>(`/conversations/${conversationId}/messages`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   projectActivity: (projectId: string, before = '') => request<{ items: ProjectActivity[] }>(`/projects/${projectId}/activity${before ? `?before=${encodeURIComponent(before)}` : ''}`),
@@ -1304,12 +1314,14 @@ export const api = {
   artifactContentUrl: (artifactId: string) => `/api/v1/artifacts/${artifactId}/content`,
   artifactPreviewUrl: (artifactId: string) => `/api/v1/artifacts/${artifactId}/preview`,
   fetchArtifactContent: async (artifactId: string): Promise<string> => {
-    const response = await fetch(`/api/v1/artifacts/${artifactId}/preview`, { credentials: 'same-origin' })
+    const response = await fetch(`/api/v1/artifacts/${artifactId}/preview`, { credentials: 'same-origin', signal: authLifecycle.signal })
+    if (response.status === 401) authLifecycle.invalidate()
     if (!response.ok) throw new Error(`Failed to load artifact: ${response.status}`)
     return response.text()
   },
   fetchPreviewText: async (url: string, maxBytes = 2 * 1024 * 1024): Promise<string> => {
-    const response = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'text/plain, text/markdown, application/json' } })
+    const response = await fetch(url, { credentials: 'same-origin', signal: authLifecycle.signal, headers: { Accept: 'text/plain, text/markdown, application/json' } })
+    if (response.status === 401) authLifecycle.invalidate()
     if (!response.ok) throw new Error(`文件读取失败：HTTP ${response.status}`)
     const contentLength = Number(response.headers.get('Content-Length') || 0)
     if (contentLength > maxBytes) throw new Error(`文件超过 ${Math.round(maxBytes / 1024 / 1024)} MB，暂不在面板内加载。`)

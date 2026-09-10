@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { canRetrySend, createPendingSend, useComposerSendController } from './composer-send-controller'
+import { ProjectQueueStatus } from './project-queue-status'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import * as Select from '@radix-ui/react-select'
@@ -117,13 +119,18 @@ function ProjectWorkspace() {
   const inspectedApprovals = useQuery({ queryKey: ['approvals', 'all'], queryFn: () => api.approvals('all'), enabled: Boolean(inspectedTask && managementOpen && managementTab === 'security') })
   const inspectedAgentTeam = useQuery({ queryKey: ['agent-team-room', inspectedTask?.run_id], queryFn: () => api.agentTeamRoom(inspectedTask!.run_id), enabled: Boolean(inspectedTask?.run_id && inspectedTask?.mode === 'agent_team' && managementOpen && managementTab === 'run') })
   const activeConversationKey = activeConversationId ?? 'new'
+  const [composerHandoff, setComposerHandoff] = useState<{ conversationId: string; key: string }>()
+  const composerKey = composerHandoff && composerHandoff.conversationId === activeConversationId ? composerHandoff.key : activeConversationKey
   const pendingForActiveConversation = pendingMessages.filter((message) => message.conversation_id === activeConversationKey)
   const streamVisible = pendingForActiveConversation.length > 0
   const confirmedMessages = messages.data?.items ?? []
   const confirmedContents = new Set(confirmedMessages.map((message) => `${message.role}:${message.content}`))
   const visibleMessages = [...confirmedMessages, ...pendingForActiveConversation.filter((message) => !confirmedContents.has(`${message.role}:${message.content}`))]
   const selectConversation = (id: string) => {
-    void navigate({ to: '/projects/$projectId/threads/$threadId', params: { projectId, threadId: id } })
+    // Keep the route component alive when the first send assigns a thread.
+    // Existing thread URLs remain canonical navigation targets elsewhere.
+    if (threadId) void navigate({ to: '/projects/$projectId/threads/$threadId', params: { projectId, threadId: id } })
+    else void navigate({ to: '/projects/$projectId', params: { projectId }, search: { conversation: id } })
     void queryClient.invalidateQueries({ queryKey: ['conversation-messages', id] })
   }
   const selectInspectorTab = (tab: string) => {
@@ -211,11 +218,12 @@ function ProjectWorkspace() {
         </div>
 
         <div className="composer-stack">
+          <ProjectQueueStatus projectId={projectId} conversationId={activeConversationId} />
           <TaskStatusStrip activeTask={allConversationTasks[0]} conversationId={activeConversationId} />
           {resourceInstallNotice ? <div className="composer-install-status" role="status"><Check size={14} />{resourceInstallNotice}</div> : null}
           {resourceInstallError ? <p className="form-error composer-resource-error" role="alert">{resourceInstallError}</p> : null}
           <TaskComposer
-            key={`composer-${activeConversationKey}`}
+            key={`composer-${composerKey}`}
             projectId={projectId}
             conversationId={activeConversationId}
             activeTask={activeConversationTasks[0]}
@@ -230,7 +238,12 @@ function ProjectWorkspace() {
             autoReviewReason={diagnostics.data?.auto_review.reason}
             onComposerDraft={handleComposerDraft}
             onResourceInstallDraft={(draft, conversationId) => { setResourceInstallDraft(draft); setResourceInstallConversationId(conversationId); setResourceInstallError(''); setResourceInstallNotice('') }}
-            onConversationSelected={selectConversation}
+            onConversationSelected={(id) => {
+              // Assigning the first server conversation must keep the live
+              // composer (including newly typed text and attachment uploads).
+              if (id !== activeConversationId) setComposerHandoff({ conversationId: id, key: composerKey })
+              selectConversation(id)
+            }}
             onOptimisticMessage={(clientMessageId, content, presentation) => {
               setPendingMessages((current) => [...current, {
                 id: clientMessageId,
@@ -940,9 +953,9 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const effectivePermissionMode = autoReviewAvailable === false && resolvedPermissionMode === 'auto_review' ? 'ask' : resolvedPermissionMode
   const projectAssets = useQuery({ queryKey: ['assets', projectId, 'composer'], queryFn: () => api.assets(projectId, { kind: 'file' }), enabled: attachmentPickerOpen, staleTime: 5_000 })
   const providerModels = useQuery({ queryKey: ['provider-models', providerId], queryFn: () => api.providerModels(providerId), enabled: providerId !== 'default', retry: false, staleTime: 60_000 })
-  const submit = useMutation({
-    mutationFn: ({ content, invocation, queueKind, forcedMode, contextAssetIds }: { clientMessageId: string; content: string; invocation: ReturnType<typeof parseSkillInvocation>; queueKind: 'follow_up' | 'steering'; forcedMode?: TaskMode; contextAssetIds: string[] }) => api.streamProjectTurn(projectId, { conversation_id: conversationId, content, mode: forcedMode ?? (isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode), visibility: 'private', permission_mode: effectivePermissionMode, queue_kind: queueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: selectedModel || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs, context_asset_ids: contextAssetIds }, { onRoute, onDelta }),
-    onSuccess: async (result, variables) => {
+  const submit = useComposerSendController<ComposerAttachment>(
+    (send) => api.streamProjectTurn(projectId, send.input, { onRoute, onDelta }, { key: send.key }),
+    async (result, variables) => {
       if (result.resource_install_draft) onResourceInstallDraft(result.resource_install_draft, result.conversation.id)
       else onConversationSelected(result.conversation.id)
       await queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
@@ -951,9 +964,10 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
       await queryClient.invalidateQueries({ queryKey: ['conversation-messages', result.conversation.id] })
       await queryClient.invalidateQueries({ queryKey: ['plan-items', projectId] })
       onSettled(variables.clientMessageId)
+      await queryClient.invalidateQueries({ queryKey: ['project-admission', result.conversation.id] })
     },
-    onError: (_error, variables) => onFailed(variables.clientMessageId),
-  })
+    onFailed,
+  )
   const abort = useMutation({
     mutationFn: () => api.controlTask(activeTask!.id, 'cancel'),
     onSuccess: async () => {
@@ -1042,7 +1056,7 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   }
 
   const send = (queueKind: 'follow_up' | 'steering' = activeTask ? 'steering' : 'follow_up') => {
-	if (!goal.trim() || (submit.isPending && !activeTask)) return
+	if (!goal.trim() || (submit.pending > 0 && !activeTask)) return
 	if (attachments.some((item) => item.status === 'uploading')) { setSkillCommandError('附件仍在上传，请等待完成后发送。'); return }
 	if (attachments.some((item) => item.status === 'failed')) { setSkillCommandError('有附件上传失败，请重试或移除后发送。'); return }
     const content = goal.trim()
@@ -1072,7 +1086,9 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
       queue_kind: activeTask ? effectiveQueueKind : undefined,
     })
     setAttachments([])
-    submit.mutate({ clientMessageId, content, invocation, queueKind: effectiveQueueKind, contextAssetIds })
+    void submit.submit(createPendingSend(clientMessageId,
+      { conversation_id: conversationId, content, mode: isCompactCommand(content) ? 'answer' : invocation ? 'single_agent' : mode, visibility: 'private', permission_mode: effectivePermissionMode, queue_kind: effectiveQueueKind, scene, provider_id: providerId === 'default' ? undefined : providerId, model: selectedModel || undefined, thinking, agent_id: agentId === 'default' ? undefined : agentId, skill_id: invocation?.skillId, skill_args: invocation?.skillArgs, context_asset_ids: contextAssetIds }, readyAttachments,
+    ))
   }
 
   const enabledAgents = agents.filter((agent) => agent.status === 'enabled')
@@ -1126,7 +1142,8 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
   const availableProjectAssets = (projectAssets.data?.items ?? []).filter((asset) => asset.kind === 'file' && (!assetQuery.trim() || asset.name.toLowerCase().includes(assetQuery.trim().toLowerCase())))
 
   return <div className="conversation-composer-wrap">
-    {skillCommandError || submit.error || abort.error ? <div className="composer-error" role="alert">{skillCommandError || submit.error?.message || abort.error?.message}</div> : null}
+    {skillCommandError || abort.error ? <div className="composer-error" role="alert">{skillCommandError || abort.error?.message}</div> : null}
+    {submit.failed.map((send) => <div className="composer-error" role="alert" key={send.key}><strong>发送未完成</strong><p>{send.input.content}</p><p>{send.attachments.map((item) => item.asset?.name).join('、')}</p><p>{send.error}</p><button type="button" disabled={!canRetrySend(send)} onClick={() => void submit.submit(send)}>重试原消息</button><button type="button" disabled={Boolean(goal.trim()) || attachments.length > 0} onClick={() => { setGoal(send.input.content); setAttachments(send.attachments); setMode(send.input.mode ?? 'auto'); submit.dismiss(send.key) }}>恢复到输入框</button>{goal.trim() || attachments.length > 0 ? <small>请先处理当前草稿，再恢复此消息。</small> : null}{!canRetrySend(send) ? <small>已超过 24 小时，请恢复为草稿后重新发送。</small> : null}</div>)}
     {commandSuggestions.length > 0 ? <div className="skill-command-menu" role="listbox" aria-label="Skills">
       <div className="skill-command-menu-heading"><Sparkles size={14} /><span>命令</span><small>{commandSuggestions.length}</small></div>
       {commandSuggestions.map((suggestion, index) => suggestion.kind === 'system'
@@ -1148,7 +1165,7 @@ function TaskComposer({ projectId, conversationId, activeTask, agents, skills, p
         <p className="composer-runtime-defaults">运行默认值：模型交互最多重试 {TASK_RUNTIME_DEFAULTS.modelRetryLimit} 次、失败工具恢复最多 {TASK_RUNTIME_DEFAULTS.toolRetryLimit} 次；单次输出按 {TASK_RUNTIME_DEFAULTS.modelOutputTokens[0].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[1].toLocaleString('zh-CN')} → {TASK_RUNTIME_DEFAULTS.modelOutputTokens[2].toLocaleString('zh-CN')} Token 递增；上下文默认保留最近 {TASK_RUNTIME_DEFAULTS.contextRetainTokens.toLocaleString('zh-CN')} Token。</p>
         {autoReviewAvailable === false ? <p className="composer-governance-notice"><ShieldAlert size={13} />自动审查当前不可用。请在<Link to="/settings/$section" params={{ section: 'governance' }}>治理与审批</Link>中选择已启用的独立 Provider 和 Model；<Link to="/diagnostics">查看诊断原因</Link>。未可用时系统会关闭式转为人工审批。</p> : null}
       </div> : null}
-      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="添加附件" title="上传新文件或关联项目资料（最多 8 个）" disabled={attachments.length >= 8} onClick={() => setAttachmentPickerOpen(true)}><Paperclip size={16} /></button><input ref={attachmentInputRef} className="sr-only" type="file" multiple onChange={(event) => { addAttachments(event.target.files); event.target.value = ''; setAttachmentPickerOpen(false) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={effectivePermissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", autoReviewAvailable === false ? "自动审查（未配置）" : "自动审查", autoReviewAvailable === false], ["full_access", "完全访问"]]} ariaLabel="权限模式" title={autoReviewAvailable === false ? `${autoReviewReason ?? ''} 请在“设置 → 治理与审批”中配置。` : undefined} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、模型服务与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={(submit.isPending && !activeTask) || !goal.trim() || attachments.some((item) => item.status === 'uploading')} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
+      <div className="composer-toolbar"><div><button className="composer-icon" type="button" aria-label="添加附件" title="上传新文件或关联项目资料（最多 8 个）" disabled={attachments.length >= 8} onClick={() => setAttachmentPickerOpen(true)}><Paperclip size={16} /></button><input ref={attachmentInputRef} className="sr-only" type="file" multiple onChange={(event) => { addAttachments(event.target.files); event.target.value = ''; setAttachmentPickerOpen(false) }} /><InlineSelect value={mode} onValueChange={(value) => setMode(value as TaskMode)} items={[["auto", "Auto"], ["answer", "Ask"], ["single_agent", "Task"]]} ariaLabel="运行模式" /><InlineSelect value={selectedModel || 'default'} onValueChange={selectModel} items={modelItems} ariaLabel="模型" title={activeTask ? '当前 Run 使用已冻结模型；这里的选择用于下一个 Run' : '选择本次发送使用的模型'} /><InlineSelect value={effectivePermissionMode} onValueChange={(value) => { if (value === 'full_access') { setFullAccessOpen(true); return } selectPermissionMode(value as PermissionMode) }} items={[["ask", "请我审批"], ["auto_review", autoReviewAvailable === false ? "自动审查（未配置）" : "自动审查", autoReviewAvailable === false], ["full_access", "完全访问"]]} ariaLabel="权限模式" title={autoReviewAvailable === false ? `${autoReviewReason ?? ''} 请在“设置 → 治理与审批”中配置。` : undefined} /><button className={`composer-icon ${advancedOpen ? 'active' : ''}`} type="button" aria-label="执行设置" title="场景、模型服务与运行设置" onClick={() => setAdvancedOpen((value) => !value)}><SlidersHorizontal size={16} /></button></div><div className="composer-send-group">{activeTask && !goal.trim() ? <button className="composer-send stop" disabled={abort.isPending} type="button" aria-label="停止任务" title="停止任务（Esc，也可直接说“取消当前任务”）" onClick={() => abort.mutate()}><Square size={11} fill="currentColor" /></button> : <button className="composer-send" disabled={((submit.pending > 0) && !activeTask) || !goal.trim() || attachments.some((item) => item.status === 'uploading')} type="submit" aria-label="发送" title={activeTask ? '发送并引导当前任务；Alt+Enter 排到下一轮' : '发送'}><ArrowUp size={18} /></button>}</div></div>
       {providerModels.error || (model && !selectedModel) ? <p className="composer-model-notice" role="status">{providerModels.error ? '模型目录暂时不可用，将使用该 Provider 的默认模型。' : '之前选择的模型已失效，已自动使用默认模型。'}</p> : null}
     </form>
     <Dialog.Root open={attachmentPickerOpen} onOpenChange={setAttachmentPickerOpen}>

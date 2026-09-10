@@ -169,10 +169,17 @@ func TestDeliverableRecoveryAcceptsEditArtifactsAndContinuationEvidence(t *testi
 	}
 }
 
-func TestAttachmentRecoveryRequiresFrozenAssetStaging(t *testing.T) {
+func TestAttachmentRecoveryUsesAvailableDocumentToolsForAllFrozenAssets(t *testing.T) {
 	hint := completionRecoveryHint(`{"completion_recovery_reason":"ATTACHMENT_NOT_READ"}`)
-	if hint == "" || !containsAll(hint, "asset_stage", "只读路径", "不得改查空的项目 Workspace") {
+	if hint == "" || !containsAll(hint, "全部冻结附件", "document_open", "document_read", "目录允许 asset_stage", "只读路径", "不得改查空的项目 Workspace") {
 		t.Fatalf("unexpected attachment recovery hint: %q", hint)
+	}
+}
+
+func TestAttachmentRecoveryNamesEveryMissingFrozenAsset(t *testing.T) {
+	hint := completionRecoveryHint(`{"completion_recovery_reason":"ATTACHMENT_NOT_READ","completion_missing_assets":[{"id":"pdf-id","name":"meeting.pdf","media_type":"application/pdf"},{"id":"sheet-id","name":"plan.xlsx","media_type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}]}`)
+	if !containsAll(hint, "asset:pdf-id", "meeting.pdf", "asset:sheet-id", "plan.xlsx") {
+		t.Fatalf("missing attachment identities in recovery hint: %q", hint)
 	}
 }
 

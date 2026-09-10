@@ -241,7 +241,7 @@ func (r sessionPrincipalResolver) ResolvePrincipal(ctx context.Context, credenti
 	if credential.Secret == "" {
 		return application.Principal{}, application.ErrPrincipalRequired
 	}
-	if credential.Method == application.AuthenticationBearer {
+	if r.service.Profile() == core.ProfileTeam && credential.Method == application.AuthenticationBearer {
 		expected := r.adminToken()
 		if expected != "" && subtle.ConstantTimeCompare([]byte(credential.Secret), []byte(expected)) == 1 {
 			scope := r.service.Scope()
@@ -252,12 +252,13 @@ func (r sessionPrincipalResolver) ResolvePrincipal(ctx context.Context, credenti
 	if err != nil || session.OrganizationID != r.service.Scope().OrganizationID {
 		return application.Principal{}, application.ErrPrincipalRequired
 	}
-	return application.Principal{OrganizationID: session.OrganizationID, UserID: session.UserID, AuthenticationMethod: credential.Method, Administrator: r.service.Profile() == core.ProfilePersonal}, nil
+	return application.Principal{OrganizationID: session.OrganizationID, UserID: session.UserID, AuthenticationMethod: credential.Method}, nil
 }
 
 func sessionAuthenticationMiddleware(service *application.Service, resolver application.PrincipalResolver, enforceSession bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = r.WithContext(application.WithRemoteRequest(r.Context()))
 			if !strings.HasPrefix(r.URL.Path, "/api/v1/") || r.URL.Path == "/api/v1/auth/login" || r.URL.Path == "/api/v1/auth/register" || r.URL.Path == "/api/v1/invitations/accept" || (r.URL.Path == "/api/v1/health" && enforceSession) {
 				next.ServeHTTP(w, r)
 				return
@@ -381,13 +382,12 @@ func correlationIDFromRequest(r *http.Request) string {
 }
 
 func (s *Server) Health(ctx context.Context, _ generated.HealthRequestObject) (generated.HealthResponseObject, error) {
-	bootstrap, err := s.service.Bootstrap(ctx)
-	if err != nil {
+	if err := s.service.Health(ctx); err != nil {
 		return nil, err
 	}
 	return generated.Health200JSONResponse{
 		Status:   generated.HealthStatusOk,
-		Profile:  generated.HealthProfile(bootstrap.Profile),
+		Profile:  generated.HealthProfile(s.service.Profile()),
 		Database: s.service.Database(),
 	}, nil
 }
@@ -679,6 +679,7 @@ func (s *Server) GetBootstrap(ctx context.Context, _ generated.GetBootstrapReque
 		return nil, err
 	}
 	return generated.GetBootstrap200JSONResponse{
+		Permissions:     generated.InstancePermissions{ManageInstance: state.Permissions.ManageInstance},
 		Profile:         generated.BootstrapProfile(state.Profile),
 		ModelEndpoint:   state.ModelEndpoint,
 		ModelConfigured: state.ModelConfigured,
@@ -889,8 +890,8 @@ func saveProviderInput(input generated.SaveProviderRequest) application.SaveProv
 }
 
 func (s *Server) CreateAuthSession(ctx context.Context, request generated.CreateAuthSessionRequestObject) (generated.CreateAuthSessionResponseObject, error) {
-	if s.service.Profile() == core.ProfileTeam && !application.IsAdmin(ctx) {
-		return nil, &core.ForbiddenError{Message: "only the Team administrator can issue sessions"}
+	if _, ok := application.PrincipalFromContext(ctx); !ok {
+		return nil, application.ErrPrincipalRequired
 	}
 	if request.Body == nil {
 		return nil, &core.ValidationError{Field: "body", Message: "is required"}
@@ -911,8 +912,8 @@ func (s *Server) CreateAuthSession(ctx context.Context, request generated.Create
 }
 
 func (s *Server) RevokeAuthSession(ctx context.Context, request generated.RevokeAuthSessionRequestObject) (generated.RevokeAuthSessionResponseObject, error) {
-	if s.service.Profile() == core.ProfileTeam && !application.IsAdmin(ctx) {
-		return nil, &core.ForbiddenError{Message: "only the Team administrator can revoke sessions"}
+	if _, ok := application.PrincipalFromContext(ctx); !ok {
+		return nil, application.ErrPrincipalRequired
 	}
 	if err := s.service.RevokeAuthSession(ctx, request.SessionId.String()); err != nil {
 		return nil, err
@@ -1622,6 +1623,16 @@ func projectTurnResponse(result core.ProjectTurnResult) (generated.ProjectTurnRe
 	if result.Queued {
 		response.Queued = &result.Queued
 	}
+	if result.QueueReason != "" {
+		response.QueueReason = &result.QueueReason
+	}
+	if result.BlockingTaskID != "" {
+		id, err := uuid.Parse(result.BlockingTaskID)
+		if err != nil {
+			return generated.ProjectTurnResponse{}, err
+		}
+		response.BlockingTaskId = &id
+	}
 	if result.QueueItem != nil {
 		item, err := conversationQueueItemResponse(*result.QueueItem)
 		if err != nil {
@@ -1648,9 +1659,13 @@ func conversationQueueItemResponse(item core.ConversationQueueItem) (generated.C
 	if err != nil {
 		return generated.ConversationQueueItem{}, err
 	}
-	activeTaskID, err := uuid.Parse(item.ActiveTaskID)
-	if err != nil {
-		return generated.ConversationQueueItem{}, err
+	var activeTaskID *uuid.UUID
+	if item.ActiveTaskID != "" {
+		parsed, err := uuid.Parse(item.ActiveTaskID)
+		if err != nil {
+			return generated.ConversationQueueItem{}, err
+		}
+		activeTaskID = &parsed
 	}
 	return generated.ConversationQueueItem{
 		Id:             id,
@@ -4408,6 +4423,8 @@ func (s *Server) writeMappedProblem(w http.ResponseWriter, r *http.Request, err 
 	var modelTurnUnavailable *application.ModelTurnUnavailableError
 	var maxBytes *http.MaxBytesError
 	switch {
+	case errors.Is(err, application.ErrPrincipalRequired):
+		s.writeProblem(w, r, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication required", "sign in with a valid session")
 	case errors.As(err, &forbidden):
 		s.writeProblem(w, r, http.StatusForbidden, "FORBIDDEN", "Forbidden", forbidden.Error())
 	case errors.As(err, &validation):

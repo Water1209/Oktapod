@@ -51,11 +51,12 @@ const (
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		writeStartupFailure(err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	command, commandArgs, err := parseCommandLine(os.Args[1:])
 	if err != nil {
 		return err
@@ -90,19 +91,33 @@ func run() error {
 	if command == "vault" {
 		return runVault(commandArgs)
 	}
+	if command == "user" {
+		return runUser(commandArgs)
+	}
 	if command == "version" {
 		fmt.Fprintln(os.Stdout, application.RuntimeVersion)
 		return nil
 	}
 	if command != "serve" {
-		return fmt.Errorf("unsupported command %q; use serve, model, context, config, vault, preflight, backup, restore, export, import, or version", command)
+		return fmt.Errorf("unsupported command %q; use serve, model, context, config, vault, user, preflight, backup, restore, export, import, or version", command)
 	}
 
 	config, err := bootstrap.LoadConfig()
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logFile, logErr := openStartupLog(config.DataRoot)
+	if logErr != nil {
+		return fmt.Errorf("open startup log: %w", logErr)
+	}
+	defer logFile.Close()
+	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, logFile), &slog.HandlerOptions{Level: slog.LevelInfo}))
+	defer func() {
+		if runErr != nil {
+			logger.Error("Oktapod startup failed", "error", runErr)
+		}
+	}()
+	logger.Info("Oktapod startup begin", "version", application.RuntimeVersion, "config", config.ConfigPath, "profile", config.Profile, "data_root", config.DataRoot, "listen", config.ListenAddress)
 	if config.Profile == core.ProfileTeam && strings.TrimSpace(config.DatabaseURL) == "" {
 		logger.Warn("team profile is running with local SQLite storage; PostgreSQL identity/RLS is not enabled", "storage_mode", "sqlite-local", "network_exposure", config.ListenAddress)
 	}
@@ -304,8 +319,13 @@ func run() error {
 	}
 	serverErrors := make(chan error, 1)
 	go func() {
+		listener, listenErr := net.Listen("tcp", config.ListenAddress)
+		if listenErr != nil {
+			serverErrors <- listenErr
+			return
+		}
 		logger.Info("Oktapod started", "version", application.RuntimeVersion, "profile", config.Profile, "listen", config.ListenAddress, "data_root", config.DataRoot, "model_endpoint", modelEndpoint, "model_configured", modelConfigured)
-		serverErrors <- httpServer.ListenAndServe()
+		serverErrors <- httpServer.Serve(listener)
 	}()
 
 	select {
@@ -330,6 +350,27 @@ func run() error {
 		logger.Warn("worker shutdown timed out; durable leases will recover unfinished work")
 	}
 	return shutdownErr
+}
+
+func openStartupLog(dataRoot string) (*os.File, error) {
+	logDir := filepath.Join(dataRoot, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(filepath.Join(logDir, "oktapod-startup.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+}
+
+func writeStartupFailure(err error) {
+	root, rootErr := os.UserConfigDir()
+	if rootErr != nil {
+		return
+	}
+	logFile, openErr := openStartupLog(filepath.Join(root, "Oktapod"))
+	if openErr != nil {
+		return
+	}
+	defer logFile.Close()
+	slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})).Error("Oktapod startup failed", "error", err)
 }
 
 // parseCommandLine removes the global --config option before subcommand flag

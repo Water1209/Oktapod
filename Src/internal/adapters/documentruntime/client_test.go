@@ -1,6 +1,7 @@
 package documentruntime
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -10,7 +11,24 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/oktapod/oktapod/Src/internal/application"
 )
+
+func TestSuccessfulRuntimeHealthIsCachedAcrossBusyOperations(t *testing.T) {
+	cached := application.DocumentRuntimeHealth{Available: true, Version: "1.0.0", Protocol: protocolVersion, Renderer: "test", OCRLanguages: []string{"chi_sim"}}
+	client := &Client{healthCache: &cached}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := client.Health(ctx)
+	if !result.Available || result.Version != "1.0.0" || result.Protocol != protocolVersion {
+		t.Fatalf("cached health=%#v", result)
+	}
+	result.OCRLanguages[0] = "mutated"
+	if client.Health(context.Background()).OCRLanguages[0] != "chi_sim" {
+		t.Fatal("Health returned mutable cached slice")
+	}
+}
 
 func TestSignedRuntimeManifestRejectsTamperingAndUnsafeHandles(t *testing.T) {
 	packageRoot, workRoot := t.TempDir(), t.TempDir()

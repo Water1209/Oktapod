@@ -86,7 +86,19 @@ function InboxHistory({ item }: { item: InboxHistoryItem }) {
 }
 
 function InboxSummary({ item }: { item: InboxItem }) {
+  const queryClient = useQueryClient()
   const task = useQuery({ queryKey: ['task', item.task_id], queryFn: () => api.task(item.task_id), enabled: item.kind === 'task_recovery' })
+  const recovery = useMutation({
+    mutationFn: () => api.controlTask(item.task_id, 'retry'),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['inbox'] }),
+        queryClient.invalidateQueries({ queryKey: ['task', item.task_id] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+        queryClient.invalidateQueries({ queryKey: ['conversation-messages'] }),
+      ])
+    },
+  })
   const usage = useQuery({ queryKey: ['run-usage', task.data?.run_id], queryFn: () => api.runUsage(task.data!.run_id), enabled: !!task.data?.run_id && task.data.error_code === 'BUDGET_RESERVATION_EXCEEDED' })
   const failure = task.data ? taskFailureInfo(task.data) : undefined
   const budgetIssue = task.data?.error_code === 'BUDGET_RESERVATION_EXCEEDED'
@@ -97,7 +109,8 @@ function InboxSummary({ item }: { item: InboxItem }) {
     <p className="approval-reason">{reason}</p>
     {budgetIssue && task.data && usage.data ? <RunBudgetControl taskId={task.data.id} runId={task.data.run_id} taskStatus={task.data.status} usage={usage.data} compact /> : null}
     {budgetIssue && usage.error ? <small className="approval-error">配额信息读取失败：{usage.error.message}</small> : null}
-    <div className="approval-actions"><Link to="/tasks/$taskId" params={{ taskId: item.task_id }}>打开任务<ExternalLink size={13} /></Link></div>
+    <div className="approval-actions"><Link to="/tasks/$taskId" params={{ taskId: item.task_id }}>打开任务<ExternalLink size={13} /></Link>{item.kind === 'task_recovery' && failure?.retryable ? <button className="approve" disabled={recovery.isPending} onClick={() => recovery.mutate()}>从阻塞点继续</button> : null}</div>
+    {recovery.error ? <small className="approval-error">恢复任务失败：{recovery.error.message}</small> : null}
   </article>
 }
 

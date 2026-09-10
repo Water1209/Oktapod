@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { assignTestInstanceOwner } from './instance-owner'
 
 test.beforeEach(async ({ page }, testInfo) => {
   const suffix = `${Date.now().toString(36)}-${testInfo.testId.slice(-6)}`
@@ -10,6 +11,9 @@ test.beforeEach(async ({ page }, testInfo) => {
   await page.getByLabel('密码', { exact: true }).fill(`routes-${suffix}-password`)
   await page.getByRole('button', { name: '创建并登录' }).click()
   await expect(page.getByText('模型服务已配置')).toBeVisible()
+  if (['模型服务不回填凭据，并用启用列表控制项目可选模型', '设置显示生效来源并能切换显式主题'].includes(testInfo.title)) {
+    assignTestInstanceOwner(`routes.${suffix}`)
+  }
 })
 
 async function createProject(page: Page, name: string) {
@@ -20,6 +24,79 @@ async function createProject(page: Page, name: string) {
   await page.getByRole('button', { name: '建立工作空间' }).click()
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/)
 }
+
+test('发送已受理后断流保留附件和新草稿，原键重试不重复创建任务', async ({ page }) => {
+  await createProject(page, `断流恢复 ${Date.now().toString(36)}`)
+  const projectId = new URL(page.url()).pathname.split('/')[2]!
+  const composer = page.getByRole('textbox', { name: '消息', exact: true })
+  await page.locator('.conversation-composer input[type="file"]').setInputFiles({ name: 'sentinel.txt', mimeType: 'text/plain', buffer: Buffer.from('isolated attachment sentinel') })
+  await expect(page.locator('.composer-attachment.ready')).toContainText('sentinel.txt')
+  const keys: string[] = []
+  let first = true
+  await page.route(/\/api\/v1\/projects\/[^/]+\/turns(?:\/stream)?$/, async (route) => {
+    keys.push(route.request().headers()['idempotency-key'] ?? '')
+    if (first) {
+      first = false
+      const accepted = await route.fetch()
+      expect(accepted.ok()).toBe(true)
+      await route.abort('connectionclosed')
+    } else await route.continue()
+  })
+  await composer.fill('返回 E2E 模型执行结果')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const failed = page.getByRole('alert').filter({ hasText: '发送未完成' })
+  await expect(failed).toContainText('sentinel.txt')
+  await composer.fill('新的草稿必须保留')
+  await expect(failed.getByRole('button', { name: '恢复到输入框' })).toBeDisabled()
+  await failed.getByRole('button', { name: '重试原消息' }).click()
+  await expect(failed).toHaveCount(0)
+  await expect(composer).toHaveValue('新的草稿必须保留')
+  expect(keys).toHaveLength(2)
+  expect(keys[0]).not.toBe('')
+  expect(keys[1]).toBe(keys[0])
+  const tasks = await page.request.get(`/api/v1/projects/${projectId}/tasks`)
+  expect(tasks.ok()).toBe(true)
+  expect((await tasks.json()).items).toHaveLength(1)
+})
+
+test('请求前断网可恢复文本和附件，已有草稿不会被覆盖', async ({ page }) => {
+  await createProject(page, `离线恢复 ${Date.now().toString(36)}`)
+  const composer = page.getByRole('textbox', { name: '消息', exact: true })
+  await page.locator('.conversation-composer input[type="file"]').setInputFiles({ name: 'offline.txt', mimeType: 'text/plain', buffer: Buffer.from('isolated offline attachment') })
+  await expect(page.locator('.composer-attachment.ready')).toContainText('offline.txt')
+  await page.route(/\/api\/v1\/projects\/[^/]+\/turns(?:\/stream)?$/, (route) => route.abort('internetdisconnected'))
+  await composer.fill('需要保留的原消息')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  const failed = page.getByRole('alert').filter({ hasText: '发送未完成' })
+  await expect(failed).toContainText('offline.txt')
+  await composer.fill('后来输入的内容')
+  await expect(failed.getByRole('button', { name: '恢复到输入框' })).toBeDisabled()
+  await composer.clear()
+  await failed.getByRole('button', { name: '恢复到输入框' }).click()
+  await expect(composer).toHaveValue('需要保留的原消息')
+  await expect(page.locator('.composer-attachment.ready')).toContainText('offline.txt')
+  await expect(failed).toHaveCount(0)
+})
+
+test('同项目不同会话独立执行，一方等待审批不阻塞另一方', async ({ page }) => {
+  test.setTimeout(60_000)
+  await createProject(page, `会话并发 ${Date.now().toString(36)}`)
+  await page.locator('.conversation-composer').getByRole('combobox').first().click()
+  await page.getByRole('option', { name: 'Task', exact: true }).click()
+  await page.getByRole('textbox', { name: '消息' }).fill('受控工具审批验收：创建文件并运行 node --version')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(page.locator('.human-action-card')).toBeVisible({ timeout: 15_000 })
+  const approvalURL = page.url()
+  await page.getByRole('link', { name: /新建会话/ }).click()
+  await page.getByRole('textbox', { name: '消息' }).fill('返回 E2E 模型执行结果')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 30_000 })
+  expect(page.url()).not.toBe(approvalURL)
+  await expect(page.getByRole('region', { name: '会话消息排队' })).toHaveCount(0)
+  await page.goto(approvalURL)
+  await expect(page.locator('.human-action-card')).toBeVisible()
+  await page.getByRole('button', { name: '停止任务', exact: true }).click()
+})
 
 test('模型服务不回填凭据，并用启用列表控制项目可选模型', async ({ page }) => {
   await page.goto('/settings/providers')

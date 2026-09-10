@@ -130,6 +130,11 @@ func (s *Store) registerLocalUserTx(ctx context.Context, organizationID, userID 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Acquire the writer before reading the owner count. A deferred read
+	// transaction cannot reliably upgrade while Workers are committing in WAL.
+	if _, err := tx.ExecContext(ctx, `UPDATE organizations SET name = name WHERE id = ?`, organizationID); err != nil {
+		return err
+	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE lower(username) = lower(?)`, input.Username).Scan(&exists); err != nil {
 		return err
@@ -137,10 +142,20 @@ func (s *Store) registerLocalUserTx(ctx context.Context, organizationID, userID 
 	if exists > 0 {
 		return core.ErrUsernameTaken
 	}
+	// Count login-capable accounts before inserting, in this same transaction.
+	// Existing databases with real accounts are never implicitly promoted.
+	var registered int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.organization_id = ? AND u.password_hash <> ''`, organizationID).Scan(&registered); err != nil {
+		return err
+	}
+	role := "member"
+	if registered == 0 {
+		role = "owner"
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, display_name, email, username, password_hash, failed_login_attempts, locked_until, created_at, updated_at) VALUES (?, ?, '', ?, ?, 0, '', ?, ?)`, userID, input.DisplayName, input.Username, passwordHash, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO memberships (organization_id, user_id, role, status, created_at, updated_at) VALUES (?, ?, 'member', 'active', ?, ?)`, organizationID, userID, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memberships (organization_id, user_id, role, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)`, organizationID, userID, role, now, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_context_settings (organization_id, owner_user_id, auto_compact, trigger_tokens, retain_tokens, summary_max_tokens, updated_at) VALUES (?, ?, 1, 100000, 20000, 4096, ?)`, organizationID, userID, now); err != nil {

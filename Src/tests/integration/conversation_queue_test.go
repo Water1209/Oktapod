@@ -26,7 +26,7 @@ func queueTestScope() core.Scope {
 }
 
 func enqueueTurn(t *testing.T, repository interface {
-	EnqueueConversationTurn(context.Context, core.Scope, string, string, string, string, string, string, core.MessagePresentation) (core.ConversationQueueItem, error)
+	EnqueueConversationTurn(context.Context, core.Scope, string, string, string, string, string, string, core.MessagePresentation, ...core.Idempotency) (core.ConversationQueueItem, error)
 }, projectID, conversationID, taskID, content, kind string) core.ConversationQueueItem {
 	t.Helper()
 	inputJSON, err := json.Marshal(core.ProjectTurnInput{ConversationID: conversationID, Content: content, Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate})
@@ -191,8 +191,21 @@ func TestConversationDoesNotTreatStaleTaskStatusAsActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("has active: %v", err)
 	}
-	if hasActive || activeID != "" {
-		t.Fatalf("terminal Run must be authoritative, active=%v id=%q", hasActive, activeID)
+	if !hasActive || activeID != task.ID {
+		t.Fatalf("blocked Run must retain responsibility, active=%v id=%q", hasActive, activeID)
+	}
+	if _, err := db.Exec(`UPDATE runs SET status = 'succeeded' WHERE id = ?`, task.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if active, _, err := repository.HasActiveTask(t.Context(), queueTestScope(), task.ConversationID); err != nil || active {
+		t.Fatalf("terminal Run must be authoritative: active=%v err=%v", active, err)
+	}
+	if blocker, err := repository.ConversationBlockingTask(t.Context(), queueTestScope(), project.ID, task.ConversationID); err != nil || blocker != "" {
+		t.Fatalf("stale task blocked project: blocker=%q err=%v", blocker, err)
+	}
+	turn, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{Content: "next task after completed run", Mode: core.ModeSingleAgent}, "", "stale-project-turn")
+	if err != nil || turn.Task == nil {
+		t.Fatalf("stale task prevented project admission: %#v err=%v", turn, err)
 	}
 }
 
@@ -380,8 +393,12 @@ func TestTerminalSteeringSuccessorPreservesGoalAndExplicitSkill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := enqueueTurn(t, repository, project.ID, first.ConversationID, first.ID, "停止继续检索，立即写报告", "steering")
 	if _, err := service.ControlTask(context.Background(), first.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "steering-successor-cancel", "steering-successor-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	item := enqueueTurn(t, repository, project.ID, first.ConversationID, first.ID, "停止继续检索，立即写报告", "steering")
+	item, err = repository.ClaimNextFollowUp(context.Background(), queueTestScope(), first.ConversationID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := service.StartQueuedConversationTurn(context.Background(), item)

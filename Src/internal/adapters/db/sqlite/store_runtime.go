@@ -26,6 +26,13 @@ func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUn
 		WHERE (candidate.status = 'queued'
 		   OR (candidate.status = 'running' AND candidate.lease_until <> '' AND candidate.lease_until < ?))
 		  AND candidate_run.status IN ('queued', 'running')
+          AND NOT EXISTS (
+              SELECT 1 FROM tasks other
+              WHERE other.conversation_id = (SELECT conversation_id FROM tasks WHERE id = candidate_run.task_id) AND other.organization_id = candidate_run.organization_id
+                AND other.id <> candidate_run.task_id
+                AND COALESCE((SELECT latest.status FROM runs latest WHERE latest.task_id = other.id ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1), other.status) IN ('queued','running','waiting_approval','waiting_input','paused','blocked','unknown')
+                AND (other.status <> 'queued' OR candidate_run.status <> 'running')
+          )
 		  AND (
 		      EXISTS (
 		          SELECT 1 FROM steps same_run
@@ -82,6 +89,13 @@ func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUn
 	nowText := formatTime(now)
 	var candidateID string
 	if err := s.db.QueryRowContext(ctx, findBatchAwareCandidate, nowText, nowText, nowText).Scan(&candidateID); errors.Is(err, sql.ErrNoRows) {
+		repairedRetry, repairErr := s.recoverPartialBatchRetry(ctx, now)
+		if repairErr != nil {
+			return core.ClaimedStep{}, fmt.Errorf("recover partial tool batch retry: %w", repairErr)
+		}
+		if repairedRetry {
+			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
+		}
 		recovered, recoverErr := s.recoverCompletedToolBatchWithoutRunnableStep(ctx, now)
 		if recoverErr != nil {
 			return core.ClaimedStep{}, fmt.Errorf("recover completed tool batch: %w", recoverErr)
@@ -89,9 +103,9 @@ func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUn
 		if recovered {
 			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
 		}
-		healed, healErr := s.recoverFailedSequentialToolBatch(ctx, now)
+		healed, healErr := s.recoverStrandedToolBatch(ctx, now)
 		if healErr != nil {
-			return core.ClaimedStep{}, fmt.Errorf("recover failed sequential tool batch: %w", healErr)
+			return core.ClaimedStep{}, fmt.Errorf("recover stranded tool batch: %w", healErr)
 		}
 		if healed {
 			return s.ClaimNextStep(ctx, workerID, now, leaseUntil)
@@ -122,6 +136,13 @@ func (s *Store) ClaimNextStep(ctx context.Context, workerID string, now, leaseUn
 		    WHERE (candidate.status = 'queued'
 		       OR (candidate.status = 'running' AND candidate.lease_until <> '' AND candidate.lease_until < ?))
 		      AND candidate_run.status IN ('queued', 'running')
+          AND NOT EXISTS (
+              SELECT 1 FROM tasks other
+              WHERE other.conversation_id = (SELECT conversation_id FROM tasks WHERE id = candidate_run.task_id) AND other.organization_id = candidate_run.organization_id
+                AND other.id <> candidate_run.task_id
+                AND COALESCE((SELECT latest.status FROM runs latest WHERE latest.task_id = other.id ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1), other.status) IN ('queued','running','waiting_approval','waiting_input','paused','blocked','unknown')
+                AND (other.status <> 'queued' OR candidate_run.status <> 'running')
+          )
 		      AND (
 		          EXISTS (
 		              SELECT 1 FROM steps same_run
@@ -598,6 +619,8 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 	toolRecoveryStepID := ""
 	toolRecoveryCount := 0
 	toolRecoveryCallID := ""
+	toolRecoverySourceStepID := ""
+	toolRecoveryErrorCode := ""
 	if outcome.ErrorCode == "BUDGET_RESERVATION_EXCEEDED" || outcome.ErrorCode == "BUDGET_EXCEEDED" {
 		if err := s.createBudgetHumanAction(ctx, tx, q, step, run, outcome, now, correlationID); err != nil {
 			return err
@@ -651,112 +674,124 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 			taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
 		}
 	}
-	if outcome.ToolExecution != nil {
-		if err := s.finishToolExecution(ctx, tx, q, step, run, *outcome.ToolExecution, now, correlationID); err != nil {
+	persistedToolStep := outcome.ToolExecution != nil
+	if !persistedToolStep {
+		var count int64
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_calls WHERE step_id = ?`, step.ID).Scan(&count); err != nil {
 			return err
 		}
-		if outcome.Status == core.StatusSucceeded {
-			taskStatus, taskErrorCode, err = deriveRunStatus(ctx, tx, run.RunID)
-			if err != nil {
+		persistedToolStep = count > 0
+	}
+	if persistedToolStep {
+		if outcome.ToolExecution != nil {
+			if err := s.finishToolExecution(ctx, tx, q, step, run, *outcome.ToolExecution, now, correlationID); err != nil {
 				return err
 			}
-			if taskStatus == core.StatusSucceeded {
-				batchReady, continuationClaimed, batchID, batchErr := s.completeToolBatchState(ctx, tx, q, step, run, now, correlationID)
-				if batchErr != nil {
-					return batchErr
+		} else if outcome.Status == core.StatusBlocked || outcome.Status == core.StatusFailed {
+			toolStatus := "failed"
+			if outcome.Status == core.StatusBlocked {
+				toolStatus = "blocked"
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE tool_calls
+				SET status = ?, error_code = ?, completed_at = ?, updated_at = ?
+				WHERE step_id = ? AND status IN ('planned', 'queued', 'running', 'waiting_approval')`,
+				toolStatus, outcome.ErrorCode, now, now, step.ID); err != nil {
+				return err
+			}
+		}
+
+		batchReady, batchClaimed, batchID, batchErr := s.completeToolBatchState(ctx, tx, q, step, run, now, correlationID)
+		if batchErr != nil {
+			return batchErr
+		}
+		if !batchReady || !batchClaimed {
+			taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
+			var dispatchable, waitingApproval int64
+			if err := tx.QueryRowContext(ctx, `
+				SELECT COALESCE(SUM(CASE WHEN status IN ('planned', 'queued', 'running') THEN 1 ELSE 0 END), 0),
+				       COALESCE(SUM(CASE WHEN status = 'waiting_approval' THEN 1 ELSE 0 END), 0)
+				FROM tool_calls WHERE run_id = ?`, run.RunID,
+			).Scan(&dispatchable, &waitingApproval); err != nil {
+				return err
+			}
+			if dispatchable == 0 && waitingApproval > 0 {
+				taskStatus = core.StatusWaitingApproval
+			}
+		} else {
+			failureStatus, failureCode, failureStep, hasFailure, failureErr := toolBatchTerminalFailure(ctx, tx, batchID)
+			if failureErr != nil {
+				return failureErr
+			}
+			if batchID == "" && (outcome.Status == core.StatusBlocked || outcome.Status == core.StatusFailed) {
+				failureStatus, failureCode, failureStep, hasFailure = outcome.Status, outcome.ErrorCode, step, true
+			}
+			if hasFailure {
+				taskStatus, taskErrorCode = failureStatus, failureCode
+				if failureStep.ID != step.ID {
+					taskSummary = "工具批次在 " + failureCode + " 处停止；已完成动作和检查点仍保留。"
 				}
-				if !batchReady {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				} else if !continuationClaimed {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				} else {
-					queued := false
-					var queueErr error
-					var queuedStepID string
-					if step.StepType == core.ToolSkillInvoke {
-						queued, queueErr = s.queueSkillResume(ctx, tx, q, step, run, outcome.Output, now, correlationID)
+				if failureStatus == core.StatusFailed && isRecoverableToolExecutionFailure(failureCode) {
+					var queued bool
+					toolRecoveryStepID, toolRecoveryCount, toolRecoveryCallID, queued, err = s.queueToolFailureRecovery(ctx, tx, q, failureStep, run, failureCode, now, correlationID)
+					if err != nil {
+						return err
+					}
+					if queued {
+						toolRecoverySourceStepID, toolRecoveryErrorCode = failureStep.ID, failureCode
+						taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
 					} else {
-						forceSynthesis := false
-						if step.StepType == core.ToolWebSearch {
-							forceSynthesis, queueErr = webSearchSynthesisThresholdReached(ctx, tx, run.RunID)
+						synthesized, synthErr := s.queueWebSearchSynthesis(ctx, tx, q, failureStep, run, now, correlationID)
+						if synthErr != nil {
+							return synthErr
 						}
-						if queueErr == nil && forceSynthesis {
-							queued, queueErr = s.queueWebSearchSynthesis(ctx, tx, q, step, run, now, correlationID)
-							if queueErr == nil && !queued {
-								var continuationStepID string
-								continuationStepID, queueErr = s.queueModelContinuation(ctx, tx, q, step, run, now, correlationID)
-								queued = continuationStepID != ""
-								queuedStepID = continuationStepID
-							}
-						} else if queueErr == nil {
+						if synthesized {
+							taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
+						} else if actionErr := s.createToolRecoveryHumanAction(ctx, tx, q, failureStep, run, failureCode, now, correlationID); actionErr != nil {
+							return actionErr
+						} else {
+							taskStatus, taskSummary, taskErrorCode = core.StatusWaitingInput, "自动恢复已用尽，需要你选择下一步。", ""
+						}
+					}
+				}
+			} else if outcome.Status == core.StatusSucceeded {
+				queued := false
+				var queueErr error
+				var queuedStepID string
+				if step.StepType == core.ToolSkillInvoke {
+					queued, queueErr = s.queueSkillResume(ctx, tx, q, step, run, outcome.Output, now, correlationID)
+				} else {
+					forceSynthesis := false
+					if step.StepType == core.ToolWebSearch {
+						forceSynthesis, queueErr = webSearchSynthesisThresholdReached(ctx, tx, run.RunID)
+					}
+					if queueErr == nil && forceSynthesis {
+						queued, queueErr = s.queueWebSearchSynthesis(ctx, tx, q, step, run, now, correlationID)
+						if queueErr == nil && !queued {
 							var continuationStepID string
 							continuationStepID, queueErr = s.queueModelContinuation(ctx, tx, q, step, run, now, correlationID)
 							queued = continuationStepID != ""
 							queuedStepID = continuationStepID
 						}
+					} else if queueErr == nil {
+						var continuationStepID string
+						continuationStepID, queueErr = s.queueModelContinuation(ctx, tx, q, step, run, now, correlationID)
+						queued = continuationStepID != ""
+						queuedStepID = continuationStepID
 					}
-					if queueErr != nil {
-						return queueErr
-					}
-					if queued {
-						if batchID != "" && queuedStepID != "" {
-							if _, err := tx.ExecContext(ctx, `UPDATE tool_batches SET continuation_step_id = ?, updated_at = ? WHERE id = ?`, queuedStepID, now, batchID); err != nil {
-								return err
-							}
+				}
+				if queueErr != nil {
+					return queueErr
+				}
+				if queued {
+					if batchID != "" && queuedStepID != "" {
+						if _, err := tx.ExecContext(ctx, `UPDATE tool_batches SET continuation_step_id = ?, updated_at = ? WHERE id = ?`, queuedStepID, now, batchID); err != nil {
+							return err
 						}
-						taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-					} else if step.StepType != core.ToolSkillInvoke {
-						return fmt.Errorf("MODEL_CONTINUATION_NOT_QUEUED: completed tool batch has no next model step")
 					}
-				}
-			}
-		} else {
-			batchReady, recoveryClaimed, _, batchErr := s.completeToolBatchState(ctx, tx, q, step, run, now, correlationID)
-			if batchErr != nil {
-				return batchErr
-			}
-			if !batchReady || !recoveryClaimed {
-				taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-			} else if outcome.Status == core.StatusFailed && isRecoverableToolExecutionFailure(outcome.ErrorCode) {
-				var queued bool
-				toolRecoveryStepID, toolRecoveryCount, toolRecoveryCallID, queued, err = s.queueToolFailureRecovery(ctx, tx, q, step, run, outcome.ErrorCode, now, correlationID)
-				if err != nil {
-					return err
-				}
-				if queued {
 					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-				} else {
-					synthesized, synthErr := s.queueWebSearchSynthesis(ctx, tx, q, step, run, now, correlationID)
-					if synthErr != nil {
-						return synthErr
-					}
-					if synthesized {
-						taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
-					} else if actionErr := s.createToolRecoveryHumanAction(ctx, tx, q, step, run, outcome.ErrorCode, now, correlationID); actionErr != nil {
-						return actionErr
-					} else {
-						taskStatus, taskSummary, taskErrorCode = core.StatusWaitingInput, "自动恢复已用尽，需要你选择下一步。", ""
-					}
-				}
-			}
-		}
-	} else if step.StepType == core.ToolWorkspaceWriteFile || step.StepType == core.ToolWorkspaceRunCommand {
-		if outcome.Status == core.StatusBlocked {
-			if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'blocked', error_code = ?, updated_at = ? WHERE step_id = ?`, outcome.ErrorCode, now, step.ID); err != nil {
-				return err
-			}
-		} else if outcome.Status == core.StatusFailed {
-			if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET status = 'failed', error_code = ?, updated_at = ? WHERE step_id = ?`, outcome.ErrorCode, now, step.ID); err != nil {
-				return err
-			}
-			if isRecoverableToolExecutionFailure(outcome.ErrorCode) {
-				var queued bool
-				toolRecoveryStepID, toolRecoveryCount, toolRecoveryCallID, queued, err = s.queueToolFailureRecovery(ctx, tx, q, step, run, outcome.ErrorCode, now, correlationID)
-				if err != nil {
-					return err
-				}
-				if queued {
-					taskStatus, taskSummary, taskErrorCode = core.StatusRunning, "", ""
+				} else if step.StepType != core.ToolSkillInvoke {
+					return fmt.Errorf("MODEL_CONTINUATION_NOT_QUEUED: completed tool batch has no next model step")
 				}
 			}
 		}
@@ -776,7 +811,7 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 			if modelStageFromInput(step.InputJSON) == "completion_recovery" {
 				taskStatus, taskErrorCode = core.StatusBlocked, validation.Reason
 				if validation.Reason == "ATTACHMENT_NOT_READ" {
-					taskSummary = "任务包含二进制附件，但当前 Run 没有成功的 asset_stage 收据，不能在未读取附件时标记为完成。"
+					taskSummary = "部分附件仍缺少成功的读取证据，不能在全部所需附件读取完成前标记为完成。"
 				} else if validation.Reason == "WEB_EVIDENCE_MISSING" {
 					taskSummary = "任务要求联网检索，但当前 Run 没有成功的互联网检索收据，不能标记为完成。"
 				} else if validation.Reason == "DELIVERABLE_MISSING" && validation.DeliverableFormat == "pdf" {
@@ -801,6 +836,7 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 					"completion_deliverable_format":  validation.DeliverableFormat,
 					"completion_required_characters": validation.RequiredCharacters,
 					"completion_actual_characters":   validation.ActualCharacters,
+					"completion_missing_assets":      validation.MissingAssets,
 				}, now)
 				if queueErr != nil {
 					return queueErr
@@ -892,7 +928,13 @@ func (s *Store) FinishStep(ctx context.Context, step core.ClaimedStep, run core.
 		}
 	}
 	if toolRecoveryStepID != "" {
-		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.recovery_queued", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": toolRecoveryStepID, "source_step_id": step.ID, "tool_call_id": toolRecoveryCallID, "retry_count": toolRecoveryCount, "max_retries": core.DefaultToolRetryLimit, "error_code": outcome.ErrorCode}}); err != nil {
+		if toolRecoverySourceStepID == "" {
+			toolRecoverySourceStepID = step.ID
+		}
+		if toolRecoveryErrorCode == "" {
+			toolRecoveryErrorCode = outcome.ErrorCode
+		}
+		if err := s.appendEvent(ctx, q, eventInput{OrganizationID: run.OrganizationID, ProjectID: run.ProjectID, RunID: run.RunID, EventType: "tool.recovery_queued", ActorType: "system", ActorID: step.OwnerID, CorrelationID: correlationID, Visibility: run.Visibility, Payload: map[string]any{"step_id": toolRecoveryStepID, "source_step_id": toolRecoverySourceStepID, "tool_call_id": toolRecoveryCallID, "retry_count": toolRecoveryCount, "max_retries": core.DefaultToolRetryLimit, "error_code": toolRecoveryErrorCode}}); err != nil {
 			return err
 		}
 	}

@@ -17,6 +17,17 @@ type ProviderSaveResult = { provider: ProviderInstance; test?: ProviderTestResul
 const emptyDraft: ProviderDraft = { display_name: '', protocol_family: 'openai_compatible', endpoint: 'https://api.openai.com/v1', credential: '', status: 'disabled', is_default: false }
 
 export function ProviderSettingsPage() {
+  const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: api.bootstrap })
+  if (!bootstrap.data?.permissions?.manage_instance) return <AvailableModels />
+  return <ManagedProviders />
+}
+
+function AvailableModels() {
+  const models = useQuery({ queryKey: ['models'], queryFn: api.models })
+  return <SettingsLayout active="providers"><h2>可用模型</h2><p>模型服务及凭据由实例维护者统一配置。</p>{models.data?.items.length ? models.data.items.map((model) => <p key={`${model.provider_id}:${model.id}`}>{model.provider_name} · {model.id}</p>) : <p>暂无可用模型，请联系实例维护者完成配置。</p>}</SettingsLayout>
+}
+
+function ManagedProviders() {
   const queryClient = useQueryClient()
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers })
   const vault = useQuery({ queryKey: ['vault'], queryFn: api.vaultStatus })

@@ -181,6 +181,9 @@ func TestTeamProjectMembershipHistoryPrivacyRevocationAndCrossOrganization(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := owner.ControlTask(t.Context(), sharedTask.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "", "finish-history-task"); err != nil {
+		t.Fatal(err)
+	}
 	privateTask, err := owner.CreateTask(context.Background(), project.ID, core.CreateTaskInput{Goal: "private existence", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate}, "00000000-0000-7000-8000-000000000181", "")
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +225,9 @@ func TestTeamProjectMembershipHistoryPrivacyRevocationAndCrossOrganization(t *te
 	}
 	if _, err := memberService.AppendConversationMessage(context.Background(), privateTask.ConversationID, core.CreateTaskInput{Goal: "private follow-up", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate}, "member-private-followup", ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("member appended private conversation err=%v", err)
+	}
+	if _, err := owner.ControlTask(context.Background(), privateTask.ID, core.ControlTaskInput{Command: core.TaskCommandCancel}, "stop-private-before-shared-followup", ""); err != nil {
+		t.Fatal(err)
 	}
 	sharedFollowup, err := memberService.AppendConversationMessage(context.Background(), sharedTask.ConversationID, core.CreateTaskInput{Goal: "shared follow-up", Mode: core.ModeAnswer, Visibility: core.VisibilityProject}, "member-shared-followup", "")
 	if err != nil || sharedFollowup.ConversationID != sharedTask.ConversationID || sharedFollowup.Visibility != core.VisibilityProject {

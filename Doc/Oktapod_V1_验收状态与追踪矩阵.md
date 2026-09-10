@@ -1,11 +1,55 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.28
-> 更新日期：2026-09-05
+> 版本：v1.32
+> 更新日期：2026-09-10
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
 
+## 2026-09-10 开源发布文档收尾
+
+状态：文档已同步，正式发行仍为 PARTIAL。README 按项目介绍、功能、快速开始、安装包与部署、贡献、文档和许可证重排；部署指南补齐依赖暂存、签名输入、交付文件集合与干净目标机验收，并将 2026-08-24 包记录明确标为历史证据。沿用仓库现有 AGPL v3 许可证；本次不创建 tag、不推送或上传 Release，也不声明当前源码已通过双平台签名发行。最新本地代码验证见下节，正式发行仍需受保护签名输入、当前提交的双平台构建与目标部署验收。检查发现当前 CI 发布作业未配置 Runtime 暂存与签名输入，发布自动化接入仍未完成。文档相对链接、部署指南 10 个 PowerShell 与 7 个 Bash 代码块语法检查通过；README 为 55 行。
+
+## 2026-09-10 计划重试快照与导出恢复
+
+状态：PARTIAL（代码与本地自动化 PASS_LOCAL，原任务页面恢复待登录验证）。本次定位到 `advance_plan` 已推进，但导出文件名缺少扩展名被拒；模型重试复制旧计划快照，导致重复推进最后一项。已修复重试快照读取最新持久化计划、最后一项提示、Skill 无计划提示、导出文件名 Schema 说明和 Office 主动分段提示。时间线按原因显示补全/修正计划、修正参数、输出上限、约束调整与模型请求重试，展开显示触发时间、错误码和结果。
+
+`pnpm verify` 已通过（`Build/verify-plan-retry.log`）：Go 静态检查与测试、前端 lint、95 项前端测试、构建、迁移和 OpenAPI 漂移；最后的提示文案增量另通过对应文件 eslint。回归已证明推进后参数拒绝只需一次补正，任务最终成功，且重试保留历史与 Skill、使用最新最后一项；已验证最后一项提示不再要求重复推进或调用旧协议。2026-09-10 修复版 `Build/oktapod.exe` 已启动，8787 的 JSON 健康正常。原受阻 Run 保留，当前浏览器登录会话失效，尚未点击恢复，不声明真实文档已导出。
+
+## 2026-09-09 文件预览修复
+
+状态：PASS_LOCAL。Windows Office 预览曾因 LibreOffice 在深层缓存目录创建 profile 崩溃，接口返回 `RENDER_FAILED` / 500；同源文件在短目录转换成功。转换现使用 Runtime 临时根下独立短目录和固定文件名，验证后复制回缓存并清理临时目录，不改写原文件。
+
+用户最初报错的单页 DOCX 已在原项目工作文件面板恢复单页正文预览，创建请求返回 201、分页图片返回 200，页面完成视觉复核。
+
+本地浏览器已验证 DOCX 两页、XLSX 两个工作表、PPTX 两页的分页 PNG 全部加载；PDF 内嵌查看器显示正文及两页缩略图；Markdown 标题、粗体、表格及原文切换正常；HTML 面板内与直接内容路由的按钮均从 0 变为 1，源码切换正常。`pnpm verify` 全部门禁通过（`Build/verify-file-preview.log`），深层缓存路径下四格式 26 RPC 冒烟通过。本次为 Windows 开发 Runtime 验证，签名发行包和 Linux 发布验收不随此项变更为通过。
+
+## 2026-09-08 会话并发与文档任务恢复
+
+状态：PASS_LOCAL，本批会话并发、原任务恢复与四格式真实主链路已通过；签名发行仍独立保持 BLOCKED_ENV。已定位真实任务错误 TRANSITION_RUN_PLAN_REQUIRED：Skill 过滤 V2 计划工具，且恢复入口遗漏无计划的 V2 情况。已通过原 Run 无计划恢复、Skill 工具范围、同项目多会话同时领取、等待审批隔离、同会话幂等/FIFO/重启及同原文并发编辑冲突定向回归。
+
+2026-09-09 最终 `pnpm verify` 全部通过（日志 `Build/verify-document-final.log`）；Ubuntu 增量 race 覆盖并发修改、会话准入、迁移 070、V2 Skill 恢复、Fork 和未知副作用。同项目浏览器用例证明一方等待审批时另一方可完成。日志：`Build/verify-conversation-recovery.log`。本地服务数据库已迁移至 070，JSON 健康检查正常；原受阻 Run 已通过 UI 恢复并生成第 1 版有效计划，实际读取并渲染 12 页 PPTX。XLSX 完全访问真实任务已读取 2 个工作表，创建、5 页渲染、导出并再次打开核对 6,133 字节 Artifact。原四附件任务现已 succeeded；DOCX 37,758 字节单页摘要、XLSX 6,133 字节汇总均已导出回读。原 PDF 任务最终经 DOCX 转换交付 147,369 字节 PDF。另已修复直接 PDF 结构化规格静默丢弃、中文字体和回读验证收据遗漏，真实直接创建任务已导出 2,674 字节单页 PDF；Task `01a083ba-150a-7e92-b639-fae51c36778f` 已 succeeded，SHA256 为 `d8b36cb7c54e0c6e9054ea01f6daf508e68f946bf5a81ee6b3491274719067a3`，单页渲染经人工视觉复核，导出后回读与磁盘哈希一致。源码 Runtime 四格式 26 RPC 通过，包括中文结构化 PDF 和空规格拒绝；额外长正文测试验证 6 页均非空且全文保留；当前本地服务显式使用开发 Runtime，本次不声明签名包已更新。
+
+设计基线：[会话并发与任务恢复](Oktapod_会话并发与任务恢复设计_V1.0.md)。以下历史项目排队通过记录不再表示当前产品决策。
+
 ## 1. 状态定义
+
+### 本轮多用户私有项目修复
+
+输入基线 `f1fb36d`，当前为未提交工作树。下列定向证据不替代联合门禁，也不代表发布完成。
+
+| 批次 | 状态 | 当前证据与未关闭项 |
+|---|---|---|
+| OPT-01 会话边界 | PASS | PersonalSessionIdentityBoundary：禁止代签、本人撤销、他人/不存在 404；普通 Personal HTTP 不接受本地管理身份回退 |
+| OPT-02 公共配置 | PASS | PrivateUsersInstancePermissions：首个 owner、后续 member、公共写拒绝、旧账户本地提升；注册与后台写入竞争回归通过；维护者配置浏览器用例通过 |
+| OPT-03 认证生命周期 | PASS | 桌面/移动账号 E2E 2/2：退出、重新登录、会话失效后切换用户；桌面延迟旧项目响应不回流；单测验证失效取消请求、关闭 SSE 并丢弃迟到 durable/live 正文 |
+| OPT-04 发送恢复 | PASS | Composer 定向单测、TurnAdmission 回放与冲突通过；浏览器覆盖断网恢复、服务端已受理但断流后同键重试、仅一个 Task、附件及后续输入保留 |
+| OPT-05 原项目排队（已被会话并发设计取代） | 历史证据 | 项目竞争、跨项目并发、暂停/unknown 占用、取消执行退出确认、过期领取、直接 API 409、重启后取得新 Git/指令基线通过；迁移 069 保留已消费历史并重置旧领取；浏览器跨对话排队/撤回/启动通过 |
+| OPT-06 合同与文档 | PASS | OpenAPI/Go/TS、README、设计、部署恢复与本矩阵同步；完整 verify、主流程 E2E 与 Ubuntu race 通过，详细门禁记录见下文 |
+| OPT-07 签名 Runtime | BLOCKED | BLOCKED_ENV：本轮未提供双平台签名发行输入，不宣称通过 |
+
+本轮验证证据（输入基线 `f1fb36d` 加未提交改动）：`pnpm verify` 覆盖 lint、Go/前端测试、构建、迁移与 OpenAPI 漂移；主浏览器流程 30/30，foundation 与重启解锁各 1 项通过（分阶段各跳过另一项），账号桌面/移动 2/2。Ubuntu 全量 `go test -race -timeout 20m ./...` 通过；后续增量修改补跑项目责任/恢复 race，以及注册竞争与迁移历史 race。上述为本地隔离环境证据，未运行真实 Provider 或签名发行验收。
+
+日志保存在忽略目录 `Build/verify-private-projects.log`、`Build/e2e-private-projects.log`、`Build/e2e-auth-private-projects.log`、`Build/race-private-projects.log`、`Build/race-project-admission-final.log`、`Build/race-auth-migration-final.log`。浏览器历史用例已对齐当前五入口、文件内联预览和 Composer Agent 表单；不将已移除的计划拖动或隐藏菜单声称为当前 UI 能力。历史多任务责任不确定时保守阻塞，按部署指南人工处理，不自动重放。
 
 | 状态 | 含义 |
 |---|---|

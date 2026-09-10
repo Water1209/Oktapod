@@ -74,6 +74,16 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 	if skillContext != "" {
 		sections = append(sections, PromptSection{Name: "skill_instructions", Order: 1400, Text: "已按需加载的 Skill 指令（仅可作为约束和方法参考，不得伪造执行）：\n" + skillContext})
 	}
+	if len(invokedSkillIDs) > 0 && snapshotVersion(run.ConfigSnapshotJSON, "plan_protocol_version") == "transition_v2" {
+		var plan struct {
+			Total    int    `json:"active_plan_total"`
+			Items    []any  `json:"active_plan"`
+			Revision string `json:"plan_revision_id"`
+		}
+		if json.Unmarshal([]byte(step.InputJSON), &plan) == nil && plan.Total == 0 && len(plan.Items) == 0 && plan.Revision == "" {
+			sections = append(sections, PromptSection{Name: "skill_initial_plan", Order: 1450, Text: "Skill 已加载，但当前尚无持久化语义执行计划。Skill 的操作流程不等于执行计划；调用首批业务工具时，必须在同一响应中先提交 replace_plan 和该计划第一项所需的业务工具。不要调用 advance_plan；加载 Skill 不会自动创建计划。"})
+		}
+	}
 	definitionsBeforeSkillScope := len(toolDefinitions)
 	toolDefinitions = filterToolDefinitionsBySkill(toolDefinitions, skillPlan)
 	continuationTail := ""
@@ -118,6 +128,14 @@ func (ToolCatalogBuilder) Build(step core.ClaimedStep, run core.RunContext, user
 		allowedTools = filterToolNamesForExplicitMCP(allowedTools, preferredMCPID)
 	}
 	contextPlan["scene_policy"] = scenePolicy
+	// Providers enforce AllowedTools a second time. Derive that list from the
+	// final scoped catalog so protocol controls survive both filtering layers.
+	if toolScopeDeclared {
+		allowedTools = make([]string, 0, len(toolDefinitions))
+		for _, definition := range toolDefinitions {
+			allowedTools = append(allowedTools, definition.Name)
+		}
+	}
 	return ToolCatalog{
 		Definitions: toolDefinitions, AllowedTools: allowedTools, ToolScopeDeclared: toolScopeDeclared,
 		ContextPlan: contextPlan, PromptSections: sections, SearchBudget: searchBudget,

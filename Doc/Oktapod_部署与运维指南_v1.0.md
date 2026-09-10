@@ -1,8 +1,20 @@
 # Oktapod 部署与运维指南
 
-> 版本：v1.1.3
-> 更新日期：2026-09-05
+> 版本：v1.1.5
+> 更新日期：2026-09-10
 > 发布路径：注册用户 + 个人私有项目 + SQLite
+
+## 多用户私有项目升级补充（迁移 069/070）
+
+实例维护者统一配置 Provider、SecretStore/Vault、公共治理、价格和运行策略。新安装第一个可登录账户在注册事务中取得 owner，后续账户为 member；普通用户可以使用公共模型并保存个人偏好。应用级私有项目隔离面向内部可信用户，不承诺任意 Shell 的跨用户强沙箱。
+
+旧数据库不自动推断维护者。部署者使用与服务相同的配置文件和 DataRoot，在本机执行 `oktapod user set-owner --username <existing-active-username>`。命令只提升已有活跃密码账户，记录 `user.owner_assigned` 审计；不创建账户，不输出或要求提供用户密码，也不赋予读取他人私有项目的权限。配置选择沿用现有 `--config` / `OKTAPOD_CONFIG_FILE` 机制。
+
+升级顺序：暂停新任务受理，正常停止旧服务，备份整个 DataRoot，再启动新版本执行迁移。不得让新旧调度器同时连接同一数据库。迁移 069 保留历史队列记录，允许首个任务没有前置任务，并加入领取版本；迁移 070 将领取唯一约束从项目收窄到会话。工作目录与 Git 基线在取得执行资格之后采集。
+
+等待审批、输入、暂停及 blocked/unknown 状态保留所属会话责任，不阻塞其他会话。取消后必须等工作进程退出、未决 Receipt 处理完成；不要直接改数据库状态来释放会话。旧库同会话存在多个未结束任务且执行结果不确定时，保留阻塞并按原有恢复流程处理；不同会话按各自状态推进。TRANSITION_RUN_PLAN_REQUIRED 等计划错误可通过任务页“恢复任务”继续原 Run，保留附件和 Skill，不自动取消或重放未知副作用。
+
+回滚必须恢复升级前备份并使用对应旧版本；迁移 069 的 down 明确报错，不能直接用旧二进制读取新队列格式。迁移 070 down 会将已领取项重新置为 pending 并递增领取版本后恢复项目唯一约束；生产回滚仍按完整备份流程。正式签名 Document Runtime 的双平台发行门禁仍独立执行，缺少签名与工件输入保持 `BLOCKED_ENV`。
 
 ## 1. 部署结论
 
@@ -53,6 +65,24 @@ Linux
 
 `OKTAPOD_DOCUMENT_RUNTIME_STAGE` 必须是目标平台的自包含目录，并包含完整 `LICENSES/`。Python、LibreOffice、Tesseract 环境变量均填写该目录内的相对路径；签名私钥只能来自仓库外的受保护文件。
 
+#### 准备依赖与签名输入
+
+发布脚本负责校验、签名和归档，不负责下载或制作自包含依赖。先按目标 OS/架构准备可迁移 Python 发行目录；使用该 Python 将 `Runtime/document-runtime/requirements.lock` 安装到其自身 site-packages，并保留依赖元数据。不要复制指向构建机绝对路径的虚拟环境。示例安装命令为 `<stage-python> -m pip install -r Runtime/document-runtime/requirements.lock`；如发行目录未包含 pip，应在制作阶段准备依赖，部署端不运行 pip。
+
+暂存完整 LibreOffice 程序目录、Tesseract 及 `tessdata/eng.traineddata`、`tessdata/chi_sim.traineddata`；PDFium 随锁定的 `pypdfium2` 分发。保留中文字体和各组件第三方声明，将完整许可证副本放入 `LICENSES/`。目录示例与下面环境变量对应：
+
+```text
+<stage>/
+  python/                 # Windows: python.exe；Linux: bin/python3
+  libreoffice/program/    # Windows: soffice.exe + soffice.com；Linux: soffice
+  tesseract/              # 可执行文件、依赖库和 tessdata/
+  LICENSES/               # 所有随包分发组件的许可证与声明
+```
+
+Linux 包需在支持的发行版/ABI 基线上制作：检查 Python、LibreOffice 和 Tesseract 的动态库依赖，确保没有构建机绝对路径或缺失的共享库；必要的系统库与字体需在目标机部署并记录版本。正式 Runtime 拒绝符号链接，暂存时应将所需链接转换为实际文件，并保留可执行权限。`pnpm release:build` 的包内测试是必要门禁，不能代替干净目标机上的迁移验证。
+
+签名文件必须是 Ed25519 PKCS8 PEM；首次建立发布签名身份时可在仓库外用 `openssl genpkey -algorithm ED25519 -out <protected-key-file>` 生成，并限制读取权限、离线备份。后续版本复用受控签名身份或执行明确的轮换流程；不把私钥复制进暂存目录、发布集合或 Git。下面 Key ID 为示例标识，应替换为发布方登记的唯一标识。
+
 ```powershell
 $env:OKTAPOD_DOCUMENT_RUNTIME_STAGE='D:\release-stage\windows-amd64'
 $env:OKTAPOD_DOCUMENT_RUNTIME_PYTHON='python\python.exe'
@@ -83,9 +113,17 @@ pnpm release:build
 pnpm release:smoke
 ```
 
-`release:build` 会检查版本、锁定依赖、LibreOffice、Tesseract `chi_sim + eng`、四格式 25 次 RPC、SBOM、许可证、逐文件 Hash 和 Ed25519 签名；`release:smoke` 使用临时端口，完成后会停止测试服务，不能代替真实部署健康检查。
+`release:build` 会检查版本、锁定依赖、LibreOffice、Tesseract `chi_sim + eng`、四格式 26 次 RPC、SBOM、许可证目录、逐文件 Hash 和 Ed25519 签名；许可证完整性和上游再分发义务仍需发布方核对，脚本不能代替人工审查。`release:smoke` 使用临时端口，完成后会停止测试服务，不能代替真实部署健康检查。
 
-### 2.2 本次 Runtime 资源包构建证据
+#### 组装安装文件集合
+
+成功后从 `Build/` 取出对应平台主程序及 `.sha256`、Runtime 归档及 `.sha256`、`document-runtime-trusted-keys.json`，另从源码复制 `Deploy/config.yaml.example`（交付名 `config.yaml.example`）与 `LICENSE`、本部署指南到同一分发目录。Runtime 的 Manifest、SBOM、依赖锁和第三方声明已在归档内。不要分发整个 `Build/`、依赖暂存目录或真实 DataRoot。Windows 与 Linux 分别运行完整流程，信任公钥需覆盖对应包的签名身份。
+
+发布集合名应包含版本与平台；`package.json` 决定主程序版本，Runtime 默认沿用该版本。记录提交 SHA、操作系统/架构、构建日志和实际 SHA256，再在干净目标环境按第 3～5 节验收。命令失败时即使已生成部分文件，也不构成可交付安装包。源码更新后必须重新构建签名包，不能混用历史二进制或 Runtime。
+
+### 2.2 历史 Runtime 资源包构建证据（2026-08-24）
+
+以下为历史构建记录，不能作为当前提交的安装包、下载校验值或发布通过证据。2026-09-10 的源码修复尚未重新完成双平台签名发布；部署当前代码前必须重新执行第 2.1 节。
 
 2026-08-24 已在 Windows 主机和 WSL Ubuntu `linux-amd64` 环境分别构建两平台主程序和自包含 `document-runtime` 资源包。主程序均报告版本 `1.0.0`；构建器对包内 Python、LibreOffice、Tesseract、许可证、逐文件 Manifest 和 Ed25519 签名执行检查，并对 PPTX、DOCX、XLSX、PDF 完成 25 次 RPC smoke；Windows 与 Linux 均通过。Windows 主程序使用新归档完成完整 `release:smoke`；Linux 主程序在 WSL ext4 临时目录中解包 Runtime 后完成同等 `product-smoke`，避免把 `/mnt/e` 的 NTFS 逐文件 I/O 延迟误判为产品启动失败。
 
@@ -167,6 +205,8 @@ $Config = 'C:\ProgramData\Oktapod\config.yaml'
 & $Binary --config $Config config doctor --json
 & $Binary --config $Config serve
 ```
+
+启动日志固定写入 DataRoot 下的 `logs/oktapod-startup.log`，同时输出到前台终端。日志包含配置加载、Runtime 检查、监听成功和启动失败原因；例如端口占用、配置解析失败或数据库不可写都会记录为 `Oktapod startup failed`。排查时先查看该文件，再检查 8787 是否已有 Oktapod 进程。
 
 另开 PowerShell 验证：
 
@@ -382,11 +422,13 @@ Skill 菜单安装只接受单 Skill ZIP，不接受裸 `SKILL.md`、JSON 或 YA
 
 ### 10.1 Document Runtime
 
+2026-09-09 本地验收使用显式开发 Runtime，验证中文结构化 PDF 创建与空内容拒绝。源码修复不会自动更新既有签名包；正式部署必须按发布流程重新打包签名并完成 Windows/Linux 加载烟测，当前签名发行仍为 `BLOCKED_ENV`。
+
 新用户和现有用户首次升级会安装 `document-runtime` 与 `presentations/pdf/documents/spreadsheets` 五个全局预置资源。用户停用状态会保留；删除后写入 tombstone，重启和升级都不会恢复。Runtime 或依赖缺失时资源中心显示 `degraded` 并提供显式安装/修复；模型不能安装、更新或删除 Runtime，也不能回退为临时解析脚本。删除共享 Runtime 前必须先删除所有声明 `document.runtime` 的 Skill，活动 Run 引用时仍会拒绝。
 
 开发环境只有显式设置 `OKTAPOD_DOCUMENT_RUNTIME_DEV=1` 才会从 `Runtime/document-runtime/runtime.py` 启动，并通过 `OKTAPOD_DOCUMENT_RUNTIME_PYTHON` 指向开发 Python；需要使用宿主渲染器时，可显式设置 `OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE` 和 `OKTAPOD_DOCUMENT_RUNTIME_TESSERACT`。这两个开发路径只接受绝对路径、普通文件且拒绝符号链接，不会放宽生产信任边界。生产环境只加载 DataRoot 的受信版本或二进制旁 `runtime/document-runtime` 签名包；Manifest 必须匹配平台、协议、Ed25519 信任 Key 和逐文件 SHA256。生产启动使用 Python `-I -B`；`-I` 会忽略 `PYTHONDONTWRITEBYTECODE`，因此显式使用 `-B`，避免 Python 字节码缓存改写已签名 Runtime 包。Runtime 不监听端口，使用独立 HOME/TEMP、空代理和受控文件句柄；缓存位于 DataRoot 的 `document-runtime/cache`，默认 1 GiB / 30 天 LRU，不进入 Backup/项目导出。
 
-发布构建新增严格输入：`OKTAPOD_DOCUMENT_RUNTIME_STAGE` 指向包含自包含平台依赖和完整 `LICENSES/` 的目录；`OKTAPOD_DOCUMENT_RUNTIME_PYTHON`、`OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE`、`OKTAPOD_DOCUMENT_RUNTIME_TESSERACT` 都是该目录内相对文件路径；`OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_FILE` 指向受保护 Ed25519 PKCS8 PEM，`OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_ID` 是部署信任 Key ID。`pnpm release:build` 缺少任一输入即失败；归档前还会用包内 Python 检查锁定依赖、LibreOffice、Tesseract `chi_sim + eng` 和四格式 25 次 RPC。构建只输出不含私钥的 `Build/document-runtime-trusted-keys.json`，`release:smoke` 将它写入隔离 DataRoot 并要求资源目录中的 Runtime 为 `available`，避免发布“主程序正常但文档能力暗中退化”的工件。
+发布构建新增严格输入：`OKTAPOD_DOCUMENT_RUNTIME_STAGE` 指向包含自包含平台依赖和完整 `LICENSES/` 的目录；`OKTAPOD_DOCUMENT_RUNTIME_PYTHON`、`OKTAPOD_DOCUMENT_RUNTIME_LIBREOFFICE`、`OKTAPOD_DOCUMENT_RUNTIME_TESSERACT` 都是该目录内相对文件路径；`OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_FILE` 指向受保护 Ed25519 PKCS8 PEM，`OKTAPOD_DOCUMENT_RUNTIME_SIGNING_KEY_ID` 是部署信任 Key ID。`pnpm release:build` 缺少任一输入即失败；归档前还会用包内 Python 检查锁定依赖、LibreOffice、Tesseract `chi_sim + eng` 和四格式 26 次 RPC。构建只输出不含私钥的 `Build/document-runtime-trusted-keys.json`，`release:smoke` 将它写入隔离 DataRoot 并要求资源目录中的 Runtime 为 `available`，避免发布“主程序正常但文档能力暗中退化”的工件。
 
 `auth.type=oauth` 使用官方 MCP Go SDK 的 Authorization Code + PKCE 流程。资源审核启用后点击“连接账号”，授权页在新窗口打开；回调地址按当前监听端口生成，例如默认 `http://127.0.0.1:8787/api/v1/mcp/oauth/callback`。Personal V1 要求浏览器与服务运行在同一台电脑；授权窗口被拦截时资源详情仍提供显式链接。取消只终止短期授权会话，不删除资源或项目文件。SDK 发现/注册得到的客户端配置、access token 和 refresh token 以 `oktapod.mcp-oauth/v1` 不透明信封进入 SecretStore，刷新后原位更新；HTTP 日志只记录 callback 路径，不记录含授权码的 query。手工 PAT/API token 使用 `bearer`，不要写入 Manifest 或自然语言消息。
 
@@ -461,7 +503,7 @@ pnpm verify
 pnpm test:e2e
 ```
 
-Ubuntu CI 额外执行 `pnpm test:race`；Ubuntu 与 Windows CI 都执行 clean install、`pnpm verify`、原生发布构建和产品烟测。本机不能把未运行的跨平台门禁标记为已通过。
+Ubuntu CI 配置了额外的 `pnpm test:race`；Ubuntu 与 Windows CI 均配置 clean install、`pnpm verify`、原生发布构建和产品烟测。但当前 `.github/workflows/ci.yml` 的发布作业尚未配置 Runtime 暂存与签名输入，直接运行会因必需输入缺失而失败；正式发布前必须接入受保护的依赖与签名流程，再取得当前提交的双平台成功结果。本机不能把未运行的跨平台门禁标记为已通过。
 
 - `SECRET_VAULT_UNINITIALIZED` / `SECRET_VAULT_PENDING`：完成初始化和恢复口令确认。
 - `SECRET_VAULT_LOCKED`：数据库来自其他机器或缺少本地 KEK，使用恢复口令重新绑定本机。

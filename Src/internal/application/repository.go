@@ -37,7 +37,7 @@ type IdentityRepository interface {
 	RegisterLocalUser(ctx context.Context, organizationID string, input core.LocalRegisterInput) (core.AuthSession, error)
 	AuthenticateLocal(ctx context.Context, organizationID string, input core.LocalLoginInput) (core.AuthSession, error)
 	ResolveAuthSession(ctx context.Context, token string) (core.AuthSession, error)
-	RevokeAuthSession(ctx context.Context, sessionID, organizationID string) error
+	RevokeAuthSession(ctx context.Context, sessionID, organizationID, userID string) error
 }
 
 type ProviderRepository interface {
@@ -176,17 +176,17 @@ type ScheduleRepository interface {
 }
 
 type ConversationQueueRepository interface {
-	EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation) (core.ConversationQueueItem, error)
+	EnqueueConversationTurn(ctx context.Context, scope core.Scope, projectID, conversationID, activeTaskID, content, inputJSON, kind string, presentation core.MessagePresentation, admission ...core.Idempotency) (core.ConversationQueueItem, error)
 	ListConversationQueue(ctx context.Context, scope core.Scope, conversationID string, status string) ([]core.ConversationQueueItem, error)
 	ApplyConversationSteering(ctx context.Context, scope core.Scope, sourceStep core.ClaimedStep, run core.RunContext, correlationID string) (core.ConversationQueueItem, string, error)
 	ClaimSteeringAfterStep(ctx context.Context, scope core.Scope, taskID, conversationID string) (core.ConversationQueueItem, error)
 	ClaimNextFollowUp(ctx context.Context, scope core.Scope, conversationID string) (core.ConversationQueueItem, error)
 	ClaimNextIdleFollowUp(ctx context.Context, retryBefore time.Time) (core.ConversationQueueItem, error)
-	MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string) (core.ConversationQueueItem, error)
+	MarkConversationQueueItemConsumed(ctx context.Context, scope core.Scope, itemID string, versions ...int64) (core.ConversationQueueItem, error)
 	CancelConversationQueueItems(ctx context.Context, scope core.Scope, conversationID, taskID string) error
 	CancelConversationQueueItem(ctx context.Context, scope core.Scope, conversationID, itemID string) (core.ConversationQueueItem, error)
 	PromoteConversationQueueItemToSteering(ctx context.Context, scope core.Scope, conversationID, itemID string) (core.ConversationQueueItem, error)
-	RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string) error
+	RequeueConversationQueueItem(ctx context.Context, scope core.Scope, itemID string, versions ...int64) error
 }
 
 // RuntimeRepository is the durable boundary consumed by the worker/harness.

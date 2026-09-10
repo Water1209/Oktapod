@@ -26,6 +26,14 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   const summary = task.result_summary?.trim() ?? ''
   const timedOut = /模型响应超时|context deadline exceeded|Client\.Timeout exceeded|awaiting headers/i.test(summary)
 
+  if (code === 'RUN_PLAN_ALREADY_AT_FINAL_ITEM') {
+    return { title: '最后一项需要恢复', detail: '执行计划已到最后一项，模型仍尝试继续推进，自动修正次数已用尽；已有文件和渲染结果均保留。', action: '恢复任务后将沿用当前计划，继续完成最后一项所需的工具操作与交付验证。', retryable: true }
+  }
+
+  if (['TRANSITION_RUN_PLAN_REQUIRED', 'TRANSITION_RUN_PLAN_INVALID', 'TRANSITION_RUN_PLAN_PLACEHOLDER_DENIED', 'TRANSITION_RUN_PLAN_DUPLICATE_ITEM', 'TRANSITION_RUN_PLAN_NO_UNFINISHED_ITEMS', 'TRANSITION_RUN_PLAN_REPLACEMENT_NOT_ALLOWED', 'PLAN_CONTROL_MULTIPLE', 'PLAN_CONTROL_REQUIRES_BUSINESS_TOOL', 'LEGACY_PLAN_CONTROL_DENIED', 'RUN_PLAN_ITEM_HAS_UNFINISHED_WORK', 'RUN_PLAN_ALREADY_AT_FINAL_ITEM', 'RUN_PLAN_STATUS_REGRESSION'].includes(code)) {
+    return { title: '执行计划需要恢复', detail: '模型返回的执行计划未通过校验，任务已暂停；尚未形成可批准的工具动作。', action: '点击恢复任务，系统会保留附件、已加载技能和已完成记录，重新生成有效的执行计划。', retryable: true }
+  }
+
   if (/通过确定性校验/.test(summary)) {
     return {
       title: '任务已停止',
@@ -55,6 +63,9 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   if (code === 'SIDE_EFFECT_STATUS_UNKNOWN') return { title: '外部操作结果未知', detail: '系统无法确认上一次非幂等操作是否完成，因此停止自动重试。', action: '先核查外部状态，再在任务详情中确认处理方式。', retryable: false }
   if (code === 'MCP_CALL_TIMEOUT') return { title: 'MCP 工具执行超时', detail: '外部 MCP 在执行截止时间内没有返回结果，系统已结束本次调用并保留此前进度。', action: '系统会让模型改用更小的查询或其他可用工具恢复；自动恢复用尽后再由你决定是否继续。', retryable: true }
   if (code === 'COMMAND_EXIT_NONZERO') return { title: '命令执行失败', detail: '命令已经运行，但退出码不是 0。', action: '查看工具事件和输出，修订命令后重试。', retryable: true }
+  if (code === 'ATTACHMENT_NOT_READ') return { title: '附件尚未全部读取', detail: '部分附件仍缺少成功的读取证据，任务已保留已完成记录并停止交付。', action: '恢复任务后，系统会核对全部附件并补读缺失内容，再生成结果。', retryable: true }
+  if (code === 'DOCUMENT_RUNTIME_VERSION_UNAVAILABLE') return { title: '文档运行时暂时不可用', detail: '当前文档运行时未能响应该任务冻结的版本，已完成的读取和编辑记录仍保留。', action: '运行时恢复后可从当前文档步骤继续。', retryable: true }
+  if (code === 'DOCUMENT_EXPORT_INVALID') return { title: '文档导出证据未通过校验', detail: '当前 Run 没有找到修订、渲染结果与 Artifact 哈希一致的有效导出，已完成的文档修订仍保留。', action: '从阻塞点继续，系统会重新核对或补做最终导出。', retryable: true }
   if (code === 'WEB_EVIDENCE_MISSING') return { title: '检索证据不足', detail: '任务要求使用最新互联网资料，但当前 Run 没有任何成功的检索收据，因此未标记为完成。', action: '检查网络后从阻塞点继续，或明确选择基于已有资料交付。', retryable: true }
   if (code === 'DELIVERABLE_MISSING') return { title: '交付文件尚未生成', detail: '任务要求生成 Markdown 或文档，但当前 Run 没有成功写入工作区文件，因此未标记为完成。', action: '从阻塞点继续，系统会补写并验证交付文件。', retryable: true }
   if (code === 'DELIVERABLE_TOO_SHORT') return { title: '报告未达到字数要求', detail: summary || '已生成报告，但实际字数低于用户明确要求，因此未标记为完成。', action: '从阻塞点继续，系统会补充研究、写作并重新校验真实文件字数。', retryable: true }
@@ -172,6 +183,12 @@ export function buildTaskTimeline(task: Task, events: RunEvent[]): TaskTimelineI
     if (state === 'running') detail = toolName ? toolInput || '工具正在受控环境中执行。' : modelProgress || '正在分析目标并生成下一步动作。'
     if (state === 'succeeded') detail = toolResult || modelProgress || payloadString(final!, 'result_summary') || (toolName ? '工具动作已完成并记录收据。' : '分析与执行步骤已完成。')
     if (state === 'failed' || state === 'blocked') detail = toolResult || modelProgress || failure?.detail || payloadString(final!, 'result_summary') || '步骤已停止，请查看错误信息。'
+    const retryEvent = stepEvents.find((event) => event.event_type === 'model.retry_queued')
+    if (retryEvent) {
+      const retryCode = payloadString(retryEvent, 'error_code')
+      const retryTime = new Date(retryEvent.occurred_at).toLocaleTimeString('zh-CN', { hour12: false })
+      detail = `触发时间：${retryTime}。触发原因：${modelRetryPresentation(retryCode).reason}（${retryCode || '原因未记录'}）。${detail}`
+    }
     items.push({
       id: stepID,
       label,
@@ -268,8 +285,7 @@ function modelStepLabel(events: RunEvent[], stepCount: number) {
 	if (retry) {
 		const code = payloadString(retry, 'error_code')
     const maxRetries = payloadNumber(retry, 'max_retries') || 3
-		const action = code === 'PROVIDER_TOOL_ARGUMENTS_INVALID' || code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED' ? '修复模型响应' : '重试模型请求'
-		return `${action}（第 ${payloadNumber(retry, 'retry_count') || 1}/${maxRetries} 次）`
+		return `${modelRetryPresentation(code).action}（本轮第 ${payloadNumber(retry, 'retry_count') || 1} 次，最多 ${maxRetries} 次）`
 	}
   const role = events.map((event) => payloadString(event, 'role')).find(Boolean)
   const stage = events.map((event) => payloadString(event, 'stage')).find(Boolean)
@@ -277,6 +293,16 @@ function modelStepLabel(events: RunEvent[], stepCount: number) {
   if (stage === 'synthesis') return '汇总子任务结果'
   if (role) return `${roleLabel(role)}执行子任务`
   return stepCount > 1 ? '生成下一步执行计划' : '分析目标并制定执行计划'
+}
+
+function modelRetryPresentation(code: string): { action: string; reason: string } {
+  if (code === 'RUN_PLAN_REQUIRED' || code === 'TRANSITION_RUN_PLAN_REQUIRED') return { action: '补全执行计划', reason: '尚未建立有效执行计划，模型已被要求补全计划后继续' }
+  if (code.startsWith('RUN_PLAN_') || code.startsWith('TRANSITION_RUN_PLAN_') || code.startsWith('PLAN_CONTROL_') || code === 'LEGACY_PLAN_CONTROL_DENIED' || code === 'UPDATE_PLAN_MUST_BE_EXCLUSIVE') return { action: '修正执行计划', reason: code === 'RUN_PLAN_ALREADY_AT_FINAL_ITEM' ? '计划已处于最后一项，不能继续推进，需完成当前项' : '模型提交的计划控制未通过校验，需按已保存进度修正' }
+  if (code === 'PROVIDER_TOOL_ARGUMENTS_INVALID' || code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED') return { action: '修正工具参数', reason: code === 'PROVIDER_TOOL_ARGUMENTS_TRUNCATED' ? '工具参数输出被截断，未执行不完整动作' : '工具参数不是有效的完整 JSON，未执行该动作' }
+  if (code === 'PROVIDER_REASONING_TRUNCATED') return { action: '模型输出达到上限，继续生成', reason: '推理耗尽输出预算，未形成回答或工具动作，将缩小本轮生成范围' }
+  if (code === 'TOOL_POLICY_DENIED' || code.startsWith('SKILL_') || code === 'TOOL_BUDGET_EXCEEDED') return { action: '调整工具调用', reason: '工具、参数或调用方式不符合当前执行约束，被拒动作未执行' }
+  const reasons: Record<string, string> = { MODEL_TIMEOUT: '模型请求超时', PROVIDER_TIMEOUT: '模型服务响应超时', PROVIDER_RATE_LIMIT: '模型服务限流', PROVIDER_UNAVAILABLE: '模型服务暂时不可用', PROVIDER_PROTOCOL_ERROR: '模型响应协议异常', PROVIDER_EMPTY_RESPONSE: '模型返回空响应' }
+  return { action: '重试模型请求', reason: reasons[code] || '模型请求未能产生可用响应' }
 }
 
 function payloadNumber(event: RunEvent, key: string) {

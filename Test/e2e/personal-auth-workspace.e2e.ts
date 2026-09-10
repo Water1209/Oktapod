@@ -43,4 +43,43 @@ test('用户注册后创建个人私有项目并可重新登录', async ({ page 
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible()
   await expect(page.getByRole('main').getByRole('link', { name: new RegExp(projectName) })).toBeVisible()
+
+  let releaseLateResponse = () => {}
+  if (testInfo.project.name === 'desktop') {
+    let captured!: () => void
+    const capturedResponse = new Promise<void>((resolve) => { captured = resolve })
+    const release = new Promise<void>((resolve) => { releaseLateResponse = resolve })
+    let held = false
+    await page.route('**/api/v1/projects', async (route) => {
+      if (held) { await route.continue(); return }
+      held = true
+      const response = await route.fetch()
+      captured()
+      await release
+      try { await route.fulfill({ response }) } catch { /* old document/request already canceled */ }
+    })
+    // Age the two-second cache, then start a real workspace query for A.
+    await page.waitForTimeout(2100)
+    await page.getByRole('link', { name: '项目', exact: true }).click()
+    await capturedResponse
+  }
+
+  // Expire A on the server side without reloading the current workspace.
+  await page.context().clearCookies()
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开导航' }).click()
+  }
+  await page.getByRole('button', { name: '打开账号菜单', exact: true }).click()
+  await page.getByRole('menuitem', { name: '模型服务', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '登录 Oktapod' })).toBeVisible()
+  await expect(page.getByText(projectName, { exact: true })).toHaveCount(0)
+  await page.getByRole('tab', { name: '注册' }).click()
+  await page.getByRole('textbox', { name: '用户名' }).fill(`other.${suffix}`)
+  await page.getByRole('textbox', { name: '显示名称' }).fill('E2E Other')
+  await page.getByLabel('密码', { exact: true }).fill(`${crypto.randomUUID()}${crypto.randomUUID()}`)
+  await page.getByRole('button', { name: '创建并登录' }).click()
+  await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible()
+  releaseLateResponse()
+  await expect(page.getByRole('button', { name: '创建第一个项目' })).toBeVisible()
+  await expect(page.getByText(projectName, { exact: true })).toHaveCount(0)
 })

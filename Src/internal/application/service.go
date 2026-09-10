@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/singleflight"
 	"io"
 	"runtime"
 	"sort"
@@ -29,6 +30,7 @@ const (
 )
 
 type Service struct {
+	turnFlights            singleflight.Group
 	repository             Repository
 	profile                string
 	endpoint               string
@@ -248,6 +250,9 @@ func (s *Service) ScopeFor(ctx context.Context) core.Scope {
 	if principal, ok := PrincipalFromContext(ctx); ok && principal.OrganizationID == s.org.ID {
 		return principal.Scope()
 	}
+	if isRemoteRequest(ctx) {
+		return core.Scope{}
+	}
 	principal, err := s.localPrincipal.ResolvePrincipal(ctx, PrincipalCredential{Method: AuthenticationLocal})
 	if err == nil {
 		return principal.Scope()
@@ -258,6 +263,9 @@ func (s *Service) ScopeFor(ctx context.Context) core.Scope {
 func (s *Service) principalFor(ctx context.Context) (Principal, error) {
 	if principal, ok := PrincipalFromContext(ctx); ok && principal.OrganizationID == s.org.ID {
 		return principal, nil
+	}
+	if isRemoteRequest(ctx) {
+		return Principal{}, ErrPrincipalRequired
 	}
 	return s.localPrincipal.ResolvePrincipal(ctx, PrincipalCredential{Method: AuthenticationLocal})
 }
@@ -271,6 +279,15 @@ func (s *Service) authorize(ctx context.Context, action, resourceType, resourceI
 }
 
 func (s *Service) CreateAuthSession(ctx context.Context, input core.CreateAuthSessionInput) (core.AuthSession, error) {
+	principal, err := s.principalFor(ctx)
+	if err != nil {
+		return core.AuthSession{}, err
+	}
+	if principal.AuthenticationMethod != AuthenticationLocal && principal.AuthenticationMethod != AuthenticationTrusted {
+		if s.profile == core.ProfilePersonal || !principal.Administrator {
+			return core.AuthSession{}, &core.ForbiddenError{Message: "session issuance requires a trusted local entry point"}
+		}
+	}
 	if input.UserID == "" {
 		input.UserID = s.actor.ID
 	}
@@ -297,10 +314,17 @@ func (s *Service) ResolveAuthSession(ctx context.Context, token string) (core.Au
 }
 
 func (s *Service) RevokeAuthSession(ctx context.Context, sessionID string) error {
-	return s.repository.RevokeAuthSession(ctx, sessionID, s.org.ID)
+	principal, err := s.principalFor(ctx)
+	if err != nil {
+		return err
+	}
+	return s.repository.RevokeAuthSession(ctx, sessionID, principal.OrganizationID, principal.UserID)
 }
 
 func (s *Service) Profile() string { return s.profile }
+
+// Health checks connectivity without loading any user's private bootstrap.
+func (s *Service) Health(ctx context.Context) error { return s.repository.Ping(ctx) }
 
 func (s *Service) Bootstrap(ctx context.Context) (core.Bootstrap, error) {
 	if err := s.repository.Ping(ctx); err != nil {
@@ -312,6 +336,7 @@ func (s *Service) Bootstrap(ctx context.Context) (core.Bootstrap, error) {
 		return core.Bootstrap{}, err
 	}
 	return core.Bootstrap{
+		Permissions:     core.InstancePermissions{ManageInstance: s.requireOwner(ctx) == nil},
 		Profile:         s.profile,
 		ModelEndpoint:   s.endpoint,
 		ModelConfigured: strings.TrimSpace(s.modelKey()) != "",
@@ -816,23 +841,25 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	if input.ProviderID != "" {
 		snapshot["model_provider_id"] = input.ProviderID
 	}
-	if s.workspaceReader != nil {
-		if instructions := s.snapshotProjectInstructions(ctx, projectID); len(instructions) > 0 {
-			snapshot["project_instructions"] = instructions
-			snapshot["project_instructions_max_bytes"] = 32 * 1024
-		}
-		baseline := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{
-			ID:   "run-baseline",
-			Name: core.ToolGitStatus,
-		})
-		if baseline.Status == core.StatusSucceeded {
-			statusText, _ := baseline.Output["status"].(string)
-			snapshot["workspace_baseline"] = map[string]any{
-				"kind":        "git",
-				"head":        baseline.Output["head"],
-				"status_hash": baseline.Output["status_hash"],
-				"dirty":       gitStatusHasChanges(statusText),
-				"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+	captureWorkspace := func(ctx context.Context) {
+		if s.workspaceReader != nil {
+			if instructions := s.snapshotProjectInstructions(ctx, projectID); len(instructions) > 0 {
+				snapshot["project_instructions"] = instructions
+				snapshot["project_instructions_max_bytes"] = 32 * 1024
+			}
+			baseline := s.workspaceReader.Execute(ctx, projectID, core.ToolCall{
+				ID:   "run-baseline",
+				Name: core.ToolGitStatus,
+			})
+			if baseline.Status == core.StatusSucceeded {
+				statusText, _ := baseline.Output["status"].(string)
+				snapshot["workspace_baseline"] = map[string]any{
+					"kind":        "git",
+					"head":        baseline.Output["head"],
+					"status_hash": baseline.Output["status_hash"],
+					"dirty":       gitStatusHasChanges(statusText),
+					"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+				}
 			}
 		}
 	}
@@ -1067,7 +1094,16 @@ func (s *Service) CreateTask(ctx context.Context, projectID string, input core.C
 	}{ProjectID: projectID, Input: input}
 	idempotency := core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)}
 	return retryTransientSQLiteValue(ctx, func() (core.Task, error) {
-		return s.repository.CreateTask(ctx, s.ScopeFor(ctx), projectID, input, snapshot, correlationID, idempotency)
+		create := func(createCtx context.Context) (core.Task, error) {
+			captureWorkspace(createCtx)
+			return s.repository.CreateTask(createCtx, s.ScopeFor(createCtx), projectID, input, snapshot, correlationID, idempotency)
+		}
+		if guarded, ok := s.repository.(interface {
+			WithProjectTaskCreation(context.Context, core.Scope, string, core.CreateTaskInput, core.Idempotency, func(context.Context) (core.Task, error)) (core.Task, error)
+		}); ok {
+			return guarded.WithProjectTaskCreation(ctx, s.ScopeFor(ctx), projectID, input, idempotency, create)
+		}
+		return create(ctx)
 	})
 }
 
@@ -1115,6 +1151,18 @@ func (s *Service) countSucceededSearchCalls(ctx context.Context, runIDs []string
 }
 
 func (s *Service) StartQueuedConversationTurn(ctx context.Context, item core.ConversationQueueItem) (core.Task, error) {
+	if owners, ok := s.repository.(interface {
+		QueueItemScope(context.Context, core.ConversationQueueItem) (core.Scope, error)
+	}); ok {
+		owner, err := owners.QueueItemScope(ctx, item)
+		if err != nil {
+			return core.Task{}, err
+		}
+		if principal, exists := PrincipalFromContext(ctx); exists && principal.Scope() != owner {
+			return core.Task{}, &core.ForbiddenError{Message: "queue item belongs to another user"}
+		}
+		ctx = WithPrincipal(ctx, Principal{OrganizationID: owner.OrganizationID, UserID: owner.UserID, AuthenticationMethod: AuthenticationLocal})
+	}
 	scope := s.ScopeFor(ctx)
 	hasActive, _, err := s.repository.HasActiveTask(ctx, scope, item.ConversationID)
 	if err != nil {
@@ -1128,6 +1176,7 @@ func (s *Service) StartQueuedConversationTurn(ctx context.Context, item core.Con
 		return core.Task{}, fmt.Errorf("decode queued conversation turn: %w", err)
 	}
 	taskInput := core.CreateTaskInput{
+		QueueClaimID: item.ID, QueueClaimVersion: item.ClaimVersion,
 		ConversationID: item.ConversationID, Goal: item.Content, Acceptance: turnInput.Acceptance,
 		Mode: turnInput.Mode, Visibility: turnInput.Visibility, PermissionMode: turnInput.PermissionMode,
 		SceneOverride: turnInput.SceneOverride, Model: turnInput.Model, FallbackModel: turnInput.FallbackModel,
@@ -1136,6 +1185,9 @@ func (s *Service) StartQueuedConversationTurn(ctx context.Context, item core.Con
 		TeamRoles: turnInput.TeamRoles, ContextAssetIDs: turnInput.ContextAssetIDs,
 		ContextMemoryIDs: turnInput.ContextMemoryIDs, SkillID: turnInput.SkillID, SkillArgs: turnInput.SkillArgs,
 		UserMessageContent: item.Content, ExistingUserMessageID: item.MessageID,
+	}
+	if turnInput.SkillID != "" && turnInput.SkillArgs != "" {
+		taskInput.Goal = turnInput.SkillArgs
 	}
 	if item.Kind == "steering" && strings.TrimSpace(item.ActiveTaskID) != "" {
 		source, sourceErr := s.repository.GetTask(ctx, scope, item.ActiveTaskID)
@@ -1175,7 +1227,7 @@ func (s *Service) StartQueuedConversationTurn(ctx context.Context, item core.Con
 			taskInput.ContinuationRunIDs = continuationRunIDs(run)
 		}
 	}
-	if taskInput.Mode == core.ModeAuto || taskInput.Mode == "" {
+	if taskInput.Mode == "" {
 		taskInput.Mode = core.ModeSingleAgent
 	}
 	return s.CreateTask(ctx, item.ProjectID, taskInput, "queue-"+item.ID, "queue-"+item.ID)
@@ -1224,7 +1276,7 @@ func (s *Service) SubmitProjectTurnStream(ctx context.Context, projectID string,
 	return s.submitProjectTurn(ctx, projectID, input, correlationID, idempotencyKey, onRoute, onDelta)
 }
 
-func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input core.ProjectTurnInput, correlationID, idempotencyKey string, onRoute func(string) error, onDelta func(string) error) (core.ProjectTurnResult, error) {
+func (s *Service) submitProjectTurnOnce(ctx context.Context, projectID string, input core.ProjectTurnInput, correlationID, idempotencyKey string, onRoute func(string) error, onDelta func(string) error) (core.ProjectTurnResult, error) {
 	content := strings.TrimSpace(input.Content)
 	if content == "" {
 		return core.ProjectTurnResult{}, &core.ValidationError{Field: "content", Message: "is required"}
@@ -1396,7 +1448,7 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 				return core.ProjectTurnResult{}, fmt.Errorf("encode queued conversation turn: %w", marshalErr)
 			}
 			presentation.QueueKind = input.QueueKind
-			queueItem, enqueueErr := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, conversationID, activeTaskID, content, string(inputJSON), input.QueueKind, presentation)
+			queueItem, enqueueErr := s.repository.EnqueueConversationTurn(ctx, s.ScopeFor(ctx), projectID, conversationID, activeTaskID, content, string(inputJSON), input.QueueKind, presentation, input.Admission)
 			if enqueueErr != nil {
 				return core.ProjectTurnResult{}, enqueueErr
 			}
@@ -1412,32 +1464,14 @@ func (s *Service) submitProjectTurn(ctx context.Context, projectID string, input
 			if taskErr != nil {
 				return core.ProjectTurnResult{}, taskErr
 			}
-			return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &activeTask, Queued: true, QueueItem: &queueItem}, nil
+			return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &activeTask, Queued: true, QueueItem: &queueItem, QueueReason: "conversation_busy", BlockingTaskID: activeTask.ID}, nil
 		}
 	}
-	taskGoal := content
-	if input.SkillID != "" && input.SkillArgs != "" {
-		// The slash command selects the skill; only its arguments are the user's
-		// actual goal. Keeping "/skill-name" in the goal makes path-aware models
-		// mistake it for an absolute workspace path and triggers a policy denial.
-		taskGoal = input.SkillArgs
-	}
-	taskInput := core.CreateTaskInput{ConversationID: conversationID, Title: titleFromGoal(taskGoal), Goal: taskGoal, Acceptance: input.Acceptance, Mode: effectiveTaskMode(mode, hasSelectedAttachments), Visibility: visibility, PermissionMode: input.PermissionMode, SceneOverride: input.SceneOverride, Model: input.Model, FallbackModel: input.FallbackModel, ProviderID: input.ProviderID, Thinking: input.Thinking, MaxModelCalls: input.MaxModelCalls, MaxTokens: input.MaxTokens, AgentID: input.AgentID, TeamDefinitionID: input.TeamDefinitionID, TeamRoles: input.TeamRoles, ContextAssetIDs: input.ContextAssetIDs, ContextMemoryIDs: input.ContextMemoryIDs, SkillID: input.SkillID, SkillArgs: input.SkillArgs, UserMessageContent: content, MessagePresentation: presentation}
-	task, taskErr := s.CreateTask(ctx, projectID, taskInput, correlationID, idempotencyKey)
-	if taskErr != nil {
-		return core.ProjectTurnResult{}, taskErr
-	}
-	conversation, conversationErr := s.repository.GetConversation(ctx, s.ScopeFor(ctx), task.ConversationID)
-	if conversationErr != nil {
-		return core.ProjectTurnResult{}, conversationErr
-	}
-	messages, messagesErr := s.repository.ListMessages(ctx, s.ScopeFor(ctx), task.ConversationID, 0, 200)
-	if messagesErr != nil {
-		return core.ProjectTurnResult{}, messagesErr
-	}
-	return core.ProjectTurnResult{Route: TurnRouteTask, Conversation: conversation, Messages: messages, Task: &task}, nil
+	queuedInput := inputWithTurnDefaults(input, content, conversationID, visibility)
+	queuedInput.Mode = effectiveTaskMode(mode, hasSelectedAttachments)
+	queuedInput.QueueKind = "follow_up"
+	return s.admitProjectTaskTurn(ctx, projectID, queuedInput, presentation)
 }
-
 func (s *Service) messagePresentationForTurn(ctx context.Context, projectID, content string, input core.ProjectTurnInput) (core.MessagePresentation, error) {
 	presentation := core.MessagePresentation{Attachments: make([]core.MessageAttachment, 0, len(input.ContextAssetIDs))}
 	seenAssets := make(map[string]struct{}, len(input.ContextAssetIDs))
@@ -2102,7 +2136,7 @@ func (s *Service) GetRunChanges(ctx context.Context, runID, baseline string) (co
 	statusHash, _ := status.Output["status_hash"].(string)
 	diffCall := core.ToolCall{ID: "changes-diff", Name: core.ToolGitDiff, Arguments: map[string]any{}}
 	baselineHead := currentHead
-	notice := ""
+	notice := "此视图是共享工作区的 Git 差异，可能包含其他会话的修改；不代表本任务独占的变更。"
 	switch baseline {
 	case "run_start":
 		baselineHead = snapshot.WorkspaceBaseline.Head
@@ -2111,7 +2145,7 @@ func (s *Service) GetRunChanges(ctx context.Context, runID, baseline string) (co
 		}
 		diffCall.Arguments["baseline"] = baselineHead
 		if snapshot.WorkspaceBaseline.Dirty {
-			notice = "Run 开始时工作区已有未提交修改；该视图包含这些前置修改。"
+			notice += " Run 开始时工作区已有未提交修改；该视图也包含这些前置修改。"
 		}
 	case "head":
 		diffCall.Arguments["baseline"] = currentHead

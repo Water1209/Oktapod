@@ -13,6 +13,60 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
+func TestTransitionRetryUsesPlanAdvancedBeforePolicyDenial(t *testing.T) {
+	ctx := context.Background()
+	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused"}`)
+	task, err := service.CreateTask(ctx, project.ID, core.CreateTaskInput{Goal: "Inspect two product facts", Mode: core.ModeSingleAgent, Visibility: core.VisibilityPrivate}, "advance-policy-retry", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedSkillModel{results: []core.ModelResult{
+		{CallID: "advance-retry-first", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{
+			{Name: core.ToolReplacePlan, Arguments: map[string]any{"items": []any{map[string]any{"title": "Inspect first fact", "description": "Get the first fact."}, map[string]any{"title": "Inspect second fact", "description": "Get the second fact."}}}},
+			{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "first fact"}},
+		}},
+		{CallID: "advance-retry-invalid", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{
+			{Name: core.ToolAdvancePlan, Arguments: map[string]any{"summary": "First fact verified."}},
+			{Name: core.ToolWebSearch, Arguments: map[string]any{"query": ""}},
+		}},
+		{CallID: "advance-retry-repaired", Provider: "test", Model: "test-model", ToolCalls: []core.ToolCall{{Name: core.ToolWebSearch, Arguments: map[string]any{"query": "second fact"}}}},
+		{CallID: "advance-retry-final", Provider: "test", Model: "test-model", Content: "Both facts inspected."},
+	}}
+	worker := NewWorker("advance-retry-worker", store, model, slog.New(slog.NewTextHandler(io.Discard, nil))).WithWebSearchExecutor(successfulSkillSearch{})
+	for index := 0; index < 6; index++ {
+		if worked, err := worker.RunOnce(ctx); err != nil || !worked {
+			t.Fatalf("turn %d: worked=%v err=%v", index, worked, err)
+		}
+	}
+	completed, err := service.GetTask(ctx, task.ID)
+	if err != nil || completed.Status != core.StatusSucceeded {
+		t.Fatalf("task=%#v err=%v", completed, err)
+	}
+	if len(model.requests) != 4 {
+		t.Fatalf("calls=%d", len(model.requests))
+	}
+	retryPrompt := model.requests[2].UserPrompt
+	if !strings.Contains(retryPrompt, "不要再调用 advance_plan") || !strings.Contains(retryPrompt, "completed") || !strings.Contains(retryPrompt, "Inspect second fact") {
+		t.Fatalf("stale retry prompt: %s", retryPrompt)
+	}
+	events, err := service.ListRunEvents(ctx, task.RunID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retries := 0
+	for _, event := range events {
+		if event.EventType == "model.retry_queued" {
+			retries++
+			if event.Payload["error_code"] != "TOOL_POLICY_DENIED" {
+				t.Fatalf("unexpected retry: %#v", event.Payload)
+			}
+		}
+	}
+	if retries != 1 {
+		t.Fatalf("retries=%d, want one policy correction", retries)
+	}
+}
+
 func TestAutoAnswerUsesOneBusinessModelCall(t *testing.T) {
 	ctx := context.Background()
 	store, service, project, _ := setupSkillProject(t, `{"description":"unused","instructions":"unused"}`)

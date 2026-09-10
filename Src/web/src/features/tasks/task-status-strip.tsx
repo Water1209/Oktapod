@@ -15,6 +15,11 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
   const [open, setOpen] = useState(false)
   const actionRef = useRef<HTMLElement>(null)
   const task = activeTask ?? null
+  useEffect(() => {
+    if (task?.status !== 'blocked' && task?.status !== 'failed') return
+    const frame = window.requestAnimationFrame(() => setOpen(true))
+    return () => window.cancelAnimationFrame(frame)
+  }, [task?.id, task?.status])
   const active = task && activeStatuses.has(task.status) ? task : null
   const terminal = task && !active ? task : null
 	const inspectableRunId = task?.presentation_kind === 'task' || (task?.presentation_kind === 'pending_auto' && terminal) ? task.run_id : undefined
@@ -30,9 +35,9 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
   })
   const refetchPlan = plan.refetch
   const actions = useQuery({
-    queryKey: ['human-actions', conversationId, active?.run_id, 'active'],
-    queryFn: () => api.humanActions({ conversationId, runId: active!.run_id }),
-    enabled: Boolean(active?.run_id && conversationId),
+    queryKey: ['human-actions', conversationId, inspectableRunId, 'active'],
+    queryFn: () => api.humanActions({ conversationId, runId: inspectableRunId! }),
+    enabled: Boolean(inspectableRunId && conversationId),
   })
   const queue = useQuery({
     queryKey: ['conversation-queue', conversationId, 'pending'],
@@ -65,7 +70,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
     }))),
     onSettled: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['human-actions', conversationId, active?.run_id] }),
+        queryClient.invalidateQueries({ queryKey: ['human-actions', conversationId, inspectableRunId] }),
         queryClient.invalidateQueries({ queryKey: ['run-plan', active?.run_id] }),
         queryClient.invalidateQueries({ queryKey: ['run-events', active?.run_id] }),
         queryClient.invalidateQueries({ queryKey: ['tasks', task?.project_id] }),
@@ -162,7 +167,7 @@ export function TaskStatusStrip({ activeTask, conversationId }: { activeTask?: T
           {failure ? <div className="task-capsule-terminal">
             <p>{failure.detail}</p>
             <small>{failure.action}</small>
-            {failure.retryable ? <button type="button" disabled={retry.isPending} onClick={() => retry.mutate()}><RotateCw size={12} />{retry.isPending ? '正在恢复' : '从阻塞点继续'}</button> : null}
+            {failure.retryable ? <button type="button" disabled={retry.isPending} onClick={() => retry.mutate()}><RotateCw size={12} />{retry.isPending ? '正在恢复' : '恢复任务'}</button> : null}
           </div> : null}
           {planItems.length > 0 ? (
             <ol className="task-capsule-plan">

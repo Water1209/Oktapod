@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { authLifecycle } from '../shared/auth-lifecycle'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, FolderOpen, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, type Bootstrap } from '../shared/api/client'
@@ -22,7 +23,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects })
   const inbox = useQuery({ queryKey: ['inbox'], queryFn: api.inbox, refetchInterval: (query) => backgroundInboxRefetchInterval(query.state.data) })
   const diagnostics = useQuery({ queryKey: ['diagnostics', 'shell'], queryFn: api.diagnostics, refetchInterval: 10_000, retry: false })
-  const logout = useMutation({ mutationFn: api.logout, onSuccess: () => { window.sessionStorage.removeItem('oktapod.authenticated'); queryClient.clear(); window.location.replace('/login') } })
+  const logout = useMutation({ mutationFn: api.logout, onSuccess: () => { window.sessionStorage.removeItem('oktapod.authenticated'); authLifecycle.invalidate(); window.location.replace('/login') } })
   const currentProject = projects.data?.items.find((project) => location.pathname.includes(project.id))
   const conversations = useQuery({ queryKey: ['conversations', currentProject?.id], queryFn: () => api.conversations(currentProject!.id), enabled: Boolean(currentProject?.id), staleTime: 15_000 })
   const projectTasks = useQuery({ queryKey: ['tasks', currentProject?.id], queryFn: () => api.tasks(currentProject!.id), enabled: Boolean(currentProject?.id), staleTime: 5_000 })
@@ -89,7 +90,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
       </div>
       <div className="rail-bottom">
         <Link className={`rail-item ${location.pathname === '/diagnostics' ? 'active' : ''}`} to="/diagnostics" title="诊断"><span className={`service-dot ${diagnostics.data?.status ?? 'unknown'}`} /><Activity /></Link>
-        <button className="rail-avatar account-menu-trigger" type="button" title="打开账号菜单" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>{bootstrap.user.display_name.slice(0, 1).toUpperCase()}</button>
+        <button className="rail-avatar account-menu-trigger" type="button" title="打开账号菜单" aria-label="打开账号菜单" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>{bootstrap.user.display_name.slice(0, 1).toUpperCase()}</button>
       </div>
     </nav>
 
@@ -103,6 +104,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
           <Link className="project-switcher-all" role="menuitem" to="/projects" onClick={() => { setProjectSwitcherOpen(false); closeMobile() }}><FolderOpen size={14} />查看全部项目</Link>
         </div> : null}
         <button className="icon-control desktop-collapse" type="button" aria-label={sidebarCollapsed ? '展开项目栏' : '收起项目栏'} onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
+        <button className="icon-control mobile-close" type="button" aria-label="打开账号菜单" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>{bootstrap.user.display_name.slice(0, 1).toUpperCase()}</button>
         <button className="icon-control mobile-close" type="button" aria-label="关闭导航" onClick={closeMobile}><X size={17} /></button>
       </header>
 

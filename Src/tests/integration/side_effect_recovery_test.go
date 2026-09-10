@@ -91,6 +91,13 @@ func TestUnknownSideEffectRequiresHumanResolutionAndNeverRetriesAutomatically(t 
 	if err != nil || len(receipts) != 1 || receipts[0].ID == "" {
 		t.Fatalf("unknown receipts=%#v err=%v", receipts, err)
 	}
+	next, err := service.SubmitProjectTurn(t.Context(), project.ID, core.ProjectTurnInput{ConversationID: task.ConversationID, Content: "wait for side effect reconciliation", Mode: core.ModeSingleAgent}, "", "after-unknown-turn")
+	if err != nil || !next.Queued || next.BlockingTaskID != task.ID {
+		t.Fatalf("unknown receipt did not queue successor: %#v %v", next, err)
+	}
+	if _, err := repository.ClaimProjectFollowUp(t.Context(), queueTestScope(), project.ID, next.QueueItem.ID); !errors.Is(err, core.ErrNoWork) {
+		t.Fatalf("successor bypassed unknown receipt: %v", err)
+	}
 	server := httptest.NewServer(httpapi.NewTrustedHandler(service, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	defer server.Close()
 	listed := getJSON[struct {
@@ -115,6 +122,13 @@ func TestUnknownSideEffectRequiresHumanResolutionAndNeverRetriesAutomatically(t 
 	}
 	if completed.Status != core.StatusSucceeded {
 		t.Fatalf("task after human confirmation=%#v", completed)
+	}
+	nextClaim, err := repository.ClaimProjectFollowUp(t.Context(), queueTestScope(), project.ID, next.QueueItem.ID)
+	if err != nil {
+		t.Fatalf("reconciled receipt did not release project: %v", err)
+	}
+	if _, err := service.StartQueuedConversationTurn(t.Context(), nextClaim); err != nil {
+		t.Fatal(err)
 	}
 	var conflict *core.StateConflictError
 	if _, err := service.ResolveSideEffect(context.Background(), receipts[0].ID, core.ResolveSideEffectInput{Decision: core.SideEffectDecisionConfirmApplied}, "unknown-side-effect-replay", "unknown-side-effect-replay"); !errors.As(err, &conflict) {

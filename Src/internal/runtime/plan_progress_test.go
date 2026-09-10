@@ -72,3 +72,19 @@ func TestBoundedFinishDisablesFurtherToolRequests(t *testing.T) {
 		t.Fatalf("bounded finish exposed tools: enable=%v definitions=%d allowed=%d", assembly.Request.EnableTools, len(assembly.Request.ToolDefinitions), len(assembly.Request.AllowedTools))
 	}
 }
+
+func TestFinalPlanItemRetryDoesNotAskToAdvanceAgain(t *testing.T) {
+	step := core.ClaimedStep{StepType: core.StepModelContinue, InputJSON: `{"stage":"continue","history":[{"kind":"assistant","content":"rendered"}],"active_plan_total":4,"active_plan_remaining":1,"model_retry_count":2,"model_retry_reason":"RUN_PLAN_ALREADY_AT_FINAL_ITEM"}`}
+	run := core.RunContext{RunID: "final-plan-retry", Mode: core.ModeSingleAgent, ConfigSnapshotJSON: `{"schema_version":2,"plan_protocol_version":"transition_v2"}`}
+	assembly, failure := NewAgentTurnAssembler(nil).Assemble(context.Background(), step, run)
+	if failure != nil {
+		t.Fatalf("assemble: %#v", failure)
+	}
+	prompt := assembly.Request.UserPrompt
+	if !strings.Contains(prompt, "禁止再次调用 advance_plan") || !strings.Contains(prompt, "不要再调用 advance_plan") || strings.Contains(prompt, "同时调用 advance_plan") || strings.Contains(prompt, "重新单独调用一次 update_plan") {
+		t.Fatalf("contradictory final item instructions: %s", prompt)
+	}
+	if !strings.Contains(prompt, "document_apply 按章节分轮追加") {
+		t.Fatal("missing Office chunking instruction")
+	}
+}
