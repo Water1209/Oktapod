@@ -162,6 +162,8 @@ func continuationInstructionForTurn(step core.ClaimedStep, continuation []map[st
 		instruction = "继续完成原目标。若目标尚未完成，调用下一批必要工具；只有全部工作和交付物都完成后，才返回不含工具调用的最终总结。"
 	}
 	switch modelStage(step.InputJSON) {
+	case "human_action_resume":
+		instruction = "用户已回答刚才的人机交互请求，问题和回答已包含在上下文中。按回答继续当前任务；已确认的相同事项不得再次请求确认。回答完成当前计划项时推进计划，再执行后续工作；用户仍要求在方案确定后确认时，应先给出具体方案再请求该阶段的确认。"
 	case "plan_execute":
 		instruction = "语义执行计划已经持久化发布。现在按计划执行唯一标记为 in_progress 的子任务。完成该语义项后，单独调用 update_plan 提交同一完整清单，将它标记 completed，并把下一个标记 in_progress；不要把工具调用写进计划。全部语义项完成后直接交付最终回答。"
 	case "permission_replan":

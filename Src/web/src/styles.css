@@ -3121,6 +3121,15 @@ html, body, #root { background: var(--bg-base); color: var(--text-main); }
 .human-action-answer label { font-size: 10px; font-weight: 600; }
 .human-action-answer textarea { resize: vertical; padding: 8px; border: 1px solid #d8c7aa; border-radius: 6px; background: #fff; font: inherit; font-size: 12px; }
 .human-action-answer button { justify-self: end; }
+.human-input-question { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.human-input-question legend { padding: 0; font-size: 11px; font-weight: 650; }
+.human-input-question p { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
+.human-input-option { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; align-items: start; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); cursor: pointer; }
+.human-input-option:has(input:checked) { border-color: var(--signal-blue); background: color-mix(in srgb, var(--signal-blue) 7%, var(--surface)); }
+.human-input-option input { margin-top: 2px; accent-color: var(--signal-blue); }
+.human-input-option span { display: grid; gap: 2px; font-size: 11px; }
+.human-input-option em { width: fit-content; padding: 1px 4px; border-radius: 3px; background: var(--surface-warning); color: var(--warning); font-size: 9px; font-style: normal; }
+.human-input-option small { color: var(--ink-faint); font-size: 10px; line-height: 1.35; }
 .human-action-error { color: #9b342f; font-size: 10px; }
 .human-action-dialog { max-width: 460px; }
 
@@ -3605,6 +3614,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .diagnostic-policy > div { display: grid; grid-template-columns: 120px 1fr auto; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 10px; }
 .diagnostic-policy > div span { color: var(--ink-soft); }
 .diagnostic-policy > div em { color: var(--ink-faint); font-style: normal; }
+.runtime-repair-guide { max-width: 960px; margin: 12px auto 0; padding: 14px 16px; border: 1px solid color-mix(in srgb,#c64343 30%,var(--line)); border-radius: 8px; background: color-mix(in srgb,#c64343 5%,var(--surface)); color: var(--ink); font-size: 11px; }
+.runtime-repair-guide summary { cursor: pointer; color: #a53b3b; font-weight: 700; }
+.runtime-repair-guide ol { display: grid; gap: 7px; margin: 10px 0 0 20px; color: var(--ink-soft); }
+.runtime-repair-guide code { font-family: var(--font-mono); font-size: 10px; }
+.runtime-repair-error { margin: 10px 0 0; color: var(--danger); overflow-wrap: anywhere; }
+.runtime-repair-note { margin: 10px 0 0; color: var(--ink-faint); }
 
 .resource-layout { display: grid; grid-template-columns: 140px 300px minmax(0, 1fr); max-width: 1160px; min-height: 590px; margin: 0 auto; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .resource-heading-actions { display: flex; align-items: center; gap: 8px; }

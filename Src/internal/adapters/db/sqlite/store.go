@@ -4847,6 +4847,15 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 	if action.Kind == core.HumanActionBudgetRequest && input.Decision != core.ApprovalApproved && input.Decision != core.ApprovalRejected {
 		return &core.ValidationError{Field: "decision", Message: "budget request requires approved or rejected"}
 	}
+	if action.Kind == core.HumanActionInputRequest {
+		request, err := normalizeHumanInputRequest(action.Request)
+		if err != nil {
+			return err
+		}
+		if err := core.ValidateHumanInputAnswer(request, input.Answer); err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -5005,6 +5014,11 @@ func (s *Store) resolveInteractiveHumanAction(ctx context.Context, scope core.Sc
 		"human_action_kind": action.Kind, "decision": input.Decision,
 		"answer": input.Answer, "note": input.Note, "source_step_id": action.StepID,
 	}
+	history, err := s.collectContinuationHistory(ctx, tx, run)
+	if err != nil {
+		return err
+	}
+	resumeInput["history"] = history
 	resumeStepID, err := insertQueuedModelStep(ctx, tx, run, resumeInput, now)
 	if err != nil {
 		return err
@@ -8925,6 +8939,11 @@ func (s *Store) planHumanInteraction(ctx context.Context, tx *sql.Tx, q *sqliteg
 		if strings.TrimSpace(prompt) == "" || len([]rune(prompt)) > 1000 {
 			return core.StatusBlocked, "HUMAN_ACTION_INPUT_INVALID", nil
 		}
+		request, err := normalizeHumanInputRequest(call.Arguments)
+		if err != nil {
+			return core.StatusBlocked, "HUMAN_ACTION_INPUT_INVALID", nil
+		}
+		call.Arguments = request
 	} else {
 		capability, _ := call.Arguments["capability"].(string)
 		reason, _ := call.Arguments["reason"].(string)
@@ -8999,6 +9018,38 @@ func (s *Store) planHumanInteraction(ctx context.Context, tx *sql.Tx, q *sqliteg
 		return "", "", err
 	}
 	return core.StatusWaitingInput, "", nil
+}
+
+func normalizeHumanInputRequest(arguments map[string]any) (map[string]any, error) {
+	request := make(map[string]any, len(arguments)+1)
+	for key, value := range arguments {
+		request[key] = value
+	}
+	if _, ok := request["questions"]; !ok {
+		if raw, ok := request["choices"].([]any); ok && len(raw) > 0 {
+			options := make([]any, 0, len(raw))
+			for index, value := range raw {
+				if label, ok := value.(string); ok {
+					options = append(options, map[string]any{"id": fmt.Sprintf("option-%d", index+1), "label": label})
+				} else {
+					options = append(options, value)
+				}
+			}
+			request["questions"] = []any{map[string]any{
+				"id": "answer", "header": "选择", "question": request["prompt"],
+				"selection_mode": "single", "options": options, "allow_freeform": true, "required": true,
+			}}
+		} else {
+			request["questions"] = []any{map[string]any{
+				"id": "answer", "header": "回答", "question": request["prompt"],
+				"allow_freeform": true, "required": true,
+			}}
+		}
+	}
+	if err := core.ValidateHumanInputRequest(request); err != nil {
+		return nil, err
+	}
+	return request, nil
 }
 
 func (s *Store) planToolSteps(ctx context.Context, tx *sql.Tx, q *sqlitegen.Queries, modelStep core.ClaimedStep, run core.RunContext, calls []core.ToolCall, now, correlationID string) (string, string, error) {
@@ -11117,6 +11168,44 @@ func (s *Store) queueSkillResume(ctx context.Context, tx *sql.Tx, q *sqlitegen.Q
 // continuation and the steering replan path.
 func (s *Store) collectContinuationHistory(ctx context.Context, tx *sql.Tx, run core.RunContext) ([]map[string]any, error) {
 	history := make([]map[string]any, 0, 16)
+
+	// A human input decision is part of the conversation state. Without it,
+	// the resumed model only sees the original request and can ask the same
+	// question again forever.
+	inputRows, err := tx.QueryContext(ctx, `
+		SELECT a.id, a.decided_at, a.response_json, a.request_json, s.position
+		FROM human_action_requests a JOIN steps s ON s.id = a.step_id
+		WHERE a.run_id = ? AND a.kind = 'input_request' AND a.status = 'answered'
+		ORDER BY s.position`, run.RunID)
+	if err != nil {
+		return nil, err
+	}
+	for inputRows.Next() {
+		var actionID, decidedAt, responseJSON, requestJSON string
+		var position int64
+		if err := inputRows.Scan(&actionID, &decidedAt, &responseJSON, &requestJSON, &position); err != nil {
+			_ = inputRows.Close()
+			return nil, err
+		}
+		var response map[string]any
+		if json.Unmarshal([]byte(responseJSON), &response) != nil {
+			continue
+		}
+		answer := response["answer"]
+		answerJSON, _ := json.Marshal(answer)
+		history = append(history, map[string]any{
+			"kind": "user", "step_id": actionID, "group_id": actionID,
+			"position": position, "content": "人机交互已回答。原问题及选项：" + requestJSON + "\n用户回答：" + string(answerJSON),
+			"decided_at": decidedAt,
+		})
+	}
+	if err := inputRows.Err(); err != nil {
+		_ = inputRows.Close()
+		return nil, err
+	}
+	if err := inputRows.Close(); err != nil {
+		return nil, err
+	}
 
 	modelRows, err := tx.QueryContext(ctx, `
 		SELECT id, position, output_json

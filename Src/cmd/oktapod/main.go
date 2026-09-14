@@ -223,37 +223,48 @@ func run() (runErr error) {
 	}
 	service.WithArtifactCapture(artifactCapture)
 	var documentExecutor application.DocumentExecutor
-	var documentClient *documentruntime.Client
+	runtimeGate := documentruntime.NewRuntimeGate()
+	documentExecutor = runtimeGate
+	service.WithDocumentRuntime(runtimeGate)
 	logger.Info("startup stage", "stage", "document_runtime_discovery")
-	documentStartup := time.Now()
-	if discovered, discoverErr := documentruntime.Discover(config.DataRoot, trustedCapabilityKeys); discoverErr != nil {
-		logger.Info("document runtime is not available; preset document resources are degraded", "reason", discoverErr.Error())
-	} else if documentState, ok := store.(application.DocumentStateRepository); !ok {
-		_ = discovered.Close()
-		logger.Warn("document runtime state repository is unavailable")
-	} else if executor, executorErr := documentruntime.NewExecutor(discovered, documentState, store, workspaceExecutor, artifactCapture); executorErr != nil {
-		_ = discovered.Close()
-		logger.Warn("document runtime adapter initialization failed", "reason", executorErr.Error())
-	} else {
-		// Complete the cold health probe before the HTTP server becomes ready.
-		// Otherwise the first resource-catalog request can transiently mark every
-		// preset document Skill degraded while Python is still starting.
-		healthCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	setupDocumentRuntime := func(setupCtx context.Context) error {
+		documentStartup := time.Now()
+		discovered, discoverErr := documentruntime.Discover(config.DataRoot, trustedCapabilityKeys)
+		if discoverErr != nil {
+			runtimeGate.SetDegraded(discoverErr.Error())
+			return discoverErr
+		}
+		documentState, ok := store.(application.DocumentStateRepository)
+		if !ok {
+			_ = discovered.Close()
+			runtimeGate.SetDegraded("document runtime state repository is unavailable")
+			return fmt.Errorf("document runtime state repository is unavailable")
+		}
+		executor, executorErr := documentruntime.NewExecutor(discovered, documentState, store, workspaceExecutor, artifactCapture)
+		if executorErr != nil {
+			_ = discovered.Close()
+			runtimeGate.SetDegraded(executorErr.Error())
+			return executorErr
+		}
+		healthCtx, cancel := context.WithTimeout(setupCtx, 15*time.Second)
 		health := executor.Health(healthCtx)
 		cancel()
 		if !health.Available || health.Protocol != "oktapod.document/v1" {
 			_ = discovered.Close()
-			logger.Warn("document runtime readiness check failed; preset document resources are degraded", "reason", health.DegradedReason)
-		} else {
-			documentClient, documentExecutor = discovered, executor
-			service.WithDocumentRuntime(documentExecutor)
-			logger.Info("document runtime is ready", "version", health.Version, "protocol", health.Protocol, "renderer", health.Renderer)
+			runtimeGate.SetDegraded(health.DegradedReason)
+			return fmt.Errorf("document runtime readiness check failed: %s", health.DegradedReason)
 		}
+		runtimeGate.SetReady(executor, health)
+		logger.Info("document runtime is ready", "version", health.Version, "protocol", health.Protocol, "renderer", health.Renderer, "duration_ms", time.Since(documentStartup).Milliseconds())
+		return nil
 	}
-	logger.Info("startup stage", "stage", "document_runtime_complete", "duration_ms", time.Since(documentStartup).Milliseconds())
-	if documentClient != nil {
-		defer documentClient.Close()
-	}
+	runtimeGate.SetRepair(setupDocumentRuntime)
+	go func() {
+		if err := setupDocumentRuntime(ctx); err != nil {
+			logger.Warn("document runtime verification failed; document features are degraded", "reason", err.Error())
+		}
+		logger.Info("startup stage", "stage", "document_runtime_complete")
+	}()
 	webSearchExecutor, err := websearch.New("")
 	if err != nil {
 		return err
@@ -288,9 +299,7 @@ func run() (runErr error) {
 			WithQueuedTurnStarter(queuedTurnStarter).
 			WithLiveTurnPublisher(liveTurnHub).
 			WithModelTurnTimeouts(modelTurnTimeouts)
-		if documentExecutor != nil {
-			worker.WithDocumentRuntime(documentExecutor)
-		}
+		worker.WithDocumentRuntime(documentExecutor)
 		workerGroup.Add(1)
 		go func() {
 			defer workerGroup.Done()
@@ -342,6 +351,7 @@ func run() (runErr error) {
 		}
 	}
 	cancel()
+	runtimeGate.Close()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 	shutdownErr := httpServer.Shutdown(shutdownCtx)

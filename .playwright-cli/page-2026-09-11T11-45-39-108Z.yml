@@ -1,0 +1,121 @@
+- generic [ref=f1e3]:
+  - navigation "全局导航" [ref=f1e4]:
+    - link [ref=f1e5] [cursor=pointer]:
+      - /url: /
+      - img "Oktapod" [ref=f1e6]
+    - generic [ref=f1e7]:
+      - link "首页" [ref=f1e8] [cursor=pointer]:
+        - /url: /
+      - link "项目" [ref=f1e12] [cursor=pointer]:
+        - /url: /projects
+      - link "资源" [ref=f1e15] [cursor=pointer]:
+        - /url: /resources
+      - link "审批" [ref=f1e20] [cursor=pointer]:
+        - /url: /approvals
+      - link "设置" [ref=f1e24] [cursor=pointer]:
+        - /url: /settings/appearance
+    - generic [ref=f1e28]:
+      - link "诊断" [active] [ref=f1e29] [cursor=pointer]:
+        - /url: /diagnostics
+      - button "打开账号菜单" [ref=f1e33] [cursor=pointer]: B
+  - complementary [ref=f1e34]:
+    - generic [ref=f1e35]:
+      - button "个人工作空间 0 个项目" [ref=f1e36] [cursor=pointer]:
+        - generic [ref=f1e40]:
+          - strong [ref=f1e41]: 个人工作空间
+          - generic [ref=f1e42]: 0 个项目
+      - button "收起项目栏" [ref=f1e45] [cursor=pointer]
+    - generic [ref=f1e49]:
+      - generic [ref=f1e50]: 最近项目
+      - emphasis [ref=f1e51]: "0"
+    - button "B Browser Test 模型服务已配置" [ref=f1e53] [cursor=pointer]:
+      - generic [ref=f1e54]: B
+      - generic [ref=f1e55]:
+        - strong [ref=f1e56]: Browser Test
+        - generic [ref=f1e57]: 模型服务已配置
+  - main [ref=f1e118]:
+    - generic [ref=f1e119]:
+      - generic [ref=f1e120]:
+        - text: System / Read only
+        - heading "诊断" [level=1] [ref=f1e121]
+        - paragraph [ref=f1e122]: 只展示可安全共享的运行状态；不会返回凭据或原始 Provider Payload。
+      - button "刷新" [ref=f1e123] [cursor=pointer]
+    - generic [ref=f1e129]:
+      - generic [ref=f1e132]:
+        - strong [ref=f1e133]: 服务可访问，但需要完成配置
+        - generic [ref=f1e134]: Oktapod dev · personal
+      - emphasis [ref=f1e135]: ATTENTION
+    - generic [ref=f1e136]:
+      - generic [ref=f1e137]:
+        - generic [ref=f1e143]:
+          - strong [ref=f1e144]: 数据库
+          - generic [ref=f1e145]: sqlite · 持久化连接
+        - emphasis [ref=f1e146]: 正常
+      - generic [ref=f1e147]:
+        - generic [ref=f1e152]:
+          - strong [ref=f1e153]: Provider
+          - generic [ref=f1e154]: 3/3 启用 · 3 个目录过期
+        - link "管理" [ref=f1e155] [cursor=pointer]:
+          - /url: /settings/providers
+        - emphasis [ref=f1e156]: 正常
+      - generic [ref=f1e157]:
+        - generic [ref=f1e163]:
+          - strong [ref=f1e164]: 模型价格
+          - generic [ref=f1e165]: 1 个价格版本 · 10 个已启用模型尚未覆盖
+        - link "配置价格" [ref=f1e166] [cursor=pointer]:
+          - /url: /settings/pricing
+        - emphasis [ref=f1e167]: 需关注
+      - generic [ref=f1e168]:
+        - generic [ref=f1e173]:
+          - strong [ref=f1e174]: 数据库密钥库
+          - generic [ref=f1e175]: 已自动解锁 · Key v1 · 4 条 Secret 密文
+        - link "管理" [ref=f1e176] [cursor=pointer]:
+          - /url: /settings/vault
+        - emphasis [ref=f1e177]: 正常
+      - generic [ref=f1e178]:
+        - generic [ref=f1e183]:
+          - strong [ref=f1e184]: 凭据状态
+          - generic [ref=f1e185]: 3 可用 · 0 缺失 · 0 锁定 · 0 损坏
+        - emphasis [ref=f1e186]: 正常
+      - generic [ref=f1e187]:
+        - generic [ref=f1e191]:
+          - strong [ref=f1e192]: Worker
+          - generic [ref=f1e193]: 0 运行 · 0 排队 · 0 活跃 lease
+        - emphasis [ref=f1e194]: 正常
+      - generic [ref=f1e195]:
+        - generic [ref=f1e199]:
+          - strong [ref=f1e200]: 文档 Runtime
+          - generic [ref=f1e201]: 已就绪 · 签名与完整性校验通过，文档能力可用。
+        - emphasis [ref=f1e202]: 正常
+      - generic [ref=f1e203]:
+        - generic [ref=f1e208]:
+          - strong [ref=f1e209]: 审批
+          - generic [ref=f1e210]: 0 项等待处理
+        - emphasis [ref=f1e211]: 正常
+      - generic [ref=f1e212]:
+        - generic [ref=f1e217]:
+          - strong [ref=f1e218]: 自动审查
+          - generic [ref=f1e219]: 独立 Reviewer Provider 与 Model 已启用；运行时故障仍会关闭式转人工。
+        - link "治理设置" [ref=f1e220] [cursor=pointer]:
+          - /url: /settings/governance
+        - emphasis [ref=f1e221]: 正常
+      - generic [ref=f1e222]:
+        - generic [ref=f1e226]:
+          - strong [ref=f1e227]: 本机存储
+          - generic [ref=f1e228]: 数据根目录：C:\Users\wangd\AppData\Roaming\Oktapod · Workspace：C:\Users\wangd\AppData\Roaming\Oktapod\workspaces
+        - emphasis [ref=f1e229]: 正常
+      - generic [ref=f1e230]:
+        - generic [ref=f1e238]:
+          - strong [ref=f1e239]: SSE
+          - generic [ref=f1e240]: 0 个活动连接
+        - emphasis [ref=f1e241]: 正常
+    - generic [ref=f1e242]:
+      - heading "安全与维护边界" [level=2] [ref=f1e243]
+      - generic [ref=f1e244]:
+        - strong [ref=f1e245]: 日志
+        - generic [ref=f1e246]: Raw process logs are not exposed by the read-only diagnostics API.
+        - emphasis [ref=f1e247]: 脱敏策略已启用
+      - generic [ref=f1e248]:
+        - strong [ref=f1e249]: 备份与恢复
+        - generic [ref=f1e250]: Backup and restore remain separate privileged operator workflows.
+        - emphasis [ref=f1e251]: 独立高风险流程

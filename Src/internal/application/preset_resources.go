@@ -204,8 +204,17 @@ func (s *Service) requireDocumentRuntimeForPresetInstall(ctx context.Context) er
 		return &core.ResourceConflictError{Resource: "document-runtime", Reason: "the host has not loaded a signed document runtime package; install it under DataRoot/runtimes/document-runtime/current (or beside the executable) and restart before validating preset resources"}
 	}
 	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	health := s.documentRuntime.Health(healthCtx)
+	cancel()
+	if !health.Available || health.Protocol != "oktapod.document/v1" {
+		if repairer, ok := s.documentRuntime.(DocumentRuntimeRepairer); ok {
+			if err := repairer.Repair(ctx); err == nil {
+				healthCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+				health = s.documentRuntime.Health(healthCtx)
+				cancel()
+			}
+		}
+	}
 	if !health.Available || health.Protocol != "oktapod.document/v1" {
 		reason := strings.TrimSpace(health.DegradedReason)
 		if reason == "" {

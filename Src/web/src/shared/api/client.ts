@@ -133,6 +133,7 @@ export interface Diagnostics {
   maintenance: { backup_endpoint_available: boolean; restore_endpoint_available: boolean; detail: string }
   storage?: { data_root: string; workspace_root: string }
   auto_review: { configured: boolean; available: boolean; reason: string }
+  document_runtime: { status: 'ok' | 'verifying' | 'degraded'; version: string; protocol: string; renderer: string; detail: string; repair_path: string }
   vault: VaultStatus
   credential_states: Record<'ready' | 'locked' | 'missing' | 'corrupt', number>
   credential_issues: Array<{ kind: 'provider' | 'mcp' | 'mcp_oauth'; resource_id: string; name: string; state: 'locked' | 'missing' | 'corrupt'; action_path: string }>

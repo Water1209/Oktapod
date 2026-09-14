@@ -440,6 +440,13 @@ const (
 	DiagnosticsStatusOk        DiagnosticsStatus = "ok"
 )
 
+// Defines values for DocumentRuntimeDiagnosticsStatus.
+const (
+	DocumentRuntimeDiagnosticsStatusDegraded  DocumentRuntimeDiagnosticsStatus = "degraded"
+	DocumentRuntimeDiagnosticsStatusOk        DocumentRuntimeDiagnosticsStatus = "ok"
+	DocumentRuntimeDiagnosticsStatusVerifying DocumentRuntimeDiagnosticsStatus = "verifying"
+)
+
 // Defines values for FilePreviewRequestSourceKind.
 const (
 	FilePreviewRequestSourceKindArtifact  FilePreviewRequestSourceKind = "artifact"
@@ -1182,14 +1189,14 @@ const (
 
 // Defines values for ListHumanActionsParamsStatus.
 const (
-	ListHumanActionsParamsStatusAll         ListHumanActionsParamsStatus = "all"
-	ListHumanActionsParamsStatusAnswered    ListHumanActionsParamsStatus = "answered"
-	ListHumanActionsParamsStatusApproved    ListHumanActionsParamsStatus = "approved"
-	ListHumanActionsParamsStatusExpired     ListHumanActionsParamsStatus = "expired"
-	ListHumanActionsParamsStatusRejected    ListHumanActionsParamsStatus = "rejected"
-	ListHumanActionsParamsStatusReviewing   ListHumanActionsParamsStatus = "reviewing"
-	ListHumanActionsParamsStatusSuperseded  ListHumanActionsParamsStatus = "superseded"
-	ListHumanActionsParamsStatusWaitingUser ListHumanActionsParamsStatus = "waiting_user"
+	All         ListHumanActionsParamsStatus = "all"
+	Answered    ListHumanActionsParamsStatus = "answered"
+	Approved    ListHumanActionsParamsStatus = "approved"
+	Expired     ListHumanActionsParamsStatus = "expired"
+	Rejected    ListHumanActionsParamsStatus = "rejected"
+	Reviewing   ListHumanActionsParamsStatus = "reviewing"
+	Superseded  ListHumanActionsParamsStatus = "superseded"
+	WaitingUser ListHumanActionsParamsStatus = "waiting_user"
 )
 
 // Defines values for ListProjectAssetsParamsKind.
@@ -1972,22 +1979,36 @@ type Diagnostics struct {
 		Missing int `json:"missing"`
 		Ready   int `json:"ready"`
 	} `json:"credential_states"`
-	Database    DatabaseDiagnostics    `json:"database"`
-	Logs        DiagnosticLogPolicy    `json:"logs"`
-	Maintenance MaintenanceDiagnostics `json:"maintenance"`
-	Pricing     PricingDiagnostics     `json:"pricing"`
-	Profile     string                 `json:"profile"`
-	Providers   ProviderDiagnostics    `json:"providers"`
-	Sse         SseDiagnostics         `json:"sse"`
-	Status      DiagnosticsStatus      `json:"status"`
-	Storage     *StorageDiagnostics    `json:"storage,omitempty"`
-	Vault       VaultStatus            `json:"vault"`
-	Version     string                 `json:"version"`
-	Worker      WorkerDiagnostics      `json:"worker"`
+	Database        DatabaseDiagnostics        `json:"database"`
+	DocumentRuntime DocumentRuntimeDiagnostics `json:"document_runtime"`
+	Logs            DiagnosticLogPolicy        `json:"logs"`
+	Maintenance     MaintenanceDiagnostics     `json:"maintenance"`
+	Pricing         PricingDiagnostics         `json:"pricing"`
+	Profile         string                     `json:"profile"`
+	Providers       ProviderDiagnostics        `json:"providers"`
+	Sse             SseDiagnostics             `json:"sse"`
+	Status          DiagnosticsStatus          `json:"status"`
+	Storage         *StorageDiagnostics        `json:"storage,omitempty"`
+	Vault           VaultStatus                `json:"vault"`
+	Version         string                     `json:"version"`
+	Worker          WorkerDiagnostics          `json:"worker"`
 }
 
 // DiagnosticsStatus defines model for Diagnostics.Status.
 type DiagnosticsStatus string
+
+// DocumentRuntimeDiagnostics defines model for DocumentRuntimeDiagnostics.
+type DocumentRuntimeDiagnostics struct {
+	Detail     string                           `json:"detail"`
+	Protocol   string                           `json:"protocol"`
+	Renderer   string                           `json:"renderer"`
+	RepairPath string                           `json:"repair_path"`
+	Status     DocumentRuntimeDiagnosticsStatus `json:"status"`
+	Version    string                           `json:"version"`
+}
+
+// DocumentRuntimeDiagnosticsStatus defines model for DocumentRuntimeDiagnostics.Status.
+type DocumentRuntimeDiagnosticsStatus string
 
 // FilePreviewRequest defines model for FilePreviewRequest.
 type FilePreviewRequest struct {

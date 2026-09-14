@@ -2886,7 +2886,7 @@ components:
     Diagnostics:
       type: object
       additionalProperties: false
-      required: [status, version, profile, database, providers, pricing, worker, sse, logs, maintenance, auto_review, vault, credential_states, credential_issues]
+      required: [status, version, profile, database, providers, pricing, worker, sse, logs, maintenance, auto_review, document_runtime, vault, credential_states, credential_issues]
       properties:
         status: { type: string, enum: [ok, attention, degraded] }
         version: { type: string }
@@ -2900,6 +2900,7 @@ components:
         maintenance: { $ref: "#/components/schemas/MaintenanceDiagnostics" }
         storage: { $ref: "#/components/schemas/StorageDiagnostics" }
         auto_review: { $ref: "#/components/schemas/AutoReviewDiagnostics" }
+        document_runtime: { $ref: "#/components/schemas/DocumentRuntimeDiagnostics" }
         vault: { $ref: "#/components/schemas/VaultStatus" }
         credential_states:
           type: object
@@ -2984,6 +2985,17 @@ components:
         configured: { type: boolean }
         available: { type: boolean }
         reason: { type: string }
+    DocumentRuntimeDiagnostics:
+      type: object
+      required: [status, version, protocol, renderer, detail, repair_path]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [ok, verifying, degraded] }
+        version: { type: string }
+        protocol: { type: string }
+        renderer: { type: string }
+        detail: { type: string }
+        repair_path: { type: string }
     Bootstrap:
       type: object
       required: [profile, model_endpoint, model_configured, user, organization, capabilities, permissions]

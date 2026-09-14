@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, Database, HardDrive, KeyRound, RefreshCw, Radio, Server, ShieldCheck, Wrench } from 'lucide-react'
 import { api } from '../../shared/api/client'
+import { RuntimeRepairGuide } from './runtime-repair-guide'
 
 export function DiagnosticsPage() {
   const diagnostics = useQuery({ queryKey: ['diagnostics'], queryFn: api.diagnostics, refetchInterval: 5_000 })
@@ -19,6 +20,8 @@ export function DiagnosticsPage() {
       <DiagnosticRow icon={<KeyRound />} title="凭据状态" status={item.credential_states.corrupt > 0 ? 'degraded' : item.credential_states.locked + item.credential_states.missing > 0 ? 'attention' : 'ok'} detail={`${item.credential_states.ready} 可用 · ${item.credential_states.missing} 缺失 · ${item.credential_states.locked} 锁定 · ${item.credential_states.corrupt} 损坏`} />
       {item.credential_issues.length ? <div className="diagnostic-issue-drawer"><strong>需要处理的凭据</strong><div>{item.credential_issues.map((issue) => <a href={issue.action_path} key={`${issue.kind}:${issue.resource_id}`}><span><b>{issue.name}</b><small>{credentialKindText[issue.kind]} · {credentialStateText[issue.state]}</small></span><em>前往修复</em></a>)}</div></div> : null}
       <DiagnosticRow icon={<Wrench />} title="Worker" status="ok" detail={`${item.worker.running_runs} 运行 · ${item.worker.queued_runs} 排队 · ${item.worker.active_leases} 活跃 lease`} />
+      <DiagnosticRow icon={<Wrench />} title="文档 Runtime" status={item.document_runtime.status === 'ok' ? 'ok' : item.document_runtime.status === 'verifying' ? 'attention' : 'degraded'} detail={`${runtimeStatusText[item.document_runtime.status]} · ${item.document_runtime.detail || '暂无详情'}`} action={item.document_runtime.status === 'ok' ? undefined : <Link to="/resources">重新验证</Link>} />
+      {item.document_runtime.status === 'degraded' ? <RuntimeRepairGuide detail={item.document_runtime.detail} /> : null}
       <DiagnosticRow icon={<ShieldCheck />} title="审批" status={item.worker.waiting_approvals > 0 ? 'attention' : 'ok'} detail={`${item.worker.waiting_approvals} 项等待处理`} />
       <DiagnosticRow icon={<ShieldCheck />} title="自动审查" status={item.auto_review.available ? 'ok' : 'attention'} detail={item.auto_review.reason} action={<Link to="/settings/$section" params={{ section: 'governance' }}>治理设置</Link>} />
       {item.storage ? <DiagnosticRow icon={<HardDrive />} title="本机存储" status="ok" detail={`数据根目录：${item.storage.data_root} · Workspace：${item.storage.workspace_root}`} /> : null}
@@ -35,3 +38,4 @@ function DiagnosticRow({ icon, title, status, detail, action }: { icon: React.Re
 const vaultStateText = { uninitialized: '尚未初始化', pending: '等待确认恢复口令', active: '已自动解锁', locked: '缺少本地 KEK', corrupt: '元数据或密文损坏' } as const
 const credentialKindText = { provider: 'Provider', mcp: 'MCP', mcp_oauth: 'MCP OAuth' } as const
 const credentialStateText = { missing: '凭据缺失', locked: '密钥库锁定', corrupt: '密文损坏' } as const
+const runtimeStatusText = { ok: '已就绪', verifying: '校验中', degraded: '异常' } as const

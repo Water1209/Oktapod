@@ -31,11 +31,21 @@ type Diagnostics struct {
 	Worker              core.RuntimeDiagnostics
 	Storage             *StorageDiagnostics
 	AutoReview          AutoReviewDiagnostics
+	DocumentRuntime     DocumentRuntimeDiagnostics
 	Pricing             PricingDiagnostics
 	Vault               core.VaultStatus
 	CredentialStates    map[string]int
 	CredentialIssues    []CredentialIssue
 	OverallStatus       string
+}
+
+type DocumentRuntimeDiagnostics struct {
+	Status      string
+	Version     string
+	Protocol    string
+	Renderer    string
+	Detail      string
+	RepairPath  string
 }
 
 type CredentialIssue struct {
@@ -74,6 +84,16 @@ func (s *Service) Diagnostics(ctx context.Context) (Diagnostics, error) {
 		OverallStatus:    "ok",
 		CredentialStates: map[string]int{core.CredentialReady: 0, core.CredentialLocked: 0, core.CredentialMissing: 0, core.CredentialCorrupt: 0},
 		CredentialIssues: []CredentialIssue{},
+		DocumentRuntime: DocumentRuntimeDiagnostics{Status: "degraded", Detail: "Document Runtime 未初始化。", RepairPath: "/resources"},
+	}
+	if s.documentRuntime != nil {
+		health := s.documentRuntime.Health(ctx)
+		status := "ok"
+		if !health.Available { status = "degraded"; if strings.Contains(health.DegradedReason, "verif") { status = "verifying" } }
+		detail := health.DegradedReason
+		if detail == "" && health.Available { detail = "签名与完整性校验通过，文档能力可用。" }
+		result.DocumentRuntime = DocumentRuntimeDiagnostics{Status: status, Version: health.Version, Protocol: health.Protocol, Renderer: health.Renderer, Detail: detail, RepairPath: "/resources"}
+		if status == "degraded" { result.OverallStatus = "degraded" } else if status == "verifying" && result.OverallStatus == "ok" { result.OverallStatus = "attention" }
 	}
 	if s.vault != nil {
 		result.Vault = s.vault.Status(ctx)

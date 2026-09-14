@@ -1,0 +1,52 @@
+- generic [ref=f1e3]:
+  - navigation "全局导航" [ref=f1e4]:
+    - link [ref=f1e5] [cursor=pointer]:
+      - /url: /
+      - img "Oktapod" [ref=f1e6]
+    - generic [ref=f1e7]:
+      - link "首页" [ref=f1e8] [cursor=pointer]:
+        - /url: /
+      - link "项目" [ref=f1e12] [cursor=pointer]:
+        - /url: /projects
+      - link "资源" [ref=f1e15] [cursor=pointer]:
+        - /url: /resources
+      - link "审批" [active] [ref=f1e20] [cursor=pointer]:
+        - /url: /approvals
+      - link "设置" [ref=f1e24] [cursor=pointer]:
+        - /url: /settings/appearance
+    - generic [ref=f1e28]:
+      - link "诊断" [ref=f1e29] [cursor=pointer]:
+        - /url: /diagnostics
+      - button "打开账号菜单" [ref=f1e33] [cursor=pointer]: B
+  - complementary [ref=f1e34]:
+    - generic [ref=f1e35]:
+      - button "个人工作空间 0 个项目" [ref=f1e36] [cursor=pointer]:
+        - generic [ref=f1e40]:
+          - strong [ref=f1e41]: 个人工作空间
+          - generic [ref=f1e42]: 0 个项目
+      - button "收起项目栏" [ref=f1e45] [cursor=pointer]
+    - generic [ref=f1e49]:
+      - generic [ref=f1e50]: 最近项目
+      - emphasis [ref=f1e51]: "0"
+    - button "B Browser Test 模型服务已配置" [ref=f1e53] [cursor=pointer]:
+      - generic [ref=f1e54]: B
+      - generic [ref=f1e55]:
+        - strong [ref=f1e56]: Browser Test
+        - generic [ref=f1e57]: 模型服务已配置
+  - generic [ref=f1e252]:
+    - generic [ref=f1e253]:
+      - generic [ref=f1e254]:
+        - paragraph [ref=f1e255]: 治理
+        - heading "审批中心" [level=1] [ref=f1e256]
+        - paragraph [ref=f1e257]: 待办、风险授权和处理历史各自归位；执行凭证仍保留在任务的安全与追踪中。
+      - generic "审批中心视图" [ref=f1e258]:
+        - button "待我处理" [ref=f1e259] [cursor=pointer]
+        - button "风险审批" [ref=f1e260] [cursor=pointer]
+        - button "处理记录" [ref=f1e261] [cursor=pointer]
+    - generic [ref=f1e263]:
+      - generic [ref=f1e264]:
+        - heading "待我处理" [level=2] [ref=f1e265]
+        - generic [ref=f1e266]: 0 项
+      - generic [ref=f1e267]:
+        - heading "当前没有待处理事项" [level=2] [ref=f1e270]
+        - paragraph [ref=f1e271]: 需要补充输入、恢复任务或人工授权的事项会出现在这里。

@@ -7,7 +7,7 @@ import { mcpToolDisplayLabel } from '../../shared/mcp-display'
 
 export function HumanActionCard({ action }: { action: HumanAction }) {
   const queryClient = useQueryClient()
-  const [answer, setAnswer] = useState('')
+  const [structuredAnswers, setStructuredAnswers] = useState<Record<string, string | string[]>>({})
   const [projectConfirmOpen, setProjectConfirmOpen] = useState(false)
   const decision = useMutation({
     mutationFn: (input: {
@@ -40,6 +40,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
   const permission = action.kind === 'permission_escalation'
   const budget = action.kind === 'budget_request'
   const sideEffect = action.kind === 'side_effect_resolution'
+  const questions = inputQuestions(action.request)
   const currentCalls = numericRequest(action.request.current_max_model_calls)
   const currentTokens = numericRequest(action.request.current_max_tokens)
   const recommendedCalls = numericRequest(action.request.recommended_max_model_calls ?? action.request.proposed_max_model_calls)
@@ -68,11 +69,14 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
     </div> : null}
     <dl><div><dt>影响范围</dt><dd>{impact}</dd></div><div><dt>请求哈希</dt><dd><code>{action.request_hash.slice(0, 16)}</code></dd></div></dl>
 
-    {waiting && input ? <div className="human-action-answer">
-      <label htmlFor={`human-action-answer-${action.id}`}>补充信息</label>
-      <textarea id={`human-action-answer-${action.id}`} value={answer} onChange={(event) => setAnswer(event.target.value)} rows={3} autoFocus />
-      <button className="approve" disabled={decision.isPending || !answer.trim()} onClick={() => decision.mutate({ decision: 'answered', answer: answer.trim() })}>提交并继续</button>
-    </div> : null}
+    {waiting && input ? <InputRequestForm
+      action={action}
+      questions={questions}
+      structuredAnswers={structuredAnswers}
+      setStructuredAnswers={setStructuredAnswers}
+      pending={decision.isPending}
+      onSubmit={(value) => decision.mutate({ decision: 'answered', answer: value })}
+    /> : null}
 
     {waiting && (approval || permission) ? <div className="human-action-actions">
       <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
@@ -107,6 +111,56 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       </Dialog.Portal>
     </Dialog.Root>
   </article>
+}
+
+type InputOption = { id: string; label: string; description?: string; recommended?: boolean }
+type InputQuestion = { id: string; header?: string; question: string; selection_mode?: 'single' | 'multiple'; options?: InputOption[]; allow_freeform?: boolean; required?: boolean }
+
+function inputQuestions(request: Record<string, unknown>): InputQuestion[] {
+  if (Array.isArray(request.questions)) return request.questions.filter((item): item is InputQuestion => Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).question === 'string'))
+  const prompt = typeof request.prompt === 'string' ? request.prompt : '请补充信息'
+  const legacy = Array.isArray(request.choices) ? request.choices : []
+  const options = legacy.map((item, index) => typeof item === 'string' ? ({ id: `option-${index + 1}`, label: item }) : item as InputOption)
+  return [{ id: 'answer', header: options.length ? '选择' : '回答', question: prompt, selection_mode: options.length ? 'single' : undefined, options, allow_freeform: true, required: true }]
+}
+
+function InputRequestForm({ action, questions, structuredAnswers, setStructuredAnswers, pending, onSubmit }: {
+  action: HumanAction
+  questions: InputQuestion[]
+  structuredAnswers: Record<string, string | string[]>
+  setStructuredAnswers: (value: Record<string, string | string[]>) => void
+  pending: boolean
+  onSubmit: (value: unknown) => void
+}) {
+  const [freeform, setFreeform] = useState<Record<string, string>>({})
+  const selectedValues = (id: string) => {
+    const value = structuredAnswers[id]
+    return Array.isArray(value) ? value : value ? [value] : []
+  }
+  const ready = questions.every((question) => !question.required || selectedValues(question.id).length > 0 || Boolean(freeform[question.id]?.trim()))
+  const submission = () => Object.fromEntries(questions.map((question) => [question.id, { selected: selectedValues(question.id), text: freeform[question.id]?.trim() || '' }]))
+  const update = (id: string, value: string | string[]) => setStructuredAnswers({ ...structuredAnswers, [id]: value })
+  return <div className="human-action-answer">
+    {questions.map((question) => <fieldset className="human-input-question" key={question.id}>
+      <legend>{question.header || '需要你的选择'}</legend>
+      <p>{question.question}</p>
+      {question.options?.map((option) => {
+        const selected = structuredAnswers[question.id]
+        const checked = Array.isArray(selected) ? selected.includes(option.id) : selected === option.id
+        return <label className="human-input-option" key={option.id}>
+          <input type={question.selection_mode === 'multiple' ? 'checkbox' : 'radio'} name={`${action.id}-${question.id}`} checked={checked} onChange={() => {
+            if (question.selection_mode === 'multiple') {
+              const values = Array.isArray(selected) ? selected : []
+              update(question.id, checked ? values.filter((value) => value !== option.id) : [...values, option.id])
+            } else update(question.id, option.id)
+          }} />
+          <span><strong>{option.label}</strong>{option.recommended ? <em>推荐</em> : null}{option.description ? <small>{option.description}</small> : null}</span>
+        </label>
+      })}
+      {question.allow_freeform || !question.options?.length ? <textarea aria-label={question.header || question.id} value={freeform[question.id] || ''} onChange={(event) => setFreeform({ ...freeform, [question.id]: event.target.value })} rows={3} placeholder={question.options?.length ? '补充说明（选填）' : '请输入回答'} /> : null}
+    </fieldset>)}
+    <button className="approve" disabled={pending || !ready} onClick={() => onSubmit(submission())}>提交并继续</button>
+  </div>
 }
 
 function formatRequest(toolName: string, value: unknown) {

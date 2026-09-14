@@ -63,6 +63,8 @@ func (e *Executor) Health(ctx context.Context) application.DocumentRuntimeHealth
 	return e.client.Health(ctx)
 }
 
+func (e *Executor) Close() error { return e.client.Close() }
+
 func (e *Executor) Execute(ctx context.Context, run core.RunContext, call core.ToolCall) core.ToolExecution {
 	planned := core.PlanTool(call)
 	result := core.ToolExecution{ToolCallID: call.ID, Status: core.StatusFailed, ErrorCode: "DOCUMENT_RUNTIME_FAILED", ExitCode: -1, InputHash: planned.InputHash, Idempotent: true, Output: map[string]any{}}

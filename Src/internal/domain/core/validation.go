@@ -529,6 +529,165 @@ func ValidateControlTask(input ControlTaskInput) error {
 	return nil
 }
 
+// ValidateHumanInputRequest validates the small, provider-neutral interaction
+// contract carried by request_input. Legacy prompt/choices requests remain
+// valid; callers normalize them before invoking this validator.
+func ValidateHumanInputRequest(request map[string]any) error {
+	questions, hasQuestions := request["questions"]
+	if !hasQuestions {
+		if prompt, _ := request["prompt"].(string); strings.TrimSpace(prompt) == "" {
+			return &ValidationError{Field: "prompt", Message: "must be non-empty"}
+		}
+		return nil
+	}
+	items, ok := questions.([]any)
+	if !ok || len(items) == 0 || len(items) > 3 {
+		return &ValidationError{Field: "questions", Message: "must contain 1 to 3 questions"}
+	}
+	seen := map[string]struct{}{}
+	for i, raw := range items {
+		question, ok := raw.(map[string]any)
+		if !ok {
+			return &ValidationError{Field: fmt.Sprintf("questions[%d]", i), Message: "must be an object"}
+		}
+		id, _ := question["id"].(string)
+		text, _ := question["question"].(string)
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(text) == "" {
+			return &ValidationError{Field: fmt.Sprintf("questions[%d]", i), Message: "id and question are required"}
+		}
+		if _, exists := seen[id]; exists {
+			return &ValidationError{Field: "questions", Message: "question ids must be unique"}
+		}
+		seen[id] = struct{}{}
+		mode, _ := question["selection_mode"].(string)
+		if mode != "" && mode != "single" && mode != "multiple" {
+			return &ValidationError{Field: fmt.Sprintf("questions[%d].selection_mode", i), Message: "must be single or multiple"}
+		}
+		if options, exists := question["options"]; exists {
+			values, ok := options.([]any)
+			if !ok || len(values) > 10 {
+				return &ValidationError{Field: fmt.Sprintf("questions[%d].options", i), Message: "must contain at most 10 options"}
+			}
+			optionIDs := map[string]struct{}{}
+			for j, value := range values {
+				option, ok := value.(map[string]any)
+				if !ok {
+					return &ValidationError{Field: fmt.Sprintf("questions[%d].options[%d]", i, j), Message: "must be an object"}
+				}
+				optionID, _ := option["id"].(string)
+				label, _ := option["label"].(string)
+				if strings.TrimSpace(optionID) == "" || strings.TrimSpace(label) == "" {
+					return &ValidationError{Field: fmt.Sprintf("questions[%d].options[%d]", i, j), Message: "id and label are required"}
+				}
+				if _, exists := optionIDs[optionID]; exists {
+					return &ValidationError{Field: fmt.Sprintf("questions[%d].options", i), Message: "option ids must be unique"}
+				}
+				optionIDs[optionID] = struct{}{}
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateHumanInputAnswer validates answers against the normalized request.
+// A legacy string answer remains accepted for old clients and old actions.
+func ValidateHumanInputAnswer(request map[string]any, answer any) error {
+	if text, ok := answer.(string); ok {
+		if strings.TrimSpace(text) == "" || len([]rune(text)) > 2000 {
+			return &ValidationError{Field: "answer", Message: "must be 1 to 2000 characters"}
+		}
+		return nil
+	}
+	answers, ok := answer.(map[string]any)
+	if !ok {
+		return &ValidationError{Field: "answer", Message: "must be text or an answer object"}
+	}
+	questions, _ := request["questions"].([]any)
+	for _, raw := range questions {
+		question, _ := raw.(map[string]any)
+		id, _ := question["id"].(string)
+		value, present := answers[id]
+		required, _ := question["required"].(bool)
+		if required && !present {
+			return &ValidationError{Field: "answer." + id, Message: "is required"}
+		}
+		if !present {
+			continue
+		}
+		allowed := map[string]struct{}{}
+		if options, ok := question["options"].([]any); ok {
+			for _, rawOption := range options {
+				option, _ := rawOption.(map[string]any)
+				optionID, _ := option["id"].(string)
+				allowed[optionID] = struct{}{}
+			}
+		}
+		selected := []string{}
+		freeform := ""
+		switch typed := value.(type) {
+		case string:
+			if len(allowed) == 0 {
+				freeform = strings.TrimSpace(typed)
+			} else if typed != "" {
+				selected = []string{typed}
+			}
+		case []any:
+			for _, item := range typed {
+				text, ok := item.(string)
+				if !ok {
+					return &ValidationError{Field: "answer." + id, Message: "selected values must be strings"}
+				}
+				selected = append(selected, text)
+			}
+		case map[string]any:
+			if rawText, exists := typed["text"]; exists {
+				text, ok := rawText.(string)
+				if !ok {
+					return &ValidationError{Field: "answer." + id, Message: "text must be a string"}
+				}
+				freeform = strings.TrimSpace(text)
+			}
+			if rawSelected, exists := typed["selected"]; exists {
+				if _, ok := rawSelected.([]any); !ok {
+					return &ValidationError{Field: "answer." + id, Message: "selected must be an array"}
+				}
+			}
+			if selectedValue, ok := typed["selected"].([]any); ok {
+				for _, item := range selectedValue {
+					text, ok := item.(string)
+					if !ok {
+						return &ValidationError{Field: "answer." + id, Message: "selected values must be strings"}
+					}
+					selected = append(selected, text)
+				}
+			}
+		default:
+			return &ValidationError{Field: "answer." + id, Message: "has an unsupported value"}
+		}
+		mode, _ := question["selection_mode"].(string)
+		if mode != "multiple" && len(selected) > 1 {
+			return &ValidationError{Field: "answer." + id, Message: "allows one selection"}
+		}
+		if required && len(selected) == 0 && freeform == "" {
+			return &ValidationError{Field: "answer." + id, Message: "requires a selection or text"}
+		}
+		if len([]rune(freeform)) > 2000 {
+			return &ValidationError{Field: "answer." + id, Message: "text must not exceed 2000 characters"}
+		}
+		if allow, _ := question["allow_freeform"].(bool); !allow && len(allowed) > 0 && freeform != "" {
+			return &ValidationError{Field: "answer." + id, Message: "does not allow freeform text"}
+		}
+		for _, selectedID := range selected {
+			if len(allowed) > 0 {
+				if _, ok := allowed[selectedID]; !ok {
+					return &ValidationError{Field: "answer." + id, Message: "contains an unknown option"}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func ValidateDecideApproval(input DecideApprovalInput) error {
 	if input.Decision != ApprovalApproved && input.Decision != ApprovalRejected {
 		return &ValidationError{Field: "decision", Message: "must be approved or rejected"}

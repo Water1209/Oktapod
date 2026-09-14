@@ -68,6 +68,10 @@ func (TranscriptAssembler) RunWithConversation(conversation []core.ModelMessage,
 	for _, item := range history {
 		kind, _ := item["kind"].(string)
 		switch kind {
+		case "user":
+			if content, _ := item["content"].(string); strings.TrimSpace(content) != "" {
+				result = append(result, textModelMessage(core.MessageRoleUser, content))
+			}
 		case "assistant":
 			stepID, _ := item["step_id"].(string)
 			if len(toolResultsByGroup[stepID]) > 0 {

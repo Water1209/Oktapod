@@ -60,6 +60,10 @@ type DocumentRuntimeHealth struct {
 	DegradedReason string   `json:"degraded_reason,omitempty"`
 }
 
+type DocumentRuntimeRepairer interface {
+	Repair(context.Context) error
+}
+
 type DocumentStateRepository interface {
 	GetDocumentSession(ctx context.Context, scope core.Scope, runID, documentID string) (core.DocumentSession, error)
 	GetDocumentSessionByOpenKey(ctx context.Context, scope core.Scope, runID, openKey string) (core.DocumentSession, error)

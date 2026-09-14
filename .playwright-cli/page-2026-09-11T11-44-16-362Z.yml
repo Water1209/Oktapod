@@ -1,0 +1,27 @@
+- main [ref=e3]:
+  - region "Oktapod" [ref=e4]:
+    - img "Oktapod" [ref=e5]
+    - generic [ref=e6]: Agent workspace
+  - generic [ref=e8]:
+    - generic [ref=e9]: 本地工作空间
+    - heading "创建账户" [level=1] [ref=e35]
+    - paragraph [ref=e15]: 新账户默认只有自己的私有项目。
+    - tablist "账户操作" [ref=e16]:
+      - tab "登录" [ref=e17] [cursor=pointer]
+      - tab "注册" [active] [selected] [ref=e18] [cursor=pointer]
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - generic [ref=e21]: 用户名
+        - textbox "用户名" [ref=e22]:
+          - /placeholder: your.name
+      - generic [ref=e36]:
+        - generic [ref=e37]: 显示名称
+        - textbox "显示名称" [ref=e38]:
+          - /placeholder: 你的名字
+      - generic [ref=e23]:
+        - generic [ref=e24]: 密码
+        - generic [ref=e25]:
+          - textbox "密码" [ref=e26]:
+            - /placeholder: 至少 8 个字符
+          - button "显示密码" [ref=e27] [cursor=pointer]
+      - button "创建并登录" [disabled] [ref=e39]

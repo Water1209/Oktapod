@@ -74,11 +74,12 @@ func BuiltinToolSpecs() []ToolSpec {
 			}),
 		},
 		{
-			Name: ToolRequestInput, Description: "Ask the user for input only when genuinely stuck after exhausting reasonable defaults. Do NOT use this for: file names, directory paths, file content, test data, configuration values - choose sensible defaults and proceed. Use ONLY for: ambiguous intent that could lead to destructive or irreversible actions, or when the user's request has multiple fundamentally different interpretations.",
+			Name: ToolRequestInput, Description: "Ask the user for input when a missing choice would materially change the result, when the user explicitly requests confirmation before proceeding, or when a recovery path requires the user's decision. Do not ask for routine defaults such as file names, temporary directories, file content, test data, or configuration values that can be chosen safely. Keep this request focused and use it only when the answer is needed to continue.",
 			Sequential: true,
 			Parameters: objectSchema([]string{"prompt"}, map[string]any{
 				"prompt":  map[string]any{"type": "string", "minLength": 1, "maxLength": 1000},
-				"choices": map[string]any{"type": "array", "maxItems": 10, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 200}},
+				"choices": map[string]any{"type": "array", "maxItems": 10, "items": map[string]any{"type": "object", "required": []string{"id", "label"}, "properties": map[string]any{"id": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "label": map[string]any{"type": "string", "minLength": 1, "maxLength": 200}, "description": map[string]any{"type": "string", "maxLength": 500}, "recommended": map[string]any{"type": "boolean"}}}},
+				"questions": map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "required": []string{"id", "question"}, "properties": map[string]any{"id": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "header": map[string]any{"type": "string", "maxLength": 80}, "question": map[string]any{"type": "string", "minLength": 1, "maxLength": 1000}, "selection_mode": map[string]any{"type": "string", "enum": []string{"single", "multiple"}}, "options": map[string]any{"type": "array", "maxItems": 10}, "allow_freeform": map[string]any{"type": "boolean"}, "required": map[string]any{"type": "boolean"}}}},
 			}),
 		},
 		{

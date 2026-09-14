@@ -426,8 +426,9 @@ func (s *Server) GetDiagnostics(ctx context.Context, _ generated.GetDiagnosticsR
 			RestoreEndpointAvailable: false,
 			Detail:                   "Backup and restore remain separate privileged operator workflows.",
 		},
-		AutoReview: generated.AutoReviewDiagnostics{Configured: diagnostics.AutoReview.Configured, Available: diagnostics.AutoReview.Available, Reason: diagnostics.AutoReview.Reason},
-		Vault:      vaultStatusResponse(diagnostics.Vault),
+		AutoReview:      generated.AutoReviewDiagnostics{Configured: diagnostics.AutoReview.Configured, Available: diagnostics.AutoReview.Available, Reason: diagnostics.AutoReview.Reason},
+		DocumentRuntime: generated.DocumentRuntimeDiagnostics{Status: generated.DocumentRuntimeDiagnosticsStatus(diagnostics.DocumentRuntime.Status), Version: diagnostics.DocumentRuntime.Version, Protocol: diagnostics.DocumentRuntime.Protocol, Renderer: diagnostics.DocumentRuntime.Renderer, Detail: diagnostics.DocumentRuntime.Detail, RepairPath: diagnostics.DocumentRuntime.RepairPath},
+		Vault:           vaultStatusResponse(diagnostics.Vault),
 	}
 	response.CredentialStates.Ready = diagnostics.CredentialStates[core.CredentialReady]
 	response.CredentialStates.Locked = diagnostics.CredentialStates[core.CredentialLocked]

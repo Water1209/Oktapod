@@ -28,7 +28,7 @@ pnpm build
 
 Windows 执行 `.\Deploy\start-local.ps1`（复用进程并等待 JSON 就绪，签名 Runtime 校验可能需要一分钟）；Linux 执行 `./Build/oktapod serve`。浏览器打开 <http://127.0.0.1:8787/>，首次注册账户成为实例维护者，在“设置 → 凭据与密钥库”初始化 Vault 后配置模型服务。
 
-普通构建不包含文档依赖，缺少 Runtime 时文档能力会显示降级；完整安装请按[部署指南](Doc/Oktapod_部署与运维指南_v1.0.md)配置签名 Runtime。需要前端热更新时，分别运行 `go run ./Src/cmd/oktapod serve` 与 `pnpm dev`。
+普通构建不包含文档依赖，缺少或正在校验 Runtime 时文档能力会显示降级/校验中；诊断页与资源中心提供重新验证入口。完整安装请按[部署指南](Doc/Oktapod_部署与运维指南_v1.0.md)配置签名 Runtime。需要前端热更新时，分别运行 `go run ./Src/cmd/oktapod serve` 与 `pnpm dev`。
 
 ## 安装包制作与部署
 

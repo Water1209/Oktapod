@@ -1,0 +1,63 @@
+- generic [ref=f1e3]:
+  - navigation "全局导航" [ref=f1e4]:
+    - link [ref=f1e5] [cursor=pointer]:
+      - /url: /
+      - img "Oktapod" [ref=f1e6]
+    - generic [ref=f1e7]:
+      - link "首页" [ref=f1e8] [cursor=pointer]:
+        - /url: /
+      - link "项目" [ref=f1e12] [cursor=pointer]:
+        - /url: /projects
+      - link "资源" [ref=f1e15] [cursor=pointer]:
+        - /url: /resources
+      - link "审批" [ref=f1e20] [cursor=pointer]:
+        - /url: /approvals
+      - link "设置" [ref=f1e24] [cursor=pointer]:
+        - /url: /settings/appearance
+    - generic [ref=f1e28]:
+      - link "诊断" [ref=f1e29] [cursor=pointer]:
+        - /url: /diagnostics
+      - button "打开账号菜单" [ref=f1e33] [cursor=pointer]: B
+  - complementary [ref=f1e34]:
+    - generic [ref=f1e35]:
+      - button "个人工作空间 0 个项目" [ref=f1e36] [cursor=pointer]:
+        - generic [ref=f1e40]:
+          - strong [ref=f1e41]: 个人工作空间
+          - generic [ref=f1e42]: 0 个项目
+      - button "收起项目栏" [ref=f1e45] [cursor=pointer]
+    - generic [ref=f1e49]:
+      - generic [ref=f1e50]: 最近项目
+      - emphasis [ref=f1e51]: "0"
+    - button "B Browser Test 模型服务已配置" [ref=f1e53] [cursor=pointer]:
+      - generic [ref=f1e54]: B
+      - generic [ref=f1e55]:
+        - strong [ref=f1e56]: Browser Test
+        - generic [ref=f1e57]: 模型服务已配置
+  - main [ref=f1e62]:
+    - generic [ref=f1e63]:
+      - generic [ref=f1e64]:
+        - generic [ref=f1e65]: 仅你可见
+        - heading "工作台" [level=1] [ref=f1e70]
+        - paragraph [ref=f1e71]: 继续正在进行的工作，或从一个清晰的新任务开始。
+      - generic [ref=f1e72]:
+        - button "新建项目" [ref=f1e73] [cursor=pointer]
+        - link "查看项目" [ref=f1e76] [cursor=pointer]:
+          - /url: /projects
+    - generic [ref=f1e79]:
+      - generic [ref=f1e80]:
+        - generic [ref=f1e81]:
+          - generic [ref=f1e82]: 继续处理
+          - emphasis [ref=f1e85]: "0"
+        - generic [ref=f1e86]: 没有正在运行的任务
+      - generic [ref=f1e91]:
+        - generic [ref=f1e92]:
+          - generic [ref=f1e93]: 等待你处理
+          - emphasis [ref=f1e97]: "0"
+        - generic [ref=f1e98]: 目前没有待处理事项
+    - generic [ref=f1e103]:
+      - generic [ref=f1e104]:
+        - generic [ref=f1e105]: 最近项目
+        - textbox "搜索项目" [ref=f1e112]
+      - generic [ref=f1e113]:
+        - generic [ref=f1e116]: 还没有个人项目
+        - button "创建第一个项目" [ref=f1e117] [cursor=pointer]

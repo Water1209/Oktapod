@@ -6,6 +6,16 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
+func TestTranscriptAssemblerPreservesHumanAnswer(t *testing.T) {
+	messages := (TranscriptAssembler{}).Run("先确认", []map[string]any{
+		{"kind": "assistant", "content": "是否继续？"},
+		{"kind": "user", "content": "继续；补充说明为空"},
+	}, "按回答继续")
+	if len(messages) != 4 || messages[2].Role != core.MessageRoleUser || messages[2].Content[0].Text != "继续；补充说明为空" {
+		t.Fatalf("human answer missing from model transcript: %#v", messages)
+	}
+}
+
 func TestTranscriptAssemblerPreservesConversationRoles(t *testing.T) {
 	assembler := TranscriptAssembler{}
 	messages := assembler.Conversation("summary", []core.Message{
