@@ -54,6 +54,7 @@ type ToolRuntime struct {
 	webAccess       WebAccess
 	mcpSecrets      application.ProviderSecretStore
 	mcpSessions     *mcpadapter.SessionBroker
+	runtimeDependencies []application.RuntimeDependencyProvider
 	webCallTimeout  time.Duration
 	mcpCallTimeout  time.Duration
 	logger          *slog.Logger
@@ -70,7 +71,8 @@ func (w *Worker) toolRuntime() ToolRuntime {
 	return ToolRuntime{
 		ledger: w.repository, repository: w.repository, workspace: w.workspace,
 		artifactCapture: w.artifactCapture, assetStager: w.assetStager, documentRuntime: w.documentRuntime,
-		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpSessions: w.mcpSessions, webCallTimeout: w.webCallTimeout, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
+		webSearch: w.webSearch, webAccess: w.webAccess, mcpSecrets: w.mcpSecrets, mcpSessions: w.mcpSessions,
+		runtimeDependencies: w.runtimeDependencies, webCallTimeout: w.webCallTimeout, mcpCallTimeout: w.mcpCallTimeout, logger: w.logger,
 	}
 }
 
@@ -505,12 +507,13 @@ func (runtime ToolRuntime) preflightMCP(ctx context.Context, run core.RunContext
 		return preparedTool{}, &failure
 	}
 	var manifestJSON, credentialRef string
+	capabilityName := ""
 	allowed, foundCapability := false, false
 	for _, capability := range mcpSnapshotsFromConfig(run.ConfigSnapshotJSON) {
 		if capability.ID != capabilityID {
 			continue
 		}
-		foundCapability, manifestJSON, credentialRef = true, capability.ManifestJSON, capability.CredentialRef
+		foundCapability, manifestJSON, credentialRef, capabilityName = true, capability.ManifestJSON, capability.CredentialRef, capability.Name
 		for _, tool := range capability.Tools {
 			if tool.Name == toolName {
 				allowed = true
@@ -556,13 +559,13 @@ func (runtime ToolRuntime) preflightMCP(ctx context.Context, run core.RunContext
 	}
 	return preparedTool{
 		dispatch: func(ctx context.Context) core.ToolExecution {
-			return runtime.dispatchMCP(ctx, run, invocation, manifestJSON, credential, capabilityID, toolName, updater)
+			return runtime.dispatchMCP(ctx, run, invocation, manifestJSON, credential, capabilityID, capabilityName, toolName, updater)
 		},
 		receiptUnknown: "MCP 副作用状态未知，已停止自动重试。", successSummary: "MCP 工具执行完成，等待确定性收据验收。", failureSummary: "MCP 工具执行失败，已记录错误收据。",
 	}, nil
 }
 
-func (runtime ToolRuntime) dispatchMCP(ctx context.Context, run core.RunContext, invocation FrozenToolInvocation, manifestJSON, credential, capabilityID, toolName string, updater mcpadapter.CredentialUpdater) core.ToolExecution {
+func (runtime ToolRuntime) dispatchMCP(ctx context.Context, run core.RunContext, invocation FrozenToolInvocation, manifestJSON, credential, capabilityID, capabilityName, toolName string, updater mcpadapter.CredentialUpdater) core.ToolExecution {
 	callContext, cancel := ctx, func() {}
 	if runtime.mcpCallTimeout > 0 {
 		callContext, cancel = context.WithTimeout(ctx, runtime.mcpCallTimeout)
@@ -595,10 +598,119 @@ func (runtime ToolRuntime) dispatchMCP(ctx context.Context, run core.RunContext,
 	if callErr != nil {
 		execution.Status = core.StatusFailed
 		execution.ErrorCode, output["reason"], output["retryable"] = classifyMCPCallError(callErr, callContext.Err())
+		if dependencies, ok := runtime.detectMCPRuntimeDependencies(ctx, capabilityID, capabilityName, manifestJSON, callErr.Error()); ok {
+			decorateRuntimeDependencyFailure(output, capabilityID, dependencies)
+			execution.ErrorCode = "MCP_RUNTIME_DEPENDENCY_MISSING"
+			runtime.recordMCPRuntimeFailure(ctx, run, capabilityID, dependencies)
+		}
 	} else if result.IsError {
 		execution.Status, execution.ErrorCode = core.StatusFailed, "MCP_TOOL_ERROR"
+		if dependencies, ok := runtime.detectMCPRuntimeDependencies(ctx, capabilityID, capabilityName, manifestJSON, mcpResultErrorText(result)); ok {
+			decorateRuntimeDependencyFailure(output, capabilityID, dependencies)
+			execution.ErrorCode = "MCP_RUNTIME_DEPENDENCY_MISSING"
+			runtime.recordMCPRuntimeFailure(ctx, run, capabilityID, dependencies)
+		}
 	}
 	return execution
+}
+
+func (runtime ToolRuntime) detectMCPRuntimeDependencies(ctx context.Context, capabilityID, capabilityName, manifestJSON, lastError string) ([]application.RuntimeDependency, bool) {
+	if len(runtime.runtimeDependencies) == 0 {
+		return nil, false
+	}
+	definition, err := core.ParseMCPDefinition(manifestJSON)
+	if err != nil {
+		if runtime.logger != nil {
+			runtime.logger.WarnContext(ctx, "runtime dependency detection skipped", "capability_id", capabilityID, "reason", err.Error())
+		}
+		return nil, false
+	}
+	request := application.RuntimeDependencyRequest{
+		Capability: core.Capability{ID: capabilityID, Kind: core.CapabilityKindMCP, Name: capabilityName, ManifestJSON: manifestJSON, Status: core.CapabilityStatusEnabled},
+		Definition: definition,
+		LastError:  lastError,
+	}
+	dependencies := make([]application.RuntimeDependency, 0)
+	for _, provider := range runtime.runtimeDependencies {
+		items, detectErr := provider.Detect(ctx, request)
+		if detectErr != nil {
+			if runtime.logger != nil {
+				runtime.logger.WarnContext(ctx, "runtime dependency detection failed", "capability_id", capabilityID, "provider", fmt.Sprintf("%T", provider), "reason", detectErr.Error())
+			}
+			continue
+		}
+		dependencies = append(dependencies, items...)
+	}
+	return dependencies, len(dependencies) > 0
+}
+
+func decorateRuntimeDependencyFailure(output map[string]any, capabilityID string, dependencies []application.RuntimeDependency) {
+	items := make([]map[string]any, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		items = append(items, map[string]any{
+			"id": dependency.ID, "kind": dependency.Kind, "provider": dependency.Provider,
+			"name": dependency.Name, "display_name": dependency.DisplayName, "version": dependency.Version,
+			"installable": dependency.Installable,
+		})
+	}
+	output["reason"] = "MCP runtime dependency is missing. Install it from the Oktapod resource center; do not install it with workspace or shell commands."
+	output["retryable"] = false
+	output["runtime_dependencies"] = items
+	output["repair_capability_id"] = capabilityID
+	output["repair"] = map[string]any{
+		"kind":          "resource_center",
+		"capability_id": capabilityID,
+		"provider":      dependencies[0].Provider,
+		"dependency_id": dependencies[0].ID,
+	}
+}
+
+func (runtime ToolRuntime) recordMCPRuntimeFailure(ctx context.Context, run core.RunContext, capabilityID string, dependencies []application.RuntimeDependency) {
+	if runtime.repository == nil || len(dependencies) == 0 {
+		return
+	}
+	marker := runtimeDependencyFailureMarker(dependencies)
+	if marker == "" {
+		return
+	}
+	if err := runtime.repository.RecordMCPRuntimeFailure(ctx, core.Scope{OrganizationID: run.OrganizationID, UserID: run.OwnerUserID}, capabilityID, marker); err != nil && runtime.logger != nil {
+		runtime.logger.WarnContext(ctx, "persist MCP runtime dependency failure", "capability_id", capabilityID, "reason", err.Error())
+	}
+}
+
+func runtimeDependencyFailureMarker(dependencies []application.RuntimeDependency) string {
+	lines := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		provider := strings.TrimSpace(dependency.Provider)
+		id := strings.TrimSpace(dependency.ID)
+		if provider == "" || id == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("RUNTIME_DEPENDENCY_MISSING provider=%s id=%s", provider, id))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func mcpResultErrorText(result mcpadapter.CallResult) string {
+	var builder strings.Builder
+	for _, raw := range result.Content {
+		var item struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &item) == nil && strings.TrimSpace(item.Text) != "" {
+			if builder.Len() > 0 {
+				builder.WriteString("\n")
+			}
+			builder.WriteString(item.Text)
+		}
+	}
+	if len(result.StructuredResult) > 0 {
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.Write(result.StructuredResult)
+	}
+	return builder.String()
 }
 
 func classifyMCPCallError(callErr, contextErr error) (string, string, bool) {

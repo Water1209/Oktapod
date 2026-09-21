@@ -1,6 +1,6 @@
 # Oktapod 详细设计文档
 
-> 版本: V1.0 | 生成日期: 2026-09-01 | 状态: 基于当前源码勘察
+> 版本: V1.0 | 生成日期: 2026-09-15 | 状态: 基于当前源码勘察
 
 本文档从源码出发，描述 Oktapod 的系统架构、模块边界、HTTP API 接口、持久化数据模型和关键行为时序。目标是让新加入的工程师或 AI Agent 能在不读完整源码的情况下，理解系统的设计意图、决策依据和执行边界。
 
@@ -236,7 +236,9 @@ API 契约定义于 `Src/api/openapi.yaml`（OpenAPI 3.1），由 oapi-codegen �
 | POST | `/tasks/{id}/fork` | Fork 任务 |
 | POST | `/tasks/{id}/acceptance` | 验收任务结果 |
 | GET/POST | `/projects/{id}/schedules` | 定时调度 |
-| PUT | `/schedules/{id}/status` | 启用/禁用调度 |
+| POST | `/projects/{id}/schedule-preview` | 自然语言计划草案解析（不落库） |
+| POST | `/schedules/{id}/status` | 启用/禁用调度 |
+| GET | `/schedules/{id}/runs` | 查看调度触发与任务执行记录 |
 | GET/POST | `/projects/{id}/turns` | 提交 Turn（核心入口） |
 | POST | `/projects/{id}/turns/stream` | SSE 流式提交（前端默认） |
 | POST | `/projects/{id}/transcript-import` | 导入外部对话记录 |
@@ -516,6 +518,8 @@ ToolRuntime 是“危险工具执行前后的治理总线”。
 
 用户选择“记住”时写入 conversation 或 project approval rules。规则不是全局信任：仍会受 frozen policy、资源 scope、副作用级别限制。
 
+任务区多个 `tool_approval` 不纵向展开，而是进入统一审批面板：一次只显示当前项，编号/左右键可切换，处理后自动定位下一项；兼容的 `once` 项可“全部批准一次”，`run_origin` 等专项授权仍必须逐项确认。批量操作只是前端聚合提交，每项仍保留独立参数、InputHash、版本和决策记录。
+
 `ExpireApprovals` 会将超时请求转为失败/取消结果，并释放 Human Action Step，防止 Run 永久挂起。
 
 ### 4.7 Side Effect Unknown Recovery
@@ -559,6 +563,8 @@ MCP 适配器包含三层能力：
 | Connection 治理 | 校验连接、Capability、安装状态 |
 | SessionBroker | 复用进程内 MCP session |
 | OAuth Coordinator | 授权码、token 交换、SecretStore 保存 |
+
+MCP 运行时依赖采用 provider-agnostic 契约：Application 只定义 `RuntimeDependencyProvider` 的 `Detect / Supports / Install`，依赖 ID 是 Provider 内局部 ID，路由必须同时使用 `Provider + ID`。适配器根据 MCP 定义和自身隔离运行根主动检测依赖，并自描述名称、版本、说明和是否可自动安装；应用层不认识 Chromium、npm 或任何具体 MCP 包。Playwright 适配器从同一 `mcpCommandIsolationRoot` 下的隔离 npm cache 定位 `playwright-core/browsers.json`，解析 Chromium revision，再按 Windows、Linux、macOS 的隔离缓存路径检查安装标记或可执行文件；Windows 同时兼容 Playwright 的 `chrome-win` 与新版 `chrome-win64` 目录。主机全局 `ms-playwright` 缓存不构成成功条件。资源中心对所有已启用 MCP 查询依赖，查询许可与依赖问题状态分离。安装流程固定为：发现依赖 → 用户显式确认 → Provider 安装 → 写入 Capability 审计 → 自动重新连接验证。任何适配器都能按该契约接入自己的外部依赖，Playwright Chromium 只是首个实现。
 
 SSRF 防护使用 `validateHost`、`isPrivateIP` 和 `safeDialContext`：域名解析结果和最终拨号地址都要检查，避免 DNS 重绑定绕过。
 
@@ -870,7 +876,9 @@ SQLite 是 V1 唯一主数据库。迁移按版本顺序演进，`sqlc` 生成�
 
 ### 8.5 定时任务
 
-`scheduler_leases` 保证同一 schedule 在同一时间只由一个实例执行。`RunDailySummaryLoop` 用于汇总运行与任务状态。调度实现避免依赖进程内存状态，确保重启后可恢复。
+`scheduler_leases` 保证同一 schedule 在同一时间只由一个实例执行。调度器只负责领取到期 fire；应用层通过 `SubmitScheduledTurn` 进入应用层 `CreateTask` 路径，以新会话直接建立 Task/Run 和用户消息，避免把独立定时触发误判为 Composer 的 follow-up 排队。该路径仍冻结项目模型、权限、工具快照、工作区和预算规则；Task 创建成功后，`schedule_fires` 才记录对应 `task_id`。调度写入对短暂 SQLite 锁执行有界重试，管理页面轮询计划与展开的执行记录。调度实现避免依赖进程内存状态，确保重启后可恢复。
+
+**自然语言创建**：有两条入口，共用同一个解析与校验链。管理页“新建”对话框调用 `POST /projects/{id}/schedule-preview`，模型把描述解析为草案（名称、Cron、时区、目标），用户确认后才真正创建；预览接口永不落库。项目会话中，应用层在消息进入 Agent Loop 前做关键词预筛（`scheduleCreationCandidate`），命中后调用同一 `PreviewSchedule` 解析；模型返回 `create_requested=true` 且通过 `ValidateCreateSchedule` 与 Cron/时区校验才调用 `CreateSchedule`，否则回复澄清问题或提示。模型只负责生成草案，不持有任何写库工具；创建动作始终由应用层完成，解析过程以 `ConversationModelCall{purpose: schedule_preview}` 记入审计。
 
 ## 9. 验证与追溯
 

@@ -20,11 +20,18 @@ type ScheduleRepository interface {
 	AdvanceScheduleAfterFire(ctx context.Context, scheduleID string, plannedAt, nextRunAt time.Time, fireStatus, taskID string) error
 }
 
+// ScheduledTaskStarter is the application-layer bridge used when a schedule
+// fires. Keeping this callback outside the repository lets scheduled work use
+// the same message, task, permission and run snapshot path as an interactive
+// project turn.
+type ScheduledTaskStarter func(context.Context, core.Schedule, core.ScheduleFire) (core.Task, error)
+
 type Scheduler struct {
 	repository   ScheduleRepository
 	logger       *slog.Logger
 	pollInterval time.Duration
 	now          func() time.Time
+	starter      ScheduledTaskStarter
 }
 
 const (
@@ -32,8 +39,14 @@ const (
 	scheduledTaskRetryDelay     = 25 * time.Millisecond
 )
 
-func NewScheduler(repository ScheduleRepository, logger *slog.Logger) *Scheduler {
-	return &Scheduler{repository: repository, logger: logger, pollInterval: 2 * time.Second, now: func() time.Time { return time.Now().UTC() }}
+func NewScheduler(repository ScheduleRepository, logger *slog.Logger, starters ...ScheduledTaskStarter) *Scheduler {
+	starter := ScheduledTaskStarter(func(ctx context.Context, schedule core.Schedule, fire core.ScheduleFire) (core.Task, error) {
+		return repository.CreateScheduledTask(ctx, schedule, fire, fmt.Sprintf("schedule:%s:%s", schedule.ID, fire.ID))
+	})
+	if len(starters) > 0 && starters[0] != nil {
+		starter = starters[0]
+	}
+	return &Scheduler{repository: repository, logger: logger, pollInterval: 2 * time.Second, now: func() time.Time { return time.Now().UTC() }, starter: starter}
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -118,10 +131,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) (bool, error) {
 	if fire.Status != core.ScheduleFirePending {
 		return true, nil
 	}
-	correlationID := fmt.Sprintf("schedule:%s:%s", schedule.ID, fire.ID)
 	var task core.Task
 	for attempt := 0; attempt < scheduledTaskCreateAttempts; attempt++ {
-		task, err = s.repository.CreateScheduledTask(ctx, schedule, fire, correlationID)
+		task, err = s.starter(ctx, schedule, fire)
 		if err == nil {
 			break
 		}

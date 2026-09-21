@@ -58,7 +58,7 @@ export function ApprovalInbox() {
       </div>
     </section>
 
-    {view !== 'history' && pendingIDs.length > 0 ? <section className="approval-batch-toolbar" aria-label="批量处理审批"><label><input type="checkbox" aria-label="全选待处理审批" checked={allPendingSelected} onChange={toggleAll} />全选待处理审批</label><span>已选 {selected.length} 项</span><button type="button" className="reject" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('rejected')}>批量拒绝</button><button type="button" className="approve" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('approved')}>批量批准一次</button>{batch.error ? <small className="approval-error">{batch.error.message}</small> : null}</section> : null}
+    {view !== 'history' && pendingIDs.length > 0 ? <section className="approval-batch-toolbar" aria-label="批量处理审批"><label><input type="checkbox" aria-label="全选待处理审批" checked={allPendingSelected} onChange={toggleAll} />选择待处理审批</label><span>已选 {selected.length} 项；批量批准要求工具、参数和风险完全相同</span><button type="button" className="reject" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('rejected')}>批量拒绝</button><button type="button" className="approve" disabled={selected.length === 0 || batch.isPending} onClick={() => batch.mutate('approved')}>各批准一次</button>{batch.error ? <small className="approval-error">{batch.error.message}</small> : null}</section> : null}
 
     <section className="approval-list">
       {view === 'pending' ? <div className="approval-list-section"><header><h2>待我处理</h2><span>{actionItems.length + (approvals.data?.items.length ?? 0)} 项</span></header>
@@ -149,10 +149,10 @@ export function ApprovalCard({ approval, compact = false, selectable = false, se
       <Link to="/tasks/$taskId" params={{ taskId: approval.task_id }}>打开任务<ExternalLink size={13} /></Link>
       {approval.status === 'pending' ? <>
         <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-        {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_origin' })}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />批准一次</button>}
+        {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_origin' })}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} title="只授权当前冻结参数的一次调用" onClick={() => decision.mutate({ decision: 'approved', scope: 'once' })}><Check size={14} />仅这一次</button>}
         {mcpApproval ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'run_tool' })}><Check size={14} />本任务允许此工具</button> : null}
-        {persistentApprovalSupported ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话允许同类动作</button> : null}
-        {persistentApprovalSupported ? <button className="approve approve-project" disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
+        {persistentApprovalSupported ? <button className="approve approve-session" disabled={decision.isPending} title="只匹配当前工具、精确参数和风险等级" onClick={() => decision.mutate({ decision: 'approved', scope: 'conversation' })}><Check size={14} />本会话同类动作</button> : null}
+        {persistentApprovalSupported ? <button className="approve approve-project" disabled={decision.isPending} title="项目后续会话可复用匹配规则，有效 30 天" onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目 30 天</button> : null}
       </> : null}
     </div>
     {decision.error ? <small className="approval-error">{decision.error.message}</small> : null}

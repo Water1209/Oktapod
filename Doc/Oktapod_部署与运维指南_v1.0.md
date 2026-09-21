@@ -224,7 +224,7 @@ Invoke-RestMethod http://127.0.0.1:8787/api/v1/health
 Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 8787 -State Listen
 ```
 
-V1 主程序尚未实现原生 Windows Service Control Manager 接口。正式支持路径是同一用户前台运行；需要登录后自启动时可选用任务计划程序，但它不替代发布烟测，维护前仍要先暂停或完成活跃任务：
+V1 主程序尚未实现原生 Windows Service Control Manager 接口。定时任务依赖 Oktapod 服务持续运行，服务停止期间不会执行模型调用；恢复后由调度器按错过策略处理。正式支持路径是同一用户前台运行；需要登录后自启动时可选用任务计划程序启动 Oktapod，但它不替代发布烟测，维护前仍要先暂停或完成活跃任务：
 
 ```powershell
 $Action = New-ScheduledTaskAction -Execute $Binary -Argument "--config `"$Config`" serve" -WorkingDirectory (Split-Path $Binary)
@@ -427,6 +427,8 @@ Web/API 支持多个 Provider 实例，协议族为 `openai_compatible`、`anthr
 内建 `web_search` 与 `web_fetch` 是无需外部凭据的最低可用 Web Access 能力，不因可选 MCP 不健康而删除。资源中心支持当前用户全局或项目级 Skill、MCP 与 Agent 的校验、隔离、人工审核、启用、调用、停用和永久删除；活动 Run 引用时拒绝删除，历史快照与脱敏审计保留。MCP Schema、配置版本、凭据引用与健康状态会进入新 Run 快照。凭据原文不得进入 Manifest、API 返回、日志或普通导出；SQLite 只保存 AES-256-GCM 应用层密文。
 
 Skill 菜单安装只接受单 Skill ZIP，不接受裸 `SKILL.md`、JSON 或 YAML；ZIP 在写入前校验唯一 `SKILL.md`、frontmatter、允许目录、文件数/体积、路径穿越、Unicode 冲突、符号链接、嵌套 Skill、依赖目录和隐藏载荷。MCP 不使用 ZIP：输入名称、`server.json`、规范化定义、URL、固定版本 npm/PyPI 包或本地命令，解析后只显示该传输所需字段，高级区可复核规范化 `MCPDefinition v1`。名称发现访问官方 Registry `https://registry.modelcontextprotocol.io`，生产环境需要允许对该域名的出站 HTTPS；Registry 只用于发现，歧义候选必须人工选择且安装前固定实际版本。模型不能静默安装或启用能力；在新 Thread 中用自然语言要求安装 MCP 时，Composer 会打开相同配置与确认面板。一个 MCP 的多项凭据以不透明加密集合写入数据库 Vault，运行时仅注入定义声明的环境变量或受控 Header。
+
+MCP 启用后如果适配器报告缺少外部运行时依赖，资源中心会显示依赖名称、版本、说明和是否可自动安装。自动安装必须由用户先点击“确认安装”，再点击“同意并安装”；模型不能静默下载。安装由对应适配器的通用 Runtime Dependency Provider 执行，下载写入 `%TEMP%\oktapod-mcp-runtime` 的隔离缓存，完成后写入审计并自动重新验证 MCP。当前首个示例是 Playwright Chromium；未知 MCP 版本映射会显示“无法自动安装”，不会猜测驱动版本。
 
 ### 10.1 Document Runtime
 

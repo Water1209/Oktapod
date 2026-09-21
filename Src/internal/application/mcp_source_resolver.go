@@ -17,6 +17,14 @@ type MCPRegistry interface {
 	Search(ctx context.Context, query string, limit int) ([]MCPRegistryServer, error)
 }
 
+// MCPPackageResolver resolves an unpinned package request to one concrete
+// version before an install manifest is created. Implementations are
+// ecosystem-specific adapters; the application layer only depends on this
+// small contract.
+type MCPPackageResolver interface {
+	Resolve(ctx context.Context, ecosystem, packageName string) (string, error)
+}
+
 type MCPRegistryServer struct {
 	Name        string                `json:"name"`
 	Title       string                `json:"title"`
@@ -72,6 +80,11 @@ func (s *Service) WithMCPRegistry(registry MCPRegistry) *Service {
 	return s
 }
 
+func (s *Service) WithMCPPackageResolver(resolver MCPPackageResolver) *Service {
+	s.mcpPackageResolver = resolver
+	return s
+}
+
 func (s *Service) ResolveMCPInstallDraft(ctx context.Context, projectID, sourceInput string) (core.ResourceInstallDraft, error) {
 	if _, err := s.repository.GetProject(ctx, s.ScopeFor(ctx), strings.TrimSpace(projectID)); err != nil {
 		return core.ResourceInstallDraft{}, err
@@ -120,7 +133,7 @@ func (s *Service) ResolveMCPInstallDraft(ctx context.Context, projectID, sourceI
 		name := remoteMCPName(resolvedInput)
 		return finalizeMCPDraft(draft, name, "remote", definition, []string{"远端 URL 未经过 Registry 身份验证；安装前请核对域名和数据权限。若服务使用 API Key，请在高级配置中将认证方式改为 bearer 或 custom_header。"}), nil
 	}
-	if definition, name, version, matched, err := resolveDirectMCPSource(resolvedInput); matched {
+	if definition, name, version, matched, err := resolveDirectMCPSource(ctx, resolvedInput, s.mcpPackageResolver); matched {
 		if err != nil {
 			return core.ResourceInstallDraft{}, &core.ValidationError{Field: "source_input", Message: err.Error()}
 		}
@@ -129,7 +142,7 @@ func (s *Service) ResolveMCPInstallDraft(ctx context.Context, projectID, sourceI
 	if s.mcpRegistry == nil {
 		return core.ResourceInstallDraft{}, &core.ResourceConflictError{Resource: "mcp_registry", Reason: "Registry 暂不可用；请改用 URL、固定版本包或本地命令"}
 	}
-	servers, err := s.mcpRegistry.Search(ctx, resolvedInput, 8)
+	servers, err := s.searchMCPRegistry(ctx, resolvedInput)
 	if err != nil {
 		return core.ResourceInstallDraft{}, &core.ResourceConflictError{Resource: "mcp_registry", Reason: "Registry 查询失败；请稍后重试或改用明确来源"}
 	}
@@ -155,9 +168,59 @@ func (s *Service) ResolveMCPInstallDraft(ctx context.Context, projectID, sourceI
 	return draft, nil
 }
 
+// The public registry treats the query as one token sequence. Natural
+// language therefore first searches the full intent, then falls back to the
+// explicit product or package identifier when the intent is too narrow.
+func (s *Service) searchMCPRegistry(ctx context.Context, query string) ([]MCPRegistryServer, error) {
+	servers, err := s.mcpRegistry.Search(ctx, query, 8)
+	if err != nil || len(servers) > 0 {
+		return servers, err
+	}
+	identifier := explicitRegistryQuery(query)
+	if identifier == "" || identifier == query {
+		return servers, nil
+	}
+	return s.mcpRegistry.Search(ctx, identifier, 20)
+}
+
+func explicitRegistryQuery(query string) string {
+	fields := strings.Fields(query)
+	identifiers := make([]string, 0, len(fields))
+	for _, field := range fields {
+		value := strings.Trim(field, "`\"'[](){}:;,.!?，。；：？！（）【】《》“”‘’")
+		if value == "" {
+			continue
+		}
+		if strings.ContainsAny(value, "/@._-") || isLatinIdentifier(value) {
+			identifiers = append(identifiers, value)
+		}
+	}
+	if len(identifiers) == 0 {
+		return ""
+	}
+	return strings.Join(identifiers, " ")
+}
+
+func isLatinIdentifier(value string) bool {
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		return false
+	}
+	return value != ""
+}
+
 func parseMCPInstallDirective(content string) (string, bool) {
 	trimmed := strings.TrimSpace(content)
 	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{"给项目", "给这个项目", "给本项目"} {
+		if strings.HasPrefix(lower, prefix) {
+			lower = strings.TrimPrefix(lower, prefix)
+			trimmed = strings.TrimSpace(trimmed[len(prefix):])
+			break
+		}
+	}
 	matchedPrefix := false
 	for _, prefix := range []string{"请帮我安装", "帮我安装", "请安装", "安装", "请添加", "添加", "请配置", "配置", "请接入", "接入", "install ", "add ", "configure "} {
 		if strings.HasPrefix(lower, strings.ToLower(prefix)) {
@@ -165,10 +228,10 @@ func parseMCPInstallDirective(content string) (string, bool) {
 			break
 		}
 	}
-	if !matchedPrefix || !strings.Contains(lower, "mcp") {
+	source := trimMCPInstallLanguage(trimmed)
+	if !matchedPrefix {
 		return "", false
 	}
-	source := trimMCPInstallLanguage(trimmed)
 	if strings.TrimSpace(source) == "" {
 		return "", false
 	}
@@ -229,13 +292,70 @@ func trimMCPInstallLanguage(input string) string {
 			break
 		}
 	}
-	for _, suffix := range []string{"mcp server", "mcp工具", "mcp 服务", "mcp服务", "mcp"} {
-		if strings.HasSuffix(strings.ToLower(value), strings.ToLower(suffix)) {
-			value = strings.TrimSpace(value[:len(value)-len(suffix)])
+	if isStructuredMCPSource(value) {
+		return value
+	}
+	for {
+		trimmedValue := false
+		for _, suffix := range []string{"mcp server", "mcp工具", "mcp 服务", "mcp服务", "mcp", "工具", "tools", "tool", "插件", "plugin"} {
+			if hasNaturalLanguageSuffix(value, suffix) {
+				value = strings.TrimSpace(value[:len(value)-len(suffix)])
+				trimmedValue = true
+				break
+			}
+		}
+		if strings.Contains(value, "的") {
+			value = strings.Join(strings.Fields(strings.ReplaceAll(value, "的", " ")), " ")
+			trimmedValue = true
+		}
+		if !trimmedValue {
 			break
 		}
 	}
 	return value
+}
+
+func isStructuredMCPSource(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(value, "{") ||
+		strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "npm:") ||
+		strings.HasPrefix(lower, "pypi:") {
+		return true
+	}
+	if strings.HasPrefix(value, "@") && !strings.ContainsAny(value, " \t\r\n") {
+		return true
+	}
+	words, err := splitMCPCommandLine(value)
+	if err != nil || len(words) == 0 {
+		return false
+	}
+	switch strings.ToLower(words[0]) {
+	case "npx", "uvx", "node", "python", "python3":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasNaturalLanguageSuffix(value, suffix string) bool {
+	value = strings.TrimSpace(value)
+	suffix = strings.TrimSpace(suffix)
+	if value == "" || suffix == "" || len(value) <= len(suffix) || !strings.HasSuffix(strings.ToLower(value), strings.ToLower(suffix)) {
+		return false
+	}
+	boundary := value[len(value)-len(suffix)-1]
+	if boundary == ' ' || boundary == '\t' || boundary == '\r' || boundary == '\n' {
+		return true
+	}
+	// Chinese natural-language phrases often attach particles directly to the
+	// source name (for example, "Playwright的插件").
+	return boundary >= 0x80
 }
 
 func resolveMCPJSON(raw string) (core.MCPDefinitionV1, string, string, error) {
@@ -254,25 +374,63 @@ func resolveMCPJSON(raw string) (core.MCPDefinitionV1, string, string, error) {
 	return candidate.Definition, candidate.Name, candidate.Version, err
 }
 
-func resolveDirectMCPSource(input string) (core.MCPDefinitionV1, string, string, bool, error) {
+func resolveDirectMCPSource(ctx context.Context, input string, packageResolver MCPPackageResolver) (core.MCPDefinitionV1, string, string, bool, error) {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	if strings.HasPrefix(lower, "npm:") {
 		spec := strings.TrimSpace(input[len("npm:"):])
-		name, version, err := pinnedNPMSpec(spec)
+		if name, version, err := pinnedNPMSpec(spec); err == nil {
+			if !validNPMPackageName(name) || !validExactPackageVersion(version) {
+				return core.MCPDefinitionV1{}, "", "", true, fmt.Errorf("npm 包名或版本格式无效")
+			}
+			definition := packageMCPDefinition("npm", name, version, "npx", []string{"-y", name + "@" + version})
+			return definition, name, version, true, nil
+		}
+		if validNPMPackageName(spec) {
+			version, err := resolvePackageVersion(ctx, packageResolver, "npm", spec)
+			if err != nil {
+				return core.MCPDefinitionV1{}, "", "", true, err
+			}
+			definition := packageMCPDefinition("npm", spec, version, "npx", []string{"-y", spec + "@" + version})
+			return definition, spec, version, true, nil
+		}
+		return core.MCPDefinitionV1{}, "", "", true, fmt.Errorf("npm 包名格式无效；请使用 npm:@scope/server 或 npm:@scope/server@1.2.3")
+	}
+	if strings.HasPrefix(lower, "pypi:") {
+		spec := strings.TrimSpace(input[len("pypi:"):])
+		parts := strings.Split(spec, "==")
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[1]) != "" {
+			name := strings.TrimSpace(parts[0])
+			version := strings.TrimSpace(parts[1])
+			if !validPyPIPackageName(name) || !validExactPackageVersion(version) {
+				return core.MCPDefinitionV1{}, "", "", true, fmt.Errorf("PyPI 包名或版本格式无效")
+			}
+			definition := packageMCPDefinition("pypi", name, version, "uvx", []string{name + "==" + version})
+			return definition, name, version, true, nil
+		}
+		if validPyPIPackageName(spec) {
+			version, err := resolvePackageVersion(ctx, packageResolver, "pypi", spec)
+			if err != nil {
+				return core.MCPDefinitionV1{}, "", "", true, err
+			}
+			definition := packageMCPDefinition("pypi", spec, version, "uvx", []string{spec + "==" + version})
+			return definition, spec, version, true, nil
+		}
+		return core.MCPDefinitionV1{}, "", "", true, fmt.Errorf("PyPI 包名格式无效；请使用 pypi:mcp-server-git 或 pypi:mcp-server-git==1.2.3")
+	}
+	if name, version, ok := pinnedBareNPMSpec(input); ok {
+		if !validExactPackageVersion(version) {
+			return core.MCPDefinitionV1{}, "", "", true, fmt.Errorf("npm 包版本格式无效；请使用明确版本号")
+		}
+		definition := packageMCPDefinition("npm", name, version, "npx", []string{"-y", name + "@" + version})
+		return definition, name, version, true, nil
+	}
+	if name, ok := bareScopedNPMPackageName(input); ok {
+		version, err := resolvePackageVersion(ctx, packageResolver, "npm", name)
 		if err != nil {
 			return core.MCPDefinitionV1{}, "", "", true, err
 		}
 		definition := packageMCPDefinition("npm", name, version, "npx", []string{"-y", name + "@" + version})
 		return definition, name, version, true, nil
-	}
-	if strings.HasPrefix(lower, "pypi:") {
-		spec := strings.TrimSpace(input[len("pypi:"):])
-		parts := strings.Split(spec, "==")
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-			return core.MCPDefinitionV1{}, "", "", true, fmt.Errorf("PyPI 包必须固定版本，例如 pypi:mcp-server-git==1.2.3")
-		}
-		definition := packageMCPDefinition("pypi", strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), "uvx", []string{strings.TrimSpace(parts[0]) + "==" + strings.TrimSpace(parts[1])})
-		return definition, strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true, nil
 	}
 	words, err := splitMCPCommandLine(input)
 	if err != nil || len(words) == 0 {
@@ -289,6 +447,102 @@ func resolveDirectMCPSource(input string) (core.MCPDefinitionV1, string, string,
 		Auth:          core.MCPAuth{Type: "none"}, Permissions: []string{"process"},
 	}
 	return definition, command, "local", true, nil
+}
+
+func resolvePackageVersion(ctx context.Context, resolver MCPPackageResolver, ecosystem, packageName string) (string, error) {
+	if resolver == nil {
+		return "", fmt.Errorf("包版本解析器暂不可用；请提供固定版本，例如 npm:@scope/server@1.2.3")
+	}
+	version, err := resolver.Resolve(ctx, ecosystem, packageName)
+	if err != nil {
+		return "", fmt.Errorf("解析 %s 包 %s 的版本失败: %w", ecosystem, packageName, err)
+	}
+	version = strings.TrimSpace(version)
+	if !validExactPackageVersion(version) {
+		return "", fmt.Errorf("%s 元数据返回了无效版本，已拒绝浮动或未知版本", ecosystem)
+	}
+	return version, nil
+}
+
+func pinnedBareNPMSpec(spec string) (string, string, bool) {
+	value := strings.TrimSpace(spec)
+	if strings.ContainsAny(value, " \t\r\n\"'") {
+		return "", "", false
+	}
+	if strings.HasPrefix(value, "@") {
+		slash := strings.Index(value, "/")
+		if slash <= 1 || slash == len(value)-1 {
+			return "", "", false
+		}
+	}
+	name, version, err := pinnedNPMSpec(value)
+	if err != nil || !validNPMPackageName(name) {
+		return "", "", false
+	}
+	return name, version, true
+}
+
+func bareScopedNPMPackageName(spec string) (string, bool) {
+	value := strings.TrimSpace(spec)
+	if !strings.HasPrefix(value, "@") || strings.ContainsAny(value, " \t\r\n\"'") || !validNPMPackageName(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func validNPMPackageName(name string) bool {
+	if name == "" || strings.HasPrefix(name, ".") || strings.Contains(name, "..") {
+		return false
+	}
+	if strings.HasPrefix(name, "@") {
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) != 2 || len(parts[0]) < 2 || parts[1] == "" {
+			return false
+		}
+		return validNPMSegment(parts[0][1:]) && validNPMSegment(parts[1])
+	}
+	return validNPMSegment(name)
+}
+
+func validNPMSegment(value string) bool {
+	if value == "" || strings.HasPrefix(value, ".") {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validPyPIPackageName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") {
+		return false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validExactPackageVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > 200 || version[0] < '0' || version[0] > '9' {
+		return false
+	}
+	for _, char := range version {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' || char == '-' || char == '+' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func pinnedNPMSpec(spec string) (string, string, error) {

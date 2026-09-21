@@ -1119,6 +1119,17 @@ type CreateScheduleInput struct {
 	MisfireGraceSeconds int64
 }
 
+type ScheduleDraft struct {
+	Name                string
+	CronExpression      string
+	Timezone            string
+	Goal                string
+	Acceptance          string
+	MisfirePolicy       string
+	OverlapPolicy       string
+	MisfireGraceSeconds int64
+}
+
 type ScheduleFire struct {
 	ID         string
 	ScheduleID string
@@ -1128,6 +1139,23 @@ type ScheduleFire struct {
 	TaskID     string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+// ScheduleRun is the read model used by the automation management page. It
+// joins a durable schedule fire with the ordinary Task/Run it started.
+type ScheduleRun struct {
+	ID             string
+	ScheduleID     string
+	PlannedAt      time.Time
+	Status         string
+	TaskID         string
+	ConversationID string
+	RunID          string
+	TaskStatus     string
+	ErrorCode      string
+	ResultSummary  string
+	StartedAt      time.Time
+	FinishedAt     time.Time
 }
 
 type Capability struct {

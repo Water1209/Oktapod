@@ -567,14 +567,7 @@ func validateDocumentToolArguments(name string, arguments map[string]any) error 
 		if !ok || len(raw) == 0 || len(raw) > 100 {
 			return fmt.Errorf("operations must contain 1 to 100 structured operations")
 		}
-		supportedOperations := map[string]bool{
-			"replace_text": true, "set_text": true, "insert_text": true, "add_image": true,
-			"add_slide": true, "delete_slide": true, "reorder_slide": true, "set_notes": true, "set_table_cell": true, "set_chart_data": true,
-			"add_paragraph": true, "insert_paragraph": true, "set_style": true, "set_page_setup": true, "set_header": true, "set_footer": true,
-			"set_cell": true, "set_range": true, "add_sheet": true, "delete_sheet": true, "rename_sheet": true, "set_formula": true, "add_table": true,
-			"merge_pages": true, "split_pages": true, "reorder_pages": true, "rotate_pages": true, "crop_pages": true, "add_annotation": true,
-			"add_watermark": true, "fill_form": true, "overlay_pages": true, "redact_regions": true,
-		}
+		supportedOperations := fixedDocumentApplyOperationSet()
 		for _, value := range raw {
 			operation, ok := value.(map[string]any)
 			if !ok {
@@ -586,6 +579,20 @@ func validateDocumentToolArguments(name string, arguments map[string]any) error 
 			}
 			if err := validateDocumentPayload(operation); err != nil {
 				return fmt.Errorf("operation %s: %w", op, err)
+			}
+			switch op {
+			case "update_paragraph":
+				if err := validateDocumentParagraphOperation(operation, true); err != nil {
+					return err
+				}
+			case "delete_paragraph":
+				if err := validateDocumentParagraphOperation(operation, false); err != nil {
+					return err
+				}
+			case "insert_table", "add_table":
+				if err := validateDocumentTableOperation(operation); err != nil {
+					return err
+				}
 			}
 		}
 	case ToolDocumentRender:
@@ -608,6 +615,73 @@ func validateDocumentToolArguments(name string, arguments map[string]any) error 
 		}
 	}
 	return nil
+}
+
+func fixedDocumentApplyOperations() []string {
+	return []string{
+		"replace_text", "set_text", "update_paragraph", "insert_text", "add_image",
+		"add_slide", "delete_slide", "reorder_slide", "set_notes", "set_table_cell", "set_chart_data",
+		"add_paragraph", "insert_paragraph", "delete_paragraph", "set_style", "set_page_setup", "set_header", "set_footer",
+		"set_cell", "set_range", "add_sheet", "delete_sheet", "rename_sheet", "set_formula", "add_table", "insert_table",
+		"merge_pages", "split_pages", "reorder_pages", "rotate_pages", "crop_pages", "add_annotation",
+		"add_watermark", "fill_form", "overlay_pages", "redact_regions",
+	}
+}
+
+func fixedDocumentApplyOperationSet() map[string]bool {
+	set := make(map[string]bool, len(fixedDocumentApplyOperations()))
+	for _, operation := range fixedDocumentApplyOperations() {
+		set[operation] = true
+	}
+	return set
+}
+
+func validateDocumentParagraphOperation(operation map[string]any, requiresText bool) error {
+	if !validJSONInteger(documentOperationIndex(operation), 1, 1_000_000) {
+		return fmt.Errorf("operation %s requires a positive integer index or paragraph", operation["op"])
+	}
+	if requiresText {
+		text, ok := operation["text"].(string)
+		if !ok || strings.ContainsRune(text, 0) || len([]rune(text)) > 100_000 {
+			return fmt.Errorf("operation %s requires text no longer than 100000 characters", operation["op"])
+		}
+	}
+	return nil
+}
+
+func validateDocumentTableOperation(operation map[string]any) error {
+	rows, ok := operation["rows"].([]any)
+	if !ok || len(rows) == 0 || len(rows) > 100 {
+		return fmt.Errorf("operation %s requires 1 to 100 table rows", operation["op"])
+	}
+	columns := 0
+	for _, value := range rows {
+		row, ok := value.([]any)
+		if !ok || len(row) == 0 || len(row) > 50 {
+			return fmt.Errorf("operation %s table rows must contain 1 to 50 cells", operation["op"])
+		}
+		if len(row) > columns {
+			columns = len(row)
+		}
+	}
+	if len(rows)*columns > 5_000 {
+		return fmt.Errorf("operation %s table is limited to 5000 cells", operation["op"])
+	}
+	_, hasIndex := operation["index"]
+	_, hasParagraph := operation["paragraph"]
+	if hasIndex || hasParagraph {
+		if !validJSONInteger(documentOperationIndex(operation), 1, 1_000_000) {
+			return fmt.Errorf("operation %s index or paragraph must be a positive integer", operation["op"])
+		}
+	}
+	return nil
+}
+
+func documentOperationIndex(operation map[string]any) any {
+	if index, exists := operation["index"]; exists {
+		return index
+	}
+	return operation["paragraph"]
 }
 
 func validateDocumentSourceRef(value any) error {

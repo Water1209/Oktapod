@@ -22,7 +22,7 @@ type Client struct {
 
 func New(client *http.Client) *Client {
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &Client{endpoint: defaultEndpoint, http: client}
 }

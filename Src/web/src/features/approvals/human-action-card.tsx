@@ -5,7 +5,7 @@ import { Check, Clock3, Gauge, Infinity as InfinityIcon, LockKeyhole, ShieldAler
 import { api, type ApprovalScope, type HumanAction } from '../../shared/api/client'
 import { mcpToolDisplayLabel } from '../../shared/mcp-display'
 
-export function HumanActionCard({ action }: { action: HumanAction }) {
+export function HumanActionCard({ action, onDecided, onBusy, onError, disabled = false }: { action: HumanAction; onDecided?: (result: HumanAction) => void; onBusy?: (busy: boolean) => void; onError?: (message: string) => void; disabled?: boolean }) {
   const queryClient = useQueryClient()
   const [structuredAnswers, setStructuredAnswers] = useState<Record<string, string | string[]>>({})
   const [projectConfirmOpen, setProjectConfirmOpen] = useState(false)
@@ -16,7 +16,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       answer?: unknown
       confirmed?: boolean
     }) => api.decideHumanAction(action.id, { ...input, version: action.version }),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setProjectConfirmOpen(false)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['human-actions'] }),
@@ -25,8 +25,13 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
         queryClient.invalidateQueries({ queryKey: ['tasks', action.project_id] }),
         queryClient.invalidateQueries({ queryKey: ['conversation-messages', action.conversation_id] }),
       ])
+      onBusy?.(false)
+      onDecided?.(result)
     },
+    onMutate: () => onBusy?.(true),
+    onError: (error) => { onBusy?.(false); onError?.(error instanceof Error ? error.message : '审批未完成，请重试') },
   })
+  const actionPending = decision.isPending || disabled
 
   const waiting = action.status === 'waiting_user'
   const frozen = action.request.frozen_params ?? action.request.params ?? action.request
@@ -74,28 +79,28 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
       questions={questions}
       structuredAnswers={structuredAnswers}
       setStructuredAnswers={setStructuredAnswers}
-      pending={decision.isPending}
+      pending={actionPending}
       onSubmit={(value) => decision.mutate({ decision: 'answered', answer: value })}
     /> : null}
 
     {waiting && (approval || permission) ? <div className="human-action-actions">
-      <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
-      {privateWebFetch ? <button className="approve approve-origin" disabled={decision.isPending} onClick={() => approve('run_origin')}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={decision.isPending} onClick={() => approve('once')}><Check size={14} />批准一次</button>}
-      {mcpApproval ? <button className="approve approve-session" disabled={decision.isPending} onClick={() => approve('run_tool')}><Check size={14} />本任务允许此工具</button> : null}
-      {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => approve('conversation')}><Check size={14} />本会话允许</button> : null}
-      {persistentApprovalSupported ? <button disabled={decision.isPending} onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目允许 30 天</button> : null}
+      <button className="reject" disabled={actionPending} onClick={() => decision.mutate({ decision: 'rejected', scope: 'once' })}><X size={14} />拒绝</button>
+      {privateWebFetch ? <button className="approve approve-origin" disabled={actionPending} onClick={() => approve('run_origin')}><Check size={14} />允许本任务访问此站点</button> : <button className="approve" disabled={actionPending} title="只授权当前冻结参数的一次调用" onClick={() => approve('once')}><Check size={14} />仅这一次</button>}
+      {mcpApproval ? <button className="approve approve-session" disabled={actionPending} onClick={() => approve('run_tool')}><Check size={14} />本任务允许此工具</button> : null}
+      {persistentApprovalSupported ? <button disabled={actionPending} title="本会话内匹配当前工具、精确参数和风险等级，不会放行其他命令" onClick={() => approve('conversation')}><Check size={14} />本会话同类动作</button> : null}
+      {persistentApprovalSupported ? <button disabled={actionPending} title="项目内后续会话可复用相同工具、精确参数和风险等级的规则，有效 30 天" onClick={() => setProjectConfirmOpen(true)}><Check size={14} />本项目 30 天</button> : null}
     </div> : null}
 
     {waiting && budget ? <div className="human-action-actions budget-actions">
-      <button className="reject" disabled={decision.isPending} title="终止当前 Run，保留已有文件和执行记录" onClick={() => decision.mutate({ decision: 'rejected', answer: 'stop' })}><Square size={12} />停止任务</button>
-      <button disabled={decision.isPending} title={`仅增加 ${formatCount(finishCalls)} 次和 ${formatTokens(finishTokens)}，要求模型立即收尾`} onClick={() => decision.mutate({ decision: 'approved', answer: 'finish_existing' })}><Check size={14} />用现有结果收尾</button>
-      <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', answer: 'recommended' })}><Check size={14} />扩展 +{formatCount(addCalls)} 次 / +{formatTokens(addTokens)}</button>
-      <button disabled={decision.isPending} title="仅当前 Run 取消模型调用和 Token 上限；风险动作仍受审批策略约束" onClick={() => decision.mutate({ decision: 'approved', answer: 'unlimited' })}><InfinityIcon size={14} />本次不限额</button>
+      <button className="reject" disabled={actionPending} title="终止当前 Run，保留已有文件和执行记录" onClick={() => decision.mutate({ decision: 'rejected', answer: 'stop' })}><Square size={12} />停止任务</button>
+      <button disabled={actionPending} title={`仅增加 ${formatCount(finishCalls)} 次和 ${formatTokens(finishTokens)}，要求模型立即收尾`} onClick={() => decision.mutate({ decision: 'approved', answer: 'finish_existing' })}><Check size={14} />用现有结果收尾</button>
+      <button className="approve" disabled={actionPending} onClick={() => decision.mutate({ decision: 'approved', answer: 'recommended' })}><Check size={14} />扩展 +{formatCount(addCalls)} 次 / +{formatTokens(addTokens)}</button>
+      <button disabled={actionPending} title="仅当前 Run 取消模型调用和 Token 上限；风险动作仍受审批策略约束" onClick={() => decision.mutate({ decision: 'approved', answer: 'unlimited' })}><InfinityIcon size={14} />本次不限额</button>
     </div> : null}
 
     {waiting && sideEffect ? <div className="human-action-actions">
-      <button className="reject" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'confirm_not_applied' })}>确认未生效</button>
-      <button className="approve" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'confirm_applied' })}>确认已生效</button>
+      <button className="reject" disabled={actionPending} onClick={() => decision.mutate({ decision: 'confirm_not_applied' })}>确认未生效</button>
+      <button className="approve" disabled={actionPending} onClick={() => decision.mutate({ decision: 'confirm_applied' })}>确认已生效</button>
     </div> : null}
 
     {decision.error ? <small className="human-action-error" role="alert">{decision.error.message}</small> : null}
@@ -106,7 +111,7 @@ export function HumanActionCard({ action }: { action: HumanAction }) {
         <Dialog.Content className="dialog-content human-action-dialog" aria-describedby={`project-rule-description-${action.id}`}>
           <Dialog.Title>允许当前项目使用同类动作？</Dialog.Title>
           <Dialog.Description id={`project-rule-description-${action.id}`}>授权有效期为 30 天，只匹配当前工具、精确参数形状和风险等级。黑名单、破坏性 Git 与开放世界 MCP 不会被放行。</Dialog.Description>
-          <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" disabled={decision.isPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'project', confirmed: true })}>确认授权</button></div>
+          <div className="dialog-actions"><Dialog.Close asChild><button type="button">取消</button></Dialog.Close><button className="primary" type="button" disabled={actionPending} onClick={() => decision.mutate({ decision: 'approved', scope: 'project', confirmed: true })}>确认授权</button></div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

@@ -148,6 +148,13 @@ func TestSecondTruncationRetryForcesChunkedWrites(t *testing.T) {
 	}
 }
 
+func TestDocumentPolicyRetryExplainsFixedOperationAliases(t *testing.T) {
+	hint := modelCompatibilityRetryHint(`{"model_retry_count":1,"model_retry_reason":"TOOL_POLICY_DENIED","model_policy_denials":[{"tool_name":"document_apply","reason":"operation \"insert_table\" is not in the fixed document protocol"}]}`)
+	if hint == "" || !containsAll(hint, "不可审批的确定性策略限制", "document_apply", "update_paragraph", "insert_table", "rows 二维数组", "不要重放被拒操作") {
+		t.Fatalf("unexpected document policy retry hint: %q", hint)
+	}
+}
+
 func TestPlanRegressionRetryPreservesCompletedItems(t *testing.T) {
 	hint := modelCompatibilityRetryHint(`{"model_retry_count":1,"model_retry_reason":"RUN_PLAN_STATUS_REGRESSION"}`)
 	if hint == "" || !containsAll(hint, "已完成项", "completed", "同一完整清单") {

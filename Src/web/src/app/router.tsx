@@ -13,6 +13,7 @@ const DiagnosticsPage = lazyNamed(() => import('../features/diagnostics/diagnost
 const SessionTreePage = lazyNamed(() => import('../features/sessions/session-tree-page'), 'SessionTreePage')
 const ImportExportPage = lazyNamed(() => import('../features/migration/import-export-page'), 'ImportExportPage')
 const SettingsPage = lazyNamed(() => import('../features/settings/settings-page'), 'SettingsPage')
+const AutomationsPage = lazyNamed(() => import('../features/automations/automations-page'), 'AutomationsPage')
 
 type ProjectSearch = {
   conversation?: string
@@ -84,6 +85,12 @@ const approvalsRoute = createRoute({
   component: suspend(ApprovalInbox),
 })
 
+const automationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/automations',
+  component: suspend(AutomationsPage),
+})
+
 const resourcesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/resources',
@@ -148,7 +155,7 @@ const invitationAcceptRoute = createRoute({
   component: () => <Navigate to="/" />,
 })
 
-const routeTree = rootRoute.addChildren([projectsRoute, projectLibraryRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, resourcesRoute, providersRoute, settingsIndexRoute, legacySecuritySettingsRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
+const routeTree = rootRoute.addChildren([projectsRoute, projectLibraryRoute, projectRoute, threadRoute, sessionTreeRoute, terminalRoute, taskRoute, approvalsRoute, automationsRoute, resourcesRoute, providersRoute, settingsIndexRoute, legacySecuritySettingsRoute, settingsRoute, importExportRoute, diagnosticsRoute, loginRoute, invitationAcceptRoute])
 
 export const router = createRouter({ routeTree })
 

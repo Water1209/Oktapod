@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -9,6 +10,11 @@ import (
 )
 
 const MCPDefinitionSchemaV1 = "oktapod.mcp/v1"
+
+// ErrMCPNotConnected means the capability is visible but no connection health
+// record has been persisted yet. It is deliberately distinct from sql.ErrNoRows,
+// which the HTTP layer maps to a missing resource.
+var ErrMCPNotConnected = errors.New("MCP has not been connected")
 
 var mcpEnvironmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var mcpHeaderNamePattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")

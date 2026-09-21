@@ -614,6 +614,63 @@ paths:
                 $ref: "#/components/schemas/Schedule"
         default:
           $ref: "#/components/responses/Problem"
+  /projects/{project_id}/schedule-preview:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    post:
+      operationId: previewSchedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description, timezone]
+              properties:
+                description: { type: string, minLength: 1, maxLength: 4000 }
+                timezone: { type: string }
+      responses:
+        "200":
+          description: Model-generated schedule preview; does not create a schedule
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, cron_expression, timezone, goal, clarification, create_requested]
+                properties:
+                  name: { type: string }
+                  cron_expression: { type: string }
+                  timezone: { type: string }
+                  goal: { type: string }
+                  clarification: { type: string }
+                  create_requested: { type: boolean }
+        default:
+          $ref: "#/components/responses/Problem"
+  /schedules/{schedule_id}/runs:
+    parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listScheduleRuns
+      responses:
+        "200":
+          description: Recent executions of a schedule
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScheduleRun"
+        default:
+          $ref: "#/components/responses/Problem"
   /projects/{project_id}/capabilities:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -926,6 +983,64 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MCPHealth" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/runtime-dependencies:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: listRuntimeDependencies
+      responses:
+        "200":
+          description: Missing external runtime dependencies reported by provider adapters
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    maxItems: 32
+                    items: { $ref: "#/components/schemas/RuntimeDependency" }
+        default: { $ref: "#/components/responses/Problem" }
+  /capabilities/{capability_id}/runtime-dependencies/{dependency_id}/install:
+    parameters:
+      - name: capability_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: dependency_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 120 }
+      - name: provider
+        in: query
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    post:
+      operationId: installRuntimeDependency
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmed]
+              additionalProperties: false
+              properties:
+                confirmed: { type: boolean, enum: [true] }
+      responses:
+        "200":
+          description: Dependency installed; capability revalidated and returned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capability" }
         default: { $ref: "#/components/responses/Problem" }
   /projects/{project_id}/memories:
     parameters:
@@ -3341,6 +3456,22 @@ components:
         misfire_grace_seconds: { type: integer, format: int64, minimum: 0 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    ScheduleRun:
+      type: object
+      required: [id, schedule_id, planned_at, status, task_id, conversation_id, run_id, task_status, error_code, result_summary]
+      properties:
+        id: { type: string, format: uuid }
+        schedule_id: { type: string, format: uuid }
+        planned_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, created, skipped, waiting_confirmation] }
+        task_id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        task_status: { type: string }
+        error_code: { type: string }
+        result_summary: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
     Capability:
       type: object
       required: [id, organization_id, project_id, owner_user_id, kind, name, version, manifest_json, content_hash, status, availability, risk_level, permission_diff, scope_type, scope_id, source_filename, bundle_hash, install_job_id, credential_configured, credential_state, origin, preset_key, dependencies, managed_version, update_state, created_at, updated_at]
@@ -3525,6 +3656,19 @@ components:
         last_error: { type: string }
         connected_at: { type: string, format: date-time, nullable: true }
         updated_at: { type: string, format: date-time }
+    RuntimeDependency:
+      type: object
+      required: [id, kind, provider, name, display_name, description, installable]
+      additionalProperties: false
+      properties:
+        id: { type: string, minLength: 1, maxLength: 120 }
+        kind: { type: string, minLength: 1, maxLength: 64 }
+        provider: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        version: { type: string, maxLength: 128 }
+        display_name: { type: string, minLength: 1, maxLength: 160 }
+        description: { type: string, minLength: 1, maxLength: 1000 }
+        installable: { type: boolean }
     CreateCapabilityRequest:
       type: object
       required: [kind, name, manifest_json]

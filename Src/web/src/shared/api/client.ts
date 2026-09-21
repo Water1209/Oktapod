@@ -10,6 +10,7 @@ export type PlanStatus = 'todo' | 'in_progress' | 'paused' | 'done'
 export type ScheduleStatus = 'enabled' | 'disabled'
 export type ScheduleMisfirePolicy = 'skip' | 'run_now' | 'ask'
 export type ScheduleOverlapPolicy = 'forbid' | 'queue' | 'replace'
+export type ScheduleFireStatus = 'pending' | 'created' | 'skipped' | 'waiting_confirmation'
 export type MemoryStatus = 'active' | 'inactive'
 export type CapabilityKind = 'skill' | 'plugin' | 'mcp' | 'agent'
 export type CapabilityStatus = 'enabled' | 'disabled' | 'quarantined'
@@ -313,6 +314,21 @@ export interface Schedule {
   updated_at: string
 }
 
+export interface ScheduleRun {
+  id: string
+  schedule_id: string
+  planned_at: string
+  status: ScheduleFireStatus
+  task_id: string
+  conversation_id: string
+  run_id: string
+  task_status: string
+  error_code: string
+  result_summary: string
+  started_at?: string
+  finished_at?: string
+}
+
 export interface Capability {
   id: string
   organization_id: string
@@ -370,6 +386,17 @@ export interface MCPHealth {
   last_error: string
   connected_at?: string
   updated_at: string
+}
+
+export interface RuntimeDependency {
+  id: string
+  kind: string
+  provider: string
+  name: string
+  version?: string
+  display_name: string
+  description: string
+  installable: boolean
 }
 
 export interface Memory {
@@ -1181,6 +1208,8 @@ export const api = {
     request<Schedule>(`/projects/${projectId}/schedules`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   setScheduleStatus: (scheduleId: string, status: ScheduleStatus) =>
     request<Schedule>(`/schedules/${scheduleId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
+  scheduleRuns: (scheduleId: string) => request<{ items: ScheduleRun[] }>(`/schedules/${scheduleId}/runs`),
+  previewSchedule: (projectId: string, description: string, timezone: string) => request<{ name: string; cron_expression: string; timezone: string; goal: string; clarification: string; create_requested: boolean }>(`/projects/${projectId}/schedule-preview`, { method: 'POST', body: JSON.stringify({ description, timezone }) }),
   capabilities: (projectId: string) => request<{ items: Capability[] }>(`/projects/${projectId}/capabilities`),
   resourceCatalog: (projectId: string) => request<{ items: PresetResourceCatalogItem[] }>(`/resource-catalog?project_id=${encodeURIComponent(projectId)}`),
   installPresetResource: (projectId: string, presetKey: string) =>
@@ -1201,6 +1230,13 @@ export const api = {
   cancelMCPOAuth: (capabilityId: string, sessionId: string) => request<MCPOAuthSession>(`/capabilities/${capabilityId}/mcp/oauth/${sessionId}/cancel`, { method: 'POST' }),
   disconnectMCP: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/disconnect`, { method: 'POST' }),
   mcpHealth: (capabilityId: string) => request<MCPHealth>(`/capabilities/${capabilityId}/mcp/health`),
+  runtimeDependencies: (capabilityId: string) => request<{ items: RuntimeDependency[] }>(`/capabilities/${capabilityId}/runtime-dependencies`),
+  installRuntimeDependency: (capabilityId: string, provider: string, dependencyId: string) =>
+    request<Capability>(`/capabilities/${capabilityId}/runtime-dependencies/${encodeURIComponent(dependencyId)}/install?provider=${encodeURIComponent(provider)}`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify({ confirmed: true }),
+    }),
   memories: (projectId: string, query = '') => request<{ items: Memory[] }>(`/projects/${projectId}/memories${query ? `?q=${encodeURIComponent(query)}` : ''}`),
   createMemory: (projectId: string, input: { kind: string; title: string; content: string; visibility: Visibility; source_refs?: string[] }) =>
     request<Memory>(`/projects/${projectId}/memories`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),

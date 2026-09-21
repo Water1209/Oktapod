@@ -18,7 +18,7 @@ for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
   const revision2 = `sessions/smoke/${format}/revision-2.${format}`
   const specification = {
     pptx: { slides: [{ title: 'Runtime smoke', body: 'before' }] },
-    docx: { title: 'Runtime smoke', paragraphs: [{ text: 'before' }] },
+    docx: { title: 'Runtime smoke', paragraphs: [{ text: 'before' }, { text: 'table anchor' }] },
     xlsx: { sheets: [{ name: 'Smoke', rows: [['before', 1]] }] },
     pdf: {
       title: '运行时冒烟测试', subtitle: 'Structured PDF specification',
@@ -28,7 +28,10 @@ for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
   }[format]
   const operations = {
     pptx: [{ op: 'replace_text', find: 'before', replace: 'after' }],
-    docx: [{ op: 'replace_text', find: 'before', replace: 'after' }],
+    docx: [
+      { op: 'update_paragraph', index: 2, text: 'after' },
+      { op: 'insert_table', index: 2, rows: [['Name', 'Value'], ['Runtime', 'ok']] },
+    ],
     xlsx: [{ op: 'set_cell', sheet: 'Smoke', cell: 'A1', value: 'after' }],
     pdf: [{ op: 'rotate_pages', pages: [1], degrees: 90 }],
   }[format]

@@ -32,8 +32,7 @@ test('Auto 对话、Task 状态条、Steering 与 Follow-up 保持同一 Thread 
   await page.getByRole('button', { name: '执行设置' }).click()
 
   await page.getByRole('button', { name: '打开任务面板' }).click()
-  await page.locator('.project-management-panel > nav').getByRole('button', { name: /更多/ }).click()
-  await page.locator('.panel-secondary-nav').getByRole('button', { name: '项目', exact: true }).click()
+  await page.getByRole('navigation', { name: '任务面板导航' }).getByRole('button', { name: '项目', exact: true }).click()
   await page.getByRole('button', { name: '项目设置' }).click()
   let projectDialog = page.getByRole('dialog')
   await expect(projectDialog.getByText('项目资源配额')).toBeVisible()
@@ -45,7 +44,7 @@ test('Auto 对话、Task 状态条、Steering 与 Follow-up 保持同一 Thread 
   await expect(projectDialog.getByRole('spinbutton', { name: '项目最多模型调用' })).toHaveValue('7')
   await expect(projectDialog.getByRole('spinbutton', { name: '项目最多 Token' })).toHaveValue('12000')
   await projectDialog.getByRole('button', { name: '取消' }).click()
-  await page.getByRole('button', { name: '关闭任务面板' }).click()
+  await page.getByRole('button', { name: '关闭侧边面板' }).click()
 
   const composer = page.getByRole('textbox', { name: '消息' })
   await composer.fill('请直接解释 SQLite 的用途')

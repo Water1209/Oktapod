@@ -73,6 +73,7 @@ export function taskFailureInfo(task: Pick<Task, 'error_code' | 'result_summary'
   }
   if (code === 'SIDE_EFFECT_STATUS_UNKNOWN') return { title: '外部操作结果未知', detail: '系统无法确认上一次非幂等操作是否完成，因此停止自动重试。', action: '先核查外部状态，再在任务详情中确认处理方式。', retryable: false }
   if (code === 'MCP_CALL_TIMEOUT') return { title: 'MCP 工具执行超时', detail: '外部 MCP 在执行截止时间内没有返回结果，系统已结束本次调用并保留此前进度。', action: '系统会让模型改用更小的查询或其他可用工具恢复；自动恢复用尽后再由你决定是否继续。', retryable: true }
+  if (code === 'MCP_RUNTIME_DEPENDENCY_MISSING') return { title: '缺少外部工具运行时依赖', detail: 'MCP 工具未执行。运行时依赖必须通过资源中心受控安装，不能用工作区或 Shell 命令自行下载。', action: '打开资源中心，检查缺失依赖并完成两次确认；安装完成后系统会自动重新连接 MCP。', retryable: false }
   if (code === 'COMMAND_EXIT_NONZERO') return { title: '命令执行失败', detail: '命令已经运行，但退出码不是 0。', action: '查看工具事件和输出，修订命令后重试。', retryable: true }
   if (code === 'ATTACHMENT_NOT_READ') return { title: '附件尚未全部读取', detail: '部分附件仍缺少成功的读取证据，任务已保留已完成记录并停止交付。', action: '恢复任务后，系统会核对全部附件并补读缺失内容，再生成结果。', retryable: true }
   if (code === 'DOCUMENT_RUNTIME_VERSION_UNAVAILABLE') return { title: '文档运行时暂时不可用', detail: '当前文档运行时未能响应该任务冻结的版本，已完成的读取和编辑记录仍保留。', action: '运行时恢复后可从当前文档步骤继续。', retryable: true }

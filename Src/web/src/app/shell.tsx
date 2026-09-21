@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { authLifecycle } from '../shared/auth-lifecycle'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, FileUp, Folder, FolderOpen, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
+import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, CirclePause, Clock3, FileUp, Folder, FolderOpen, Home, LoaderCircle, LogOut, Menu, MessageSquare, MoreHorizontal, Network, PackageOpen, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, type Bootstrap } from '../shared/api/client'
 import { assistantExcerpt } from '../shared/assistant-segments'
 import { BootstrapContext } from '../shared/bootstrap-context'
@@ -83,6 +83,7 @@ export function AppShell({ bootstrap, children }: { bootstrap: Bootstrap; childr
       <div className="rail-primary">
         <RailLink to="/" label="首页" active={location.pathname === '/'} icon={<Home />} />
         <RailLink to="/projects" label="项目" active={location.pathname.startsWith('/projects')} icon={<Folder />} />
+        <RailLink to="/automations" label="定时" active={location.pathname === '/automations'} icon={<Clock3 />} />
         <RailLink to="/resources" label="资源" active={location.pathname === '/resources'} icon={<PackageOpen />} />
         <RailLink to="/approvals" label="审批" active={location.pathname === '/approvals'} icon={<ShieldCheck />} badge={inbox.data?.items.length} />
         <RailLink to="/settings/$section" params={{ section: 'appearance' }} label="设置" active={location.pathname.startsWith('/settings')} icon={<Settings />} />

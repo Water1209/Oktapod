@@ -5,7 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+func TestNewUsesConservativeRegistryTimeout(t *testing.T) {
+	client := New(nil)
+	if client.http.Timeout != 30*time.Second {
+		t.Fatalf("timeout=%s, want 30s", client.http.Timeout)
+	}
+}
 
 func TestSearchUsesOfficialContractWrapper(t *testing.T) {
 	t.Parallel()

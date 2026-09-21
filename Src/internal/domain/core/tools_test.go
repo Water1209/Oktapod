@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPlanToolFailsClosedForUnsafeInputs(t *testing.T) {
 	t.Parallel()
@@ -172,6 +175,9 @@ func TestPlanToolClassifiesFixedDocumentProtocolAndRejectsExecutablePayloads(t *
 		{ToolCall{Name: ToolDocumentRender, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1)}}, "L0"},
 		{ToolCall{Name: ToolDocumentCreate, Arguments: map[string]any{"format": "docx", "specification": map[string]any{"title": "Report"}}}, "L1"},
 		{ToolCall{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "replace_text", "find": "old", "replace": "new"}}}}, "L1"},
+		{ToolCall{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "update_paragraph", "index": float64(2), "text": "updated"}}}}, "L1"},
+		{ToolCall{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "insert_table", "index": float64(2), "rows": []any{[]any{"Name", "Value"}, []any{"Runtime", "ok"}}}}}}, "L1"},
+		{ToolCall{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "delete_paragraph", "paragraph": float64(2)}}}}, "L1"},
 		{ToolCall{Name: ToolDocumentExport, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "name": "report.docx", "format": "docx", "kind": "deliverable"}}, "L1"},
 	}
 	for _, test := range tests {
@@ -184,11 +190,44 @@ func TestPlanToolClassifiesFixedDocumentProtocolAndRejectsExecutablePayloads(t *
 		{Name: ToolDocumentOpen, Arguments: map[string]any{"source_ref": "workspace:../secret.pdf", "mode": "full"}},
 		{Name: ToolDocumentCreate, Arguments: map[string]any{"format": "pdf", "specification": map[string]any{"script": "open('secret')"}}},
 		{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "shell", "command": "calc.exe"}}}},
+		{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "update_paragraph", "text": "missing index"}}}},
+		{Name: ToolDocumentApply, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "operations": []any{map[string]any{"op": "insert_table", "rows": []any{[]any{}}}}}},
 		{Name: ToolDocumentExport, Arguments: map[string]any{"document_ref": "document:00000000-0000-7000-8000-000000000001", "expected_revision": float64(1), "name": "../report.pdf", "format": "pdf", "kind": "deliverable"}},
 	} {
 		if planned := PlanTool(call); planned.Decision != PolicyDeny {
 			t.Fatalf("unsafe document tool payload was not denied: call=%#v planned=%#v", call, planned)
 		}
+	}
+}
+
+func TestDocumentApplySchemaListsFixedOperationsAndRecoveryAliases(t *testing.T) {
+	var apply ToolSpec
+	for _, spec := range BuiltinToolSpecs() {
+		if spec.Name == ToolDocumentApply {
+			apply = spec
+			break
+		}
+	}
+	properties := apply.Parameters["properties"].(map[string]any)
+	operations := properties["operations"].(map[string]any)
+	items := operations["items"].(map[string]any)
+	itemProperties := items["properties"].(map[string]any)
+	op := itemProperties["op"].(map[string]any)
+	enum := op["enum"].([]string)
+	for _, expected := range []string{"update_paragraph", "insert_table", "delete_paragraph"} {
+		found := false
+		for _, actual := range enum {
+			if actual == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("document_apply schema omitted %q: %#v", expected, enum)
+		}
+	}
+	if !strings.Contains(apply.PromptHint, "insert_table") || !strings.Contains(apply.Guidelines[1], "update_paragraph") {
+		t.Fatalf("document_apply recovery guidance is incomplete: %#v", apply)
 	}
 }
 

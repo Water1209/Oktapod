@@ -98,6 +98,17 @@ describe('task progress presentation', () => {
     })
   })
 
+  it('routes a missing MCP runtime dependency through the governed resource center', () => {
+    const failure = taskFailureInfo({ error_code: 'MCP_RUNTIME_DEPENDENCY_MISSING', result_summary: '' })
+    expect(failure).toMatchObject({
+      title: '缺少外部工具运行时依赖',
+      retryable: false,
+    })
+    expect(failure?.action).toContain('资源中心')
+    expect(failure?.action).toContain('两次确认')
+    expect(failure?.detail).toContain('不能')
+  })
+
   it('explains reasoning-only truncation without claiming completion', () => {
     expect(taskFailureInfo({ error_code: 'PROVIDER_REASONING_TRUNCATED', result_summary: '' })).toMatchObject({
       title: '模型推理达到输出上限',

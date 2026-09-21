@@ -6228,6 +6228,57 @@ func (s *Store) ListSchedules(ctx context.Context, scope core.Scope, projectID s
 	return items, nil
 }
 
+func (s *Store) ListScheduleRuns(ctx context.Context, scope core.Scope, scheduleID string, limit int) ([]core.ScheduleRun, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.id, f.schedule_id, f.planned_at, f.status,
+		       COALESCE(f.task_id, ''), COALESCE(c.id, ''),
+		       COALESCE(r.id, ''), COALESCE(t.status, ''),
+		       COALESCE(t.error_code, ''), COALESCE(t.result_summary, ''),
+		       COALESCE(r.created_at, ''), COALESCE(r.updated_at, '')
+		FROM schedule_fires f
+		JOIN schedules s ON s.id = f.schedule_id
+		JOIN projects p ON p.id = s.project_id
+		JOIN project_memberships pm ON pm.project_id = s.project_id
+		LEFT JOIN tasks t ON t.id = f.task_id
+		LEFT JOIN conversations c ON c.id = t.conversation_id
+		LEFT JOIN runs r ON r.id = (
+			SELECT r2.id FROM runs r2 WHERE r2.task_id = t.id ORDER BY r2.created_at DESC, r2.id DESC LIMIT 1
+		)
+		WHERE f.schedule_id = ? AND s.organization_id = ? AND pm.user_id = ?
+		  AND pm.status = 'active' AND p.status = 'active'
+		ORDER BY f.planned_at DESC, f.id DESC LIMIT ?`, scheduleID, scope.OrganizationID, scope.UserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]core.ScheduleRun, 0)
+	for rows.Next() {
+		var item core.ScheduleRun
+		var planned, started, finished string
+		if err := rows.Scan(&item.ID, &item.ScheduleID, &planned, &item.Status, &item.TaskID, &item.ConversationID, &item.RunID, &item.TaskStatus, &item.ErrorCode, &item.ResultSummary, &started, &finished); err != nil {
+			return nil, err
+		}
+		item.PlannedAt, err = parseTime(planned)
+		if err != nil {
+			return nil, err
+		}
+		if started != "" {
+			item.StartedAt, err = parseTime(started)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if finished != "" {
+			item.FinishedAt, err = parseTime(finished)
+			if err != nil {
+				return nil, err
+			}
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) SetScheduleStatus(ctx context.Context, scope core.Scope, scheduleID, status string, idempotency core.Idempotency) (core.Schedule, error) {
 	route := "POST /schedules/" + scheduleID + "/status"
 	if idempotency.Key != "" {
@@ -6272,6 +6323,12 @@ func (s *Store) GetDueSchedule(ctx context.Context, now time.Time) (core.Schedul
 }
 
 func (s *Store) ClaimScheduleFire(ctx context.Context, schedule core.Schedule, nextRunAt time.Time) (core.ScheduleFire, error) {
+	return retrySQLiteBusyValue(ctx, func() (core.ScheduleFire, error) {
+		return s.claimScheduleFire(ctx, schedule, nextRunAt)
+	})
+}
+
+func (s *Store) claimScheduleFire(ctx context.Context, schedule core.Schedule, nextRunAt time.Time) (core.ScheduleFire, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return core.ScheduleFire{}, err
@@ -6331,7 +6388,10 @@ func (s *Store) CreateScheduledTask(ctx context.Context, schedule core.Schedule,
 
 func (s *Store) AdvanceScheduleAfterFire(ctx context.Context, scheduleID string, plannedAt, nextRunAt time.Time, fireStatus, taskID string) error {
 	_ = nextRunAt
-	_, err := s.db.ExecContext(ctx, `UPDATE schedule_fires SET status = ?, task_id = ?, updated_at = ? WHERE schedule_id = ? AND planned_at = ? AND generation = 1 AND status = 'pending'`, fireStatus, nullableString(taskID), formatTime(time.Now()), scheduleID, formatTime(plannedAt))
+	_, err := retrySQLiteBusyValue(ctx, func() (bool, error) {
+		_, updateErr := s.db.ExecContext(ctx, `UPDATE schedule_fires SET status = ?, task_id = ?, updated_at = ? WHERE schedule_id = ? AND planned_at = ? AND generation = 1 AND status = 'pending'`, fireStatus, nullableString(taskID), formatTime(time.Now()), scheduleID, formatTime(plannedAt))
+		return true, updateErr
+	})
 	return err
 }
 
@@ -7085,6 +7145,30 @@ func (s *Store) DisconnectMCP(ctx context.Context, scope core.Scope, capabilityI
 	return s.GetMCPHealth(ctx, scope, capabilityID)
 }
 
+// RecordMCPRuntimeFailure persists a bounded, provider-neutral dependency
+// marker when an MCP connects successfully but a tool call fails because its
+// runtime is incomplete. The original external output never enters this row.
+func (s *Store) RecordMCPRuntimeFailure(ctx context.Context, scope core.Scope, capabilityID, lastError string) error {
+	if strings.TrimSpace(capabilityID) == "" {
+		return &core.ValidationError{Field: "capability_id", Message: "is required"}
+	}
+	if strings.TrimSpace(lastError) == "" {
+		return &core.ValidationError{Field: "last_error", Message: "is required"}
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE mcp_connections SET status = ?, health_state = ?, last_error = ?, updated_at = ? WHERE capability_id = ? AND organization_id = ?`, core.MCPStatusFailed, core.MCPStatusFailed, lastError, formatTime(time.Now()), capabilityID, scope.OrganizationID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return core.ErrMCPNotConnected
+	}
+	return nil
+}
+
 func (s *Store) GetMCPHealth(ctx context.Context, scope core.Scope, capabilityID string) (core.MCPHealth, error) {
 	var item core.MCPHealth
 	var connectedAt, updatedAt string
@@ -7092,6 +7176,12 @@ func (s *Store) GetMCPHealth(ctx context.Context, scope core.Scope, capabilityID
 	// may use an enabled MCP capability, while connect/disconnect remains owner-only.
 	err := s.db.QueryRowContext(ctx, `SELECT id, capability_id, project_id, transport, status, protocol, tool_count, tools_json, schema_hash, config_version, health_state, last_error, connected_at, updated_at FROM mcp_connections WHERE capability_id = ? AND organization_id = ? AND EXISTS (SELECT 1 FROM capabilities c JOIN project_memberships pm ON pm.project_id = c.project_id AND pm.user_id = ? AND pm.status = 'active' WHERE c.id = mcp_connections.capability_id AND c.organization_id = ?)`, capabilityID, scope.OrganizationID, scope.UserID, scope.OrganizationID).Scan(&item.ID, &item.CapabilityID, &item.ProjectID, &item.Transport, &item.Status, &item.Protocol, &item.ToolCount, &item.ToolsJSON, &item.SchemaHash, &item.ConfigVersion, &item.HealthState, &item.LastError, &connectedAt, &updatedAt)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			var kind string
+			if capErr := s.db.QueryRowContext(ctx, `SELECT kind FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(&kind); capErr == nil && kind == core.CapabilityKindMCP {
+				return core.MCPHealth{}, core.ErrMCPNotConnected
+			}
+		}
 		return core.MCPHealth{}, err
 	}
 	item.ConnectedAt = mustParseTimeOrZero(connectedAt)
@@ -7193,6 +7283,15 @@ func (s *Store) writeCapabilityAudit(ctx context.Context, scope core.Scope, proj
 		return
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_events (id, organization_id, project_id, actor_user_id, action, target_type, target_id, outcome, detail_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, ?, 'mcp_connection', ?, 'succeeded', ?, ?, ?)`, auditID, scope.OrganizationID, projectID, scope.UserID, action, targetID, string(data), correlationID, formatTime(time.Now()))
+}
+
+func (s *Store) AuditCapability(ctx context.Context, scope core.Scope, capabilityID, action string, detail map[string]any, correlationID string) error {
+	var projectID string
+	if err := s.db.QueryRowContext(ctx, `SELECT project_id FROM capabilities WHERE id = ? AND organization_id = ?`, capabilityID, scope.OrganizationID).Scan(&projectID); err != nil {
+		return err
+	}
+	s.writeCapabilityAudit(ctx, scope, projectID, action, capabilityID, detail, correlationID)
+	return nil
 }
 
 func (s *Store) CreateMemory(ctx context.Context, scope core.Scope, projectID string, input core.CreateMemoryInput, sourceHash string, idempotency core.Idempotency) (core.Memory, error) {
@@ -11519,7 +11618,7 @@ func isRecoverableToolExecutionFailure(code string) bool {
 		return false
 	}
 	switch code {
-	case "SIDE_EFFECT_STATUS_UNKNOWN", "TOOL_POLICY_DENIED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED":
+	case "MCP_RUNTIME_DEPENDENCY_MISSING", "SIDE_EFFECT_STATUS_UNKNOWN", "TOOL_POLICY_DENIED", "APPROVAL_REJECTED", "APPROVAL_EXPIRED":
 		return false
 	default:
 		return true

@@ -25,6 +25,7 @@ import (
 	"github.com/oktapod/oktapod/Src/internal/adapters/documentruntime"
 	"github.com/oktapod/oktapod/Src/internal/adapters/httpapi"
 	mcpadapter "github.com/oktapod/oktapod/Src/internal/adapters/mcp"
+	"github.com/oktapod/oktapod/Src/internal/adapters/mcppackage"
 	"github.com/oktapod/oktapod/Src/internal/adapters/mcpregistry"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/databaseconfigured"
 	"github.com/oktapod/oktapod/Src/internal/adapters/model/modeltransport"
@@ -187,6 +188,8 @@ func run() (runErr error) {
 	})
 	service.WithVault(vaultKeys).WithBootstrapConfiguration(configManager).WithWebAccessPolicy(config.WebAccessPolicy)
 	service.WithMCPRegistry(mcpregistry.New(nil))
+	service.WithMCPPackageResolver(mcppackage.New(nil))
+	service.WithRuntimeDependencyProvider(mcpadapter.NewPlaywrightDependencyProvider())
 	trustedCapabilityKeys, keyErr := bootstrap.CapabilityTrustedKeys(config.CapabilityTrustedKeysJSON)
 	if keyErr != nil {
 		return keyErr
@@ -286,6 +289,7 @@ func run() (runErr error) {
 	}
 	hostname, _ := os.Hostname()
 	workerInstanceID := fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().UnixNano())
+	runtimeDependencyProviders := service.RuntimeDependencyProviders()
 	var workerGroup sync.WaitGroup
 	for index := 0; index < config.RunConcurrency; index++ {
 		workerID := fmt.Sprintf("%s-%d", workerInstanceID, index+1)
@@ -296,6 +300,7 @@ func run() (runErr error) {
 			WithWebAccess(webAccessExecutor).
 			WithMCPSecretStore(credentials).
 			WithMCPSessionBroker(mcpSessions).
+			WithRuntimeDependencyProviders(runtimeDependencyProviders).
 			WithQueuedTurnStarter(queuedTurnStarter).
 			WithLiveTurnPublisher(liveTurnHub).
 			WithModelTurnTimeouts(modelTurnTimeouts)
@@ -309,7 +314,9 @@ func run() (runErr error) {
 			}
 		}()
 	}
-	scheduler := okruntime.NewScheduler(store, logger)
+	scheduler := okruntime.NewScheduler(store, logger, func(ctx context.Context, schedule core.Schedule, fire core.ScheduleFire) (core.Task, error) {
+		return service.SubmitScheduledTurn(ctx, schedule, fire)
+	})
 	go func() {
 		if schedulerErr := scheduler.Run(workerCtx); schedulerErr != nil && !errors.Is(schedulerErr, context.Canceled) {
 			logger.Error("scheduler stopped", "error", schedulerErr)

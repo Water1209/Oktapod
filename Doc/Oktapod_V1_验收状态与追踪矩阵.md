@@ -1,9 +1,17 @@
 # Oktapod V1 验收状态与追踪矩阵
 
-> 版本：v1.34
-> 更新日期：2026-09-10
+> 版本：v1.36
+> 更新日期：2026-09-20
 > 权威性：本文件是 V1 实现完成度与发布状态的唯一验收矩阵。设计文档覆盖某项能力，不代表该能力已经完成。
 > 执行基线：`Oktapod_V1_总体架构与产品优化方案_审定版_V2.0.md`、`Oktapod_V1_执行计划与验收门禁_V1.0.md`、`Oktapod_V1.1_Agent_Runtime_优化执行计划.md`、`Oktapod_Agent_Runtime_性能与LLM调用优化执行方案_V2.0.md`
+
+## 2026-09-15 文档策略拒绝与人工恢复
+
+状态：PASS_LOCAL；真实浏览器点击复验待登录会话恢复。`document_apply` 的 `insert_table`/`update_paragraph` 曾被固定协议拒绝，原因是模型可见 Schema 未枚举真实可执行操作，且 DOCX Runtime 没有对应实现；该拒绝属于不可审批的确定性安全策略，不是用户审批未通过。现已对齐固定操作枚举、DOCX 段落别名和有界 `rows` 表格实现，恢复提示明确禁止重放拒绝动作并引导使用合法操作。新增领域策略、工具 Schema、模型恢复提示和 Document Runtime 冒烟回归；`pnpm verify`、四格式 Runtime 冒烟、服务 JSON 健康与数据库状态检查通过。既有受阻 Task 保留，不直接改写历史或数据库；需在登录态下再次点击“恢复任务”验证真实模型续跑。
+
+## 2026-09-15 权限冻结、Auto 路由与审批面板
+
+状态：PASS_LOCAL。普通项目消息的 Auto 路由已接入既有模型分类：解释、原理、报错讨论和不做交付物的问答走 chat；显式指令、附件、执行/修改/导出交付物及分类失败安全回退走 task，并记录 `route_reason`。Composer 在活动任务旁提示权限已冻结、切换只影响下一次发送；完全访问弹窗提供“停止当前任务并准备重发”，但不自动中止或改写历史 Run。任务区多项审批改为单窗口面板，支持编号/上一项/下一项、自动跳转和兼容项“全部批准一次”；`run_origin` 等专项授权不进入批量批准。审批中心同步使用一致的范围文案。新增严格 JSON 路由解析、Auto chat 流式回归、分类失败回退任务和审批面板三项前端测试；application/integration、前端 lint、完整 `pnpm verify`、审批 E2E 与 turn E2E 已通过。未修改 Run 权限快照、ExecutionPolicy、高风险硬拒绝和审批数据模型。
 
 ## 2026-09-10 3D 测试策略恢复
 
@@ -286,3 +294,6 @@
 | 2026-09-05 | 覆盖式最大化与 HTML/Markdown 双模式预览 | 根据真实 Codex 交互澄清最大化语义：普通右栏保持 360px，最大化保留左侧导航并覆盖整个对话工作区，项目栏收起后从全局栏右侧铺满。HTML 从通用代码路由独立为沙箱预览，禁用脚本、表单、子框架、对象、Base URL 与外部网络，并可切换带行号源码；Markdown 可在渲染结果和原文间切换。文件行对可预览格式显示眼睛图标，未支持格式显示新页面图标。Vitest 新增 HTML 路由与 CSP 注入用例；Playwright 校验覆盖边界、HTML 脚本未执行、HTML 源码和 Markdown 原文切换。 |
 
 HTML 预览回归修复（2026-09-05）：真实浏览器确认空 `sandbox` 与全局 `script-src 'self'` 同时阻断单文件 HTML，下载文件正常而面板/新窗口无法运行。现改为隔离源 `allow-scripts` + `script-src 'unsafe-inline'`，继续禁止宿主访问、网络、表单、子框架和对象；工作区/资产预览路由使用专用 HTML CSP，并补充 Go/Vitest 回归用例。
+
+| 2026-09-15 | 定时任务触发关联与页面状态修复 | 定时触发改为通过应用层 `CreateTask` 为每个 fire 同步创建独立 Task/Run，避免 Composer follow-up 在 SQLite 短暂锁竞争时返回空 Task，导致 fire 被错误标记为 `skipped`；调度领取与 fire 状态更新增加有界 SQLite 瞬态重试。定时任务页面轮询计划和展开的执行记录，并同时展示 fire 状态与 Task 状态。新增 `TestSubmitScheduledTurnCreatesOneDirectlyLinkedTask`；application、SQLite adapter、runtime、integration 定向测试及前端 lint/build 通过。此前已用内置浏览器完成真实触发链路验证；本次重启后浏览器会话回到登录页，修复后的服务已通过运行态健康检查与数据库调度验证，待复用登录态补做页面点击复验。
+| 2026-09-20 | 通用 MCP 运行时依赖安装 | `RuntimeDependencyProvider` 保持 provider-agnostic 的 `Detect / Supports / Install` 契约，Application、OpenAPI 与 Web 不含 Playwright/Chromium 特判。Playwright 0.0.81 已在隔离实例完成资源中心解析、预检、安装、审核、主动依赖检测、两阶段人工确认、`chromium-1244` 隔离下载及重启后自动重连；真实安装暴露并修复新版 Windows `chrome-win64` 目录兼容问题，列表和生命周期由“需要修复”恢复“可用”，26 个工具在线。Codex 浏览器同时安装并连接 Filesystem MCP 2026.8.31，14 个工具在线；外部冒烟真实执行 Playwright `browser_navigate` 打开本地 Oktapod，以及 Filesystem `write_file`、`read_text_file` 和越界拒绝。定向 Go 测试、完整 `pnpm verify`、PID/listener 与 `application/json` 健康检查通过。状态仍为 `PARTIAL`：隔离实例未配置模型 Provider，故自然语言安装入口和经 Agent Loop 产生调用/Receipt 的浏览器闭环没有证据；不得以适配器级真实工具调用替代该门禁。最小解锁动作是向该隔离实例配置一项可用、支持工具调用的模型 Provider 后，在 Codex 浏览器中各执行一次自然语言安装和项目对话调用。 |

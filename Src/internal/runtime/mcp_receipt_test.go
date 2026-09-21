@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/oktapod/oktapod/Src/internal/application"
 	"github.com/oktapod/oktapod/Src/internal/domain/core"
 )
 
@@ -80,5 +81,31 @@ func TestMCPCallErrorSeparatesCancelTimeoutAndFailure(t *testing.T) {
 	}
 	if code, reason, retryable := classifyMCPCallError(errors.New("remote failed"), nil); code != "MCP_CALL_FAILED" || reason != "remote failed" || retryable {
 		t.Fatalf("failure code=%s reason=%q retryable=%v", code, reason, retryable)
+	}
+}
+
+func TestRuntimeDependencyFailureTargetsCapabilityAndKeepsDependencyID(t *testing.T) {
+	output := map[string]any{}
+	decorateRuntimeDependencyFailure(output, "mcp-capability", []application.RuntimeDependency{{
+		ID: "chromium", Kind: "browser", Provider: "playwright", Name: "chromium", DisplayName: "Chromium",
+		Version: "1.2.3", Installable: true,
+	}})
+	repair := output["repair"].(map[string]any)
+	if output["repair_capability_id"] != "mcp-capability" || repair["capability_id"] != "mcp-capability" {
+		t.Fatalf("repair target=%#v", output)
+	}
+	dependencies := output["runtime_dependencies"].([]map[string]any)
+	if len(dependencies) != 1 || dependencies[0]["id"] != "chromium" {
+		t.Fatalf("runtime dependencies=%#v", dependencies)
+	}
+}
+
+func TestRuntimeDependencyFailureMarkerIsProviderNeutralAndBounded(t *testing.T) {
+	marker := runtimeDependencyFailureMarker([]application.RuntimeDependency{
+		{Provider: "playwright", ID: "chromium", Description: "raw output must not be persisted"},
+		{Provider: "generic", ID: "runtime"},
+	})
+	if marker != "RUNTIME_DEPENDENCY_MISSING provider=playwright id=chromium\nRUNTIME_DEPENDENCY_MISSING provider=generic id=runtime" {
+		t.Fatalf("marker=%q", marker)
 	}
 }

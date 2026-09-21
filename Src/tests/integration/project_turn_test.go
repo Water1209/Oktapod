@@ -262,7 +262,7 @@ func TestConversationContextUsagePrefersLatestMeasuredAssistantCall(t *testing.T
 	}
 }
 
-func TestProjectTurnAutoCreatesPendingAgentTurnWithoutClassification(t *testing.T) {
+func TestProjectTurnAutoFallsBackToPendingAgentTurnWhenClassificationFails(t *testing.T) {
 	service, databasePath, closeStore := newProjectTurnService(t, &projectTurnModelStub{})
 	defer closeStore()
 
@@ -611,7 +611,7 @@ func TestProjectTurnNaturalLanguageMCPInstallReturnsReviewDraft(t *testing.T) {
 	}
 }
 
-func TestProjectTurnAutoStreamDefersDeltasToDurableRunSSE(t *testing.T) {
+func TestProjectTurnAutoStreamRoutesExplanationToChat(t *testing.T) {
 	model := &streamingProjectTurnModelStub{
 		classification: turnModelResult("classification-stream", `{"route":"chat"}`),
 		answer:         turnModelResult("answer-stream", "分段回答完成。"),
@@ -635,10 +635,10 @@ func TestProjectTurnAutoStreamDefersDeltasToDurableRunSSE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route != application.TurnRouteTask || len(deltas) != 0 {
+	if route != application.TurnRouteChat || strings.Join(deltas, "") != "分段回答完成。" {
 		t.Fatalf("route=%q deltas=%#v", route, deltas)
 	}
-	if result.Task == nil || result.Task.PresentationKind != core.TaskPresentationPendingAuto || len(result.Messages) != 1 {
+	if result.Task != nil || len(result.Messages) != 2 || result.Messages[1].Content != "分段回答完成。" {
 		t.Fatalf("result=%#v", result)
 	}
 }

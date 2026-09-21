@@ -1,7 +1,7 @@
 # Oktapod 预置文档能力与 Artifact Runtime 实现说明
 
 > 版本：V1.2
-> 更新日期：2026-09-09
+> 更新日期：2026-09-15
 > 状态：核心实现完成，跨平台签名包与性能发布门禁待 CI/标准夹具证明
 
 ## 1. 结论与用户影响
@@ -19,7 +19,7 @@ Oktapod 已采用“可卸载预置 Skill + 共享签名 Document Runtime”两�
 - Capability 增加 `origin`、`preset_key`、`dependencies`、`managed_version`、`update_state`；`preset_resource_states` 保存安装/删除记忆。
 - `GET /resource-catalog` 与 `POST /resource-catalog/{preset_key}:install` 提供预置目录和显式恢复；现有 Capability 状态与删除接口继续统一管理预置和自定义资源。
 - `document-runtime` 提供 `document.runtime`；四个预置 Skill 只包含触发词、格式、固定工作流、严格 fallback 和六个工具白名单。
-- `document_open/read/render` 固定为 L0；`document_create/apply/export` 固定为 L1。所有写操作按输入 Hash 和修订号幂等，协议递归拒绝 `code`、`command`、`script`、`macro`、`network` 等可执行载荷。
+- `document_open/read/render` 固定为 L0；`document_create/apply/export` 固定为 L1。所有写操作按输入 Hash 和修订号幂等，协议递归拒绝 `code`、`command`、`script`、`macro`、`network` 等可执行载荷。`document_apply` 的操作名由固定 Schema 枚举约束；DOCX 段落支持 `add_paragraph`/`insert_paragraph`、`set_text`/`update_paragraph`、`delete_paragraph`，有界表格支持 `add_table`/`insert_table` 的 `rows` 二维数组。
 - `document_sessions` 与 `document_revisions` 保存 Run、Runtime 版本、修订 Hash、操作 Hash、工作句柄和最终渲染证据；CAS 防止重复或乱序编辑。
 - 解析缓存键包含 Organization、源内容 Hash、Runtime 版本和提取配置；渲染缓存键包含修订 Hash、渲染器和选项。缓存仅位于 DataRoot 派生目录，执行 1 GiB / 30 天 LRU，每次命中仍重新授权源对象。
 - Task 流展示“结构读取、分页读取、修订、渲染校验、输出”，渲染预览通过 Principal + Run + Document 授权的只读路由提供，版式警告和缓存命中可见。
@@ -40,7 +40,7 @@ Runtime 是 stdio newline JSON-RPC 子进程，不监听端口；Go 只传 DataR
 | 格式 | 已验证主链路 | 明确边界 |
 |---|---|---|
 | PPTX | 文字/备注/表格/图表元数据读取；创建；文字替换、文本设置、增删幻灯片；LibreOffice/PDFium 渲染；PPTX/PDF 导出 | 动画、宏、OLE 只读保护；复杂图表/母版编辑尚未声明完成 |
-| DOCX | 段落/run、表格、章节、页眉页脚读取；创建；替换、段落、页眉页脚编辑；DOCX/PDF 导出 | 修订记录、内容控件、宏、嵌入对象不做可写承诺 |
+| DOCX | 段落/run、表格、章节、页眉页脚读取；创建；替换、段落、页眉页脚和有界表格编辑；DOCX/PDF 导出 | 修订记录、内容控件、宏、嵌入对象不做可写承诺 |
 | XLSX | 工作表、范围、公式、表格/图表元数据读取；创建；单元格/公式、工作表、文本替换；XLSX/PDF 导出 | 不执行宏、不刷新外部连接；复杂图表编辑尚未声明完成 |
 | PDF | 原生文本、布局、表格、表单、低密度 OCR；创建；旋转、排序、裁剪、表单填写；页面渲染和 PDF 导出 | 不承诺 Word 式正文回流；合并/拆分/批注/遮盖完整矩阵尚未声明完成 |
 

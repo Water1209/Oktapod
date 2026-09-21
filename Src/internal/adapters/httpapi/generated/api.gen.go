@@ -20,7 +20,7 @@ import (
 
 // Defines values for AIGovernanceSettingsFailClosed.
 const (
-	True AIGovernanceSettingsFailClosed = true
+	AIGovernanceSettingsFailClosedTrue AIGovernanceSettingsFailClosed = true
 )
 
 // Defines values for AddProjectMemberRequestRole.
@@ -989,6 +989,14 @@ const (
 	ScheduleVisibilitySelected ScheduleVisibility = "selected"
 )
 
+// Defines values for ScheduleRunStatus.
+const (
+	ScheduleRunStatusCreated             ScheduleRunStatus = "created"
+	ScheduleRunStatusPending             ScheduleRunStatus = "pending"
+	ScheduleRunStatusSkipped             ScheduleRunStatus = "skipped"
+	ScheduleRunStatusWaitingConfirmation ScheduleRunStatus = "waiting_confirmation"
+)
+
 // Defines values for SessionEntryContextInjection.
 const (
 	Default     SessionEntryContextInjection = "default"
@@ -1172,6 +1180,11 @@ const (
 	ListApprovalsParamsStatusRejected ListApprovalsParamsStatus = "rejected"
 )
 
+// Defines values for InstallRuntimeDependencyJSONBodyConfirmed.
+const (
+	InstallRuntimeDependencyJSONBodyConfirmedTrue InstallRuntimeDependencyJSONBodyConfirmed = true
+)
+
 // Defines values for SetCapabilityStatusJSONBodyStatus.
 const (
 	SetCapabilityStatusJSONBodyStatusDisabled    SetCapabilityStatusJSONBodyStatus = "disabled"
@@ -1189,14 +1202,14 @@ const (
 
 // Defines values for ListHumanActionsParamsStatus.
 const (
-	All         ListHumanActionsParamsStatus = "all"
-	Answered    ListHumanActionsParamsStatus = "answered"
-	Approved    ListHumanActionsParamsStatus = "approved"
-	Expired     ListHumanActionsParamsStatus = "expired"
-	Rejected    ListHumanActionsParamsStatus = "rejected"
-	Reviewing   ListHumanActionsParamsStatus = "reviewing"
-	Superseded  ListHumanActionsParamsStatus = "superseded"
-	WaitingUser ListHumanActionsParamsStatus = "waiting_user"
+	ListHumanActionsParamsStatusAll         ListHumanActionsParamsStatus = "all"
+	ListHumanActionsParamsStatusAnswered    ListHumanActionsParamsStatus = "answered"
+	ListHumanActionsParamsStatusApproved    ListHumanActionsParamsStatus = "approved"
+	ListHumanActionsParamsStatusExpired     ListHumanActionsParamsStatus = "expired"
+	ListHumanActionsParamsStatusRejected    ListHumanActionsParamsStatus = "rejected"
+	ListHumanActionsParamsStatusReviewing   ListHumanActionsParamsStatus = "reviewing"
+	ListHumanActionsParamsStatusSuperseded  ListHumanActionsParamsStatus = "superseded"
+	ListHumanActionsParamsStatusWaitingUser ListHumanActionsParamsStatus = "waiting_user"
 )
 
 // Defines values for ListProjectAssetsParamsKind.
@@ -2908,6 +2921,18 @@ type RuntimeCapabilities struct {
 	Sandbox    string `json:"sandbox"`
 }
 
+// RuntimeDependency defines model for RuntimeDependency.
+type RuntimeDependency struct {
+	Description string  `json:"description"`
+	DisplayName string  `json:"display_name"`
+	Id          string  `json:"id"`
+	Installable bool    `json:"installable"`
+	Kind        string  `json:"kind"`
+	Name        string  `json:"name"`
+	Provider    string  `json:"provider"`
+	Version     *string `json:"version,omitempty"`
+}
+
 // SaveArtifactAsProjectFileRequest defines model for SaveArtifactAsProjectFileRequest.
 type SaveArtifactAsProjectFileRequest struct {
 	Name       string                                     `json:"name"`
@@ -2979,6 +3004,25 @@ type ScheduleStatus string
 
 // ScheduleVisibility defines model for Schedule.Visibility.
 type ScheduleVisibility string
+
+// ScheduleRun defines model for ScheduleRun.
+type ScheduleRun struct {
+	ConversationId openapi_types.UUID `json:"conversation_id"`
+	ErrorCode      string             `json:"error_code"`
+	FinishedAt     *time.Time         `json:"finished_at"`
+	Id             openapi_types.UUID `json:"id"`
+	PlannedAt      time.Time          `json:"planned_at"`
+	ResultSummary  string             `json:"result_summary"`
+	RunId          openapi_types.UUID `json:"run_id"`
+	ScheduleId     openapi_types.UUID `json:"schedule_id"`
+	StartedAt      *time.Time         `json:"started_at"`
+	Status         ScheduleRunStatus  `json:"status"`
+	TaskId         openapi_types.UUID `json:"task_id"`
+	TaskStatus     string             `json:"task_status"`
+}
+
+// ScheduleRunStatus defines model for ScheduleRun.Status.
+type ScheduleRunStatus string
 
 // SecretBinding defines model for SecretBinding.
 type SecretBinding struct {
@@ -3395,6 +3439,20 @@ type ReviewCapabilityParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
+// InstallRuntimeDependencyJSONBody defines parameters for InstallRuntimeDependency.
+type InstallRuntimeDependencyJSONBody struct {
+	Confirmed InstallRuntimeDependencyJSONBodyConfirmed `json:"confirmed"`
+}
+
+// InstallRuntimeDependencyParams defines parameters for InstallRuntimeDependency.
+type InstallRuntimeDependencyParams struct {
+	Provider       string          `form:"provider" json:"provider"`
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// InstallRuntimeDependencyJSONBodyConfirmed defines parameters for InstallRuntimeDependency.
+type InstallRuntimeDependencyJSONBodyConfirmed bool
+
 // SetCapabilityStatusJSONBody defines parameters for SetCapabilityStatus.
 type SetCapabilityStatusJSONBody struct {
 	Status SetCapabilityStatusJSONBodyStatus `json:"status"`
@@ -3601,6 +3659,12 @@ type ResolveResourceInstallDraftJSONBody struct {
 	SourceInput string `json:"source_input"`
 }
 
+// PreviewScheduleJSONBody defines parameters for PreviewSchedule.
+type PreviewScheduleJSONBody struct {
+	Description string `json:"description"`
+	Timezone    string `json:"timezone"`
+}
+
 // CreateScheduleParams defines parameters for CreateSchedule.
 type CreateScheduleParams struct {
 	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
@@ -3743,6 +3807,9 @@ type UpdateMCPCredentialJSONRequestBody = MCPSecretUpdateRequest
 // ReviewCapabilityJSONRequestBody defines body for ReviewCapability for application/json ContentType.
 type ReviewCapabilityJSONRequestBody = ReviewCapabilityRequest
 
+// InstallRuntimeDependencyJSONRequestBody defines body for InstallRuntimeDependency for application/json ContentType.
+type InstallRuntimeDependencyJSONRequestBody InstallRuntimeDependencyJSONBody
+
 // SetCapabilityStatusJSONRequestBody defines body for SetCapabilityStatus for application/json ContentType.
 type SetCapabilityStatusJSONRequestBody SetCapabilityStatusJSONBody
 
@@ -3829,6 +3896,9 @@ type CreatePlanItemJSONRequestBody = CreatePlanItemRequest
 
 // ResolveResourceInstallDraftJSONRequestBody defines body for ResolveResourceInstallDraft for application/json ContentType.
 type ResolveResourceInstallDraftJSONRequestBody ResolveResourceInstallDraftJSONBody
+
+// PreviewScheduleJSONRequestBody defines body for PreviewSchedule for application/json ContentType.
+type PreviewScheduleJSONRequestBody PreviewScheduleJSONBody
 
 // CreateScheduleJSONRequestBody defines body for CreateSchedule for application/json ContentType.
 type CreateScheduleJSONRequestBody = CreateScheduleRequest
@@ -4017,6 +4087,12 @@ type ServerInterface interface {
 
 	// (POST /capabilities/{capability_id}/review)
 	ReviewCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params ReviewCapabilityParams)
+
+	// (GET /capabilities/{capability_id}/runtime-dependencies)
+	ListRuntimeDependencies(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID)
+
+	// (POST /capabilities/{capability_id}/runtime-dependencies/{dependency_id}/install)
+	InstallRuntimeDependency(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, dependencyId string, params InstallRuntimeDependencyParams)
 
 	// (POST /capabilities/{capability_id}/status)
 	SetCapabilityStatus(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params SetCapabilityStatusParams)
@@ -4207,6 +4283,9 @@ type ServerInterface interface {
 	// (POST /projects/{project_id}/resource-install-drafts:resolve)
 	ResolveResourceInstallDraft(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 
+	// (POST /projects/{project_id}/schedule-preview)
+	PreviewSchedule(w http.ResponseWriter, r *http.Request, projectId ProjectId)
+
 	// (GET /projects/{project_id}/schedules)
 	ListProjectSchedules(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 
@@ -4296,6 +4375,9 @@ type ServerInterface interface {
 
 	// (GET /runs/{run_id}/usage)
 	GetRunUsage(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
+
+	// (GET /schedules/{schedule_id}/runs)
+	ListScheduleRuns(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID)
 
 	// (POST /schedules/{schedule_id}/status)
 	SetScheduleStatus(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID, params SetScheduleStatusParams)
@@ -4462,6 +4544,16 @@ func (_ Unimplemented) CancelMCPOAuth(w http.ResponseWriter, r *http.Request, ca
 
 // (POST /capabilities/{capability_id}/review)
 func (_ Unimplemented) ReviewCapability(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, params ReviewCapabilityParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /capabilities/{capability_id}/runtime-dependencies)
+func (_ Unimplemented) ListRuntimeDependencies(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /capabilities/{capability_id}/runtime-dependencies/{dependency_id}/install)
+func (_ Unimplemented) InstallRuntimeDependency(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, dependencyId string, params InstallRuntimeDependencyParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4785,6 +4877,11 @@ func (_ Unimplemented) ResolveResourceInstallDraft(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// (POST /projects/{project_id}/schedule-preview)
+func (_ Unimplemented) PreviewSchedule(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // (GET /projects/{project_id}/schedules)
 func (_ Unimplemented) ListProjectSchedules(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -4934,6 +5031,11 @@ func (_ Unimplemented) GetActiveRunPlan(w http.ResponseWriter, r *http.Request, 
 
 // (GET /runs/{run_id}/usage)
 func (_ Unimplemented) GetRunUsage(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /schedules/{schedule_id}/runs)
+func (_ Unimplemented) ListScheduleRuns(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -5660,6 +5762,104 @@ func (siw *ServerInterfaceWrapper) ReviewCapability(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ReviewCapability(w, r, capabilityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRuntimeDependencies operation middleware
+func (siw *ServerInterfaceWrapper) ListRuntimeDependencies(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRuntimeDependencies(w, r, capabilityId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InstallRuntimeDependency operation middleware
+func (siw *ServerInterfaceWrapper) InstallRuntimeDependency(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "capability_id" -------------
+	var capabilityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "capability_id", chi.URLParam(r, "capability_id"), &capabilityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "capability_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "dependency_id" -------------
+	var dependencyId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "dependency_id", chi.URLParam(r, "dependency_id"), &dependencyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dependency_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params InstallRuntimeDependencyParams
+
+	// ------------- Required query parameter "provider" -------------
+
+	if paramValue := r.URL.Query().Get("provider"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "provider"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "provider", r.URL.Query(), &params.Provider)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InstallRuntimeDependency(w, r, capabilityId, dependencyId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7900,6 +8100,31 @@ func (siw *ServerInterfaceWrapper) ResolveResourceInstallDraft(w http.ResponseWr
 	handler.ServeHTTP(w, r)
 }
 
+// PreviewSchedule operation middleware
+func (siw *ServerInterfaceWrapper) PreviewSchedule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewSchedule(w, r, projectId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListProjectSchedules operation middleware
 func (siw *ServerInterfaceWrapper) ListProjectSchedules(w http.ResponseWriter, r *http.Request) {
 
@@ -8835,6 +9060,31 @@ func (siw *ServerInterfaceWrapper) GetRunUsage(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// ListScheduleRuns operation middleware
+func (siw *ServerInterfaceWrapper) ListScheduleRuns(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "schedule_id" -------------
+	var scheduleId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "schedule_id", chi.URLParam(r, "schedule_id"), &scheduleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "schedule_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListScheduleRuns(w, r, scheduleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SetScheduleStatus operation middleware
 func (siw *ServerInterfaceWrapper) SetScheduleStatus(w http.ResponseWriter, r *http.Request) {
 
@@ -9548,6 +9798,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/review", wrapper.ReviewCapability)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/capabilities/{capability_id}/runtime-dependencies", wrapper.ListRuntimeDependencies)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/capabilities/{capability_id}/runtime-dependencies/{dependency_id}/install", wrapper.InstallRuntimeDependency)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/capabilities/{capability_id}/status", wrapper.SetCapabilityStatus)
 	})
 	r.Group(func(r chi.Router) {
@@ -9737,6 +9993,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/projects/{project_id}/resource-install-drafts:resolve", wrapper.ResolveResourceInstallDraft)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/projects/{project_id}/schedule-preview", wrapper.PreviewSchedule)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/projects/{project_id}/schedules", wrapper.ListProjectSchedules)
 	})
 	r.Group(func(r chi.Router) {
@@ -9825,6 +10084,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/runs/{run_id}/usage", wrapper.GetRunUsage)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/schedules/{schedule_id}/runs", wrapper.ListScheduleRuns)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/schedules/{schedule_id}/status", wrapper.SetScheduleStatus)
@@ -10530,6 +10792,69 @@ type ReviewCapabilitydefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ReviewCapabilitydefaultApplicationProblemPlusJSONResponse) VisitReviewCapabilityResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListRuntimeDependenciesRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+}
+
+type ListRuntimeDependenciesResponseObject interface {
+	VisitListRuntimeDependenciesResponse(w http.ResponseWriter) error
+}
+
+type ListRuntimeDependencies200JSONResponse struct {
+	Items []RuntimeDependency `json:"items"`
+}
+
+func (response ListRuntimeDependencies200JSONResponse) VisitListRuntimeDependenciesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListRuntimeDependenciesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListRuntimeDependenciesdefaultApplicationProblemPlusJSONResponse) VisitListRuntimeDependenciesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type InstallRuntimeDependencyRequestObject struct {
+	CapabilityId openapi_types.UUID `json:"capability_id"`
+	DependencyId string             `json:"dependency_id"`
+	Params       InstallRuntimeDependencyParams
+	Body         *InstallRuntimeDependencyJSONRequestBody
+}
+
+type InstallRuntimeDependencyResponseObject interface {
+	VisitInstallRuntimeDependencyResponse(w http.ResponseWriter) error
+}
+
+type InstallRuntimeDependency200JSONResponse Capability
+
+func (response InstallRuntimeDependency200JSONResponse) VisitInstallRuntimeDependencyResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type InstallRuntimeDependencydefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response InstallRuntimeDependencydefaultApplicationProblemPlusJSONResponse) VisitInstallRuntimeDependencyResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(response.StatusCode)
 
@@ -12473,6 +12798,43 @@ func (response ResolveResourceInstallDraftdefaultApplicationProblemPlusJSONRespo
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type PreviewScheduleRequestObject struct {
+	ProjectId ProjectId `json:"project_id"`
+	Body      *PreviewScheduleJSONRequestBody
+}
+
+type PreviewScheduleResponseObject interface {
+	VisitPreviewScheduleResponse(w http.ResponseWriter) error
+}
+
+type PreviewSchedule200JSONResponse struct {
+	Clarification   string `json:"clarification"`
+	CreateRequested bool   `json:"create_requested"`
+	CronExpression  string `json:"cron_expression"`
+	Goal            string `json:"goal"`
+	Name            string `json:"name"`
+	Timezone        string `json:"timezone"`
+}
+
+func (response PreviewSchedule200JSONResponse) VisitPreviewScheduleResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PreviewScheduledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PreviewScheduledefaultApplicationProblemPlusJSONResponse) VisitPreviewScheduleResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type ListProjectSchedulesRequestObject struct {
 	ProjectId ProjectId `json:"project_id"`
 }
@@ -13378,6 +13740,37 @@ func (response GetRunUsagedefaultApplicationProblemPlusJSONResponse) VisitGetRun
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type ListScheduleRunsRequestObject struct {
+	ScheduleId openapi_types.UUID `json:"schedule_id"`
+}
+
+type ListScheduleRunsResponseObject interface {
+	VisitListScheduleRunsResponse(w http.ResponseWriter) error
+}
+
+type ListScheduleRuns200JSONResponse struct {
+	Items []ScheduleRun `json:"items"`
+}
+
+func (response ListScheduleRuns200JSONResponse) VisitListScheduleRunsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListScheduleRunsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListScheduleRunsdefaultApplicationProblemPlusJSONResponse) VisitListScheduleRunsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type SetScheduleStatusRequestObject struct {
 	ScheduleId openapi_types.UUID `json:"schedule_id"`
 	Params     SetScheduleStatusParams
@@ -14073,6 +14466,12 @@ type StrictServerInterface interface {
 	// (POST /capabilities/{capability_id}/review)
 	ReviewCapability(ctx context.Context, request ReviewCapabilityRequestObject) (ReviewCapabilityResponseObject, error)
 
+	// (GET /capabilities/{capability_id}/runtime-dependencies)
+	ListRuntimeDependencies(ctx context.Context, request ListRuntimeDependenciesRequestObject) (ListRuntimeDependenciesResponseObject, error)
+
+	// (POST /capabilities/{capability_id}/runtime-dependencies/{dependency_id}/install)
+	InstallRuntimeDependency(ctx context.Context, request InstallRuntimeDependencyRequestObject) (InstallRuntimeDependencyResponseObject, error)
+
 	// (POST /capabilities/{capability_id}/status)
 	SetCapabilityStatus(ctx context.Context, request SetCapabilityStatusRequestObject) (SetCapabilityStatusResponseObject, error)
 
@@ -14262,6 +14661,9 @@ type StrictServerInterface interface {
 	// (POST /projects/{project_id}/resource-install-drafts:resolve)
 	ResolveResourceInstallDraft(ctx context.Context, request ResolveResourceInstallDraftRequestObject) (ResolveResourceInstallDraftResponseObject, error)
 
+	// (POST /projects/{project_id}/schedule-preview)
+	PreviewSchedule(ctx context.Context, request PreviewScheduleRequestObject) (PreviewScheduleResponseObject, error)
+
 	// (GET /projects/{project_id}/schedules)
 	ListProjectSchedules(ctx context.Context, request ListProjectSchedulesRequestObject) (ListProjectSchedulesResponseObject, error)
 
@@ -14351,6 +14753,9 @@ type StrictServerInterface interface {
 
 	// (GET /runs/{run_id}/usage)
 	GetRunUsage(ctx context.Context, request GetRunUsageRequestObject) (GetRunUsageResponseObject, error)
+
+	// (GET /schedules/{schedule_id}/runs)
+	ListScheduleRuns(ctx context.Context, request ListScheduleRunsRequestObject) (ListScheduleRunsResponseObject, error)
 
 	// (POST /schedules/{schedule_id}/status)
 	SetScheduleStatus(ctx context.Context, request SetScheduleStatusRequestObject) (SetScheduleStatusResponseObject, error)
@@ -15010,6 +15415,67 @@ func (sh *strictHandler) ReviewCapability(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ReviewCapabilityResponseObject); ok {
 		if err := validResponse.VisitReviewCapabilityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRuntimeDependencies operation middleware
+func (sh *strictHandler) ListRuntimeDependencies(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID) {
+	var request ListRuntimeDependenciesRequestObject
+
+	request.CapabilityId = capabilityId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRuntimeDependencies(ctx, request.(ListRuntimeDependenciesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRuntimeDependencies")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRuntimeDependenciesResponseObject); ok {
+		if err := validResponse.VisitListRuntimeDependenciesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InstallRuntimeDependency operation middleware
+func (sh *strictHandler) InstallRuntimeDependency(w http.ResponseWriter, r *http.Request, capabilityId openapi_types.UUID, dependencyId string, params InstallRuntimeDependencyParams) {
+	var request InstallRuntimeDependencyRequestObject
+
+	request.CapabilityId = capabilityId
+	request.DependencyId = dependencyId
+	request.Params = params
+
+	var body InstallRuntimeDependencyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InstallRuntimeDependency(ctx, request.(InstallRuntimeDependencyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InstallRuntimeDependency")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InstallRuntimeDependencyResponseObject); ok {
+		if err := validResponse.VisitInstallRuntimeDependencyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -16872,6 +17338,39 @@ func (sh *strictHandler) ResolveResourceInstallDraft(w http.ResponseWriter, r *h
 	}
 }
 
+// PreviewSchedule operation middleware
+func (sh *strictHandler) PreviewSchedule(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+	var request PreviewScheduleRequestObject
+
+	request.ProjectId = projectId
+
+	var body PreviewScheduleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewSchedule(ctx, request.(PreviewScheduleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewSchedule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewScheduleResponseObject); ok {
+		if err := validResponse.VisitPreviewScheduleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListProjectSchedules operation middleware
 func (sh *strictHandler) ListProjectSchedules(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	var request ListProjectSchedulesRequestObject
@@ -17728,6 +18227,32 @@ func (sh *strictHandler) GetRunUsage(w http.ResponseWriter, r *http.Request, run
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetRunUsageResponseObject); ok {
 		if err := validResponse.VisitGetRunUsageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListScheduleRuns operation middleware
+func (sh *strictHandler) ListScheduleRuns(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID) {
+	var request ListScheduleRunsRequestObject
+
+	request.ScheduleId = scheduleId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListScheduleRuns(ctx, request.(ListScheduleRunsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListScheduleRuns")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListScheduleRunsResponseObject); ok {
+		if err := validResponse.VisitListScheduleRunsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -1,6 +1,8 @@
 package application
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,6 +26,108 @@ func TestClassifyTaskModeUsesDeterministicRules(t *testing.T) {
 				t.Fatalf("mode=%s reason=%s want=%s", mode, reason, test.mode)
 			}
 		})
+	}
+}
+
+func TestParseTurnRouteAcceptsOnlyStrictRoutes(t *testing.T) {
+	tests := []struct {
+		content string
+		want    string
+	}{
+		{`{"route":"chat"}`, TurnRouteChat},
+		{`{"route":"task"}`, TurnRouteTask},
+		{"chat", ""},
+		{"task", ""},
+		{`{"route":"CHAT"}`, ""},
+		{`{"route":"unknown"}`, ""},
+		{"```json\n{\"route\":\"chat\"}\n```", ""},
+		{"I think this is neither", ""},
+	}
+	for _, test := range tests {
+		got, _ := parseTurnRoute(test.content)
+		if got != test.want {
+			t.Fatalf("parseTurnRoute(%q)=%q, want %q", test.content, got, test.want)
+		}
+	}
+}
+
+func TestParseMCPInstallDirectiveAcceptsNaturalToolInstallRequests(t *testing.T) {
+	tests := []struct {
+		content string
+		want    string
+		matched bool
+	}{
+		{"安装 Playwright 的浏览器自动化工具", "Playwright 浏览器自动化", true},
+		{"帮我安装浏览器自动化工具", "浏览器自动化", true},
+		{"给项目接入浏览器自动化工具", "浏览器自动化", true},
+		{"帮我安装 @playwright/mcp", "@playwright/mcp", true},
+		{"安装 npm:@playwright/mcp", "npm:@playwright/mcp", true},
+		{"install playwright tools", "playwright", true},
+		{"安装文档生成工具", "文档生成", true},
+		{"帮我写一份文档", "", false},
+	}
+	for _, test := range tests {
+		got, matched := parseMCPInstallDirective(test.content)
+		if got != test.want || matched != test.matched {
+			t.Fatalf("parseMCPInstallDirective(%q)=(%q,%v), want (%q,%v)", test.content, got, matched, test.want, test.matched)
+		}
+	}
+}
+
+type recordingMCPRegistry struct {
+	searches []string
+	limits   []int
+	results  [][]MCPRegistryServer
+	err      error
+}
+
+func (r *recordingMCPRegistry) Search(_ context.Context, query string, limit int) ([]MCPRegistryServer, error) {
+	r.searches = append(r.searches, query)
+	r.limits = append(r.limits, limit)
+	if len(r.results) > 0 {
+		result := r.results[0]
+		r.results = r.results[1:]
+		return result, nil
+	}
+	return nil, nil
+}
+
+type erroringMCPRegistry struct{}
+
+func (erroringMCPRegistry) Search(_ context.Context, _ string, _ int) ([]MCPRegistryServer, error) {
+	return nil, errors.New("registry timeout")
+}
+
+func TestSearchMCPRegistryFallsBackToExplicitIdentifier(t *testing.T) {
+	service := (&Service{}).WithMCPRegistry(&recordingMCPRegistry{
+		results: [][]MCPRegistryServer{
+			nil,
+			{{Name: "io.github.microsoft/playwright-mcp", Title: "Playwright"}},
+		},
+	})
+
+	servers, err := service.searchMCPRegistry(t.Context(), "Playwright 浏览器自动化")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := service.mcpRegistry.(*recordingMCPRegistry)
+	if len(servers) != 1 || servers[0].Name != "io.github.microsoft/playwright-mcp" {
+		t.Fatalf("servers=%#v", servers)
+	}
+	if len(registry.searches) != 2 || registry.searches[0] != "Playwright 浏览器自动化" || registry.searches[1] != "Playwright" {
+		t.Fatalf("searches=%#v", registry.searches)
+	}
+	if len(registry.limits) != 2 || registry.limits[0] != 8 || registry.limits[1] != 20 {
+		t.Fatalf("limits=%#v", registry.limits)
+	}
+}
+
+func TestSearchMCPRegistryDoesNotFallbackAfterSearchError(t *testing.T) {
+	service := (&Service{}).WithMCPRegistry(erroringMCPRegistry{})
+
+	_, err := service.searchMCPRegistry(t.Context(), "Playwright 浏览器自动化")
+	if err == nil || err.Error() != "registry timeout" {
+		t.Fatalf("err=%v, want registry timeout", err)
 	}
 }
 

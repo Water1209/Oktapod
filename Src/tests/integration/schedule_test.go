@@ -69,6 +69,50 @@ func TestSchedulePersistsAndCreatesExactlyOneFire(t *testing.T) {
 	}
 }
 
+func TestSubmitScheduledTurnCreatesOneDirectlyLinkedTask(t *testing.T) {
+	t.Parallel()
+	repository, _ := newRepository(t)
+	defer repository.Close()
+	bootstrapRepository(t, repository)
+	service := application.NewService(repository, core.ProfilePersonal, "https://provider.invalid/v1", core.Actor{ID: testUserID, DisplayName: "Test User"}, core.Organization{ID: testOrgID, Name: "Test Org"}, func() string { return "" })
+	project, err := service.CreateProject(t.Context(), core.CreateProjectInput{Name: "Scheduled task link", Kind: core.ProjectKindPersonal, Scene: core.SceneWork}, "scheduled-task-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := service.CreateSchedule(t.Context(), project.ID, core.CreateScheduleInput{
+		Name: "Linked schedule", CronExpression: "* * * * *", Timezone: "UTC", Goal: "create one linked task", Mode: core.ModeAnswer, Visibility: core.VisibilityPrivate,
+	}, "scheduled-task-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fire, err := repository.ClaimScheduleFire(t.Context(), schedule, schedule.NextRunAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.SubmitScheduledTurn(t.Context(), schedule, fire)
+	if err != nil {
+		t.Fatalf("submit scheduled turn: %v", err)
+	}
+	replayed, err := service.SubmitScheduledTurn(t.Context(), schedule, fire)
+	if err != nil || replayed.ID != task.ID {
+		t.Fatalf("scheduled turn replay=%#v err=%v; want task %s", replayed, err, task.ID)
+	}
+	if task.ProjectID != project.ID || task.ConversationID == "" || task.Mode != core.ModeSingleAgent {
+		t.Fatalf("scheduled task=%#v", task)
+	}
+	if err := repository.AdvanceScheduleAfterFire(t.Context(), schedule.ID, schedule.NextRunAt, schedule.NextRunAt.Add(time.Minute), core.ScheduleFireCreated, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := service.ListScheduleRuns(t.Context(), schedule.ID)
+	if err != nil || len(runs) != 1 || runs[0].Status != core.ScheduleFireCreated || runs[0].TaskID != task.ID {
+		t.Fatalf("schedule runs=%#v err=%v", runs, err)
+	}
+	pending, err := repository.ListConversationQueue(t.Context(), queueTestScope(), task.ConversationID, "pending")
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("scheduled turn unexpectedly queued follow-up=%#v err=%v", pending, err)
+	}
+}
+
 // A scheduler is a replaceable process. Reopening the same store must not
 // create a second fire for the same planned timestamp after the first process
 // has already advanced the schedule and committed its task.

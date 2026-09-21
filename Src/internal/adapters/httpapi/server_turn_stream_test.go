@@ -20,6 +20,7 @@ func TestTurnStreamErrorDetailPreservesDeterministicFailures(t *testing.T) {
 		{name: "validation", err: &core.ValidationError{Field: "goal", Message: "is required"}, code: "VALIDATION_FAILED", detail: "goal: is required"},
 		{name: "forbidden", err: &core.ForbiddenError{Message: "project is outside scope"}, code: "FORBIDDEN", detail: "project is outside scope"},
 		{name: "state conflict", err: &core.StateConflictError{Status: core.StatusRunning, Command: "resume"}, code: "STATE_CONFLICT", detail: "cannot resume a task in running state"},
+		{name: "resource conflict", err: &core.ResourceConflictError{Resource: "mcp_registry", Reason: "Registry 查询失败；请稍后重试或改用明确来源"}, code: "RESOURCE_CONFLICT", detail: "mcp_registry conflicts with an existing resource: Registry 查询失败；请稍后重试或改用明确来源"},
 		{name: "unknown", err: errors.New("database unavailable"), code: "TURN_STREAM_ERROR", detail: "会话处理失败，请重试"},
 	}
 	for _, test := range tests {

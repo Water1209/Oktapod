@@ -136,7 +136,7 @@ test('Changes 可按文件查看并通过原 Thread 受治理提交所选路径'
 
   const approval = page.locator('.human-action-card').filter({ hasText: '执行结果.md' })
   await expect(approval).toContainText('执行结果.md', { timeout: 15_000 })
-  await approval.getByRole('button', { name: '批准一次' }).click()
+  await approval.getByRole('button', { name: '仅这一次' }).click()
   await expect(page.locator('.message-task-stream').last().getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
 
   await page.getByRole('button', { name: '变更', exact: true }).click()
@@ -220,8 +220,8 @@ test('L2 命令建立项目规则后只执行一次并展示审批记录', async
   const commandApproval = page.locator('.human-action-card').filter({ hasText: '运行工作区命令' })
   await expect(commandApproval).toBeVisible({ timeout: 15_000 })
   await expect(commandApproval).toContainText('"node" "--version"')
-  await expect(commandApproval.getByRole('button', { name: '本项目允许 30 天' })).toBeVisible()
-  await commandApproval.getByRole('button', { name: '本项目允许 30 天' }).click()
+  await expect(commandApproval.getByRole('button', { name: '本项目 30 天' })).toBeVisible()
+  await commandApproval.getByRole('button', { name: '本项目 30 天' }).click()
   await page.getByRole('dialog').getByRole('button', { name: '确认授权' }).click()
   await expect(commandApproval).toHaveCount(0)
   await expect(page.locator('.message-task-stream').getByText('任务已完成', { exact: true })).toBeVisible({ timeout: 45_000 })
@@ -305,7 +305,7 @@ test('完全访问在有效窗口内跳过命令审批并自动完成', async ({
   await page.getByRole('option', { name: 'Task', exact: true }).click()
   await composer.getByRole('combobox', { name: '权限模式' }).click()
   await page.getByRole('option', { name: '完全访问', exact: true }).click()
-  await page.getByRole('dialog').getByRole('button', { name: '确认启用' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '从下次发送启用' }).click()
   await page.getByRole('button', { name: '执行设置' }).click()
   await page.locator('.composer-advanced .inline-select').first().click()
   await page.getByRole('option', { name: '代码场景', exact: true }).click()

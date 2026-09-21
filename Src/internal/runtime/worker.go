@@ -29,6 +29,7 @@ type WorkerRepository interface {
 	ClaimNextStep(ctx context.Context, workerID string, now, leaseUntil time.Time) (core.ClaimedStep, error)
 	HeartbeatStep(ctx context.Context, step core.ClaimedStep, now, leaseUntil time.Time) (bool, error)
 	GetRunContext(ctx context.Context, runID string) (core.RunContext, error)
+	RecordMCPRuntimeFailure(ctx context.Context, scope core.Scope, capabilityID, lastError string) error
 	MarkStepStarted(ctx context.Context, step core.ClaimedStep, run core.RunContext, correlationID string) error
 	CommitCheckpoint(ctx context.Context, step core.ClaimedStep, run core.RunContext, kind string, state map[string]any, correlationID string) error
 	BeginToolExecution(ctx context.Context, step core.ClaimedStep, run core.RunContext, call core.ToolCall, inputHash string, idempotent bool, correlationID string) (string, error)
@@ -64,6 +65,7 @@ type Worker struct {
 	webAccess         WebAccess
 	mcpSecrets        application.ProviderSecretStore
 	mcpSessions       *mcpadapter.SessionBroker
+	runtimeDependencies []application.RuntimeDependencyProvider
 	webCallTimeout    time.Duration
 	mcpCallTimeout    time.Duration
 	modelCallTimeout  time.Duration
@@ -132,6 +134,13 @@ func (w *Worker) WithMCPSecretStore(secrets application.ProviderSecretStore) *Wo
 // servers while keeping approval and receipts scoped to each individual call.
 func (w *Worker) WithMCPSessionBroker(broker *mcpadapter.SessionBroker) *Worker {
 	w.mcpSessions = broker
+	return w
+}
+
+// WithRuntimeDependencyProviders keeps tool failures and resource repair on
+// the same provider-agnostic dependency contract used by the resource center.
+func (w *Worker) WithRuntimeDependencyProviders(providers []application.RuntimeDependencyProvider) *Worker {
+	w.runtimeDependencies = append([]application.RuntimeDependencyProvider(nil), providers...)
 	return w
 }
 
@@ -619,10 +628,18 @@ func modelCompatibilityRetryHint(inputJSON string) string {
 		hint += " workspace_run_command 必须使用 program 与 args，不接受 command，也不能把 cmd、powershell 或 bash 作为 program。需要 Shell 语法时只使用已提供的 workspace_shell(command)，仍须经过正常策略与审批。workspace_read_file 不接受 selector；workspace_edit_file 使用 old_text/new_text；仅使用当前工具定义列出的参数。用用户使用的语言说明进展，不要声称尚未成功的复制或验证已完成。"
 		if len(input.PolicyDenials) > 0 {
 			details := make([]string, 0, len(input.PolicyDenials))
+			documentPolicyDenied := false
 			for _, denial := range input.PolicyDenials {
-				details = append(details, fmt.Sprintf("%s（%s）", strings.TrimSpace(denial.ToolName), strings.TrimSpace(denial.Reason)))
+				toolName, reason := strings.TrimSpace(denial.ToolName), strings.TrimSpace(denial.Reason)
+				details = append(details, fmt.Sprintf("%s（%s）", toolName, reason))
+				if toolName == core.ToolDocumentApply || strings.Contains(reason, "fixed document protocol") {
+					documentPolicyDenied = true
+				}
 			}
 			hint += " 被拒动作：" + strings.Join(details, "；") + "。"
+			if documentPolicyDenied {
+				hint += " document_apply 只能使用固定操作协议；DOCX 段落使用 add_paragraph/insert_paragraph、set_text/update_paragraph 或 delete_paragraph，表格使用 add_table/insert_table 并传入 rows 二维数组。不要生成 update_text、update_paragraphs、table_insert 等未列出的操作名；修正参数后继续，不要重放被拒操作。"
+			}
 		}
 	}
 	if input.RetryCount >= 2 && input.RetryReason == "PROVIDER_TOOL_ARGUMENTS_TRUNCATED" {

@@ -538,6 +538,48 @@ def _replace_pptx(deck, find: str, replace: str) -> int:
     return changed
 
 
+def _docx_paragraph_index(operation: dict, default: int = 1) -> int:
+    raw = operation.get("index", operation.get("paragraph", default))
+    if isinstance(raw, bool):
+        raise RuntimeFailure("OPERATION_INPUT_INVALID", "paragraph index must be a positive integer")
+    try:
+        index = int(raw)
+    except (TypeError, ValueError):
+        raise RuntimeFailure("OPERATION_INPUT_INVALID", "paragraph index must be a positive integer")
+    if index < 1 or index != raw:
+        raise RuntimeFailure("OPERATION_INPUT_INVALID", "paragraph index must be a positive integer")
+    return index
+
+
+def _docx_paragraph(document, operation: dict):
+    index = _docx_paragraph_index(operation)
+    try:
+        return document.paragraphs[index - 1]
+    except IndexError:
+        raise RuntimeFailure("OPERATION_TARGET_INVALID", f"paragraph index {index} is out of range")
+
+
+def _docx_table_value(value) -> str:
+    return "" if value is None else str(value)
+
+
+def _insert_docx_table(document, operation: dict) -> int:
+    rows = operation.get("rows")
+    if not isinstance(rows, list) or not rows or any(not isinstance(row, list) or not row for row in rows):
+        raise RuntimeFailure("OPERATION_INPUT_INVALID", "table rows must be non-empty arrays")
+    columns = max(len(row) for row in rows)
+    table = document.add_table(rows=len(rows), cols=columns)
+    for row_index, row in enumerate(rows):
+        for column_index, value in enumerate(row):
+            table.cell(row_index, column_index).text = _docx_table_value(value)
+    if "index" in operation or "paragraph" in operation:
+        anchor = _docx_paragraph(document, operation)
+        table_element = table._tbl
+        table_element.getparent().remove(table_element)
+        anchor._p.addnext(table_element)
+    return len(rows) * columns
+
+
 def apply_document(params: dict) -> dict:
     source = _handle(params.get("input_handle", ""), must_exist=True)
     output = _handle(params.get("output_handle", ""))
@@ -584,10 +626,21 @@ def apply_document(params: dict) -> dict:
                         if find in run.text:
                             run.text = run.text.replace(find, replace); count += 1
             elif op in {"add_paragraph", "insert_paragraph"}:
-                document.add_paragraph(str(operation.get("text", "")), style=operation.get("style") or None); count = 1
-            elif op == "set_text":
-                paragraph = document.paragraphs[int(operation.get("paragraph", 1)) - 1]
+                anchor = _docx_paragraph(document, operation) if "index" in operation or "paragraph" in operation else None
+                paragraph = document.add_paragraph(str(operation.get("text", "")), style=operation.get("style") or None)
+                if anchor is not None:
+                    paragraph_element = paragraph._p
+                    paragraph_element.getparent().remove(paragraph_element)
+                    anchor._p.addnext(paragraph_element)
+                count = 1
+            elif op in {"set_text", "update_paragraph"}:
+                paragraph = _docx_paragraph(document, operation)
                 paragraph.text = str(operation.get("text", "")); count = 1
+            elif op == "delete_paragraph":
+                paragraph = _docx_paragraph(document, operation)
+                paragraph._element.getparent().remove(paragraph._element); count = 1
+            elif op in {"add_table", "insert_table"}:
+                count = _insert_docx_table(document, operation)
             elif op in {"set_header", "set_footer"}:
                 section = document.sections[int(operation.get("section", 1)) - 1]
                 target = section.header if op == "set_header" else section.footer

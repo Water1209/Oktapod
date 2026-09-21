@@ -137,6 +137,7 @@ type ResourceRepository interface {
 	ConnectMCP(ctx context.Context, scope core.Scope, capabilityID, credential string, credentialUpdater func(context.Context, string) error, correlationID string) (core.MCPHealth, error)
 	DisconnectMCP(ctx context.Context, scope core.Scope, capabilityID, correlationID string) (core.MCPHealth, error)
 	GetMCPHealth(ctx context.Context, scope core.Scope, capabilityID string) (core.MCPHealth, error)
+	RecordMCPRuntimeFailure(ctx context.Context, scope core.Scope, capabilityID, lastError string) error
 	CreateMemory(ctx context.Context, scope core.Scope, projectID string, input core.CreateMemoryInput, sourceHash string, idempotency core.Idempotency) (core.Memory, error)
 	ListMemories(ctx context.Context, scope core.Scope, projectID, query string, limit int) ([]core.Memory, error)
 	UpdateMemory(ctx context.Context, scope core.Scope, memoryID string, input core.UpdateMemoryInput, sourceHash string, idempotency core.Idempotency) (core.Memory, error)
@@ -169,6 +170,7 @@ type ScheduleRepository interface {
 	CreateSchedule(ctx context.Context, scope core.Scope, projectID string, input core.CreateScheduleInput, nextRunAt time.Time, idempotency core.Idempotency) (core.Schedule, error)
 	ListSchedules(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Schedule, error)
 	SetScheduleStatus(ctx context.Context, scope core.Scope, scheduleID, status string, idempotency core.Idempotency) (core.Schedule, error)
+	ListScheduleRuns(ctx context.Context, scope core.Scope, scheduleID string, limit int) ([]core.ScheduleRun, error)
 	GetDueSchedule(ctx context.Context, now time.Time) (core.Schedule, error)
 	ClaimScheduleFire(ctx context.Context, schedule core.Schedule, nextRunAt time.Time) (core.ScheduleFire, error)
 	CreateScheduledTask(ctx context.Context, schedule core.Schedule, fire core.ScheduleFire, correlationID string) (core.Task, error)

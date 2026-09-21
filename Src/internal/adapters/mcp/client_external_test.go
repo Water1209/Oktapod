@@ -20,8 +20,8 @@ func TestExternalFilesystemStdioBoundedRoot(t *testing.T) {
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	manifestDocument := map[string]any{
 		"schema_version": "oktapod.mcp/v1",
-		"source":         map[string]any{"type": "npm", "reference": "@modelcontextprotocol/server-filesystem", "version": "2026.7.10"},
-		"transport":      map[string]any{"type": "stdio", "command": "npx", "args": []string{"-y", "@modelcontextprotocol/server-filesystem@2026.7.10", root}},
+		"source":         map[string]any{"type": "npm", "reference": "@modelcontextprotocol/server-filesystem", "version": "2026.8.31"},
+		"transport":      map[string]any{"type": "stdio", "command": "npx", "args": []string{"-y", "@modelcontextprotocol/server-filesystem@2026.8.31", root}},
 		"auth":           map[string]any{"type": "none"}, "permissions": []string{"filesystem:" + root},
 	}
 	encoded, _ := json.Marshal(manifestDocument)
@@ -67,9 +67,9 @@ func TestExternalPlaywrightStdioNavigatesLocalProduct(t *testing.T) {
 	}
 	manifestDocument := map[string]any{
 		"schema_version": "oktapod.mcp/v1",
-		"source":         map[string]any{"type": "npm", "reference": "@playwright/mcp", "version": "0.0.78", "publisher": "Microsoft"},
+		"source":         map[string]any{"type": "npm", "reference": "@playwright/mcp", "version": "0.0.81", "publisher": "Microsoft"},
 		"transport": map[string]any{"type": "stdio", "command": "npx", "args": []string{
-			"-y", "@playwright/mcp@0.0.78", "--headless", "--browser", "chromium", "--executable-path", browserExecutable, "--isolated", "--image-responses", "omit",
+			"-y", "@playwright/mcp@0.0.81", "--headless", "--browser", "chromium", "--executable-path", browserExecutable, "--isolated", "--image-responses", "omit",
 		}},
 		"auth": map[string]any{"type": "none"}, "permissions": []string{"browser", "network:loopback"},
 	}
@@ -83,7 +83,11 @@ func TestExternalPlaywrightStdioNavigatesLocalProduct(t *testing.T) {
 	if !hasTool(health.Tools, "browser_navigate") || len(health.Tools) < 10 {
 		t.Fatalf("Playwright MCP exposed an unexpected tool catalog (%d tools)", len(health.Tools))
 	}
-	result, err := Call(ctx, string(encoded), "", "browser_navigate", map[string]any{"url": "http://127.0.0.1:8787/"})
+	productURL := strings.TrimSpace(os.Getenv("OKTAPOD_TEST_PRODUCT_URL"))
+	if productURL == "" {
+		productURL = "http://127.0.0.1:8787/"
+	}
+	result, err := Call(ctx, string(encoded), "", "browser_navigate", map[string]any{"url": productURL})
 	if err != nil || result.IsError {
 		t.Fatalf("navigate Oktapod with Playwright MCP: err=%v isError=%v detail=%s", err, result.IsError, externalResultText(result))
 	}

@@ -1751,6 +1751,10 @@ func turnStreamErrorDetail(err error) (string, string) {
 	if errors.As(err, &conflict) {
 		return "STATE_CONFLICT", conflict.Error()
 	}
+	var resourceConflict *core.ResourceConflictError
+	if errors.As(err, &resourceConflict) {
+		return "RESOURCE_CONFLICT", resourceConflict.Error()
+	}
 	return "TURN_STREAM_ERROR", "会话处理失败，请重试"
 }
 
@@ -1961,6 +1965,33 @@ func (s *Server) ListProjectSchedules(ctx context.Context, request generated.Lis
 		items = append(items, item)
 	}
 	return generated.ListProjectSchedules200JSONResponse{Items: items}, nil
+}
+
+func (s *Server) PreviewSchedule(ctx context.Context, request generated.PreviewScheduleRequestObject) (generated.PreviewScheduleResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	draft, _, err := s.service.PreviewSchedule(ctx, request.ProjectId.String(), request.Body.Description, request.Body.Timezone)
+	if err != nil {
+		return nil, err
+	}
+	return generated.PreviewSchedule200JSONResponse{Name: draft.Name, CronExpression: draft.CronExpression, Timezone: draft.Timezone, Goal: draft.Goal, Clarification: draft.Clarification, CreateRequested: draft.CreateRequested}, nil
+}
+
+func (s *Server) ListScheduleRuns(ctx context.Context, request generated.ListScheduleRunsRequestObject) (generated.ListScheduleRunsResponseObject, error) {
+	runs, err := s.service.ListScheduleRuns(ctx, request.ScheduleId.String())
+	if err != nil {
+		return nil, err
+	}
+	items := make([]generated.ScheduleRun, 0, len(runs))
+	for _, run := range runs {
+		item, convertErr := scheduleRunResponse(run)
+		if convertErr != nil {
+			return nil, convertErr
+		}
+		items = append(items, item)
+	}
+	return generated.ListScheduleRuns200JSONResponse{Items: items}, nil
 }
 
 func (s *Server) CreateSchedule(ctx context.Context, request generated.CreateScheduleRequestObject) (generated.CreateScheduleResponseObject, error) {
@@ -2255,6 +2286,41 @@ func (s *Server) GetMCPHealth(ctx context.Context, request generated.GetMCPHealt
 		return nil, err
 	}
 	return generated.GetMCPHealth200JSONResponse(response), nil
+}
+
+func (s *Server) ListRuntimeDependencies(ctx context.Context, request generated.ListRuntimeDependenciesRequestObject) (generated.ListRuntimeDependenciesResponseObject, error) {
+	dependencies, err := s.service.ListRuntimeDependencies(ctx, request.CapabilityId.String())
+	if err != nil {
+		return nil, err
+	}
+	items := make([]generated.RuntimeDependency, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		version := ""
+		if dependency.Version != "" {
+			version = dependency.Version
+		}
+		items = append(items, generated.RuntimeDependency{
+			Id: dependency.ID, Kind: dependency.Kind, Provider: dependency.Provider, Name: dependency.Name,
+			Version: &version, DisplayName: dependency.DisplayName, Description: dependency.Description,
+			Installable: dependency.Installable,
+		})
+	}
+	return generated.ListRuntimeDependencies200JSONResponse{Items: items}, nil
+}
+
+func (s *Server) InstallRuntimeDependency(ctx context.Context, request generated.InstallRuntimeDependencyRequestObject) (generated.InstallRuntimeDependencyResponseObject, error) {
+	if request.Body == nil {
+		return nil, &core.ValidationError{Field: "body", Message: "is required"}
+	}
+	capability, err := s.service.InstallRuntimeDependency(ctx, request.CapabilityId.String(), request.Params.Provider, request.DependencyId, correlationID(ctx), bool(request.Body.Confirmed))
+	if err != nil {
+		return nil, err
+	}
+	response, err := capabilityResponse(capability)
+	if err != nil {
+		return nil, err
+	}
+	return generated.InstallRuntimeDependency200JSONResponse(response), nil
 }
 
 func mcpOAuthSessionResponse(session core.MCPOAuthSession) (generated.MCPOAuthSession, error) {
@@ -3624,6 +3690,45 @@ func scheduleResponse(schedule core.Schedule) (generated.Schedule, error) {
 	}, nil
 }
 
+func scheduleRunResponse(run core.ScheduleRun) (generated.ScheduleRun, error) {
+	parseOptional := func(value string) (openapi_types.UUID, error) {
+		if strings.TrimSpace(value) == "" {
+			return uuid.Nil, nil
+		}
+		return uuid.Parse(value)
+	}
+	id, err := uuid.Parse(run.ID)
+	if err != nil {
+		return generated.ScheduleRun{}, err
+	}
+	scheduleID, err := uuid.Parse(run.ScheduleID)
+	if err != nil {
+		return generated.ScheduleRun{}, err
+	}
+	taskID, err := parseOptional(run.TaskID)
+	if err != nil {
+		return generated.ScheduleRun{}, err
+	}
+	conversationID, err := parseOptional(run.ConversationID)
+	if err != nil {
+		return generated.ScheduleRun{}, err
+	}
+	runID, err := parseOptional(run.RunID)
+	if err != nil {
+		return generated.ScheduleRun{}, err
+	}
+	item := generated.ScheduleRun{Id: id, ScheduleId: scheduleID, PlannedAt: run.PlannedAt, Status: generated.ScheduleRunStatus(run.Status), TaskId: taskID, ConversationId: conversationID, RunId: runID, TaskStatus: run.TaskStatus, ErrorCode: run.ErrorCode, ResultSummary: run.ResultSummary}
+	if !run.StartedAt.IsZero() {
+		value := run.StartedAt
+		item.StartedAt = &value
+	}
+	if !run.FinishedAt.IsZero() {
+		value := run.FinishedAt
+		item.FinishedAt = &value
+	}
+	return item, nil
+}
+
 func capabilityResponse(capability core.Capability) (generated.Capability, error) {
 	id, err := uuid.Parse(capability.ID)
 	if err != nil {
@@ -4459,6 +4564,8 @@ func (s *Server) writeMappedProblem(w http.ResponseWriter, r *http.Request, err 
 		s.writeProblem(w, r, http.StatusLocked, "SECRET_VAULT_LOCKED", "Vault is locked", "recover the database vault before using credentials")
 	case errors.Is(err, secretstore.ErrSecretMissing):
 		s.writeProblem(w, r, http.StatusConflict, "SECRET_MISSING", "Credential is missing", "re-enter the credential in settings")
+	case errors.Is(err, core.ErrMCPNotConnected):
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "MCP_NOT_CONNECTED", "MCP is not connected", "the MCP capability exists, but its connection has not been established")
 	case errors.Is(err, sql.ErrNoRows):
 		s.writeProblem(w, r, http.StatusNotFound, "RESOURCE_NOT_FOUND", "Resource not found", "the resource does not exist or is not visible")
 	default:
