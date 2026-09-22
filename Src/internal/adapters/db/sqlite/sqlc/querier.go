@@ -45,6 +45,7 @@ type Querier interface {
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	CreateUsageLedger(ctx context.Context, arg CreateUsageLedgerParams) error
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) error
+	DeleteScheduleAsOwner(ctx context.Context, arg DeleteScheduleAsOwnerParams) error
 	FindUserByEmail(ctx context.Context, lower string) (User, error)
 	FinishStepAttempt(ctx context.Context, arg FinishStepAttemptParams) (int64, error)
 	GetAcceptedOutcomeByRun(ctx context.Context, runID string) (AcceptedOutcome, error)

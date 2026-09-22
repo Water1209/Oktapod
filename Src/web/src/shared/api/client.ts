@@ -1208,6 +1208,8 @@ export const api = {
     request<Schedule>(`/projects/${projectId}/schedules`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input) }),
   setScheduleStatus: (scheduleId: string, status: ScheduleStatus) =>
     request<Schedule>(`/schedules/${scheduleId}/status`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ status }) }),
+  deleteSchedule: (scheduleId: string) =>
+    request<void>(`/schedules/${scheduleId}`, { method: 'DELETE', headers: { 'Idempotency-Key': crypto.randomUUID() } }),
   scheduleRuns: (scheduleId: string) => request<{ items: ScheduleRun[] }>(`/schedules/${scheduleId}/runs`),
   previewSchedule: (projectId: string, description: string, timezone: string) => request<{ name: string; cron_expression: string; timezone: string; goal: string; clarification: string; create_requested: boolean }>(`/projects/${projectId}/schedule-preview`, { method: 'POST', body: JSON.stringify({ description, timezone }) }),
   capabilities: (projectId: string) => request<{ items: Capability[] }>(`/projects/${projectId}/capabilities`),

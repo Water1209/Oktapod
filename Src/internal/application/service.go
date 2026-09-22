@@ -2369,6 +2369,17 @@ func (s *Service) SetScheduleStatus(ctx context.Context, scheduleID, status, ide
 	})
 }
 
+func (s *Service) DeleteSchedule(ctx context.Context, scheduleID, idempotencyKey string) error {
+	scheduleID = strings.TrimSpace(scheduleID)
+	if scheduleID == "" { return &core.ValidationError{Field: "schedule_id", Message: "is required"} }
+	idempotencyKey, err := normalizeIdempotencyKey(idempotencyKey)
+	if err != nil { return err }
+	request := struct{ ScheduleID string `json:"schedule_id"` }{ScheduleID: scheduleID}
+	idempotency := core.Idempotency{Key: idempotencyKey, RequestHash: requestHash(request)}
+	_, err = retryTransientSQLiteValue(ctx, func() (struct{}, error) { return struct{}{}, s.repository.DeleteSchedule(ctx, s.ScopeFor(ctx), scheduleID, idempotency) })
+	return err
+}
+
 // SubmitScheduledTurn turns one claimed schedule fire into a durable Task/Run.
 // Each fire owns a fresh conversation, so it bypasses the Composer follow-up
 // queue and must return the created Task synchronously for schedule_fires to

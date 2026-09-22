@@ -170,6 +170,7 @@ type ScheduleRepository interface {
 	CreateSchedule(ctx context.Context, scope core.Scope, projectID string, input core.CreateScheduleInput, nextRunAt time.Time, idempotency core.Idempotency) (core.Schedule, error)
 	ListSchedules(ctx context.Context, scope core.Scope, projectID string, limit int) ([]core.Schedule, error)
 	SetScheduleStatus(ctx context.Context, scope core.Scope, scheduleID, status string, idempotency core.Idempotency) (core.Schedule, error)
+	DeleteSchedule(ctx context.Context, scope core.Scope, scheduleID string, idempotency core.Idempotency) error
 	ListScheduleRuns(ctx context.Context, scope core.Scope, scheduleID string, limit int) ([]core.ScheduleRun, error)
 	GetDueSchedule(ctx context.Context, now time.Time) (core.Schedule, error)
 	ClaimScheduleFire(ctx context.Context, schedule core.Schedule, nextRunAt time.Time) (core.ScheduleFire, error)

@@ -1669,6 +1669,24 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 	return err
 }
 
+const deleteScheduleAsOwner = `-- name: DeleteScheduleAsOwner :exec
+DELETE FROM schedules
+WHERE id = ?
+  AND organization_id = ?
+  AND owner_user_id = ?
+`
+
+type DeleteScheduleAsOwnerParams struct {
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	OwnerUserID    string `json:"owner_user_id"`
+}
+
+func (q *Queries) DeleteScheduleAsOwner(ctx context.Context, arg DeleteScheduleAsOwnerParams) error {
+	_, err := q.db.ExecContext(ctx, deleteScheduleAsOwner, arg.ID, arg.OrganizationID, arg.OwnerUserID)
+	return err
+}
+
 const findUserByEmail = `-- name: FindUserByEmail :one
 SELECT id, display_name, created_at, updated_at, email, password_hash, failed_login_attempts, locked_until, username FROM users WHERE lower(email) = lower(?) AND email <> ''
 `

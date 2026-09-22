@@ -610,6 +610,12 @@ WHERE id = ?
   AND owner_user_id = ?
 RETURNING *;
 
+-- name: DeleteScheduleAsOwner :exec
+DELETE FROM schedules
+WHERE id = ?
+  AND organization_id = ?
+  AND owner_user_id = ?;
+
 -- name: GetDueSchedule :one
 SELECT *
 FROM schedules

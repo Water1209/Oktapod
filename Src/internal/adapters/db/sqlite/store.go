@@ -6314,6 +6314,25 @@ func (s *Store) SetScheduleStatus(ctx context.Context, scope core.Scope, schedul
 	return schedule, nil
 }
 
+func (s *Store) DeleteSchedule(ctx context.Context, scope core.Scope, scheduleID string, idempotency core.Idempotency) error {
+	route := "DELETE /schedules/" + scheduleID
+	if idempotency.Key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		var replay struct{}
+		found, err := replayIdempotency(ctx, s.db, scope, route, idempotency, &replay)
+		if err != nil { return err }
+		if found { return nil }
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM schedules WHERE id = ? AND organization_id = ? AND owner_user_id = ?`, scheduleID, scope.OrganizationID, scope.UserID)
+	if err != nil { return err }
+	if affected, _ := result.RowsAffected(); affected == 0 { return sql.ErrNoRows }
+	if idempotency.Key != "" {
+		if err := saveIdempotency(ctx, s.db, scope, route, idempotency, httpStatusNoContent, struct{}{}); err != nil { return err }
+	}
+	return nil
+}
+
 func (s *Store) GetDueSchedule(ctx context.Context, now time.Time) (core.Schedule, error) {
 	row, err := s.queries.GetDueSchedule(ctx, formatTime(now))
 	if err != nil {

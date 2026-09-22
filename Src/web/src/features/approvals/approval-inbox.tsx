@@ -109,7 +109,7 @@ function InboxSummary({ item }: { item: InboxItem }) {
     <p className="approval-reason">{reason}</p>
     {budgetIssue && task.data && usage.data ? <RunBudgetControl taskId={task.data.id} runId={task.data.run_id} taskStatus={task.data.status} usage={usage.data} compact /> : null}
     {budgetIssue && usage.error ? <small className="approval-error">配额信息读取失败：{usage.error.message}</small> : null}
-    <div className="approval-actions"><Link to="/tasks/$taskId" params={{ taskId: item.task_id }}>打开任务<ExternalLink size={13} /></Link>{item.kind === 'task_recovery' && failure?.retryable ? <button className="approve" disabled={recovery.isPending} onClick={() => recovery.mutate()}>从阻塞点继续</button> : null}</div>
+    <div className="approval-actions"><Link to="/tasks/$taskId" params={{ taskId: item.task_id }}>打开任务与审批<ExternalLink size={13} /></Link>{item.kind === 'task_recovery' && failure?.retryable ? <button className="approve" disabled={recovery.isPending} onClick={() => recovery.mutate()}>从阻塞点继续</button> : null}</div>
     {recovery.error ? <small className="approval-error">恢复任务失败：{recovery.error.message}</small> : null}
   </article>
 }

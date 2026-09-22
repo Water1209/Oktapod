@@ -614,6 +614,23 @@ paths:
                 $ref: "#/components/schemas/Schedule"
         default:
           $ref: "#/components/responses/Problem"
+  /schedules/{schedule_id}:
+    parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: deleteSchedule
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Schedule deleted by its owner; schedule fires and their task history remain auditable
+        default:
+          $ref: "#/components/responses/Problem"
   /projects/{project_id}/schedule-preview:
     parameters:
       - $ref: "#/components/parameters/ProjectId"

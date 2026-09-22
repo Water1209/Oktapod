@@ -2041,6 +2041,11 @@ func (s *Server) SetScheduleStatus(ctx context.Context, request generated.SetSch
 	return generated.SetScheduleStatus200JSONResponse(response), nil
 }
 
+func (s *Server) DeleteSchedule(ctx context.Context, request generated.DeleteScheduleRequestObject) (generated.DeleteScheduleResponseObject, error) {
+	if err := s.service.DeleteSchedule(ctx, request.ScheduleId.String(), optionalIdempotencyKey(request.Params.IdempotencyKey)); err != nil { return nil, err }
+	return generated.DeleteSchedule204Response{}, nil
+}
+
 func (s *Server) ListProjectCapabilities(ctx context.Context, request generated.ListProjectCapabilitiesRequestObject) (generated.ListProjectCapabilitiesResponseObject, error) {
 	capabilities, err := s.service.ListCapabilities(ctx, request.ProjectId.String())
 	if err != nil {

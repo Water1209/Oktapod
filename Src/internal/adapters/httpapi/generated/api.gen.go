@@ -3732,6 +3732,11 @@ type ListRunEventsParams struct {
 	After *int64 `form:"after,omitempty" json:"after,omitempty"`
 }
 
+// DeleteScheduleParams defines parameters for DeleteSchedule.
+type DeleteScheduleParams struct {
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
 // SetScheduleStatusJSONBody defines parameters for SetScheduleStatus.
 type SetScheduleStatusJSONBody struct {
 	Status SetScheduleStatusJSONBodyStatus `json:"status"`
@@ -4375,6 +4380,9 @@ type ServerInterface interface {
 
 	// (GET /runs/{run_id}/usage)
 	GetRunUsage(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
+
+	// (DELETE /schedules/{schedule_id})
+	DeleteSchedule(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID, params DeleteScheduleParams)
 
 	// (GET /schedules/{schedule_id}/runs)
 	ListScheduleRuns(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID)
@@ -5031,6 +5039,11 @@ func (_ Unimplemented) GetActiveRunPlan(w http.ResponseWriter, r *http.Request, 
 
 // (GET /runs/{run_id}/usage)
 func (_ Unimplemented) GetRunUsage(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (DELETE /schedules/{schedule_id})
+func (_ Unimplemented) DeleteSchedule(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID, params DeleteScheduleParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -9060,6 +9073,55 @@ func (siw *ServerInterfaceWrapper) GetRunUsage(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteSchedule operation middleware
+func (siw *ServerInterfaceWrapper) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "schedule_id" -------------
+	var scheduleId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "schedule_id", chi.URLParam(r, "schedule_id"), &scheduleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "schedule_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteScheduleParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteSchedule(w, r, scheduleId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListScheduleRuns operation middleware
 func (siw *ServerInterfaceWrapper) ListScheduleRuns(w http.ResponseWriter, r *http.Request) {
 
@@ -10084,6 +10146,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/runs/{run_id}/usage", wrapper.GetRunUsage)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/schedules/{schedule_id}", wrapper.DeleteSchedule)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/schedules/{schedule_id}/runs", wrapper.ListScheduleRuns)
@@ -13740,6 +13805,35 @@ func (response GetRunUsagedefaultApplicationProblemPlusJSONResponse) VisitGetRun
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type DeleteScheduleRequestObject struct {
+	ScheduleId openapi_types.UUID `json:"schedule_id"`
+	Params     DeleteScheduleParams
+}
+
+type DeleteScheduleResponseObject interface {
+	VisitDeleteScheduleResponse(w http.ResponseWriter) error
+}
+
+type DeleteSchedule204Response struct {
+}
+
+func (response DeleteSchedule204Response) VisitDeleteScheduleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteScheduledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteScheduledefaultApplicationProblemPlusJSONResponse) VisitDeleteScheduleResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type ListScheduleRunsRequestObject struct {
 	ScheduleId openapi_types.UUID `json:"schedule_id"`
 }
@@ -14753,6 +14847,9 @@ type StrictServerInterface interface {
 
 	// (GET /runs/{run_id}/usage)
 	GetRunUsage(ctx context.Context, request GetRunUsageRequestObject) (GetRunUsageResponseObject, error)
+
+	// (DELETE /schedules/{schedule_id})
+	DeleteSchedule(ctx context.Context, request DeleteScheduleRequestObject) (DeleteScheduleResponseObject, error)
 
 	// (GET /schedules/{schedule_id}/runs)
 	ListScheduleRuns(ctx context.Context, request ListScheduleRunsRequestObject) (ListScheduleRunsResponseObject, error)
@@ -18227,6 +18324,33 @@ func (sh *strictHandler) GetRunUsage(w http.ResponseWriter, r *http.Request, run
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetRunUsageResponseObject); ok {
 		if err := validResponse.VisitGetRunUsageResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteSchedule operation middleware
+func (sh *strictHandler) DeleteSchedule(w http.ResponseWriter, r *http.Request, scheduleId openapi_types.UUID, params DeleteScheduleParams) {
+	var request DeleteScheduleRequestObject
+
+	request.ScheduleId = scheduleId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteSchedule(ctx, request.(DeleteScheduleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteSchedule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteScheduleResponseObject); ok {
+		if err := validResponse.VisitDeleteScheduleResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
