@@ -21,7 +21,7 @@ import { TaskStatusStrip } from '../tasks/task-status-strip'
 import { useRunEvents } from '../runs/use-run-events'
 import { isCompactCommand, parseSkillInvocation, skillCommandName } from './skill-command'
 import { InspectorChanges, InspectorContext, InspectorEvents, InspectorRun, InspectorSecurity, InspectorUsage } from './project-inspector'
-import { ResourceInstallDialog } from '../resources/resources-page'
+import { ResourceInstallDialog } from '../resources/resource-install-dialog'
 import { FilePreview, type FilePreviewTarget } from './file-preview'
 import { canPreviewFile } from './file-preview-kind'
 

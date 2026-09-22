@@ -2,6 +2,8 @@ import type { Capability } from '../../shared/api/client'
 
 export type ResourceItem = Capability & { catalog_install_state?: 'available'; description?: string }
 export type ResourceAbility = { title: string; detail: string; technicalName?: string }
+export const availabilityText = { available: '可用', degraded: '需要修复', disabled: '已停用', quarantined: '待审核' } as const
+
 export type ResourceProfile = {
   displayName?: string
   summary: string
